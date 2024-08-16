@@ -14,7 +14,7 @@
 
 // *** DO NOT MODIFY ***
 // This file is auto-generated. To update it, run:
-// `bazel run proto:update_protos`
+// `bazel run nativelink-proto:update_protos`
 
 pub mod build {
     pub mod bazel {
@@ -47,6 +47,13 @@ pub mod google {
     }
     pub mod bytestream {
         include!("google.bytestream.pb.rs");
+    }
+    pub mod devtools {
+        pub mod build {
+            pub mod v1 {
+                include!("google.devtools.build.v1.pb.rs");
+            }
+        }
     }
     pub mod longrunning {
         include!("google.longrunning.pb.rs");

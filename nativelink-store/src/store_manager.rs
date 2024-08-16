@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,12 +13,15 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 
+use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::store_trait::Store;
+use parking_lot::RwLock;
 
+#[derive(MetricsComponent)]
 pub struct StoreManager {
-    stores: RwLock<HashMap<String, Arc<dyn Store>>>,
+    #[metric]
+    stores: RwLock<HashMap<String, Store>>,
 }
 
 impl StoreManager {
@@ -28,25 +31,21 @@ impl StoreManager {
         }
     }
 
-    pub fn add_store(&self, name: &str, store: Arc<dyn Store>) {
-        let mut stores = self
-            .stores
-            .write()
-            .expect("Failed to lock mutex in add_store()");
+    pub fn add_store(&self, name: &str, store: Store) {
+        let mut stores = self.stores.write();
         stores.insert(name.to_string(), store);
     }
 
-    pub fn get_store(&self, name: &str) -> Option<Arc<dyn Store>> {
-        let stores = self
-            .stores
-            .read()
-            .expect("Failed to lock read mutex in get_store()");
+    pub fn get_store(&self, name: &str) -> Option<Store> {
+        let stores = self.stores.read();
         if let Some(store) = stores.get(name) {
             return Some(store.clone());
         }
         None
     }
 }
+
+impl RootMetricsComponent for StoreManager {}
 
 impl Default for StoreManager {
     fn default() -> Self {

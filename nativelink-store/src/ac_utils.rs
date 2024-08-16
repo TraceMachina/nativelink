@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ use futures::TryFutureExt;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasher;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{StoreKey, StoreLike};
 use prost::Message;
 
 // NOTE(blaise.bruer) From some local testing it looks like action cache items are rarely greater than
@@ -37,29 +37,34 @@ pub const ESTIMATED_DIGEST_SIZE: usize = 2048;
 const MAX_ACTION_MSG_SIZE: usize = 10 << 20; // 10mb.
 
 /// Attempts to fetch the digest contents from a store into the associated proto.
-pub async fn get_and_decode_digest<T: Message + Default>(
-    store: Pin<&dyn Store>,
-    digest: &DigestInfo,
+pub async fn get_and_decode_digest<T: Message + Default + 'static>(
+    store: &impl StoreLike,
+    key: StoreKey<'_>,
 ) -> Result<T, Error> {
-    get_size_and_decode_digest(store, digest)
+    get_size_and_decode_digest(store, key)
         .map_ok(|(v, _)| v)
         .await
 }
 
 /// Attempts to fetch the digest contents from a store into the associated proto.
-pub async fn get_size_and_decode_digest<T: Message + Default>(
-    store: Pin<&dyn Store>,
-    digest: &DigestInfo,
+pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
+    store: &impl StoreLike,
+    key: impl Into<StoreKey<'_>>,
 ) -> Result<(T, usize), Error> {
+    // Note: For unknown reasons we appear to be hitting:
+    // https://github.com/rust-lang/rust/issues/92096
+    // or a smiliar issue if we try to use the non-store driver function, so we
+    // are using the store driver function here.
     let mut store_data_resp = store
-        .get_part_unchunked(*digest, 0, Some(MAX_ACTION_MSG_SIZE))
+        .as_store_driver_pin()
+        .get_part_unchunked(key.into(), 0, Some(MAX_ACTION_MSG_SIZE))
         .await;
     if let Err(err) = &mut store_data_resp {
         if err.code == Code::NotFound {
             // Trim the error code. Not Found is quite common and we don't want to send a large
             // error (debug) message for something that is common. We resize to just the last
             // message as it will be the most relevant.
-            err.messages.resize_with(1, || "".to_string());
+            err.messages.resize_with(1, String::new);
         }
     }
     let store_data = store_data_resp?;
@@ -91,14 +96,19 @@ pub fn message_to_digest(
 /// Takes a proto message and will serialize it and upload it to the provided store.
 pub async fn serialize_and_upload_message<'a, T: Message>(
     message: &'a T,
-    cas_store: Pin<&'a dyn Store>,
+    cas_store: Pin<&'a impl StoreLike>,
     hasher: &mut impl DigestHasher,
 ) -> Result<DigestInfo, Error> {
     let mut buffer = BytesMut::with_capacity(message.encoded_len());
     let digest = message_to_digest(message, &mut buffer, hasher)
         .err_tip(|| "In serialize_and_upload_message")?;
+    // Note: For unknown reasons we appear to be hitting:
+    // https://github.com/rust-lang/rust/issues/92096
+    // or a smiliar issue if we try to use the non-store driver function, so we
+    // are using the store driver function here.
     cas_store
-        .update_oneshot(digest, buffer.freeze())
+        .as_store_driver_pin()
+        .update_oneshot(digest.into(), buffer.freeze())
         .await
         .err_tip(|| "In serialize_and_upload_message")?;
     Ok(digest)

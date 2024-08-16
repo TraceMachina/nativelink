@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use nativelink_metric::{
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use prost_types::TimestampError;
+use serde::{Deserialize, Serialize};
 
 #[macro_export]
 macro_rules! make_err {
@@ -40,10 +44,20 @@ macro_rules! error_if {
     }};
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Error {
     pub code: Code,
     pub messages: Vec<String>,
+}
+
+impl MetricsComponent for Error {
+    fn publish(
+        &self,
+        kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        self.to_string().publish(kind, field_metadata)
+    }
 }
 
 impl Error {
@@ -145,6 +159,12 @@ impl From<prost::EncodeError> for Error {
     }
 }
 
+impl From<prost::UnknownEnumValue> for Error {
+    fn from(err: prost::UnknownEnumValue) -> Self {
+        make_err!(Code::Internal, "{}", err.to_string())
+    }
+}
+
 impl From<std::num::TryFromIntError> for Error {
     fn from(err: std::num::TryFromIntError) -> Self {
         make_err!(Code::InvalidArgument, "{}", err.to_string())
@@ -194,6 +214,29 @@ impl From<std::io::Error> for Error {
 impl From<Code> for Error {
     fn from(code: Code) -> Self {
         make_err!(code, "")
+    }
+}
+
+impl From<fred::error::RedisError> for Error {
+    fn from(error: fred::error::RedisError) -> Self {
+        use fred::error::RedisErrorKind::{
+            Auth, Backpressure, Canceled, Cluster, Config, InvalidArgument, InvalidCommand,
+            NotFound, Parse, Protocol, Sentinel, Timeout, Tls, Unknown, Url, IO,
+        };
+
+        // Conversions here are based on https://grpc.github.io/grpc/core/md_doc_statuscodes.html.
+        let code = match error.kind() {
+            Config | InvalidCommand | InvalidArgument | Url => Code::InvalidArgument,
+            IO | Protocol | Tls | Cluster | Parse | Sentinel => Code::Internal,
+            Auth => Code::PermissionDenied,
+            Canceled => Code::Aborted,
+            Unknown => Code::Unknown,
+            Timeout => Code::DeadlineExceeded,
+            NotFound => Code::NotFound,
+            Backpressure => Code::Unavailable,
+        };
+
+        make_err!(code, "{error}")
     }
 }
 
@@ -296,7 +339,7 @@ impl<T> ResultExt<T> for Option<T> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive] // New Codes may be added in the future, so never exhaustively match!
 pub enum Code {
     Ok = 0,
@@ -432,5 +475,19 @@ impl From<Code> for std::io::ErrorKind {
             Code::Unavailable => Self::ConnectionRefused,
             _ => Self::Other,
         }
+    }
+}
+
+// Allows for mapping this type into a generic serialization error.
+impl serde::ser::Error for Error {
+    fn custom<T: std::fmt::Display>(msg: T) -> Self {
+        Self::new(Code::InvalidArgument, msg.to_string())
+    }
+}
+
+// Allows for mapping this type into a generic deserialization error.
+impl serde::de::Error for Error {
+    fn custom<T: std::fmt::Display>(msg: T) -> Self {
+        Self::new(Code::InvalidArgument, msg.to_string())
     }
 }

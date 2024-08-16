@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod ac_server;
+pub mod bep_server;
 pub mod bytestream_server;
 pub mod capabilities_server;
 pub mod cas_server;

@@ -60,18 +60,9 @@ pub struct ExecuteResult {
     /// / that initially sent the job as part of the BRE protocol.
     #[prost(string, tag = "6")]
     pub instance_name: ::prost::alloc::string::String,
-    /// / The original execution digest request for this response. The scheduler knows what it
-    /// / should be, but we do safety checks to ensure it really is the request we expected.
-    #[prost(message, optional, tag = "2")]
-    pub action_digest: ::core::option::Option<
-        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
-    >,
-    /// / The salt originally sent along with the StartExecute request. This salt is used
-    /// / as a seed for cases where the execution digest should never be cached or merged
-    /// / with other jobs. This salt is added to the hash function used to compute jobs that
-    /// / are running or cached.
-    #[prost(uint64, tag = "3")]
-    pub salt: u64,
+    /// / The operation ID that was executed.
+    #[prost(string, tag = "8")]
+    pub operation_id: ::prost::alloc::string::String,
     /// / The actual response data.
     #[prost(oneof = "execute_result::Result", tags = "4, 5")]
     pub result: ::core::option::Option<execute_result::Result>,
@@ -103,13 +94,13 @@ pub struct ConnectionResult {
     #[prost(string, tag = "1")]
     pub worker_id: ::prost::alloc::string::String,
 }
-/// / Request to kill a running action sent from the scheduler to a worker.
+/// / Request to kill a running operation sent from the scheduler to a worker.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct KillActionRequest {
-    /// / The the hex encoded unique qualifier for the action to be killed.
+pub struct KillOperationRequest {
+    /// / The the operation id for the operation to be killed.
     #[prost(string, tag = "1")]
-    pub action_id: ::prost::alloc::string::String,
+    pub operation_id: ::prost::alloc::string::String,
 }
 /// / Communication from the scheduler to the worker.
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -142,9 +133,9 @@ pub mod update_for_worker {
         /// / The worker may discard any outstanding work that is being executed.
         #[prost(message, tag = "4")]
         Disconnect(()),
-        /// / Instructs the worker to kill a specific running action.
+        /// / Instructs the worker to kill a specific running operation.
         #[prost(message, tag = "5")]
-        KillActionRequest(super::KillActionRequest),
+        KillOperationRequest(super::KillOperationRequest),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -155,9 +146,9 @@ pub struct StartExecute {
     pub execute_request: ::core::option::Option<
         super::super::super::super::super::build::bazel::remote::execution::v2::ExecuteRequest,
     >,
-    /// / See documentation in ExecuteResult::salt.
-    #[prost(uint64, tag = "2")]
-    pub salt: u64,
+    /// / Id of the operation.
+    #[prost(string, tag = "4")]
+    pub operation_id: ::prost::alloc::string::String,
     /// / The time at which the command was added to the queue to allow population
     /// / of the ActionResult.
     #[prost(message, optional, tag = "3")]
@@ -194,17 +185,6 @@ pub mod worker_api_client {
     #[derive(Debug, Clone)]
     pub struct WorkerApiClient<T> {
         inner: tonic::client::Grpc<T>,
-    }
-    impl WorkerApiClient<tonic::transport::Channel> {
-        /// Attempt to create a new client by connecting to a given endpoint.
-        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
-        where
-            D: TryInto<tonic::transport::Endpoint>,
-            D::Error: Into<StdError>,
-        {
-            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
-            Ok(Self::new(conn))
-        }
     }
     impl<T> WorkerApiClient<T>
     where
@@ -468,19 +448,17 @@ pub mod worker_api_server {
     /// / to determine which jobs the worker can process.
     #[derive(Debug)]
     pub struct WorkerApiServer<T: WorkerApi> {
-        inner: _Inner<T>,
+        inner: Arc<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
         max_decoding_message_size: Option<usize>,
         max_encoding_message_size: Option<usize>,
     }
-    struct _Inner<T>(Arc<T>);
     impl<T: WorkerApi> WorkerApiServer<T> {
         pub fn new(inner: T) -> Self {
             Self::from_arc(Arc::new(inner))
         }
         pub fn from_arc(inner: Arc<T>) -> Self {
-            let inner = _Inner(inner);
             Self {
                 inner,
                 accept_compression_encodings: Default::default(),
@@ -543,7 +521,6 @@ pub mod worker_api_server {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
-            let inner = self.inner.clone();
             match req.uri().path() {
                 "/com.github.trace_machina.nativelink.remote_execution.WorkerApi/ConnectWorker" => {
                     #[allow(non_camel_case_types)]
@@ -575,7 +552,6 @@ pub mod worker_api_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = ConnectWorkerSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -621,7 +597,6 @@ pub mod worker_api_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = KeepAliveSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -667,7 +642,6 @@ pub mod worker_api_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = GoingAwaySvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -711,7 +685,6 @@ pub mod worker_api_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = ExecutionResponseSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -733,8 +706,11 @@ pub mod worker_api_server {
                         Ok(
                             http::Response::builder()
                                 .status(200)
-                                .header("grpc-status", "12")
-                                .header("content-type", "application/grpc")
+                                .header("grpc-status", tonic::Code::Unimplemented as i32)
+                                .header(
+                                    http::header::CONTENT_TYPE,
+                                    tonic::metadata::GRPC_CONTENT_TYPE,
+                                )
                                 .body(empty_body())
                                 .unwrap(),
                         )
@@ -753,16 +729,6 @@ pub mod worker_api_server {
                 max_decoding_message_size: self.max_decoding_message_size,
                 max_encoding_message_size: self.max_encoding_message_size,
             }
-        }
-    }
-    impl<T: WorkerApi> Clone for _Inner<T> {
-        fn clone(&self) -> Self {
-            Self(Arc::clone(&self.0))
-        }
-    }
-    impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{:?}", self.0)
         }
     }
     impl<T: WorkerApi> tonic::server::NamedService for WorkerApiServer<T> {

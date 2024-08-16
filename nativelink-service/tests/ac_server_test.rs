@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,14 +21,14 @@ use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function, ActionResult, Digest,
+    digest_function, ActionResult, Digest, GetActionResultRequest, UpdateActionResultRequest,
 };
 use nativelink_service::ac_server::AcServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::Store;
-use prometheus_client::registry::Registry;
+use nativelink_util::store_trait::StoreLike;
+use pretty_assertions::assert_eq;
 use prost::Message;
 use tonic::{Code, Request, Response, Status};
 
@@ -37,7 +37,7 @@ const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789a
 const HASH1_SIZE: i64 = 147;
 
 async fn insert_into_store<T: Message>(
-    store: Pin<&dyn Store>,
+    store: Pin<&impl StoreLike>,
     hash: &str,
     action_size: i64,
     action_result: &T,
@@ -59,7 +59,6 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
                 nativelink_config::stores::MemoryStore::default(),
             ),
             &store_manager,
-            Some(&mut <Registry>::default()),
             None,
         )
         .await?,
@@ -71,7 +70,6 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
                 nativelink_config::stores::MemoryStore::default(),
             ),
             &store_manager,
-            Some(&mut <Registry>::default()),
             None,
         )
         .await?,
@@ -91,161 +89,142 @@ fn make_ac_server(store_manager: &StoreManager) -> Result<AcServer, Error> {
     )
 }
 
-#[cfg(test)]
-mod get_action_result {
-    use nativelink_proto::build::bazel::remote::execution::v2::GetActionResultRequest;
-    use pretty_assertions::assert_eq; // Must be declared in every module.
-
-    use super::*;
-
-    async fn get_action_result(
-        ac_server: &AcServer,
-        hash: &str,
-        size: i64,
-    ) -> Result<Response<ActionResult>, Status> {
-        ac_server
-            .get_action_result(Request::new(GetActionResultRequest {
-                instance_name: INSTANCE_NAME.to_string(),
-                action_digest: Some(Digest {
-                    hash: hash.to_string(),
-                    size_bytes: size,
-                }),
-                inline_stdout: false,
-                inline_stderr: false,
-                inline_output_files: vec![],
-                digest_function: digest_function::Value::Sha256.into(),
-            }))
-            .await
-    }
-
-    #[nativelink_test]
-    async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
-        let store_manager = make_store_manager().await?;
-        let ac_server = make_ac_server(&store_manager)?;
-
-        let raw_response = get_action_result(&ac_server, HASH1, 0).await;
-
-        let err = raw_response.unwrap_err();
-        assert_eq!(err.code(), Code::NotFound);
-        assert_eq!(
-            err.message(),
-            "Hash 0123456789abcdef000000000000000000000000000000000123456789abcdef not found"
-        );
-        Ok(())
-    }
-
-    #[nativelink_test]
-    async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
-        let store_manager = make_store_manager().await?;
-        let ac_server = make_ac_server(&store_manager)?;
-        let ac_store_owned = store_manager.get_store("main_ac").unwrap();
-
-        let action_result = ActionResult {
-            exit_code: 45,
-            ..Default::default()
-        };
-
-        let ac_store = Pin::new(ac_store_owned.as_ref());
-        insert_into_store(ac_store, HASH1, HASH1_SIZE, &action_result).await?;
-        let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE).await;
-
-        assert!(
-            raw_response.is_ok(),
-            "Expected value, got error {raw_response:?}"
-        );
-        assert_eq!(raw_response.unwrap().into_inner(), action_result);
-        Ok(())
-    }
-
-    #[nativelink_test]
-    async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error>> {
-        let store_manager = make_store_manager().await?;
-        let ac_server = make_ac_server(&store_manager)?;
-        let ac_store_owned = store_manager.get_store("main_ac").unwrap();
-
-        let action_result = ActionResult {
-            exit_code: 45,
-            ..Default::default()
-        };
-
-        let ac_store = Pin::new(ac_store_owned.as_ref());
-        insert_into_store(ac_store, HASH1, HASH1_SIZE, &action_result).await?;
-        let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE - 1).await;
-
-        let err = raw_response.unwrap_err();
-        assert_eq!(err.code(), Code::NotFound);
-        assert_eq!(
-            err.message(),
-            "Hash 0123456789abcdef000000000000000000000000000000000123456789abcdef not found"
-        );
-        Ok(())
-    }
+async fn get_action_result(
+    ac_server: &AcServer,
+    hash: &str,
+    size: i64,
+) -> Result<Response<ActionResult>, Status> {
+    ac_server
+        .get_action_result(Request::new(GetActionResultRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            action_digest: Some(Digest {
+                hash: hash.to_string(),
+                size_bytes: size,
+            }),
+            inline_stdout: false,
+            inline_stderr: false,
+            inline_output_files: vec![],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await
 }
 
-#[cfg(test)]
-mod update_action_result {
-    use nativelink_proto::build::bazel::remote::execution::v2::UpdateActionResultRequest;
-    use pretty_assertions::assert_eq; // Must be declared in every module.
+#[nativelink_test]
+async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let ac_server = make_ac_server(&store_manager)?;
 
-    use super::*;
+    let raw_response = get_action_result(&ac_server, HASH1, 0).await;
 
-    fn get_encoded_proto_size<T: Message>(proto: &T) -> Result<usize, Box<dyn std::error::Error>> {
-        let mut store_data = Vec::new();
-        proto.encode(&mut store_data)?;
-        Ok(store_data.len())
-    }
-
-    async fn update_action_result(
-        ac_server: &AcServer,
-        digest: Digest,
-        action_result: ActionResult,
-    ) -> Result<Response<ActionResult>, Status> {
-        ac_server
-            .update_action_result(Request::new(UpdateActionResultRequest {
-                instance_name: INSTANCE_NAME.to_string(),
-                action_digest: Some(digest),
-                action_result: Some(action_result),
-                results_cache_policy: None,
-                digest_function: digest_function::Value::Sha256.into(),
-            }))
-            .await
-    }
-
-    #[nativelink_test]
-    async fn one_item_update_test() -> Result<(), Box<dyn std::error::Error>> {
-        let store_manager = make_store_manager().await?;
-        let ac_server = make_ac_server(&store_manager)?;
-        let ac_store_owned = store_manager.get_store("main_ac").unwrap();
-
-        let action_result = ActionResult {
-            exit_code: 45,
-            ..Default::default()
-        };
-
-        let size_bytes = get_encoded_proto_size(&action_result)? as i64;
-
-        let raw_response = update_action_result(
-            &ac_server,
-            Digest {
-                hash: HASH1.to_string(),
-                size_bytes,
-            },
-            action_result.clone(),
-        )
-        .await;
-
-        assert!(
-            raw_response.is_ok(),
-            "Expected success, got error {raw_response:?}"
+    let err = raw_response.unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    assert_eq!(
+            err.message(),
+            "Key Digest(DigestInfo { size_bytes: 0, hash: \"0123456789abcdef000000000000000000000000000000000123456789abcdef\" }) not found"
         );
-        assert_eq!(raw_response.unwrap().into_inner(), action_result);
+    Ok(())
+}
 
-        let digest = DigestInfo::try_new(HASH1, size_bytes)?;
-        let ac_store = Pin::new(ac_store_owned.as_ref());
-        let raw_data = ac_store.get_part_unchunked(digest, 0, None).await?;
+#[nativelink_test]
+async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let ac_server = make_ac_server(&store_manager)?;
+    let ac_store = store_manager.get_store("main_ac").unwrap();
 
-        let decoded_action_result = ActionResult::decode(raw_data)?;
-        assert_eq!(decoded_action_result, action_result);
-        Ok(())
-    }
+    let action_result = ActionResult {
+        exit_code: 45,
+        ..Default::default()
+    };
+
+    insert_into_store(ac_store.as_pin(), HASH1, HASH1_SIZE, &action_result).await?;
+    let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE).await;
+
+    assert!(
+        raw_response.is_ok(),
+        "Expected value, got error {raw_response:?}"
+    );
+    assert_eq!(raw_response.unwrap().into_inner(), action_result);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let ac_server = make_ac_server(&store_manager)?;
+    let ac_store = store_manager.get_store("main_ac").unwrap();
+
+    let action_result = ActionResult {
+        exit_code: 45,
+        ..Default::default()
+    };
+
+    insert_into_store(ac_store.as_pin(), HASH1, HASH1_SIZE, &action_result).await?;
+    let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE - 1).await;
+
+    let err = raw_response.unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    assert_eq!(
+            err.message(),
+            "Key Digest(DigestInfo { size_bytes: 146, hash: \"0123456789abcdef000000000000000000000000000000000123456789abcdef\" }) not found"
+        );
+    Ok(())
+}
+
+fn get_encoded_proto_size<T: Message>(proto: &T) -> Result<usize, Box<dyn std::error::Error>> {
+    let mut store_data = Vec::new();
+    proto.encode(&mut store_data)?;
+    Ok(store_data.len())
+}
+
+async fn update_action_result(
+    ac_server: &AcServer,
+    digest: Digest,
+    action_result: ActionResult,
+) -> Result<Response<ActionResult>, Status> {
+    ac_server
+        .update_action_result(Request::new(UpdateActionResultRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            action_digest: Some(digest),
+            action_result: Some(action_result),
+            results_cache_policy: None,
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await
+}
+
+#[nativelink_test]
+async fn one_item_update_test() -> Result<(), Box<dyn std::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let ac_server = make_ac_server(&store_manager)?;
+    let ac_store = store_manager.get_store("main_ac").unwrap();
+
+    let action_result = ActionResult {
+        exit_code: 45,
+        ..Default::default()
+    };
+
+    let size_bytes = get_encoded_proto_size(&action_result)? as i64;
+
+    let raw_response = update_action_result(
+        &ac_server,
+        Digest {
+            hash: HASH1.to_string(),
+            size_bytes,
+        },
+        action_result.clone(),
+    )
+    .await;
+
+    assert!(
+        raw_response.is_ok(),
+        "Expected success, got error {raw_response:?}"
+    );
+    assert_eq!(raw_response.unwrap().into_inner(), action_result);
+
+    let digest = DigestInfo::try_new(HASH1, size_bytes)?;
+    let raw_data = ac_store.get_part_unchunked(digest, 0, None).await?;
+
+    let decoded_action_result = ActionResult::decode(raw_data)?;
+    assert_eq!(decoded_action_result, action_result);
+    Ok(())
 }

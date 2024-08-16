@@ -22,15 +22,14 @@ rust_library(
     deps = [
         "//nativelink-config",
         "//nativelink-error",
+        "//nativelink-metric",
         "//nativelink-proto",
-        "//nativelink-scheduler",
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:bytes",
         "@crates//:filetime",
         "@crates//:formatx",
         "@crates//:futures",
-        "@crates//:hex",
         "@crates//:parking_lot",
         "@crates//:prost",
         "@crates//:relative-path",
@@ -66,14 +65,14 @@ rust_test_suite(
         "//nativelink-config",
         "//nativelink-error",
         "//nativelink-proto",
-        "//nativelink-scheduler",
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:async-lock",
+        "@crates//:bytes",
         "@crates//:futures",
-        "@crates//:hex",
-        "@crates//:hyper",
+        "@crates//:hyper-1.4.1",
         "@crates//:once_cell",
+        "@crates//:pin-project-lite",
         "@crates//:pretty_assertions",
         "@crates//:prost",
         "@crates//:prost-types",
@@ -86,6 +85,7 @@ rust_test_suite(
 rust_doc(
     name = "docs",
     crate = ":nativelink-worker",
+    visibility = ["//visibility:public"],
 )
 
 rust_doc_test(

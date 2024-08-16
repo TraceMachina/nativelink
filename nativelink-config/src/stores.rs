@@ -1,4 +1,4 @@
-// Copyright 2023-2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
+    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
     convert_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
     convert_string_with_shellexpand, convert_vec_string_with_shellexpand,
 };
@@ -39,6 +40,18 @@ pub enum ConfigDigestHashFunction {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum StoreConfig {
     /// Memory store will store all data in a hashmap in memory.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "memory": {
+    ///     "eviction_policy": {
+    ///       // 10mb.
+    ///       "max_bytes": 10000000,
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
     memory(MemoryStore),
 
     /// S3 store will use Amazon's S3 service as a backend to store
@@ -47,6 +60,22 @@ pub enum StoreConfig {
     ///
     /// This configuration will never delete files, so you are
     /// responsible for purging old files in other ways.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "experimental_s3_store": {
+    ///   "region": "eu-north-1",
+    ///   "bucket": "crossplane-bucket-af79aeca9",
+    ///   "key_prefix": "test-prefix-index/",
+    ///   "retry": {
+    ///     "max_retries": 6,
+    ///     "delay": 0.3,
+    ///     "jitter": 0.5
+    ///   },
+    ///   "multipart_max_concurrent_uploads": 10
+    /// }
+    /// ```
+    ///
     experimental_s3_store(S3Store),
 
     /// Verify store is used to apply verifications to an underlying
@@ -57,12 +86,48 @@ pub enum StoreConfig {
     ///
     /// The suggested configuration is to have the CAS validate the
     /// hash and size and the AC validate nothing.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "verify": {
+    ///   "memory": {
+    ///     "eviction_policy": {
+    ///       "max_bytes": 500000000 // 500mb.
+    ///     }
+    ///   },
+    ///   "verify_size": true,
+    ///   "hash_verification_function": "sha256"
+    /// }
+    /// ```
+    ///
     verify(Box<VerifyStore>),
 
     /// Completeness checking store verifies if the
     /// output files & folders exist in the CAS before forwarding
     /// the request to the underlying store.
     /// Note: This store should only be used on AC stores.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "completeness_checking": {
+    ///     "backend": {
+    ///       "filesystem": {
+    ///         "content_path": "~/.cache/nativelink/content_path-ac",
+    ///         "temp_path": "~/.cache/nativelink/tmp_path-ac",
+    ///         "eviction_policy": {
+    ///           // 500mb.
+    ///           "max_bytes": 500000000,
+    ///         }
+    ///       }
+    ///     },
+    ///     "cas_store": {
+    ///       "ref_store": {
+    ///         "name": "CAS_MAIN_STORE"
+    ///       }
+    ///     }
+    ///   }
+    /// ```
+    ///
     completeness_checking(Box<CompletenessCheckingStore>),
 
     /// A compression store that will compress the data inbound and
@@ -71,6 +136,26 @@ pub enum StoreConfig {
     /// a store that requires network transport and/or storage space
     /// is a concern it is often faster and more efficient to use this
     /// store before those stores.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "compression": {
+    ///     "compression_algorithm": {
+    ///       "lz4": {}
+    ///     },
+    ///     "backend": {
+    ///       "filesystem": {
+    ///         "content_path": "/tmp/nativelink/data/content_path-cas",
+    ///         "temp_path": "/tmp/nativelink/data/tmp_path-cas",
+    ///         "eviction_policy": {
+    ///           // 2gb.
+    ///           "max_bytes": 2000000000,
+    ///         }
+    ///       }
+    ///     }
+    ///   }
+    /// ```
+    ///
     compression(Box<CompressionStore>),
 
     /// A dedup store will take the inputs and run a rolling hash
@@ -97,6 +182,45 @@ pub enum StoreConfig {
     /// Note: When running `.has()` on this store, it will only check
     /// to see if the entry exists in the `index_store` and not check
     /// if the individual chunks exist in the `content_store`.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "dedup": {
+    ///     "index_store": {
+    ///       "memory_store": {
+    ///         "max_size": 1000000000, // 1GB
+    ///         "eviction_policy": "LeastRecentlyUsed"
+    ///       }
+    ///     },
+    ///     "content_store": {
+    ///       "compression": {
+    ///         "compression_algorithm": {
+    ///           "lz4": {}
+    ///         },
+    ///         "backend": {
+    ///           "fast_slow": {
+    ///             "fast": {
+    ///               "memory_store": {
+    ///                 "max_size": 500000000, // 500MB
+    ///                 "eviction_policy": "LeastRecentlyUsed"
+    ///               }
+    ///             },
+    ///             "slow": {
+    ///               "filesystem": {
+    ///                 "content_path": "/tmp/nativelink/data/content_path-content",
+    ///                 "temp_path": "/tmp/nativelink/data/tmp_path-content",
+    ///                 "eviction_policy": {
+    ///                   "max_bytes": 2000000000 // 2gb.
+    ///                 }
+    ///               }
+    ///             }
+    ///           }
+    ///         }
+    ///       }
+    ///     }
+    ///   }
+    /// ```
+    ///
     dedup(Box<DedupStore>),
 
     /// Existence store will wrap around another store and cache calls
@@ -104,6 +228,26 @@ pub enum StoreConfig {
     /// faster. This is useful for cases when you have a store that
     /// is slow to respond to has calls.
     /// Note: This store should only be used on CAS stores.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "existence_cache": {
+    ///     "backend": {
+    ///       "memory": {
+    ///         "eviction_policy": {
+    ///           // 500mb.
+    ///           "max_bytes": 500000000,
+    ///         }
+    ///       }
+    ///     },
+    ///     "cas_store": {
+    ///       "ref_store": {
+    ///         "name": "CAS_MAIN_STORE"
+    ///       }
+    ///     }
+    ///   }
+    /// ```
+    ///
     existence_cache(Box<ExistenceCacheStore>),
 
     /// FastSlow store will first try to fetch the data from the `fast`
@@ -120,12 +264,55 @@ pub enum StoreConfig {
     /// `slow` store if it exists in the `fast` store (ie: it assumes
     /// that if an object exists `fast` store it will exist in `slow`
     /// store).
+    ///
+    /// ***Example JSON Config:***
+    /// ```json
+    /// "fast_slow": {
+    ///     "fast": {
+    ///       "filesystem": {
+    ///         "content_path": "/tmp/nativelink/data/content_path-index",
+    ///         "temp_path": "/tmp/nativelink/data/tmp_path-index",
+    ///         "eviction_policy": {
+    ///           // 500mb.
+    ///           "max_bytes": 500000000,
+    ///         }
+    ///       }
+    ///     },
+    ///     "slow": {
+    ///       "filesystem": {
+    ///         "content_path": "/tmp/nativelink/data/content_path-index",
+    ///         "temp_path": "/tmp/nativelink/data/tmp_path-index",
+    ///         "eviction_policy": {
+    ///           // 500mb.
+    ///           "max_bytes": 500000000,
+    ///         }
+    ///       }
+    ///     }
+    ///   }
+    /// ```
+    ///
     fast_slow(Box<FastSlowStore>),
 
     /// Shards the data to multiple stores. This is useful for cases
     /// when you want to distribute the load across multiple stores.
     /// The digest hash is used to determine which store to send the
     /// data to.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "shard": {
+    ///     "stores": [
+    ///         "memory": {
+    ///             "eviction_policy": {
+    ///                 // 10mb.
+    ///                 "max_bytes": 10000000
+    ///             },
+    ///             "weight": 1
+    ///         }
+    ///     ]
+    /// }
+    /// ```
+    ///
     shard(ShardStore),
 
     /// Stores the data on the filesystem. This store is designed for
@@ -134,6 +321,19 @@ pub enum StoreConfig {
     /// as long as the filesystem integrity holds. This store uses the
     /// filesystem's `atime` (access time) to hold the last touched time
     /// of the file(s).
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "filesystem": {
+    ///     "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
+    ///     "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
+    ///     "eviction_policy": {
+    ///       // 10gb.
+    ///       "max_bytes": 10000000000,
+    ///     }
+    /// }
+    /// ```
+    ///
     filesystem(FilesystemStore),
 
     /// Store used to reference a store in the root store manager.
@@ -141,6 +341,14 @@ pub enum StoreConfig {
     /// nested stores. Example, you may want to share the same memory store
     /// used for the action cache, but use a FastSlowStore and have the fast
     /// store also share the memory store for efficiency.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "ref_store": {
+    ///     "name": "FS_CONTENT_STORE"
+    /// }
+    /// ```
+    ///
     ref_store(RefStore),
 
     /// Uses the size field of the digest to separate which store to send the
@@ -150,6 +358,25 @@ pub enum StoreConfig {
     /// words, don't use on AC (Action Cache) stores. Any store where you can
     /// safely use VerifyStore.verify_size = true, this store should be safe
     /// to use (ie: CAS stores).
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "size_partitioning": {
+    ///     "size": 134217728, // 128mib.
+    ///     "lower_store": {
+    ///       "memory": {
+    ///         "eviction_policy": {
+    ///           "max_bytes": "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100000000}"
+    ///         }
+    ///       }
+    ///     },
+    ///     "upper_store": {
+    ///       /// This store discards data larger than 128mib.
+    ///       "noop": {}
+    ///     }
+    ///   }
+    /// ```
+    ///
     size_partitioning(Box<SizePartitioningStore>),
 
     /// This store will pass-through calls to another GRPC store. This store
@@ -161,6 +388,18 @@ pub enum StoreConfig {
     /// when this store is serving the a CAS store, not an AC store. If using
     /// this store directly without being a child of any store there are no
     /// side effects and is the most efficient way to use it.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "grpc": {
+    ///     "instance_name": "main",
+    ///     "endpoints": [
+    ///       {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
+    ///     ],
+    ///     "store_type": "ac"
+    ///   }
+    /// ```
+    ///
     grpc(GrpcStore),
 
     /// Stores data in any stores compatible with Redis APIs.
@@ -168,12 +407,28 @@ pub enum StoreConfig {
     /// Pairs well with SizePartitioning and/or FastSlow stores.
     /// Ideal for accepting small object sizes as most redis store
     /// services have a max file upload of between 256Mb-512Mb.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "redis_store": {
+    ///     "addresses": [
+    ///         "redis://127.0.0.1:6379/",
+    ///     ]
+    /// }
+    /// ```
+    ///
     redis_store(RedisStore),
 
     /// Noop store is a store that sends streams into the void and all data
     /// retrieval will return 404 (NotFound). This can be useful for cases
     /// where you may need to partition your data and part of your data needs
     /// to be discarded.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "noop": {}
+    /// ```
+    ///
     noop,
 }
 
@@ -203,7 +458,7 @@ pub struct ShardStore {
 #[serde(deny_unknown_fields)]
 pub struct SizePartitioningStore {
     /// Size to partition the data on.
-    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(deserialize_with = "convert_data_size_with_shellexpand")]
     pub size: u64,
 
     /// Store to send data when object is < (less than) size.
@@ -243,7 +498,7 @@ pub struct FilesystemStore {
     /// Buffer size to use when reading files. Generally this should be left
     /// to the default value except for testing.
     /// Default: 32k.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub read_buffer_size: u32,
 
     /// Policy used to evict items out of the store. Failure to set this
@@ -255,7 +510,7 @@ pub struct FilesystemStore {
     /// value is used to determine an entry's actual size on disk consumed
     /// For a 4KB block size filesystem, a 1B file actually consumes 4KB
     /// Default: 4096
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub block_size: u64,
 }
 
@@ -297,7 +552,7 @@ pub struct DedupStore {
     /// deciding where to partition the data.
     ///
     /// Default: 65536 (64k)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub min_size: u32,
 
     /// A best-effort attempt will be made to keep the average size
@@ -311,13 +566,13 @@ pub struct DedupStore {
     /// details.
     ///
     /// Default: 262144 (256k)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub normal_size: u32,
 
     /// Maximum size a chunk is allowed to be.
     ///
     /// Default: 524288 (512k)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_size: u32,
 
     /// Due to implementation detail, we want to prefer to download
@@ -368,13 +623,13 @@ pub struct VerifyStore {
     #[serde(default)]
     pub verify_size: bool,
 
-    /// The digest hash function to hash the contents and to verify if the digest hash is
-    /// matching before writing the entry to underlying store.
-    ///
-    /// If None, the hash verification will be disabled.
+    /// If the data should be hashed and verify that the key matches the
+    /// computed hash. The hash function is automatically determined based
+    /// request and if not set will use the global default.
     ///
     /// This should be set to None for AC, but hashing function like `sha256` for CAS stores.
-    pub hash_verification_function: Option<ConfigDigestHashFunction>,
+    #[serde(default)]
+    pub verify_hash: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -396,7 +651,7 @@ pub struct Lz4Config {
     /// compression ratios.
     ///
     /// Default: 65536 (64k).
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub block_size: u32,
 
     /// Maximum size allowed to attempt to deserialize data into.
@@ -407,7 +662,7 @@ pub struct Lz4Config {
     /// allow you to specify the maximum that we'll attempt deserialize.
     ///
     /// Default: value in `block_size`.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_decode_block_size: u32,
 }
 
@@ -447,19 +702,20 @@ pub struct CompressionStore {
 pub struct EvictionPolicy {
     /// Maximum number of bytes before eviction takes place.
     /// Default: 0. Zero means never evict based on size.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_bytes: usize,
 
     /// When eviction starts based on hitting max_bytes, continue until
     /// max_bytes - evict_bytes is met to create a low watermark.  This stops
     /// operations from thrashing when the store is close to the limit.
     /// Default: 0
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub evict_bytes: usize,
 
-    /// Maximum number of seconds for an entry to live before an eviction.
+    /// Maximum number of seconds for an entry to live since it was last
+    /// accessed before it is evicted.
     /// Default: 0. Zero means never evict based on time.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_seconds: u32,
 
     /// Maximum size of the store before an eviction takes place.
@@ -486,6 +742,20 @@ pub struct S3Store {
     /// Retry configuration to use when a network request fails.
     #[serde(default)]
     pub retry: Retry,
+
+    /// If the number of seconds since the `last_modified` time of the object
+    /// is greater than this value, the object will not be considered
+    /// "existing". This allows for external tools to delete objects that
+    /// have not been uploaded in a long time. If a client receives a NotFound
+    /// the client should re-upload the object.
+    ///
+    /// There should be sufficient buffer time between how long the expiration
+    /// configuration of the external tool is and this value. Keeping items
+    /// around for a few days is generally a good idea.
+    ///
+    /// Default: 0. Zero means never consider an object expired.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub consider_expired_after_s: u32,
 
     /// The maximum buffer size to retain in case of a retryable error
     /// during upload. Setting this to zero will disable upload buffering;
@@ -609,7 +879,6 @@ pub struct RedisStore {
     /// The hostname or IP address of the Redis server.
     /// Ex: ["redis://username:password@redis-server-url:6380/99"]
     /// 99 Represents database ID, 6380 represents the port.
-    // Note: This is currently one address but supports multile for clusters.
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
     pub addresses: Vec<String>,
 
@@ -624,6 +893,46 @@ pub struct RedisStore {
     /// Default: 10
     #[serde(default)]
     pub connection_timeout_s: u64,
+
+    /// An optional and experimental Redis channel to publish write events to.
+    ///
+    /// If set, every time a write operation is made to a Redis node
+    /// then an event will be published to a Redis channel with the given name.
+    /// If unset, the writes will still be made,
+    /// but the write events will not be published.
+    ///
+    /// Default: (Empty String / No Channel)
+    #[serde(default)]
+    pub experimental_pub_sub_channel: Option<String>,
+
+    /// An optional prefix to prepend to all keys in this store.
+    ///
+    /// Setting this value can make it convenient to query or
+    /// organize your data according to the shared prefix.
+    ///
+    /// Default: (Empty String / No Prefix)
+    #[serde(default)]
+    pub key_prefix: String,
+
+    /// Set the mode Redis is operating in.
+    ///
+    /// Available options are "cluster" for
+    /// [cluster mode](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/),
+    /// "sentinel" for [sentinel mode](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/),
+    /// or "standard" if Redis is operating in neither cluster nor sentinel mode.
+    ///
+    /// Default: standard,
+    #[serde(default)]
+    pub mode: RedisMode,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RedisMode {
+    Cluster,
+    Sentinel,
+    #[default]
+    Standard,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration

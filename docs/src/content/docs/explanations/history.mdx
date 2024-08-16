@@ -1,0 +1,20 @@
+---
+title: 'History'
+description: 'What is NativeLink?'
+---
+
+This project was first created due to frustration with similar projects not
+working or being extremely inefficient. Rust was chosen as the language to
+write it in because at the time Rust was going through a revolution in the
+new-ish feature async-await. This made making multi-threading more accessible
+when paired with a runtime like Tokio while still giving all the lifetime and
+other protections that Rust gives. This pretty much guarantees that we will
+never have crashes due to race conditions. This kind of project seemed perfect,
+since there is so much asynchronous activity happening and running them on
+different threads is most preferable. Other languages like Go are good
+candidates, but other similar projects rely heavily on channels and mutex locks
+which are cumbersome and have to be carefully designed by the developer. Rust
+doesn't have these issues, since the compiler will always tell you when the code
+you are writing might introduce undefined behavior. The last major reason is
+because Rust is extremely fast, comparable to C++ and has no garbage collection
+(like C++, but unlike Java, Go, or Typescript).

@@ -1,4 +1,9 @@
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+)
 
 rust_library(
     name = "nativelink-error",
@@ -7,11 +12,26 @@ rust_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//nativelink-metric",
         "//nativelink-proto",
+        "@crates//:fred",
         "@crates//:hex",
         "@crates//:prost",
         "@crates//:prost-types",
+        "@crates//:serde",
         "@crates//:tokio",
         "@crates//:tonic",
     ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-error",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":nativelink-error",
 )

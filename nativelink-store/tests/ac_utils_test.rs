@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,14 +14,13 @@
 
 use std::env;
 use std::ffi::OsString;
-use std::pin::Pin;
-use std::sync::Arc;
 
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::{fs, DigestInfo};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use pretty_assertions::assert_eq;
 use rand::{thread_rng, Rng};
 use tokio::io::AsyncWriteExt;
 
@@ -37,55 +36,45 @@ async fn make_temp_path(data: &str) -> OsString {
     OsString::from(format!("{dir}/{data}"))
 }
 
-#[cfg(test)]
-mod ac_utils_tests {
-    use pretty_assertions::assert_eq;
+const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
+const HASH1_SIZE: i64 = 147;
 
-    use super::*; // Must be declared in every module.
-
-    const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
-    const HASH1_SIZE: i64 = 147;
-
-    // Regression test for bug created when implementing ResumeableFileSlot
-    // where the timeout() success condition was breaking out of the outer
-    // loop resulting in the file always being created with <= 4096 bytes.
-    #[nativelink_test]
-    async fn upload_file_to_store_with_large_file() -> Result<(), Error> {
-        let filepath = make_temp_path("test.txt").await;
-        let expected_data = vec![0x88; 1024 * 1024]; // 1MB.
-        let store = Arc::new(MemoryStore::new(
-            &nativelink_config::stores::MemoryStore::default(),
-        ));
-        let store_pin = Pin::new(store.as_ref());
-        let digest = DigestInfo::try_new(HASH1, HASH1_SIZE)?; // Dummy hash data.
-        {
-            // Write 1MB of 0x88s to the file.
-            let mut file = tokio::fs::File::create(&filepath)
-                .await
-                .err_tip(|| "Could not open file")?;
-            file.write_all(&expected_data)
-                .await
-                .err_tip(|| "Could not write to file")?;
-            file.flush().await.err_tip(|| "Could not flush file")?;
-            file.sync_all().await.err_tip(|| "Could not sync file")?;
-        }
-        {
-            // Upload our file.
-            let resumeable_file = fs::open_file(filepath, u64::MAX).await?;
-            store_pin
-                .update_with_whole_file(
-                    digest,
-                    resumeable_file,
-                    UploadSizeInfo::ExactSize(expected_data.len()),
-                )
-                .await?;
-        }
-        {
-            // Check to make sure the file was saved correctly to the store.
-            let store_data = store_pin.get_part_unchunked(digest, 0, None).await?;
-            assert_eq!(store_data.len(), expected_data.len());
-            assert_eq!(store_data, expected_data);
-        }
-        Ok(())
+// Regression test for bug created when implementing ResumeableFileSlot
+// where the timeout() success condition was breaking out of the outer
+// loop resulting in the file always being created with <= 4096 bytes.
+#[nativelink_test]
+async fn upload_file_to_store_with_large_file() -> Result<(), Error> {
+    let filepath = make_temp_path("test.txt").await;
+    let expected_data = vec![0x88; 1024 * 1024]; // 1MB.
+    let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let digest = DigestInfo::try_new(HASH1, HASH1_SIZE)?; // Dummy hash data.
+    {
+        // Write 1MB of 0x88s to the file.
+        let mut file = tokio::fs::File::create(&filepath)
+            .await
+            .err_tip(|| "Could not open file")?;
+        file.write_all(&expected_data)
+            .await
+            .err_tip(|| "Could not write to file")?;
+        file.flush().await.err_tip(|| "Could not flush file")?;
+        file.sync_all().await.err_tip(|| "Could not sync file")?;
     }
+    {
+        // Upload our file.
+        let resumeable_file = fs::open_file(filepath, u64::MAX).await?;
+        store
+            .update_with_whole_file(
+                digest,
+                resumeable_file,
+                UploadSizeInfo::ExactSize(expected_data.len()),
+            )
+            .await?;
+    }
+    {
+        // Check to make sure the file was saved correctly to the store.
+        let store_data = store.get_part_unchunked(digest, 0, None).await?;
+        assert_eq!(store_data.len(), expected_data.len());
+        assert_eq!(store_data, expected_data);
+    }
+    Ok(())
 }

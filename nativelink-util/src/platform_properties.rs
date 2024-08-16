@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,11 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use nativelink_metric::{
+    publish, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
+use serde::{Deserialize, Serialize};
 
 /// `PlatformProperties` helps manage the configuration of platform properties to
 /// keys and types. The scheduler uses these properties to decide what jobs
@@ -24,8 +28,9 @@ use nativelink_proto::build::bazel::remote::execution::v2::Platform as ProtoPlat
 /// all the platform property keys configured on the worker.
 ///
 /// Additional rules may be applied based on `PlatfromPropertyValue`.
-#[derive(Eq, PartialEq, Clone, Debug, Default)]
+#[derive(Eq, PartialEq, Clone, Debug, Default, Serialize, Deserialize, MetricsComponent)]
 pub struct PlatformProperties {
+    #[metric]
     pub properties: HashMap<String, PlatformPropertyValue>,
 }
 
@@ -76,7 +81,7 @@ impl From<ProtoPlatform> for PlatformProperties {
 ///            TODO(allada) In the future this will be used by the scheduler and
 ///            worker to cause the scheduler to prefer certain workers over others,
 ///            but not restrict them based on these values.
-#[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug)]
+#[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug, Serialize, Deserialize)]
 pub enum PlatformPropertyValue {
     Exact(String),
     Minimum(u64),
@@ -114,5 +119,24 @@ impl PlatformPropertyValue {
             Self::Priority(value) => Cow::Borrowed(value),
             Self::Unknown(value) => Cow::Borrowed(value),
         }
+    }
+}
+
+impl MetricsComponent for PlatformPropertyValue {
+    fn publish(
+        &self,
+        kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        let name = field_metadata.name.into_owned();
+        let help = field_metadata.help.as_ref();
+        match self {
+            Self::Exact(v) => publish!(name, v, kind, help, "exact"),
+            Self::Minimum(v) => publish!(name, v, kind, help, "minimum"),
+            Self::Priority(v) => publish!(name, v, kind, help, "priority"),
+            Self::Unknown(v) => publish!(name, v, kind, help, "unknown"),
+        }
+
+        Ok(MetricPublishKnownKindData::Component)
     }
 }

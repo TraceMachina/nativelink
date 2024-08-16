@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -41,14 +41,15 @@ use hyper::service::Service;
 use hyper::Uri;
 use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
-use nativelink_util::common::DigestInfo;
 use nativelink_util::fs;
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
+use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -233,17 +234,32 @@ impl http_body::Body for BodyWrapper {
     }
 }
 
-pub struct S3Store {
+#[derive(MetricsComponent)]
+pub struct S3Store<NowFn> {
     s3_client: Arc<Client>,
+    now_fn: NowFn,
+    #[metric(help = "The bucket name for the S3 store")]
     bucket: String,
+    #[metric(help = "The key prefix for the S3 store")]
     key_prefix: String,
     retrier: Retrier,
+    #[metric(help = "The number of seconds to consider an object expired")]
+    consider_expired_after_s: i64,
+    #[metric(help = "The number of bytes to buffer for retrying requests")]
     max_retry_buffer_per_request: usize,
+    #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
 }
 
-impl S3Store {
-    pub async fn new(config: &nativelink_config::stores::S3Store) -> Result<Self, Error> {
+impl<I, NowFn> S3Store<NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
+{
+    pub async fn new(
+        config: &nativelink_config::stores::S3Store,
+        now_fn: NowFn,
+    ) -> Result<Arc<Self>, Error> {
         let jitter_amt = config.retry.jitter;
         let jitter_fn = Arc::new(move |delay: Duration| {
             if jitter_amt == 0. {
@@ -275,16 +291,18 @@ impl S3Store {
             }
             aws_sdk_s3::Client::new(&config_builder.load().await)
         };
-        Self::new_with_client_and_jitter(config, s3_client, jitter_fn)
+        Self::new_with_client_and_jitter(config, s3_client, jitter_fn, now_fn)
     }
 
     pub fn new_with_client_and_jitter(
         config: &nativelink_config::stores::S3Store,
         s3_client: Client,
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
-    ) -> Result<Self, Error> {
-        Ok(Self {
+        now_fn: NowFn,
+    ) -> Result<Arc<Self>, Error> {
+        Ok(Arc::new(Self {
             s3_client: Arc::new(s3_client),
+            now_fn,
             bucket: config.bucket.to_string(),
             key_prefix: config.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
             retrier: Retrier::new(
@@ -292,37 +310,41 @@ impl S3Store {
                 jitter_fn,
                 config.retry.to_owned(),
             ),
+            consider_expired_after_s: i64::from(config.consider_expired_after_s),
             max_retry_buffer_per_request: config
                 .max_retry_buffer_per_request
                 .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST),
             multipart_max_concurrent_uploads: config
                 .multipart_max_concurrent_uploads
                 .map_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS, |v| v),
-        })
+        }))
     }
 
-    fn make_s3_path(&self, digest: &DigestInfo) -> String {
-        format!(
-            "{}{}-{}",
-            self.key_prefix,
-            digest.hash_str(),
-            digest.size_bytes
-        )
+    fn make_s3_path(&self, key: StoreKey<'_>) -> String {
+        format!("{}{}", self.key_prefix, key.as_str(),)
     }
 
-    async fn has(self: Pin<&Self>, digest: &DigestInfo) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<usize>, Error> {
         self.retrier
             .retry(unfold((), move |state| async move {
                 let result = self
                     .s3_client
                     .head_object()
                     .bucket(&self.bucket)
-                    .key(&self.make_s3_path(digest))
+                    .key(self.make_s3_path(digest.borrow()))
                     .send()
                     .await;
 
                 match result {
                     Ok(head_object_output) => {
+                        if self.consider_expired_after_s != 0 {
+                            if let Some(last_modified) = head_object_output.last_modified {
+                                let now_s = (self.now_fn)().unix_timestamp() as i64;
+                                if last_modified.secs() + self.consider_expired_after_s <= now_s {
+                                    return Some((RetryResult::Ok(None), state));
+                                }
+                            }
+                        }
                         let Some(length) = head_object_output.content_length else {
                             return Some((RetryResult::Ok(None), state));
                         };
@@ -354,37 +376,39 @@ impl S3Store {
 }
 
 #[async_trait]
-impl Store for S3Store {
+impl<I, NowFn> StoreDriver for S3Store<NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
+{
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        digests
-            .iter()
+        keys.iter()
             .zip(results.iter_mut())
-            .map(|(digest, result)| async move {
-                // We need to do a special pass to ensure our zero digest exist.
-                if is_zero_digest(digest) {
+            .map(|(key, result)| async move {
+                // We need to do a special pass to ensure our zero key exist.
+                if is_zero_digest(key.borrow()) {
                     *result = Some(0);
                     return Ok::<_, Error>(());
                 }
-                *result = self.has(digest).await?;
+                *result = self.has(key).await?;
                 Ok::<_, Error>(())
             })
             .collect::<FuturesUnordered<_>>()
             .try_collect()
-            .await?;
-        Ok(())
+            .await
     }
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        digest: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let s3_path = &self.make_s3_path(&digest);
+        let s3_path = &self.make_s3_path(digest.borrow());
 
         let max_size = match upload_size {
             UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
@@ -426,7 +450,7 @@ impl Store for S3Store {
                                 .send()
                                 .map_ok_or_else(|e| Err(make_err!(Code::Aborted, "{e:?}")), |_| Ok(())),
                             // Stream all data from the reader channel to the writer channel.
-                            tx.bind(reader_ref)
+                            tx.bind_buffered(reader_ref)
                         );
                         upload_res
                             .merge(bind_res)
@@ -639,21 +663,21 @@ impl Store for S3Store {
             .await
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        if is_zero_digest(&digest) {
+        if is_zero_digest(key.borrow()) {
             writer
                 .send_eof()
-                .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
             return Ok(());
         }
 
-        let s3_path = &self.make_s3_path(&digest);
+        let s3_path = &self.make_s3_path(key);
         let end_read_byte = length
             .map_or(Some(None), |length| Some(offset.checked_add(length)))
             .err_tip(|| "Integer overflow protection triggered")?;
@@ -738,11 +762,7 @@ impl Store for S3Store {
             .await
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
         self
     }
 
@@ -755,4 +775,17 @@ impl Store for S3Store {
     }
 }
 
-default_health_status_indicator!(S3Store);
+#[async_trait]
+impl<I, NowFn> HealthStatusIndicator for S3Store<NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
+{
+    fn get_name(&self) -> &'static str {
+        "S3Store"
+    }
+
+    async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
+        StoreDriver::check_health(Pin::new(self), namespace).await
+    }
+}

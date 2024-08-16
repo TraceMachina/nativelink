@@ -1,0 +1,54 @@
+---
+title: "What is Remote Caching?"
+description: "Remote Caching with NativeLink"
+pagefind: true
+---
+
+## Overview
+
+Remote caching is a technique used by development teams and continuous
+integration (CI) systems to share build outputs. If your build process is
+reproducible, the outputs from one machine can be safely reused on another
+machine, significantly speeding up the build process.
+
+The build process is broken down into discrete steps, known as actions. Each
+action has inputs, output names, a command line, and environment variables.
+Required inputs and expected outputs are declared explicitly for each action.
+
+A server like NativeLink can be set up to act as a remote cache for these build outputs. These
+outputs consist of a list of output file names and the hashes of their contents.
+With a remote cache, you can reuse build outputs from another user's build
+rather than building each new output locally.
+
+To use remote caching, you need to:
+
+1. Set up NativeLink as the cache's back-end
+2. Configure the build to use the remote cache
+3. Use a build tool that supports remote caching
+
+The remote cache stores two types of data:
+
+1. Action result metadata in the Action Cache.
+2. Output files in the CAS (Content Addressable Storage).
+
+These two types of information can allow a complete
+re-build without requiring any redundant build steps
+saving significantly on time and compute.
+
+## How Remote Caching Works
+
+1. The build tool creates the graph of targets that need to be built, and then
+   creates a list of required actions.
+2. The build tool checks your local machine for existing build outputs and
+   reuses any that it finds.
+3. The build tool checks the cache for existing build outputs. If the output is
+   found, the build tool retrieves the output. This is a cache hit.
+4. For required actions where the outputs weren't found, the build tool
+   executes the actions locally and creates the required build outputs.
+5. New build outputs are uploaded to the remote cache.
+
+
+For a more detailed understanding of how remote caching works in build systems
+like Bazel, you may find the following reference helpful:
+
+- [Bazel Remote Caching Documentation](https://bazel.build/remote/caching)

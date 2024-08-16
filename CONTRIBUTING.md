@@ -86,7 +86,7 @@ please raise an issue so that we can clarify this document.
 
 ## Local development setup
 
-NativeLink ships almost all of it's tooling in a nix flake which is configured
+NativeLink ships almost all of its tooling in a nix flake which is configured
 via a [`flake.nix`](./flake.nix) file in the root of the repository. While it's
 possible to work on some parts of the codebase without this environment, it'll
 make your life much easier since it lets you reproduce most of CI locally.
@@ -300,11 +300,97 @@ This will automatically apply some fixes like automated line fixes and format
 changes. Note that changed files aren't automatically staged. Use `git add` to
 add the changed files manually to the staging area.
 
+### Setting up rust-analyzer
+
+[rust-analyzer](https://rust-analyzer.github.io/) works reasonably well out of the box due to picking up the manifest for the `nativelink` crate, but it isn't integrated with Bazel by default. In order to generate a project configuration for rust-analyzer,
+run the `@rules_rust//tools/rust_analyzer:gen_rust_project` target:
+
+```sh
+bazel run @rules_rust//tools/rust_analyzer:gen_rust_project
+```
+
+This will generate a `rust-project.json` file in the root directory. This file needs to be regenerated every time new files or dependencies are added in order to stay up-to-date. You can configure rust-analyzer can pick it up by setting the [`rust-analyzer.linkedProjects`](https://rust-analyzer.github.io/manual.html#rust-analyzer.linkedProjects) [configuration option](https://rust-analyzer.github.io/manual.html#configuration).
+
+If you use VS Code, you can configure the following `tasks.json` file to automatically generate this file when you open the editor:
+
+```jsonc
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Generate rust-project.json",
+      "command": "bazel",
+      "args": ["run", "@rules_rust//tools/rust_analyzer:gen_rust_project"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "never",
+        "panel": "dedicated"
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "dependsOn": "Build nativelink"
+    },
+    {
+      "label": "Build nativelink",
+      "command": "bazel",
+      "args": ["build", "//:nativelink"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      }
+    }
+  ]
+}
+```
+
+And to configure rust-analyzer to use that project, set this in your `.vscode/settings.json`:
+
+```jsonc
+{
+     "rust-analyzer.linkedProjects": ["rust-project.json"]
+}
+```
+
+## Generating documentation
+
+Automatically generated documentation is still under construction. To view the
+documentation for the `nativelink-*` crates, run the `docs` command in the nix
+flake:
+
+```bash
+docs
+```
+
+To build individual crate-level docs:
+
+```bash
+# All docs
+bazel build docs
+
+# A single crate
+bazel build nativelink-config:docs
+```
+
+To run documentation tests with Bazel:
+
+```bash
+bazel test doctests
+```
+
 ## Writing documentation
 
 NativeLink largely follows the [Microsoft Style Guide](https://learn.microsoft.com/en-us/style-guide/welcome/).
 
-NativeLink implements it's documentation style guide via Vale. The pre-commit
+NativeLink implements its documentation style guide via Vale. The pre-commit
 hooks forbid errors but permit warnings and suggestions. To view all of Vale's
 suggestions invoke it directly:
 
@@ -325,7 +411,6 @@ most automatically generated changelogs provide.
    - `MODULE.bazel`
    - `Cargo.toml`
    - `nativelink-*/Cargo.toml`
-   - `nativelink-docs/package.json`
 
 2. Run `git cliff --tag=0.x.y > CHANGELOG.md` to update the changelog. You might
    need to make manual adjustments to `cliff.toml` if `git-cliff` doesn't put a

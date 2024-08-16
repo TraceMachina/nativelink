@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -110,22 +110,38 @@ impl DropCloserWriteHalf {
 
     /// Binds a reader and a writer together. This will send all the data from the reader
     /// to the writer until an EOF is received.
-    pub async fn bind(&mut self, reader: &mut DropCloserReadHalf) -> Result<(), Error> {
+    /// This will always read one message ahead to ensure that if an error happens
+    /// on the EOF message it will not forward on the last payload message and instead
+    /// forward on the error.
+    pub async fn bind_buffered(&mut self, reader: &mut DropCloserReadHalf) -> Result<(), Error> {
         loop {
             let chunk = reader
                 .recv()
                 .await
-                .err_tip(|| "In DropCloserWriteHalf::bind::recv")?;
+                .err_tip(|| "In DropCloserWriteHalf::bind_buffered::recv")?;
             if chunk.is_empty() {
                 self.send_eof()
-                    .err_tip(|| "In DropCloserWriteHalf::bind::send_eof")?;
+                    .err_tip(|| "In DropCloserWriteHalf::bind_buffered::send_eof")?;
                 break; // EOF.
+            }
+            // Always read one message ahead so if we get an error on our EOF
+            // we forward it on to the reader.
+            if reader.peek().await.is_err() {
+                // Read our next message for good book keeping.
+                let _ = reader
+                    .recv()
+                    .await
+                    .err_tip(|| "In DropCloserWriteHalf::bind_buffered::peek::eof")?;
+                return Err(make_err!(
+                    Code::Internal,
+                    "DropCloserReadHalf::peek() said error, but when data received said Ok. This should never happen."
+                ));
             }
             match self.send_get_bytes_on_error(chunk).await {
                 Ok(()) => {}
                 Err(e) => {
                     reader.queued_data.push_front(Ok(e.1));
-                    return Err(e.0).err_tip(|| "In DropCloserWriteHalf::bind::send");
+                    return Err(e.0).err_tip(|| "In DropCloserWriteHalf::bind_buffered::send");
                 }
             }
         }

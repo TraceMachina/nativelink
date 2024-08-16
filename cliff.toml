@@ -69,6 +69,7 @@ commit_parsers = [
   { message = "Shard store weight scale distribution", group = "<!-- 1 -->⛰️  Features" },
   { message = "Use mimalloc", group = "<!-- 1 -->⛰️  Features" },
   { message = "Build nativelink with musl", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Implement .* feature", group = "<!-- 1 -->⛰️  Features" },
   { message = "Add configuration breakdown page", group = "<!-- 3 -->📚 Documentation" },
   { message = "Draw a General Purpose Diagram", group = "<!-- 3 -->📚 Documentation" },
   { message = "Basic config updated", group = "<!-- 3 -->📚 Documentation" },
@@ -79,6 +80,11 @@ commit_parsers = [
   { message = "Don't retry permanent failures", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Retry GrpcStore get_part_ref", group = "<!-- 1 -->⛰️  Features" },
   { message = "Evict on touch failure", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Implement `ClientStateManager` for `SimpleScheduler`", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Move `update_action_with_internal_error` into `StateManager`", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Migrate to callPackage syntax", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Remove nativelink-proto as build dependency", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Add rt-tokio feature to aws-sdk-s3", group = "<!-- 2 -->🐛 Bug Fixes" },
 
   # Get all breaking changes first.
   { message = "Breaking", group = "<!-- 0 -->❌️  Breaking Changes" },
@@ -87,10 +93,12 @@ commit_parsers = [
   # Filter these out early but show them later in the changelog.
   { message = "docs", group = "<!-- 3 -->📚 Documentation" },
   { message = "document", group = "<!-- 3 -->📚 Documentation" },
+  { message = "Document", group = "<!-- 3 -->📚 Documentation" },
   { message = "documentation", group = "<!-- 3 -->📚 Documentation" },
   { message = "README", group = "<!-- 3 -->📚 Documentation" },
   { message = "Example", group = "<!-- 3 -->📚 Documentation" },
   { message = "Breakdown", group = "<!-- 3 -->📚 Documentation" },
+  { message = "Update .* Readme", group = "<!-- 3 -->📚 Documentation" },
 
   # Filter out all updates, but show them last.
   { message = "to [0-9.]+", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },

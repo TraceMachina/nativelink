@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,14 +14,14 @@
 
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
 use nativelink_config::stores::StoreConfig;
 use nativelink_error::Error;
 use nativelink_util::health_utils::HealthRegistryBuilder;
-use nativelink_util::metrics_utils::Registry;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, StoreDriver};
 
 use crate::completeness_checking_store::CompletenessCheckingStore;
 use crate::compression_store::CompressionStore;
@@ -40,77 +40,71 @@ use crate::size_partitioning_store::SizePartitioningStore;
 use crate::store_manager::StoreManager;
 use crate::verify_store::VerifyStore;
 
-type FutureMaybeStore<'a> = Box<dyn Future<Output = Result<Arc<dyn Store>, Error>> + 'a>;
+type FutureMaybeStore<'a> = Box<dyn Future<Output = Result<Store, Error>> + 'a>;
 
 pub fn store_factory<'a>(
     backend: &'a StoreConfig,
     store_manager: &'a Arc<StoreManager>,
-    maybe_store_metrics: Option<&'a mut Registry>,
     maybe_health_registry_builder: Option<&'a mut HealthRegistryBuilder>,
 ) -> Pin<FutureMaybeStore<'a>> {
     Box::pin(async move {
-        let store: Arc<dyn Store> = match backend {
-            StoreConfig::memory(config) => Arc::new(MemoryStore::new(config)),
-            StoreConfig::experimental_s3_store(config) => Arc::new(S3Store::new(config).await?),
-            StoreConfig::redis_store(config) => Arc::new(RedisStore::new(config)?),
-            StoreConfig::verify(config) => Arc::new(VerifyStore::new(
-                config,
-                store_factory(&config.backend, store_manager, None, None).await?,
-            )),
-            StoreConfig::compression(config) => Arc::new(CompressionStore::new(
-                *config.clone(),
-                store_factory(&config.backend, store_manager, None, None).await?,
-            )?),
-            StoreConfig::dedup(config) => Arc::new(DedupStore::new(
-                config,
-                store_factory(&config.index_store, store_manager, None, None).await?,
-                store_factory(&config.content_store, store_manager, None, None).await?,
-            )),
-            StoreConfig::existence_cache(config) => Arc::new(ExistenceCacheStore::new(
-                config,
-                store_factory(&config.backend, store_manager, None, None).await?,
-            )),
-            StoreConfig::completeness_checking(config) => Arc::new(CompletenessCheckingStore::new(
-                store_factory(&config.backend, store_manager, None, None).await?,
-                store_factory(&config.cas_store, store_manager, None, None).await?,
-            )),
-            StoreConfig::fast_slow(config) => Arc::new(FastSlowStore::new(
-                config,
-                store_factory(&config.fast, store_manager, None, None).await?,
-                store_factory(&config.slow, store_manager, None, None).await?,
-            )),
-            StoreConfig::filesystem(config) => Arc::new(<FilesystemStore>::new(config).await?),
-            StoreConfig::ref_store(config) => {
-                Arc::new(RefStore::new(config, Arc::downgrade(store_manager)))
+        let store: Arc<dyn StoreDriver> = match backend {
+            StoreConfig::memory(config) => MemoryStore::new(config),
+            StoreConfig::experimental_s3_store(config) => {
+                S3Store::new(config, SystemTime::now).await?
             }
-            StoreConfig::size_partitioning(config) => Arc::new(SizePartitioningStore::new(
+            StoreConfig::redis_store(config) => RedisStore::new(config)?,
+            StoreConfig::verify(config) => VerifyStore::new(
                 config,
-                store_factory(&config.lower_store, store_manager, None, None).await?,
-                store_factory(&config.upper_store, store_manager, None, None).await?,
-            )),
-            StoreConfig::grpc(config) => Arc::new(GrpcStore::new(config).await?),
-            StoreConfig::noop => Arc::new(NoopStore::new()),
+                store_factory(&config.backend, store_manager, None).await?,
+            ),
+            StoreConfig::compression(config) => CompressionStore::new(
+                *config.clone(),
+                store_factory(&config.backend, store_manager, None).await?,
+            )?,
+            StoreConfig::dedup(config) => DedupStore::new(
+                config,
+                store_factory(&config.index_store, store_manager, None).await?,
+                store_factory(&config.content_store, store_manager, None).await?,
+            ),
+            StoreConfig::existence_cache(config) => ExistenceCacheStore::new(
+                config,
+                store_factory(&config.backend, store_manager, None).await?,
+            ),
+            StoreConfig::completeness_checking(config) => CompletenessCheckingStore::new(
+                store_factory(&config.backend, store_manager, None).await?,
+                store_factory(&config.cas_store, store_manager, None).await?,
+            ),
+            StoreConfig::fast_slow(config) => FastSlowStore::new(
+                config,
+                store_factory(&config.fast, store_manager, None).await?,
+                store_factory(&config.slow, store_manager, None).await?,
+            ),
+            StoreConfig::filesystem(config) => <FilesystemStore>::new(config).await?,
+            StoreConfig::ref_store(config) => RefStore::new(config, Arc::downgrade(store_manager)),
+            StoreConfig::size_partitioning(config) => SizePartitioningStore::new(
+                config,
+                store_factory(&config.lower_store, store_manager, None).await?,
+                store_factory(&config.upper_store, store_manager, None).await?,
+            ),
+            StoreConfig::grpc(config) => GrpcStore::new(config).await?,
+            StoreConfig::noop => NoopStore::new(),
             StoreConfig::shard(config) => {
                 let stores = config
                     .stores
                     .iter()
-                    .map(|store_config| {
-                        store_factory(&store_config.store, store_manager, None, None)
-                    })
+                    .map(|store_config| store_factory(&store_config.store, store_manager, None))
                     .collect::<FuturesOrdered<_>>()
                     .try_collect::<Vec<_>>()
                     .await?;
-                Arc::new(ShardStore::new(config, stores)?)
+                ShardStore::new(config, stores)?
             }
         };
-        if let Some(store_metrics) = maybe_store_metrics {
-            store.clone().register_metrics(store_metrics);
-        }
 
         if let Some(health_registry_builder) = maybe_health_registry_builder {
             store.clone().register_health(health_registry_builder);
         }
 
-        Ok(store)
+        Ok(Store::new(store))
     })
 }

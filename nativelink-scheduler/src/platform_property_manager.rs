@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,11 +16,33 @@ use std::collections::HashMap;
 
 use nativelink_config::schedulers::PropertyType;
 use nativelink_error::{make_input_err, Code, Error, ResultExt};
-use nativelink_util::platform_properties::PlatformPropertyValue;
+use nativelink_metric::{
+    group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
+use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 
 /// Helps manage known properties and conversion into `PlatformPropertyValue`.
 pub struct PlatformPropertyManager {
     known_properties: HashMap<String, PropertyType>,
+}
+
+// TODO(allada) We cannot use the `MetricsComponent` trait here because
+// the `PropertyType` lives in the `nativelink-config` crate which is not
+// a dependency of the `nativelink-metric-collector` crate.
+impl MetricsComponent for PlatformPropertyManager {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        let _enter = group!("known_properties").entered();
+        for (k, v) in &self.known_properties {
+            group!(k).in_scope(|| {
+                format!("{v:?}").publish(MetricKind::String, field_metadata.clone())
+            })?;
+        }
+        Ok(MetricPublishKnownKindData::Component)
+    }
 }
 
 impl PlatformPropertyManager {
@@ -33,6 +55,20 @@ impl PlatformPropertyManager {
     #[must_use]
     pub const fn get_known_properties(&self) -> &HashMap<String, PropertyType> {
         &self.known_properties
+    }
+
+    /// Given a map of key-value pairs, returns a map of `PlatformPropertyValue` based on the
+    /// configuration passed into the `PlatformPropertyManager` constructor.
+    pub fn make_platform_properties(
+        &self,
+        properties: HashMap<String, String>,
+    ) -> Result<PlatformProperties, Error> {
+        let mut platform_properties = HashMap::with_capacity(properties.len());
+        for (key, value) in properties {
+            let prop_value = self.make_prop_value(&key, &value)?;
+            platform_properties.insert(key, prop_value);
+        }
+        Ok(PlatformProperties::new(platform_properties))
     }
 
     /// Given a specific key and value, returns the translated `PlatformPropertyValue`. This will

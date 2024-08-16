@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,14 +16,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use bytes::Bytes;
-use mock_instant::{Instant as MockInstant, MockClock};
+use mock_instant::MockClock;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::evicting_map::{EvictingMap, InstantWrapper, LenEntry};
+use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+use nativelink_util::instant_wrapper::MockInstantWrapped;
+use pretty_assertions::assert_eq;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct BytesWrapper(Bytes);
@@ -47,643 +48,616 @@ impl From<Bytes> for BytesWrapper {
     }
 }
 
-/// Our mocked out instant that we can pass to our EvictionMap.
-struct MockInstantWrapped(MockInstant);
+const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
+const HASH2: &str = "123456789abcdef000000000000000000000000000000000123456789abcdef1";
+const HASH3: &str = "23456789abcdef000000000000000000000000000000000123456789abcdef12";
+const HASH4: &str = "3456789abcdef000000000000000000000000000000000123456789abcdef012";
 
-impl InstantWrapper for MockInstantWrapped {
-    fn from_secs(_secs: u64) -> Self {
-        MockInstantWrapped(MockInstant::now())
-    }
+#[nativelink_test]
+async fn insert_purges_at_max_count() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 3,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    evicting_map
+        .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::new().into())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::new().into())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::new().into())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH4, 0)?, Bytes::new().into())
+        .await;
 
-    fn unix_timestamp(&self) -> u64 {
-        100
-    }
-
-    fn elapsed(&self) -> Duration {
-        self.0.elapsed()
-    }
-}
-
-#[cfg(test)]
-mod evicting_map_tests {
-    use super::*;
-
-    const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
-    const HASH2: &str = "123456789abcdef000000000000000000000000000000000123456789abcdef1";
-    const HASH3: &str = "23456789abcdef000000000000000000000000000000000123456789abcdef12";
-    const HASH4: &str = "3456789abcdef000000000000000000000000000000000123456789abcdef012";
-
-    #[nativelink_test]
-    async fn insert_purges_at_max_count() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
-            &EvictionPolicy {
-                max_count: 3,
-                max_seconds: 0,
-                max_bytes: 0,
-                evict_bytes: 0,
-            },
-            MockInstantWrapped(MockInstant::now()),
-        );
-        evicting_map
-            .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::new().into())
-            .await;
-        evicting_map
-            .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::new().into())
-            .await;
-        evicting_map
-            .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::new().into())
-            .await;
-        evicting_map
-            .insert(DigestInfo::try_new(HASH4, 0)?, Bytes::new().into())
-            .await;
-
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
-                .await,
-            None,
-            "Expected map to not have item 1"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
-                .await,
-            Some(0),
-            "Expected map to have item 2"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
-                .await,
-            Some(0),
-            "Expected map to have item 3"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
-                .await,
-            Some(0),
-            "Expected map to have item 4"
-        );
-
-        Ok(())
-    }
-
-    #[nativelink_test]
-    async fn insert_purges_at_max_bytes() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
-            &EvictionPolicy {
-                max_count: 0,
-                max_seconds: 0,
-                max_bytes: 17,
-                evict_bytes: 0,
-            },
-            MockInstantWrapped(MockInstant::now()),
-        );
-        const DATA: &str = "12345678";
-        evicting_map
-            .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
-            .await;
-        evicting_map
-            .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
-            .await;
-        evicting_map
-            .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
-            .await;
-        evicting_map
-            .insert(DigestInfo::try_new(HASH4, 0)?, Bytes::from(DATA).into())
-            .await;
-
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
-                .await,
-            None,
-            "Expected map to not have item 1"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
-                .await,
-            None,
-            "Expected map to not have item 2"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
-                .await,
-            Some(DATA.len()),
-            "Expected map to have item 3"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
-                .await,
-            Some(DATA.len()),
-            "Expected map to have item 4"
-        );
-
-        Ok(())
-    }
-
-    #[nativelink_test]
-    async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
-            &EvictionPolicy {
-                max_count: 0,
-                max_seconds: 0,
-                max_bytes: 17,
-                evict_bytes: 9,
-            },
-            MockInstantWrapped(MockInstant::now()),
-        );
-        const DATA: &str = "12345678";
-        evicting_map
-            .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
-            .await;
-        evicting_map
-            .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
-            .await;
-        evicting_map
-            .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
-            .await;
-        evicting_map
-            .insert(DigestInfo::try_new(HASH4, 0)?, Bytes::from(DATA).into())
-            .await;
-
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
-                .await,
-            None,
-            "Expected map to not have item 1"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
-                .await,
-            None,
-            "Expected map to not have item 2"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
-                .await,
-            None,
-            "Expected map to not have item 3"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
-                .await,
-            Some(DATA.len()),
-            "Expected map to have item 4"
-        );
-
-        Ok(())
-    }
-
-    #[nativelink_test]
-    async fn insert_purges_at_max_seconds() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
-            &EvictionPolicy {
-                max_count: 0,
-                max_seconds: 5,
-                max_bytes: 0,
-                evict_bytes: 0,
-            },
-            MockInstantWrapped(MockInstant::now()),
-        );
-
-        const DATA: &str = "12345678";
-        evicting_map
-            .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
-            .await;
-        MockClock::advance(Duration::from_secs(2));
-        evicting_map
-            .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
-            .await;
-        MockClock::advance(Duration::from_secs(2));
-        evicting_map
-            .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
-            .await;
-        MockClock::advance(Duration::from_secs(2));
-        evicting_map
-            .insert(DigestInfo::try_new(HASH4, 0)?, Bytes::from(DATA).into())
-            .await;
-
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
-                .await,
-            None,
-            "Expected map to not have item 1"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
-                .await,
-            Some(DATA.len()),
-            "Expected map to have item 2"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
-                .await,
-            Some(DATA.len()),
-            "Expected map to have item 3"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
-                .await,
-            Some(DATA.len()),
-            "Expected map to have item 4"
-        );
-
-        Ok(())
-    }
-
-    #[nativelink_test]
-    async fn get_refreshes_time() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
-            &EvictionPolicy {
-                max_count: 0,
-                max_seconds: 3,
-                max_bytes: 0,
-                evict_bytes: 0,
-            },
-            MockInstantWrapped(MockInstant::now()),
-        );
-
-        const DATA: &str = "12345678";
-        evicting_map
-            .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
-            .await;
-        MockClock::advance(Duration::from_secs(2));
-        evicting_map
-            .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
-            .await;
-        MockClock::advance(Duration::from_secs(2));
-        evicting_map.get(&DigestInfo::try_new(HASH1, 0)?).await; // HASH1 should now be last to be evicted.
-        MockClock::advance(Duration::from_secs(2));
-        evicting_map
-            .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
-            .await; // This will trigger an eviction.
-
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
-                .await,
-            None,
-            "Expected map to not have item 1"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
-                .await,
-            None,
-            "Expected map to not have item 2"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
-                .await,
-            Some(DATA.len()),
-            "Expected map to have item 3"
-        );
-
-        Ok(())
-    }
-
-    #[nativelink_test]
-    async fn unref_called_on_replace() -> Result<(), Error> {
-        #[derive(Debug)]
-        struct MockEntry {
-            data: Bytes,
-            unref_called: AtomicBool,
-        }
-
-        #[async_trait]
-        impl LenEntry for MockEntry {
-            fn len(&self) -> usize {
-                // Note: We are not testing this functionality.
-                0
-            }
-
-            fn is_empty(&self) -> bool {
-                unreachable!("We are not testing this functionality");
-            }
-
-            async fn touch(&self) -> bool {
-                // Do nothing. We are not testing this functionality.
-                true
-            }
-
-            async fn unref(&self) {
-                self.unref_called.store(true, Ordering::Relaxed);
-            }
-        }
-
-        let evicting_map = EvictingMap::<Arc<MockEntry>, MockInstantWrapped>::new(
-            &EvictionPolicy {
-                max_count: 1,
-                max_seconds: 0,
-                max_bytes: 0,
-                evict_bytes: 0,
-            },
-            MockInstantWrapped(MockInstant::now()),
-        );
-
-        const DATA1: &str = "12345678";
-        const DATA2: &str = "87654321";
-
-        let (entry1, entry2) = {
-            let entry1 = Arc::new(MockEntry {
-                data: Bytes::from(DATA1),
-                unref_called: AtomicBool::new(false),
-            });
-            evicting_map
-                .insert(DigestInfo::try_new(HASH1, 0)?, entry1.clone())
-                .await;
-
-            let entry2 = Arc::new(MockEntry {
-                data: Bytes::from(DATA2),
-                unref_called: AtomicBool::new(false),
-            });
-            evicting_map
-                .insert(DigestInfo::try_new(HASH1, 0)?, entry2.clone())
-                .await;
-            (entry1, entry2)
-        };
-
-        let existing_entry = evicting_map
-            .get(&DigestInfo::try_new(HASH1, 0)?)
-            .await
-            .unwrap();
-        assert_eq!(existing_entry.data, DATA2);
-
-        assert!(entry1.unref_called.load(Ordering::Relaxed));
-        assert!(!entry2.unref_called.load(Ordering::Relaxed));
-
-        Ok(())
-    }
-
-    #[nativelink_test]
-    async fn contains_key_refreshes_time() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
-            &EvictionPolicy {
-                max_count: 0,
-                max_seconds: 3,
-                max_bytes: 0,
-                evict_bytes: 0,
-            },
-            MockInstantWrapped(MockInstant::now()),
-        );
-
-        const DATA: &str = "12345678";
-        evicting_map
-            .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
-            .await;
-        MockClock::advance(Duration::from_secs(2));
-        evicting_map
-            .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
-            .await;
-        MockClock::advance(Duration::from_secs(2));
+    assert_eq!(
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
-            .await; // HASH1 should now be last to be evicted.
-        MockClock::advance(Duration::from_secs(2));
+            .await,
+        None,
+        "Expected map to not have item 1"
+    );
+    assert_eq!(
         evicting_map
-            .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
-            .await; // This will trigger an eviction.
+            .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+            .await,
+        Some(0),
+        "Expected map to have item 2"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+            .await,
+        Some(0),
+        "Expected map to have item 3"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
+            .await,
+        Some(0),
+        "Expected map to have item 4"
+    );
 
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
-                .await,
-            None,
-            "Expected map to not have item 1"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
-                .await,
-            None,
-            "Expected map to not have item 2"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
-                .await,
-            Some(8),
-            "Expected map to have item 3"
-        );
+    Ok(())
+}
 
-        Ok(())
+#[nativelink_test]
+async fn insert_purges_at_max_bytes() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 0,
+            max_bytes: 17,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    const DATA: &str = "12345678";
+    evicting_map
+        .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH4, 0)?, Bytes::from(DATA).into())
+        .await;
+
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+            .await,
+        None,
+        "Expected map to not have item 1"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+            .await,
+        None,
+        "Expected map to not have item 2"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+            .await,
+        Some(DATA.len()),
+        "Expected map to have item 3"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
+            .await,
+        Some(DATA.len()),
+        "Expected map to have item 4"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 0,
+            max_bytes: 17,
+            evict_bytes: 9,
+        },
+        MockInstantWrapped::default(),
+    );
+    const DATA: &str = "12345678";
+    evicting_map
+        .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH4, 0)?, Bytes::from(DATA).into())
+        .await;
+
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+            .await,
+        None,
+        "Expected map to not have item 1"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+            .await,
+        None,
+        "Expected map to not have item 2"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+            .await,
+        None,
+        "Expected map to not have item 3"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
+            .await,
+        Some(DATA.len()),
+        "Expected map to have item 4"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn insert_purges_at_max_seconds() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 5,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+
+    const DATA: &str = "12345678";
+    evicting_map
+        .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
+        .await;
+    MockClock::advance(Duration::from_secs(2));
+    evicting_map
+        .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
+        .await;
+    MockClock::advance(Duration::from_secs(2));
+    evicting_map
+        .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
+        .await;
+    MockClock::advance(Duration::from_secs(2));
+    evicting_map
+        .insert(DigestInfo::try_new(HASH4, 0)?, Bytes::from(DATA).into())
+        .await;
+
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+            .await,
+        None,
+        "Expected map to not have item 1"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+            .await,
+        Some(DATA.len()),
+        "Expected map to have item 2"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+            .await,
+        Some(DATA.len()),
+        "Expected map to have item 3"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
+            .await,
+        Some(DATA.len()),
+        "Expected map to have item 4"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn get_refreshes_time() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 3,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+
+    const DATA: &str = "12345678";
+    evicting_map
+        .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
+        .await;
+    MockClock::advance(Duration::from_secs(2));
+    evicting_map
+        .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
+        .await;
+    MockClock::advance(Duration::from_secs(2));
+    evicting_map.get(&DigestInfo::try_new(HASH1, 0)?).await; // HASH1 should now be last to be evicted.
+    MockClock::advance(Duration::from_secs(2));
+    evicting_map
+        .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
+        .await; // This will trigger an eviction.
+
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+            .await,
+        None,
+        "Expected map to not have item 1"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+            .await,
+        None,
+        "Expected map to not have item 2"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+            .await,
+        Some(DATA.len()),
+        "Expected map to have item 3"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn unref_called_on_replace() -> Result<(), Error> {
+    #[derive(Debug)]
+    struct MockEntry {
+        data: Bytes,
+        unref_called: AtomicBool,
     }
 
-    #[nativelink_test]
-    async fn hashes_equal_sizes_different_doesnt_override() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
-            &EvictionPolicy {
-                max_count: 0,
-                max_seconds: 0,
-                max_bytes: 0,
-                evict_bytes: 0,
-            },
-            MockInstantWrapped(MockInstant::now()),
-        );
-
-        let value1 = BytesWrapper(Bytes::from_static(b"12345678"));
-        let value2 = BytesWrapper(Bytes::from_static(b"87654321"));
-        evicting_map
-            .insert(DigestInfo::try_new(HASH1, 0)?, value1.clone())
-            .await;
-        evicting_map
-            .insert(DigestInfo::try_new(HASH1, 1)?, value2.clone())
-            .await;
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
-                .await,
-            Some(value1.len()),
-            "HASH1/0 should exist"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH1, 1)?)
-                .await,
-            Some(value2.len()),
-            "HASH1/1 should exist"
-        );
-
-        assert_eq!(
-            evicting_map
-                .get(&DigestInfo::try_new(HASH1, 0)?)
-                .await
-                .unwrap(),
-            value1
-        );
-        assert_eq!(
-            evicting_map
-                .get(&DigestInfo::try_new(HASH1, 1)?)
-                .await
-                .unwrap(),
-            value2
-        );
-
-        Ok(())
-    }
-
-    #[nativelink_test]
-    async fn build_lru_index_and_reload() -> Result<(), Error> {
-        let mut evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
-            &EvictionPolicy {
-                max_count: 0,
-                max_seconds: 0,
-                max_bytes: 0,
-                evict_bytes: 0,
-            },
-            MockInstantWrapped(MockInstant::now()),
-        );
-
-        let value1 = BytesWrapper(Bytes::new());
-        let value2 = BytesWrapper(Bytes::new());
-        evicting_map
-            .insert(DigestInfo::try_new(HASH1, 0)?, value1.clone())
-            .await;
-        evicting_map
-            .insert(DigestInfo::try_new(HASH2, 1)?, value2.clone())
-            .await;
-
-        let serialized_index = evicting_map.build_lru_index().await;
-
-        {
-            // Now insert another entry.
-            let value3 = BytesWrapper(Bytes::new());
-            evicting_map
-                .insert(DigestInfo::try_new(HASH3, 3)?, value3.clone())
-                .await;
-
-            assert_eq!(
-                evicting_map
-                    .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
-                    .await,
-                Some(value1.len()),
-                "HASH1/0 should exist"
-            );
-            assert_eq!(
-                evicting_map
-                    .size_for_key(&DigestInfo::try_new(HASH2, 1)?)
-                    .await,
-                Some(value2.len()),
-                "HASH2/1 should exist"
-            );
-            assert_eq!(
-                evicting_map
-                    .size_for_key(&DigestInfo::try_new(HASH3, 3)?)
-                    .await,
-                Some(value3.len()),
-                "HASH3/1 should exist"
-            );
+    impl LenEntry for MockEntry {
+        fn len(&self) -> usize {
+            // Note: We are not testing this functionality.
+            0
         }
 
-        // Now reload from the serialized version.
-        evicting_map
-            .restore_lru(serialized_index, move |_digest| BytesWrapper(Bytes::new()))
-            .await;
+        fn is_empty(&self) -> bool {
+            unreachable!("We are not testing this functionality");
+        }
 
-        // Data should now have the previously inserted data, but not the newly inserted data
-        // that was inserted after the `build_lru_index` call.
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
-                .await,
-            Some(value1.len()),
-            "HASH1/0 should exist"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH2, 1)?)
-                .await,
-            Some(value2.len()),
-            "HASH2/1 should exist"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH3, 3)?)
-                .await,
-            None,
-            "HASH3/2 should be empty"
-        );
+        async fn touch(&self) -> bool {
+            // Do nothing. We are not testing this functionality.
+            true
+        }
 
-        Ok(())
+        async fn unref(&self) {
+            self.unref_called.store(true, Ordering::Relaxed);
+        }
     }
 
-    #[nativelink_test]
-    async fn get_evicts_on_time() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
-            &EvictionPolicy {
-                max_count: 0,
-                max_seconds: 5,
-                max_bytes: 0,
-                evict_bytes: 0,
-            },
-            MockInstantWrapped(MockInstant::now()),
-        );
+    let evicting_map = EvictingMap::<DigestInfo, Arc<MockEntry>, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 1,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
 
-        const DATA: &str = "12345678";
-        let digest_info1: DigestInfo = DigestInfo::try_new(HASH1, 0)?;
+    const DATA1: &str = "12345678";
+    const DATA2: &str = "87654321";
+
+    let (entry1, entry2) = {
+        let entry1 = Arc::new(MockEntry {
+            data: Bytes::from(DATA1),
+            unref_called: AtomicBool::new(false),
+        });
         evicting_map
-            .insert(digest_info1, Bytes::from(DATA).into())
+            .insert(DigestInfo::try_new(HASH1, 0)?, entry1.clone())
             .await;
 
-        // Getting from map before time has expired should return the value.
-        assert_eq!(
-            evicting_map.get(&digest_info1).await,
-            Some(Bytes::from(DATA).into())
-        );
+        let entry2 = Arc::new(MockEntry {
+            data: Bytes::from(DATA2),
+            unref_called: AtomicBool::new(false),
+        });
+        evicting_map
+            .insert(DigestInfo::try_new(HASH1, 0)?, entry2.clone())
+            .await;
+        (entry1, entry2)
+    };
 
-        MockClock::advance(Duration::from_secs(10));
+    let existing_entry = evicting_map
+        .get(&DigestInfo::try_new(HASH1, 0)?)
+        .await
+        .unwrap();
+    assert_eq!(existing_entry.data, DATA2);
 
-        // Getting from map after time has expired should return None.
-        assert_eq!(evicting_map.get(&digest_info1).await, None);
+    assert!(entry1.unref_called.load(Ordering::Relaxed));
+    assert!(!entry2.unref_called.load(Ordering::Relaxed));
 
-        Ok(())
+    Ok(())
+}
+
+#[nativelink_test]
+async fn contains_key_refreshes_time() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 3,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+
+    const DATA: &str = "12345678";
+    evicting_map
+        .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
+        .await;
+    MockClock::advance(Duration::from_secs(2));
+    evicting_map
+        .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
+        .await;
+    MockClock::advance(Duration::from_secs(2));
+    evicting_map
+        .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+        .await; // HASH1 should now be last to be evicted.
+    MockClock::advance(Duration::from_secs(2));
+    evicting_map
+        .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
+        .await; // This will trigger an eviction.
+
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+            .await,
+        None,
+        "Expected map to not have item 1"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+            .await,
+        None,
+        "Expected map to not have item 2"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+            .await,
+        Some(8),
+        "Expected map to have item 3"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn hashes_equal_sizes_different_doesnt_override() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+
+    let value1 = BytesWrapper(Bytes::from_static(b"12345678"));
+    let value2 = BytesWrapper(Bytes::from_static(b"87654321"));
+    evicting_map
+        .insert(DigestInfo::try_new(HASH1, 0)?, value1.clone())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH1, 1)?, value2.clone())
+        .await;
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+            .await,
+        Some(value1.len()),
+        "HASH1/0 should exist"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH1, 1)?)
+            .await,
+        Some(value2.len()),
+        "HASH1/1 should exist"
+    );
+
+    assert_eq!(
+        evicting_map
+            .get(&DigestInfo::try_new(HASH1, 0)?)
+            .await
+            .unwrap(),
+        value1
+    );
+    assert_eq!(
+        evicting_map
+            .get(&DigestInfo::try_new(HASH1, 1)?)
+            .await
+            .unwrap(),
+        value2
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn get_evicts_on_time() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 5,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+
+    const DATA: &str = "12345678";
+    let digest_info1: DigestInfo = DigestInfo::try_new(HASH1, 0)?;
+    evicting_map
+        .insert(digest_info1, Bytes::from(DATA).into())
+        .await;
+
+    // Getting from map before time has expired should return the value.
+    assert_eq!(
+        evicting_map.get(&digest_info1).await,
+        Some(Bytes::from(DATA).into())
+    );
+
+    MockClock::advance(Duration::from_secs(10));
+
+    // Getting from map after time has expired should return None.
+    assert_eq!(evicting_map.get(&digest_info1).await, None);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn remove_evicts_on_time() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 5,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+
+    const DATA: &str = "12345678";
+    let digest_info1: DigestInfo = DigestInfo::try_new(HASH1, 0)?;
+    evicting_map
+        .insert(digest_info1, Bytes::from(DATA).into())
+        .await;
+
+    let digest_info2: DigestInfo = DigestInfo::try_new(HASH2, 0)?;
+    evicting_map
+        .insert(digest_info2, Bytes::from(DATA).into())
+        .await;
+
+    // Removing digest before time has expired should return true.
+    assert!(evicting_map.remove(&digest_info2).await);
+
+    MockClock::advance(Duration::from_secs(10));
+
+    // Removing digest after time has expired should return false.
+    assert!(!evicting_map.remove(&digest_info1).await);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn range_multiple_items_test() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<String, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+
+    const KEY1: &str = "key-123";
+    const DATA1: &str = "123";
+    evicting_map
+        .insert(KEY1.into(), Bytes::from(DATA1).into())
+        .await;
+    const KEY2: &str = "key-234";
+    const DATA2: &str = "234";
+    evicting_map
+        .insert(KEY2.into(), Bytes::from(DATA2).into())
+        .await;
+    const KEY3: &str = "key-345";
+    const DATA3: &str = "345";
+    evicting_map
+        .insert(KEY3.into(), Bytes::from(DATA3).into())
+        .await;
+
+    async fn get_map_range(
+        evicting_map: &EvictingMap<String, BytesWrapper, MockInstantWrapped>,
+        range: impl std::ops::RangeBounds<String>,
+    ) -> Vec<(String, Bytes)> {
+        let mut found_values = Vec::new();
+        evicting_map
+            .range(range, |k, v: &BytesWrapper| {
+                found_values.push((k.clone(), v.0.clone()));
+                true
+            })
+            .await;
+        found_values
     }
 
-    #[nativelink_test]
-    async fn remove_evicts_on_time() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
-            &EvictionPolicy {
-                max_count: 0,
-                max_seconds: 5,
-                max_bytes: 0,
-                evict_bytes: 0,
-            },
-            MockInstantWrapped(MockInstant::now()),
-        );
-
-        const DATA: &str = "12345678";
-        let digest_info1: DigestInfo = DigestInfo::try_new(HASH1, 0)?;
-        evicting_map
-            .insert(digest_info1, Bytes::from(DATA).into())
-            .await;
-
-        let digest_info2: DigestInfo = DigestInfo::try_new(HASH2, 0)?;
-        evicting_map
-            .insert(digest_info2, Bytes::from(DATA).into())
-            .await;
-
-        // Removing digest before time has expired should return true.
-        assert!(evicting_map.remove(&digest_info2).await);
-
-        MockClock::advance(Duration::from_secs(10));
-
-        // Removing digest after time has expired should return false.
-        assert!(!evicting_map.remove(&digest_info1).await);
-
-        Ok(())
+    {
+        // Ensure all range works.
+        let expected_values = vec![
+            (KEY1.to_string(), Bytes::from(DATA1)),
+            (KEY2.to_string(), Bytes::from(DATA2)),
+            (KEY3.to_string(), Bytes::from(DATA3)),
+        ];
+        let found_values = get_map_range(&evicting_map, ..).await;
+        assert_eq!(expected_values, found_values);
     }
+    {
+        // Ensure prefix but everything range works.
+        let expected_values = vec![
+            (KEY1.to_string(), Bytes::from(DATA1)),
+            (KEY2.to_string(), Bytes::from(DATA2)),
+            (KEY3.to_string(), Bytes::from(DATA3)),
+        ];
+        let found_values = get_map_range(&evicting_map, "key-".to_string()..).await;
+        assert_eq!(expected_values, found_values);
+    }
+    {
+        // Ensure prefix range with everything after "key-2" works.
+        let expected_values = vec![
+            (KEY2.to_string(), Bytes::from(DATA2)),
+            (KEY3.to_string(), Bytes::from(DATA3)),
+        ];
+        let found_values = get_map_range(&evicting_map, "key-2".to_string()..).await;
+        assert_eq!(expected_values, found_values);
+    }
+    {
+        // Ensure prefix range with only KEY2.
+        let expected_values = vec![(KEY2.to_string(), Bytes::from(DATA2))];
+        let found_values = get_map_range(&evicting_map, KEY2.to_string()..KEY3.to_string()).await;
+        assert_eq!(expected_values, found_values);
+    }
+
+    Ok(())
 }

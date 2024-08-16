@@ -1,5 +1,9 @@
-{pkgs, ...}:
-pkgs.buildGoModule rec {
+{
+  buildGoModule,
+  fetchFromGitHub,
+  lib,
+}:
+buildGoModule rec {
   pname = "bazel-toolchains";
   version = "5.1.3-rc1";
 
@@ -7,7 +11,7 @@ pkgs.buildGoModule rec {
     ./rbe_configs_gen_adjustments.diff
   ];
 
-  src = pkgs.fetchFromGitHub {
+  src = fetchFromGitHub {
     owner = "bazelbuild";
     repo = "bazel-toolchains";
     rev = "v${version}";
@@ -16,7 +20,7 @@ pkgs.buildGoModule rec {
 
   vendorHash = "sha256-E6PylI2prXCXqOUYgYi5nZ4qptqOqbcaOquDfEkhaQ4=";
 
-  meta = with pkgs.lib; {
+  meta = with lib; {
     description = "Generate Bazel toolchain configs for remote execution.";
     homepage = "https://github.com/bazelbuild/bazel-toolchains";
     license = licenses.asl20;

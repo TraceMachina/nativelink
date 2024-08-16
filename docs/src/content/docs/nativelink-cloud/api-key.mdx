@@ -1,0 +1,85 @@
+---
+title: "API Keys in CI"
+description: "How to use NativeLink Cloud API keys in CI"
+pagefind: true
+---
+
+## GitHub Actions
+
+### Add NativeLink Cloud to a GitHub Actions Workflow
+
+To run NativeLink cloud in your workflow, you will need to create a YAML in
+your `.github/workflows` folder with the following added to your `jobs` section:
+
+
+```yaml
+jobs:
+  build-test:
+    runs-on: ubuntu-22.04
+    environment: production
+    steps:
+    - name: Checkout
+      uses: >- # v4.1.1
+        actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+    - name: Setup Bazelisk
+      uses: >- # v0.8.1
+        bazel-contrib/setup-bazel@b388b84bb637e50cdae241d0f255670d4bd79f29
+      with:
+        bazelisk-cache: true
+    - name: Run Bazel tests
+      shell: bash
+      run: |
+        bazel test \
+          --remote_cache=${{ vars.NATIVELINK_COM_REMOTE_CACHE_URL }} \
+          --remote_header=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+          --bes_backend=${{ vars.NATIVELINK_COM_BES_URL }} \
+          --bes_header=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+          --bes_results_url=${{ vars.NATIVELINK_COM_BES_RESULTS_URL }} \
+          --remote_header=x-nativelink-project=nativelink-ci \
+          //...
+```
+
+### Configure Secrets in your GitHub Repository
+
+GitHub Repository Secrets is the recommended way
+to store your NativeLink Cloud API keys
+for use with GitHub Actions.
+
+[GitHub Repository Secrets Tutorial](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-a-repository)
+
+They can be access via the secrets context i.e.
+```bash
+${{ secrets.YourSecretKeyName }}
+```
+
+:::note
+If your repository uses forks for pull requests (PRs), note that the secrets
+context isn't accessible from PRs originating from forks. To address this,
+we introduced Read-Only keys.
+:::
+
+Read-Only keys can be used for PRs and stored in the vars context. For
+merge-to-main actions, use a Read/Write key stored in the secrets context.
+
+## Read Only keys
+
+For Read Only API Keys you need to set these two flags:
+
+```bash
+--nogenerate_json_trace_profile
+--remote_upload_local_results=false
+```
+
+## BEP Disabled Keys
+
+For keys where BEP is disabled, remove the following flags from your Config:
+
+```bash
+build --bes_backend=YOUR_BEP_URL
+build --bes_header=x-nativelink-api-key=YOUR_KEY
+```
+
+## Third-Party Secrets Management
+If you need info on setting up API keys for different CI environments, ask in
+the [Slack channel](https://nativelink.slack.com/join/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A#/shared-invite/email)
+or open an issue on our [GitHub](https://github.com/TraceMachina/nativelink).

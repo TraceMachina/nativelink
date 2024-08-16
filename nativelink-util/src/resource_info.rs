@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,6 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+use std::borrow::Cow;
 
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
 
@@ -76,17 +78,17 @@ const SLASH_SIZE: usize = 1;
 //                 uploads/{uuid}/blobs/                                          {hash}/{size}
 //
 
-// Useful utility struct for converting bazel's (uri-like path) into it's parts.
+// Useful utility struct for converting bazel's (uri-like path) into its parts.
 #[derive(Debug, Default)]
 pub struct ResourceInfo<'a> {
-    pub instance_name: &'a str,
-    pub uuid: Option<&'a str>,
-    pub compressor: Option<&'a str>,
-    pub digest_function: Option<&'a str>,
-    pub hash: &'a str,
-    size: &'a str,
+    pub instance_name: Cow<'a, str>,
+    pub uuid: Option<Cow<'a, str>>,
+    pub compressor: Option<Cow<'a, str>>,
+    pub digest_function: Option<Cow<'a, str>>,
+    pub hash: Cow<'a, str>,
+    size: Cow<'a, str>,
     pub expected_size: usize,
-    pub optional_metadata: Option<&'a str>,
+    pub optional_metadata: Option<Cow<'a, str>>,
 }
 
 impl<'a> ResourceInfo<'a> {
@@ -114,7 +116,7 @@ impl<'a> ResourceInfo<'a> {
             &resource_name[..resource_name.len() - end_bytes_processed - SLASH_SIZE]
         };
         if !is_upload {
-            output.instance_name = beginning_part;
+            output.instance_name = Cow::Borrowed(beginning_part);
             return Ok(output);
         }
 
@@ -123,11 +125,11 @@ impl<'a> ResourceInfo<'a> {
         // Remember, `instance_name` can contain slashes and/or special names
         // like "blobs" or "uploads".
         let mut parts = beginning_part.rsplitn(3, '/');
-        output.uuid = Some(
+        output.uuid = Some(Cow::Borrowed(
             parts
                 .next()
                 .err_tip(|| format!("{ERROR_MSG} in {resource_name}"))?,
-        );
+        ));
         {
             // Sanity check that our next item is "uploads".
             let uploads = parts
@@ -141,22 +143,55 @@ impl<'a> ResourceInfo<'a> {
 
         // `instance_name` is optional.
         if let Some(instance_name) = parts.next() {
-            output.instance_name = instance_name;
+            output.instance_name = Cow::Borrowed(instance_name);
         }
         Ok(output)
     }
 
+    /// Returns a new ResourceInfo with all fields owned.
+    pub fn to_owned(&self) -> ResourceInfo<'static> {
+        ResourceInfo {
+            instance_name: Cow::Owned(self.instance_name.to_string()),
+            uuid: self.uuid.as_ref().map(|uuid| Cow::Owned(uuid.to_string())),
+            compressor: self
+                .compressor
+                .as_ref()
+                .map(|compressor| Cow::Owned(compressor.to_string())),
+            digest_function: self
+                .digest_function
+                .as_ref()
+                .map(|digest_function| Cow::Owned(digest_function.to_string())),
+            hash: Cow::Owned(self.hash.to_string()),
+            size: Cow::Owned(self.size.to_string()),
+            expected_size: self.expected_size,
+            optional_metadata: self
+                .optional_metadata
+                .as_ref()
+                .map(|optional_metadata| Cow::Owned(optional_metadata.to_string())),
+        }
+    }
+
     pub fn to_string(&self, is_upload: bool) -> String {
         [
-            Some(self.instance_name),
+            Some(self.instance_name.as_ref()),
             is_upload.then_some("uploads"),
-            self.uuid,
-            Some(self.compressor.map_or("blobs", |_| "compressed-blobs")),
-            self.compressor,
-            self.digest_function,
-            Some(self.hash),
-            Some(self.size),
-            self.optional_metadata,
+            self.uuid.as_ref().map(|uuid| uuid.as_ref()),
+            Some(
+                self.compressor
+                    .as_ref()
+                    .map_or("blobs", |_| "compressed-blobs"),
+            ),
+            self.compressor
+                .as_ref()
+                .map(|compressor| compressor.as_ref()),
+            self.digest_function
+                .as_ref()
+                .map(|digest_function| digest_function.as_ref()),
+            Some(self.hash.as_ref()),
+            Some(self.size.as_ref()),
+            self.optional_metadata
+                .as_ref()
+                .map(|optional_metadata| optional_metadata.as_ref()),
         ]
         .into_iter()
         .flatten()
@@ -209,7 +244,7 @@ fn recursive_parse<'a>(
             State::Compressor => {
                 state = State::DigestFunction;
                 if COMPRESSORS.contains(&part) {
-                    output.compressor = Some(part);
+                    output.compressor = Some(Cow::Borrowed(part));
                     *bytes_processed += part.len() + SLASH_SIZE;
                     return Ok(state);
                 } else {
@@ -219,20 +254,20 @@ fn recursive_parse<'a>(
             State::DigestFunction => {
                 state = State::Hash;
                 if DIGEST_FUNCTIONS.contains(&part) {
-                    output.digest_function = Some(part);
+                    output.digest_function = Some(Cow::Borrowed(part));
                     *bytes_processed += part.len() + SLASH_SIZE;
                     return Ok(state);
                 }
                 continue;
             }
             State::Hash => {
-                output.hash = part;
+                output.hash = Cow::Borrowed(part);
                 *bytes_processed += part.len() + SLASH_SIZE;
                 // TODO(allada) Set the digest_function if it is not set based on the hash size.
                 return Ok(State::Size);
             }
             State::Size => {
-                output.size = part;
+                output.size = Cow::Borrowed(part);
                 output.expected_size = part.parse::<usize>().map_err(|_| {
                     make_input_err!(
                         "Digest size_bytes was not convertible to usize. Got: {}",
@@ -243,7 +278,7 @@ fn recursive_parse<'a>(
                 return Ok(State::OptionalMetadata);
             }
             State::OptionalMetadata => {
-                output.optional_metadata = Some(part);
+                output.optional_metadata = Some(Cow::Borrowed(part));
                 *bytes_processed += part.len() + SLASH_SIZE;
                 // If we get here, we are done parsing backwards and have successfully parsed
                 // everything beyond the "(compressed-)blobs" section.

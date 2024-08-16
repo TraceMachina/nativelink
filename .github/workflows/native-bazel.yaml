@@ -6,8 +6,14 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
 
 permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   unit-tests:
@@ -19,7 +25,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-
       - name: Checkout
         uses: >- # v4.1.1
           actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11

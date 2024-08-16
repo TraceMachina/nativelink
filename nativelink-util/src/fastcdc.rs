@@ -30,7 +30,7 @@ impl State {
 /// normal conditions all the chunk boundaries will be identical except the ones near
 /// the mutations.
 ///
-/// This is not very useful on it's own, but is extremely useful because we can pair
+/// This is not very useful on its own, but is extremely useful because we can pair
 /// this together with a hash algorithm (like sha256) to then hash each chunk and
 /// then check to see if we already have the sha256 somewhere before attempting to
 /// upload the file. If the file does exist, we can skip the chunk and continue then

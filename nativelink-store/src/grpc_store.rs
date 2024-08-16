@@ -1,4 +1,4 @@
-// Copyright 2023-2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,13 +22,13 @@ use bytes::BytesMut;
 use futures::stream::{unfold, FuturesUnordered};
 use futures::{future, Future, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function, ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse,
-    BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, FindMissingBlobsRequest,
-    FindMissingBlobsResponse, GetActionResultRequest, GetTreeRequest, GetTreeResponse,
-    UpdateActionResultRequest,
+    ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
+    BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse,
+    GetActionResultRequest, GetTreeRequest, GetTreeResponse, UpdateActionResultRequest,
 };
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::{
@@ -37,13 +38,15 @@ use nativelink_proto::google::bytestream::{
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
+use nativelink_util::digest_hasher::{default_digest_hasher_func, ACTIVE_HASHER_FUNC};
 use nativelink_util::health_utils::HealthStatusIndicator;
+use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::proto_stream_utils::{
     FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
 };
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::{default_health_status_indicator, tls_utils};
 use parking_lot::Mutex;
 use prost::Message;
@@ -57,7 +60,9 @@ use uuid::Uuid;
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
+#[derive(MetricsComponent)]
 pub struct GrpcStore {
+    #[metric(help = "Instance name for the store")]
     instance_name: String,
     store_type: nativelink_config::stores::StoreType,
     retrier: Retrier,
@@ -65,7 +70,7 @@ pub struct GrpcStore {
 }
 
 impl GrpcStore {
-    pub async fn new(config: &nativelink_config::stores::GrpcStore) -> Result<Self, Error> {
+    pub async fn new(config: &nativelink_config::stores::GrpcStore) -> Result<Arc<Self>, Error> {
         let jitter_amt = config.retry.jitter;
         Self::new_with_jitter(
             config,
@@ -84,7 +89,7 @@ impl GrpcStore {
     pub async fn new_with_jitter(
         config: &nativelink_config::stores::GrpcStore,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Arc<Self>, Error> {
         error_if!(
             config.endpoints.is_empty(),
             "Expected at least 1 endpoint in GrpcStore"
@@ -97,7 +102,7 @@ impl GrpcStore {
         }
 
         let jitter_fn = Arc::new(jitter_fn);
-        Ok(GrpcStore {
+        Ok(Arc::new(GrpcStore {
             instance_name: config.instance_name.clone(),
             store_type: config.store_type,
             retrier: Retrier::new(
@@ -112,7 +117,7 @@ impl GrpcStore {
                 config.retry.to_owned(),
                 jitter_fn,
             ),
-        })
+        }))
     }
 
     async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
@@ -239,7 +244,7 @@ impl GrpcStore {
         const IS_UPLOAD_FALSE: bool = false;
         let mut resource_info = ResourceInfo::new(&request.resource_name, IS_UPLOAD_FALSE)?;
         if resource_info.instance_name != self.instance_name {
-            resource_info.instance_name = &self.instance_name;
+            resource_info.instance_name = Cow::Borrowed(&self.instance_name);
             request.resource_name = resource_info.to_string(IS_UPLOAD_FALSE);
         }
         Ok(request)
@@ -362,7 +367,7 @@ impl GrpcStore {
         const IS_UPLOAD_TRUE: bool = true;
         let mut request_info = ResourceInfo::new(&request.resource_name, IS_UPLOAD_TRUE)?;
         if request_info.instance_name != self.instance_name {
-            request_info.instance_name = &self.instance_name;
+            request_info.instance_name = Cow::Borrowed(&self.instance_name);
             request.resource_name = request_info.to_string(IS_UPLOAD_TRUE);
         }
 
@@ -430,7 +435,11 @@ impl GrpcStore {
             inline_stdout: false,
             inline_stderr: false,
             inline_output_files: Vec::new(),
-            digest_function: digest_function::Value::Sha256.into(),
+            digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
+                .err_tip(|| "In get_action_from_store")?
+                .map_or_else(default_digest_hasher_func, |v| *v)
+                .proto_digest_func()
+                .into(),
         };
         self.get_action_result(Request::new(action_result_request))
             .await
@@ -482,7 +491,11 @@ impl GrpcStore {
             action_digest: Some(digest.into()),
             action_result: Some(action_result),
             results_cache_policy: None,
-            digest_function: digest_function::Value::Sha256.into(),
+            digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
+                .err_tip(|| "In get_action_from_store")?
+                .map_or_else(default_digest_hasher_func, |v| *v)
+                .proto_digest_func()
+                .into(),
         };
         self.update_action_result(Request::new(update_action_request))
             .await
@@ -491,23 +504,23 @@ impl GrpcStore {
 }
 
 #[async_trait]
-impl Store for GrpcStore {
+impl StoreDriver for GrpcStore {
     // NOTE: This function can only be safely used on CAS stores. AC stores may return a size that
     // is incorrect.
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
         if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
-            digests
-                .iter()
+            keys.iter()
                 .zip(results.iter_mut())
-                .map(|(digest, result)| async move {
+                .map(|(key, result)| async move {
                     // The length of an AC is incorrect, so we don't figure out the
                     // length, instead the biggest possible result is returned in the
                     // hope that we detect incorrect usage.
-                    self.get_action_result_from_digest(*digest).await?;
+                    self.get_action_result_from_digest(key.borrow().into_digest())
+                        .await?;
                     *result = Some(usize::MAX);
                     Ok::<_, Error>(())
                 })
@@ -521,8 +534,15 @@ impl Store for GrpcStore {
         let missing_blobs_response = self
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
                 instance_name: self.instance_name.clone(),
-                blob_digests: digests.iter().map(|digest| digest.into()).collect(),
-                digest_function: digest_function::Value::Sha256.into(),
+                blob_digests: keys
+                    .iter()
+                    .map(|k| k.borrow().into_digest().into())
+                    .collect(),
+                digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
+                    .err_tip(|| "In GrpcStore::has_with_results")?
+                    .map_or_else(default_digest_hasher_func, |v| *v)
+                    .proto_digest_func()
+                    .into(),
             }))
             .await?
             .into_inner();
@@ -538,8 +558,12 @@ impl Store for GrpcStore {
             missing_digests.push(DigestInfo::try_from(missing_digest)?);
         }
         missing_digests.sort_unstable();
-        for (digest, result) in digests.iter().zip(results.iter_mut()) {
-            match missing_digests.binary_search(digest) {
+        for (digest, result) in keys
+            .iter()
+            .map(|v| v.borrow().into_digest())
+            .zip(results.iter_mut())
+        {
+            match missing_digests.binary_search(&digest) {
                 Ok(_) => *result = None,
                 Err(_) => *result = Some(usize::try_from(digest.size_bytes)?),
             }
@@ -550,10 +574,11 @@ impl Store for GrpcStore {
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
@@ -626,13 +651,14 @@ impl Store for GrpcStore {
         Ok(())
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
+        let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
             return self
                 .get_action_result_as_part(digest, writer, offset, length)
@@ -721,11 +747,7 @@ impl Store for GrpcStore {
             .await
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 

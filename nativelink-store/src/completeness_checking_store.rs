@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,16 +20,15 @@ use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::{select, FutureExt, TryFutureExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, OutputDirectory as ProtoOutputDirectory, Tree as ProtoTree,
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{
-    Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
-};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::metrics_utils::CounterWithTime;
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tracing::{event, Level};
@@ -40,7 +39,7 @@ use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
 /// output directories that need to be checked.
 fn get_digests_and_output_dirs(
     action_result: ProtoActionResult,
-) -> Result<(Vec<DigestInfo>, Vec<ProtoOutputDirectory>), Error> {
+) -> Result<(Vec<StoreKey<'static>>, Vec<ProtoOutputDirectory>), Error> {
     // TODO(allada) When `try_collect()` is stable we can use it instead.
     let mut digest_iter = action_result
         .output_files
@@ -51,7 +50,7 @@ fn get_digests_and_output_dirs(
     let mut digest_infos = Vec::with_capacity(digest_iter.size_hint().1.unwrap_or(0));
     digest_iter
         .try_for_each(|maybe_digest| {
-            digest_infos.push(maybe_digest?);
+            digest_infos.push(maybe_digest?.into());
             Result::<_, Error>::Ok(())
         })
         .err_tip(|| "Some digests could not be converted to DigestInfos")?;
@@ -61,10 +60,10 @@ fn get_digests_and_output_dirs(
 /// Given a list of output directories recursively get all digests
 /// that need to be checked and pass them into `handle_digest_infos_fn`
 /// as they are found.
-async fn check_output_directories(
-    cas_store: Pin<&dyn Store>,
+async fn check_output_directories<'a>(
+    cas_store: &Store,
     output_directories: Vec<ProtoOutputDirectory>,
-    handle_digest_infos_fn: &impl Fn(Vec<DigestInfo>),
+    handle_digest_infos_fn: &impl Fn(Vec<StoreKey<'a>>),
 ) -> Result<(), Error> {
     let mut futures = FuturesUnordered::new();
 
@@ -75,7 +74,7 @@ async fn check_output_directories(
         let tree_digest = maybe_tree_digest
             .err_tip(|| "Could not decode tree digest CompletenessCheckingStore::has")?;
         futures.push(async move {
-            let tree = get_and_decode_digest::<ProtoTree>(cas_store, &tree_digest).await?;
+            let tree = get_and_decode_digest::<ProtoTree>(cas_store, tree_digest.into()).await?;
             // TODO(allada) When `try_collect()` is stable we can use it instead.
             // https://github.com/rust-lang/rust/issues/94047
             let mut digest_iter = tree.children.into_iter().chain(tree.root).flat_map(|dir| {
@@ -87,7 +86,7 @@ async fn check_output_directories(
             let mut digest_infos = Vec::with_capacity(digest_iter.size_hint().1.unwrap_or(0));
             digest_iter
                 .try_for_each(|maybe_digest| {
-                    digest_infos.push(maybe_digest?);
+                    digest_infos.push(maybe_digest?.into());
                     Result::<_, Error>::Ok(())
                 })
                 .err_tip(|| "Expected digest to exist and be convertable")?;
@@ -105,22 +104,25 @@ async fn check_output_directories(
     Ok(())
 }
 
+#[derive(MetricsComponent)]
 pub struct CompletenessCheckingStore {
-    cas_store: Arc<dyn Store>,
-    ac_store: Arc<dyn Store>,
+    cas_store: Store,
+    ac_store: Store,
 
+    #[metric(help = "Incomplete entries hit in CompletenessCheckingStore")]
     incomplete_entries_counter: CounterWithTime,
+    #[metric(help = "Complete entries hit in CompletenessCheckingStore")]
     complete_entries_counter: CounterWithTime,
 }
 
 impl CompletenessCheckingStore {
-    pub fn new(ac_store: Arc<dyn Store>, cas_store: Arc<dyn Store>) -> Self {
-        CompletenessCheckingStore {
+    pub fn new(ac_store: Store, cas_store: Store) -> Arc<Self> {
+        Arc::new(CompletenessCheckingStore {
             cas_store,
             ac_store,
             incomplete_entries_counter: CounterWithTime::default(),
             complete_entries_counter: CounterWithTime::default(),
-        }
+        })
     }
 
     /// Check that all files and directories in action results
@@ -129,16 +131,14 @@ impl CompletenessCheckingStore {
     /// are polled concurrently.
     async fn inner_has_with_results(
         &self,
-        action_result_digests: &[DigestInfo],
+        action_result_digests: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        let ac_store = Pin::new(self.ac_store.as_ref());
-        let cas_store = Pin::new(self.cas_store.as_ref());
         // Holds shared state between the different futures.
         // This is how get around lifetime issues.
         struct State<'a> {
             results: &'a mut [Option<usize>],
-            digests_to_check: Vec<DigestInfo>,
+            digests_to_check: Vec<StoreKey<'a>>,
             digests_to_check_idxs: Vec<usize>,
             notify: Arc<Notify>,
             done: bool,
@@ -163,8 +163,11 @@ impl CompletenessCheckingStore {
             .map(|(i, digest)| {
                 async move {
                     // Note: We don't err_tip here because often have NotFound here which is ok.
-                    let (action_result, size) =
-                        get_size_and_decode_digest::<ProtoActionResult>(ac_store, digest).await?;
+                    let (action_result, size) = get_size_and_decode_digest::<ProtoActionResult>(
+                        &self.ac_store,
+                        digest.borrow(),
+                    )
+                    .await?;
 
                     let (mut digest_infos, output_directories) =
                         get_digests_and_output_dirs(action_result)?;
@@ -197,15 +200,19 @@ impl CompletenessCheckingStore {
                         return Ok(());
                     }
 
-                    check_output_directories(cas_store, output_directories, &move |digest_infos| {
-                        let mut state = state_mux.lock();
-                        let rep_len = digest_infos.len();
-                        state.digests_to_check.extend(digest_infos);
-                        state
-                            .digests_to_check_idxs
-                            .extend(iter::repeat(i).take(rep_len));
-                        state.notify.notify_one();
-                    })
+                    check_output_directories(
+                        &self.cas_store,
+                        output_directories,
+                        &move |digest_infos| {
+                            let mut state = state_mux.lock();
+                            let rep_len = digest_infos.len();
+                            state.digests_to_check.extend(digest_infos);
+                            state
+                                .digests_to_check_idxs
+                                .extend(iter::repeat(i).take(rep_len));
+                            state.notify.notify_one();
+                        },
+                    )
                     .await?;
 
                     Result::<(), Error>::Ok(())
@@ -262,7 +269,7 @@ impl CompletenessCheckingStore {
                 // Recycle our results vector to avoid needless allocations.
                 has_results.clear();
                 has_results.resize(digests.len(), None);
-                cas_store
+                self.cas_store
                     .has_with_results(&digests, &mut has_results[..])
                     .await
                     .err_tip(|| {
@@ -331,54 +338,45 @@ impl CompletenessCheckingStore {
 }
 
 #[async_trait]
-impl Store for CompletenessCheckingStore {
+impl StoreDriver for CompletenessCheckingStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        action_result_digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.inner_has_with_results(action_result_digests, results)
-            .await
+        self.inner_has_with_results(keys, results).await
     }
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        Pin::new(self.ac_store.as_ref())
-            .update(digest, reader, size_info)
-            .await
+        self.ac_store.update(key, reader, size_info).await
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
         let results = &mut [None];
-        self.inner_has_with_results(&[digest], results)
+        self.inner_has_with_results(&[key.borrow()], results)
             .await
-            .err_tip(|| "when calling CompletenessCheckingStore::get_part_ref")?;
+            .err_tip(|| "when calling CompletenessCheckingStore::get_part")?;
         if results[0].is_none() {
             return Err(make_err!(
                 Code::NotFound,
-                "Digest found, but not all parts were found in CompletenessCheckingStore::get_part_ref"
+                "Digest found, but not all parts were found in CompletenessCheckingStore::get_part"
             ));
         }
-        Pin::new(self.ac_store.as_ref())
-            .get_part_ref(digest, writer, offset, length)
-            .await
+        self.ac_store.get_part(key, writer, offset, length).await
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 
@@ -388,31 +386,6 @@ impl Store for CompletenessCheckingStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
-    }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        self.cas_store
-            .clone()
-            .register_metrics(registry.sub_registry_with_prefix("cas_store"));
-        self.ac_store
-            .clone()
-            .register_metrics(registry.sub_registry_with_prefix("ac_store"));
-        registry.register_collector(Box::new(Collector::new(&self)));
-    }
-}
-
-impl MetricsComponent for CompletenessCheckingStore {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish(
-            "incomplete_entries_counter",
-            &self.incomplete_entries_counter,
-            "Incomplete entries hit in CompletenessCheckingStore",
-        );
-        c.publish(
-            "complete_entries_counter",
-            &self.complete_entries_counter,
-            "Complete entries hit in CompletenessCheckingStore",
-        );
     }
 }
 

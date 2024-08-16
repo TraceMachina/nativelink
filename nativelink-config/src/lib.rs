@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,5 +14,5 @@
 
 pub mod cas_server;
 pub mod schedulers;
-mod serde_utils;
+pub mod serde_utils;
 pub mod stores;

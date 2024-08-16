@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -19,12 +20,13 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use nativelink_config::stores::{EvictionPolicy, ExistenceCacheStore as ExistenceCacheStoreConfig};
 use nativelink_error::{error_if, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
+use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
 #[derive(Clone, Debug)]
 struct ExistanceItem(usize);
@@ -41,23 +43,39 @@ impl LenEntry for ExistanceItem {
     }
 }
 
-pub struct ExistenceCacheStore {
-    inner_store: Arc<dyn Store>,
-    existence_cache: EvictingMap<ExistanceItem, SystemTime>,
+#[derive(MetricsComponent)]
+pub struct ExistenceCacheStore<I: InstantWrapper> {
+    #[metric(group = "inner_store")]
+    inner_store: Store,
+    existence_cache: EvictingMap<DigestInfo, ExistanceItem, I>,
 }
 
-impl ExistenceCacheStore {
-    pub fn new(config: &ExistenceCacheStoreConfig, inner_store: Arc<dyn Store>) -> Self {
+impl ExistenceCacheStore<SystemTime> {
+    pub fn new(config: &ExistenceCacheStoreConfig, inner_store: Store) -> Arc<Self> {
+        Self::new_with_time(config, inner_store, SystemTime::now())
+    }
+}
+
+impl<I: InstantWrapper> ExistenceCacheStore<I> {
+    pub fn new_with_time(
+        config: &ExistenceCacheStoreConfig,
+        inner_store: Store,
+        anchor_time: I,
+    ) -> Arc<Self> {
         let empty_policy = EvictionPolicy::default();
         let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
-        Self {
+        Arc::new(Self {
             inner_store,
-            existence_cache: EvictingMap::new(eviction_policy, SystemTime::now()),
-        }
+            existence_cache: EvictingMap::new(eviction_policy, anchor_time),
+        })
     }
 
     pub async fn exists_in_cache(&self, digest: &DigestInfo) -> bool {
-        self.existence_cache.size_for_key(digest).await.is_some()
+        let mut results = [None];
+        self.existence_cache
+            .sizes_for_keys([digest], &mut results[..], true /* peek */)
+            .await;
+        results[0].is_some()
     }
 
     pub async fn remove_from_cache(&self, digest: &DigestInfo) {
@@ -66,26 +84,28 @@ impl ExistenceCacheStore {
 
     async fn inner_has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.existence_cache.sizes_for_keys(digests, results).await;
+        self.existence_cache
+            .sizes_for_keys(keys, results, true /* peek */)
+            .await;
 
-        let not_cached_digests: Vec<DigestInfo> = digests
+        let not_cached_keys: Vec<_> = keys
             .iter()
             .zip(results.iter())
-            .filter_map(|(digest, result)| result.map_or_else(|| Some(*digest), |_| None))
+            .filter_map(|(digest, result)| result.map_or_else(|| Some(digest.into()), |_| None))
             .collect();
 
-        // Hot path optimization when all digests are cached.
-        if not_cached_digests.is_empty() {
+        // Hot path optimization when all keys are cached.
+        if not_cached_keys.is_empty() {
             return Ok(());
         }
 
         // Now query only the items not found in the cache.
-        let mut inner_results = vec![None; not_cached_digests.len()];
-        self.pin_inner()
-            .has_with_results(&not_cached_digests, &mut inner_results)
+        let mut inner_results = vec![None; not_cached_keys.len()];
+        self.inner_store
+            .has_with_results(&not_cached_keys, &mut inner_results)
             .await
             .err_tip(|| "In ExistenceCacheStore::inner_has_with_results")?;
 
@@ -93,10 +113,12 @@ impl ExistenceCacheStore {
         {
             // Note: Sadly due to some weird lifetime issues we need to collect here, but
             // in theory we don't actually need to collect.
-            let inserts = not_cached_digests
+            let inserts = not_cached_keys
                 .iter()
                 .zip(inner_results.iter())
-                .filter_map(|(digest, result)| result.map(|size| (*digest, ExistanceItem(size))))
+                .filter_map(|(key, result)| {
+                    result.map(|size| (key.borrow().into_digest(), ExistanceItem(size)))
+                })
                 .collect::<Vec<_>>();
             let _ = self.existence_cache.insert_many(inserts).await;
         }
@@ -122,28 +144,33 @@ impl ExistenceCacheStore {
 
         Ok(())
     }
-
-    fn pin_inner(&self) -> Pin<&dyn Store> {
-        Pin::new(self.inner_store.as_ref())
-    }
 }
 
 #[async_trait]
-impl Store for ExistenceCacheStore {
+impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        digests: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.inner_has_with_results(digests, results).await
+        // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
+        // existence_cache. We need to convert the digests to owned values to be able to
+        // insert them into the cache. In theory it should be able to elide this conversion
+        // but it seems to be a bit tricky to get right.
+        let digests: Vec<_> = digests
+            .iter()
+            .map(|key| key.borrow().into_digest())
+            .collect();
+        self.inner_has_with_results(&digests, results).await
     }
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        let digest = key.into_digest();
         let mut exists = [None];
         self.inner_has_with_results(&[digest], &mut exists)
             .await
@@ -157,7 +184,7 @@ impl Store for ExistenceCacheStore {
                 .err_tip(|| "In ExistenceCacheStore::update")?;
             return Ok(());
         }
-        let result = self.pin_inner().update(digest, reader, size_info).await;
+        let result = self.inner_store.update(digest, reader, size_info).await;
         if result.is_ok() {
             if let UploadSizeInfo::ExactSize(size) = size_info {
                 let _ = self
@@ -169,16 +196,17 @@ impl Store for ExistenceCacheStore {
         result
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
+        let digest = key.into_digest();
         let result = self
-            .pin_inner()
-            .get_part_ref(digest, writer, offset, length)
+            .inner_store
+            .get_part(digest, writer, offset, length)
             .await;
         if result.is_ok() {
             let size = usize::try_from(digest.size_bytes)
@@ -191,11 +219,7 @@ impl Store for ExistenceCacheStore {
         result
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 
@@ -206,19 +230,15 @@ impl Store for ExistenceCacheStore {
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
     }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        let inner_store_registry = registry.sub_registry_with_prefix("inner_store");
-        self.inner_store
-            .clone()
-            .register_metrics(inner_store_registry);
-    }
 }
 
-impl MetricsComponent for ExistenceCacheStore {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        self.existence_cache.gather_metrics(c)
+#[async_trait]
+impl<I: InstantWrapper> HealthStatusIndicator for ExistenceCacheStore<I> {
+    fn get_name(&self) -> &'static str {
+        "ExistenceCacheStore"
+    }
+
+    async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
+        StoreDriver::check_health(Pin::new(self), namespace).await
     }
 }
-
-default_health_status_indicator!(ExistenceCacheStore);

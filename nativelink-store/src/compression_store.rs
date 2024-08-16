@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,14 +24,13 @@ use bytes::{Buf, BufMut, BytesMut};
 use futures::future::FutureExt;
 use lz4_flex::block::{compress_into, decompress_into, get_maximum_output_size};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
-use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::metrics_utils::Registry;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::cas_utils::is_zero_digest;
@@ -210,8 +209,10 @@ impl UploadState {
 /// Note: Currently using get_part() and trying to read part of the data will
 /// result in the entire contents being read from the inner store but will
 /// only send the contents requested.
+#[derive(MetricsComponent)]
 pub struct CompressionStore {
-    inner_store: Arc<dyn Store>,
+    #[metric(group = "inner_store")]
+    inner_store: Store,
     config: nativelink_config::stores::Lz4Config,
     bincode_options: BincodeOptions,
 }
@@ -219,8 +220,8 @@ pub struct CompressionStore {
 impl CompressionStore {
     pub fn new(
         compression_config: nativelink_config::stores::CompressionStore,
-        inner_store: Arc<dyn Store>,
-    ) -> Result<Self, Error> {
+        inner_store: Store,
+    ) -> Result<Arc<Self>, Error> {
         let lz4_config = match compression_config.compression_algorithm {
             nativelink_config::stores::CompressionAlgorithm::lz4(mut lz4_config) => {
                 if lz4_config.block_size == 0 {
@@ -232,29 +233,27 @@ impl CompressionStore {
                 lz4_config
             }
         };
-        Ok(CompressionStore {
+        Ok(Arc::new(CompressionStore {
             inner_store,
             config: lz4_config,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
-        })
+        }))
     }
 }
 
 #[async_trait]
-impl Store for CompressionStore {
+impl StoreDriver for CompressionStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        digests: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        Pin::new(self.inner_store.as_ref())
-            .has_with_results(digests, results)
-            .await
+        self.inner_store.has_with_results(digests, results).await
     }
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
@@ -263,10 +262,11 @@ impl Store for CompressionStore {
         let (mut tx, rx) = make_buf_channel_pair();
 
         let inner_store = self.inner_store.clone();
+        let key = key.into_owned();
         let update_fut = spawn!("compression_store_update_spawn", async move {
-            Pin::new(inner_store.as_ref())
+            inner_store
                 .update(
-                    digest,
+                    key,
                     rx,
                     UploadSizeInfo::MaxSize(output_state.max_output_size),
                 )
@@ -388,17 +388,17 @@ impl Store for CompressionStore {
         write_result.merge(update_result)
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        if is_zero_digest(&digest) {
+        if is_zero_digest(key.borrow()) {
             writer
                 .send_eof()
-                .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
             return Ok(());
         }
 
@@ -406,9 +406,10 @@ impl Store for CompressionStore {
         let (tx, mut rx) = make_buf_channel_pair();
 
         let inner_store = self.inner_store.clone();
+        let key = key.into_owned();
         let get_part_fut = spawn!("compression_store_get_part_spawn", async move {
-            Pin::new(inner_store.as_ref())
-                .get_part(digest, tx, 0, None)
+            inner_store
+                .get_part(key, tx, 0, None)
                 .await
                 .err_tip(|| "Inner store get in compression store failed")
         })
@@ -613,11 +614,7 @@ impl Store for CompressionStore {
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 
@@ -627,13 +624,6 @@ impl Store for CompressionStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
-    }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        let inner_store_registry = registry.sub_registry_with_prefix("inner_store");
-        self.inner_store
-            .clone()
-            .register_metrics(inner_store_registry);
     }
 }
 

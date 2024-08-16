@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,14 +14,20 @@
 
 pub mod action_messages;
 pub mod buf_channel;
+pub mod channel_body_for_tests;
+pub mod chunked_stream;
 pub mod common;
 pub mod connection_manager;
+pub mod default_store_key_subscribe;
 pub mod digest_hasher;
 pub mod evicting_map;
 pub mod fastcdc;
 pub mod fs;
 pub mod health_utils;
+pub mod instant_wrapper;
+pub mod known_platform_property_provider;
 pub mod metrics_utils;
+pub mod operation_state_manager;
 pub mod origin_context;
 pub mod platform_properties;
 pub mod proto_stream_utils;
@@ -52,22 +58,44 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
         .with_default_directive(tracing::metadata::LevelFilter::WARN.into())
         .from_env_lossy();
 
+    // Setup tracing logger for multiple format types, compact, json, and pretty as a single layer.
+    // Configuration for log format comes from environment variable NL_LOG_FMT due to subscribers
+    // being configured before config parsing.
+    let nl_log_fmt = std::env::var("NL_LOG").unwrap_or_else(|_| "pretty".to_string());
+    // Layers vector is used for due to how tracing_subscriber::fmt::layer builds type signature
+    // not being able to unify a single trait type before being boxed. For example see
+    // https://docs.rs/tracing-subscriber/0.3.18/tracing_subscriber/layer/index.html
+    let mut layers = Vec::new();
+    match nl_log_fmt.as_str() {
+        "compact" => layers.push(
+            tracing_subscriber::fmt::layer()
+                .compact()
+                .with_timer(tracing_subscriber::fmt::time::time())
+                .with_filter(env_filter)
+                .boxed(),
+        ),
+        "json" => layers.push(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_timer(tracing_subscriber::fmt::time::time())
+                .with_filter(env_filter)
+                .boxed(),
+        ),
+        _ => layers.push(
+            tracing_subscriber::fmt::layer()
+                .pretty()
+                .with_timer(tracing_subscriber::fmt::time::time())
+                .with_filter(env_filter)
+                .boxed(),
+        ),
+    };
+
+    // Add a console subscriber if the feature is enabled, see tokio-console for a client console.
+    // https://crates.io/crates/tokio-console
     if cfg!(feature = "enable_tokio_console") {
-        tracing_subscriber::registry()
-            .with(console_subscriber::spawn())
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .pretty()
-                    .with_timer(tracing_subscriber::fmt::time::time())
-                    .with_filter(env_filter),
-            )
-            .init();
-    } else {
-        tracing_subscriber::fmt()
-            .pretty()
-            .with_timer(tracing_subscriber::fmt::time::time())
-            .with_env_filter(env_filter)
-            .init();
+        layers.push(console_subscriber::spawn().boxed());
     }
+
+    tracing_subscriber::registry().with(layers).init();
     Ok(())
 }

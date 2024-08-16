@@ -3,6 +3,7 @@ load(
     "rust_doc",
     "rust_doc_test",
     "rust_library",
+    "rust_test_suite",
 )
 
 rust_library(
@@ -14,16 +15,48 @@ rust_library(
         "src/serde_utils.rs",
         "src/stores.rs",
     ],
+    compile_data = [
+        "README.md",
+    ],
     visibility = ["//visibility:public"],
     deps = [
+        "@crates//:byte-unit",
+        "@crates//:humantime",
         "@crates//:serde",
         "@crates//:shellexpand",
+    ],
+)
+
+rust_test_suite(
+    name = "integration",
+    timeout = "short",
+    srcs = [
+        "tests/deserialization_test.rs",
+    ],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "@crates//:byte-unit",
+        "@crates//:humantime",
+        "@crates//:pretty_assertions",
+        "@crates//:serde",
+        "@crates//:serde_json5",
     ],
 )
 
 rust_doc(
     name = "docs",
     crate = ":nativelink-config",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc(
+    name = "docs_json",
+    crate = ":nativelink-config",
+    rustdoc_flags = [
+        "--output-format=json",
+        "-Zunstable-options",
+    ],
 )
 
 rust_doc_test(

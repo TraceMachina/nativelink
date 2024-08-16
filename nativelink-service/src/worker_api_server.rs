@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,11 +27,10 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     execute_result, ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
-use nativelink_scheduler::worker::{Worker, WorkerId};
+use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::background_spawn;
-use nativelink_util::action_messages::ActionInfoHashKey;
-use nativelink_util::common::DigestInfo;
+use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::mpsc;
 use tokio::time::interval;
@@ -139,7 +138,7 @@ impl WorkerApiServer {
 
         // Now register the worker with the scheduler.
         let worker_id = {
-            let worker_id = Uuid::new_v4().as_u128();
+            let worker_id = Uuid::new_v4();
             let worker = Worker::new(
                 WorkerId(worker_id),
                 platform_properties,
@@ -188,7 +187,10 @@ impl WorkerApiServer {
         going_away_request: GoingAwayRequest,
     ) -> Result<Response<()>, Error> {
         let worker_id: WorkerId = going_away_request.worker_id.try_into()?;
-        self.scheduler.remove_worker(worker_id).await;
+        self.scheduler
+            .remove_worker(&worker_id)
+            .await
+            .err_tip(|| "While calling WorkerApiServer::inner_going_away")?;
         Ok(Response::new(()))
     }
 
@@ -197,15 +199,7 @@ impl WorkerApiServer {
         execute_result: ExecuteResult,
     ) -> Result<Response<()>, Error> {
         let worker_id: WorkerId = execute_result.worker_id.try_into()?;
-        let action_digest: DigestInfo = execute_result
-            .action_digest
-            .err_tip(|| "Expected action_digest to exist")?
-            .try_into()?;
-        let action_info_hash_key = ActionInfoHashKey {
-            instance_name: execute_result.instance_name,
-            digest: action_digest,
-            salt: execute_result.salt,
-        };
+        let operation_id = OperationId::from(execute_result.operation_id);
 
         match execute_result
             .result
@@ -216,14 +210,15 @@ impl WorkerApiServer {
                     .try_into()
                     .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?;
                 self.scheduler
-                    .update_action(&worker_id, &action_info_hash_key, action_stage)
+                    .update_action(&worker_id, &operation_id, Ok(action_stage))
                     .await
-                    .err_tip(|| format!("Failed to update_action {action_digest:?}"))?;
+                    .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
             }
             execute_result::Result::InternalError(e) => {
                 self.scheduler
-                    .update_action_with_internal_error(&worker_id, &action_info_hash_key, e.into())
-                    .await;
+                    .update_action(&worker_id, &operation_id, Err(e.into()))
+                    .await
+                    .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
             }
         }
         Ok(Response::new(()))

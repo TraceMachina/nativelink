@@ -1,5 +1,5 @@
 ---
-apiVersion: tekton.dev/v1beta1
+apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
   name: rebuild-nativelink
@@ -163,3 +163,15 @@ spec:
         - input: "$(tasks.check-hashlocked-url.results.exists)"
           operator: notin
           values: ["true"]
+
+    - name: update-image-tags
+      taskRef:
+        name: update-image-tags
+      params:
+        - name: imageName
+          value: "$(tasks.get-image-info.results.imageName)"
+        - name: imageTag
+          value: "$(tasks.get-image-info.results.imageTag)"
+      runAfter:
+        - copy-verified-prebuilt-image
+        - copy-nix-built-image

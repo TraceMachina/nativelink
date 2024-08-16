@@ -58,19 +58,21 @@ pub struct Http {
 ///
 /// Example:
 ///
-///      service Messaging {
-///        rpc GetMessage(GetMessageRequest) returns (Message) {
-///          option (google.api.http) = {
-///              get: "/v1/{name=messages/*}"
-///          };
-///        }
-///      }
-///      message GetMessageRequest {
-///        string name = 1; // Mapped to URL path.
-///      }
-///      message Message {
-///        string text = 1; // The resource content.
-///      }
+/// ```text
+/// service Messaging {
+///    rpc GetMessage(GetMessageRequest) returns (Message) {
+///      option (google.api.http) = {
+///          get: "/v1/{name=messages/*}"
+///      };
+///    }
+/// }
+/// message GetMessageRequest {
+///    string name = 1; // Mapped to URL path.
+/// }
+/// message Message {
+///    string text = 1; // The resource content.
+/// }
+/// ```
 ///
 /// This enables an HTTP REST to gRPC mapping as below:
 ///
@@ -82,21 +84,23 @@ pub struct Http {
 /// automatically become HTTP query parameters if there is no HTTP request body.
 /// For example:
 ///
-///      service Messaging {
-///        rpc GetMessage(GetMessageRequest) returns (Message) {
-///          option (google.api.http) = {
-///              get:"/v1/messages/{message_id}"
-///          };
-///        }
-///      }
-///      message GetMessageRequest {
-///        message SubMessage {
-///          string subfield = 1;
-///        }
-///        string message_id = 1; // Mapped to URL path.
-///        int64 revision = 2;    // Mapped to URL query parameter `revision`.
-///        SubMessage sub = 3;    // Mapped to URL query parameter `sub.subfield`.
-///      }
+/// ```text
+/// service Messaging {
+///    rpc GetMessage(GetMessageRequest) returns (Message) {
+///      option (google.api.http) = {
+///          get:"/v1/messages/{message_id}"
+///      };
+///    }
+/// }
+/// message GetMessageRequest {
+///    message SubMessage {
+///      string subfield = 1;
+///    }
+///    string message_id = 1; // Mapped to URL path.
+///    int64 revision = 2;    // Mapped to URL query parameter `revision`.
+///    SubMessage sub = 3;    // Mapped to URL query parameter `sub.subfield`.
+/// }
+/// ```
 ///
 /// This enables a HTTP JSON to RPC mapping as below:
 ///
@@ -117,18 +121,20 @@ pub struct Http {
 /// specifies the mapping. Consider a REST update method on the
 /// message resource collection:
 ///
-///      service Messaging {
-///        rpc UpdateMessage(UpdateMessageRequest) returns (Message) {
-///          option (google.api.http) = {
-///            patch: "/v1/messages/{message_id}"
-///            body: "message"
-///          };
-///        }
-///      }
-///      message UpdateMessageRequest {
-///        string message_id = 1; // mapped to the URL
-///        Message message = 2;   // mapped to the body
-///      }
+/// ```text
+/// service Messaging {
+///    rpc UpdateMessage(UpdateMessageRequest) returns (Message) {
+///      option (google.api.http) = {
+///        patch: "/v1/messages/{message_id}"
+///        body: "message"
+///      };
+///    }
+/// }
+/// message UpdateMessageRequest {
+///    string message_id = 1; // mapped to the URL
+///    Message message = 2;   // mapped to the body
+/// }
+/// ```
 ///
 /// The following HTTP JSON to RPC mapping is enabled, where the
 /// representation of the JSON in the request body is determined by
@@ -144,19 +150,20 @@ pub struct Http {
 /// request body.  This enables the following alternative definition of
 /// the update method:
 ///
-///      service Messaging {
-///        rpc UpdateMessage(Message) returns (Message) {
-///          option (google.api.http) = {
-///            patch: "/v1/messages/{message_id}"
-///            body: "*"
-///          };
-///        }
-///      }
-///      message Message {
-///        string message_id = 1;
-///        string text = 2;
-///      }
-///
+/// ```text
+/// service Messaging {
+///    rpc UpdateMessage(Message) returns (Message) {
+///      option (google.api.http) = {
+///        patch: "/v1/messages/{message_id}"
+///        body: "*"
+///      };
+///    }
+/// }
+/// message Message {
+///    string message_id = 1;
+///    string text = 2;
+/// }
+/// ```
 ///
 /// The following HTTP JSON to RPC mapping is enabled:
 ///
@@ -174,20 +181,22 @@ pub struct Http {
 /// It is possible to define multiple HTTP methods for one RPC by using
 /// the `additional_bindings` option. Example:
 ///
-///      service Messaging {
-///        rpc GetMessage(GetMessageRequest) returns (Message) {
-///          option (google.api.http) = {
-///            get: "/v1/messages/{message_id}"
-///            additional_bindings {
-///              get: "/v1/users/{user_id}/messages/{message_id}"
-///            }
-///          };
+/// ```proto
+/// service Messaging {
+///    rpc GetMessage(GetMessageRequest) returns (Message) {
+///      option (google.api.http) = {
+///        get: "/v1/messages/{message_id}"
+///        additional_bindings {
+///          get: "/v1/users/{user_id}/messages/{message_id}"
 ///        }
-///      }
-///      message GetMessageRequest {
-///        string message_id = 1;
-///        string user_id = 2;
-///      }
+///      };
+///    }
+/// }
+/// message GetMessageRequest {
+///    string message_id = 1;
+///    string user_id = 2;
+/// }
+/// ```
 ///
 /// This enables the following two alternative HTTP JSON to RPC mappings:
 ///
@@ -215,12 +224,14 @@ pub struct Http {
 ///
 /// ### Path template syntax
 ///
-///      Template = "/" Segments \[ Verb \] ;
-///      Segments = Segment { "/" Segment } ;
-///      Segment  = "*" | "**" | LITERAL | Variable ;
-///      Variable = "{" FieldPath \[ "=" Segments \] "}" ;
-///      FieldPath = IDENT { "." IDENT } ;
-///      Verb     = ":" LITERAL ;
+/// ```text
+/// Template = "/" Segments \[ Verb \] ;
+/// Segments = Segment { "/" Segment } ;
+/// Segment  = "*" | "**" | LITERAL | Variable ;
+/// Variable = "{" FieldPath \[ "=" Segments \] "}" ;
+/// FieldPath = IDENT { "." IDENT } ;
+/// Verb     = ":" LITERAL ;
+/// ```
 ///
 /// The syntax `*` matches a single URL path segment. The syntax `**` matches
 /// zero or more URL path segments, which must be the last part of the URL path
@@ -269,11 +280,13 @@ pub struct Http {
 ///
 /// Example:
 ///
+/// ```yaml
 ///      http:
 ///        rules:
 ///          # Selects a gRPC method and applies HttpRule to it.
 ///          - selector: example.v1.Messaging.GetMessage
 ///            get: /v1/messages/{message_id}/{sub.subfield}
+/// ```
 ///
 /// ## Special notes
 ///
@@ -379,4 +392,94 @@ pub struct CustomHttpPattern {
     /// The path matched by this custom verb.
     #[prost(string, tag = "2")]
     pub path: ::prost::alloc::string::String,
+}
+/// An indicator of the behavior of a given field (for example, that a field
+/// is required in requests, or given as output but ignored as input).
+/// This **does not** change the behavior in protocol buffers itself; it only
+/// denotes the behavior and may affect how API tooling handles the field.
+///
+/// Note: This enum **may** receive new values in the future.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum FieldBehavior {
+    /// Conventional default for enums. Do not use this.
+    Unspecified = 0,
+    /// Specifically denotes a field as optional.
+    /// While all fields in protocol buffers are optional, this may be specified
+    /// for emphasis if appropriate.
+    Optional = 1,
+    /// Denotes a field as required.
+    /// This indicates that the field **must** be provided as part of the request,
+    /// and failure to do so will cause an error (usually `INVALID_ARGUMENT`).
+    Required = 2,
+    /// Denotes a field as output only.
+    /// This indicates that the field is provided in responses, but including the
+    /// field in a request does nothing (the server *must* ignore it and
+    /// *must not* throw an error as a result of the field's presence).
+    OutputOnly = 3,
+    /// Denotes a field as input only.
+    /// This indicates that the field is provided in requests, and the
+    /// corresponding field is not included in output.
+    InputOnly = 4,
+    /// Denotes a field as immutable.
+    /// This indicates that the field may be set once in a request to create a
+    /// resource, but may not be changed thereafter.
+    Immutable = 5,
+    /// Denotes that a (repeated) field is an unordered list.
+    /// This indicates that the service may provide the elements of the list
+    /// in any arbitrary  order, rather than the order the user originally
+    /// provided. Additionally, the list's order may or may not be stable.
+    UnorderedList = 6,
+    /// Denotes that this field returns a non-empty default value if not set.
+    /// This indicates that if the user provides the empty value in a request,
+    /// a non-empty value will be returned. The user will not be aware of what
+    /// non-empty value to expect.
+    NonEmptyDefault = 7,
+    /// Denotes that the field in a resource (a message annotated with
+    /// google.api.resource) is used in the resource name to uniquely identify the
+    /// resource. For AIP-compliant APIs, this should only be applied to the
+    /// `name` field on the resource.
+    ///
+    /// This behavior should not be applied to references to other resources within
+    /// the message.
+    ///
+    /// The identifier field of resources often have different field behavior
+    /// depending on the request it is embedded in (e.g. for Create methods name
+    /// is optional and unused, while for Update methods it is required). Instead
+    /// of method-specific annotations, only `IDENTIFIER` is required.
+    Identifier = 8,
+}
+impl FieldBehavior {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            FieldBehavior::Unspecified => "FIELD_BEHAVIOR_UNSPECIFIED",
+            FieldBehavior::Optional => "OPTIONAL",
+            FieldBehavior::Required => "REQUIRED",
+            FieldBehavior::OutputOnly => "OUTPUT_ONLY",
+            FieldBehavior::InputOnly => "INPUT_ONLY",
+            FieldBehavior::Immutable => "IMMUTABLE",
+            FieldBehavior::UnorderedList => "UNORDERED_LIST",
+            FieldBehavior::NonEmptyDefault => "NON_EMPTY_DEFAULT",
+            FieldBehavior::Identifier => "IDENTIFIER",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "FIELD_BEHAVIOR_UNSPECIFIED" => Some(Self::Unspecified),
+            "OPTIONAL" => Some(Self::Optional),
+            "REQUIRED" => Some(Self::Required),
+            "OUTPUT_ONLY" => Some(Self::OutputOnly),
+            "INPUT_ONLY" => Some(Self::InputOnly),
+            "IMMUTABLE" => Some(Self::Immutable),
+            "UNORDERED_LIST" => Some(Self::UnorderedList),
+            "NON_EMPTY_DEFAULT" => Some(Self::NonEmptyDefault),
+            "IDENTIFIER" => Some(Self::Identifier),
+            _ => None,
+        }
+    }
 }

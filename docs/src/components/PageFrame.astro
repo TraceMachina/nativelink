@@ -1,0 +1,14 @@
+---
+import Default from "@astrojs/starlight/components/PageFrame.astro";
+import type { Props } from "@astrojs/starlight/props";
+---
+
+<Default {...Astro.props}>
+  <slot name="header" slot="header" />
+  <slot name="sidebar" slot="sidebar" />
+  <slot />
+</Default>
+
+<script>
+  import "./svgpanzoom.ts";
+</script>

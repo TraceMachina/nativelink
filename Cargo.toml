@@ -3,52 +3,82 @@ resolver = "2"
 
 [package]
 name = "nativelink"
-version = "0.3.0"
+version = "0.5.1"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.79.0"
 
 [profile.release]
 lto = true
 opt-level = 3
 
+[profile.dev]
+lto = false
+opt-level = 0
+strip = false
+debug = true
+
 # Prefer this profile in CI, for instance via `cargo test --all --profile=smol`.
 # It reduces the size of the `target` directory from ~12GB to ~1GB.
 [profile.smol]
-inherits = "release"
-lto = "thin"
+inherits = "dev"
 opt-level = "z"
 strip = true
+debug = false
 
 [[bin]]
 name = "nativelink"
 
 [features]
-enable_tokio_console = []
+enable_tokio_console = [
+  "nativelink-util/enable_tokio_console"
+]
 
 [dependencies]
 nativelink-error = { path = "nativelink-error" }
-nativelink-proto = { path = "nativelink-proto" }
 nativelink-config = { path = "nativelink-config" }
 nativelink-scheduler = { path = "nativelink-scheduler" }
 nativelink-service = { path = "nativelink-service" }
 nativelink-store = { path = "nativelink-store" }
 nativelink-util = { path = "nativelink-util" }
 nativelink-worker = { path = "nativelink-worker" }
-
-async-lock = "3.3.0"
-axum = "0.6.20"
-
-clap = { version = "4.5.4", features = ["derive"] }
-futures = "0.3.30"
-hyper = { version = "0.14.28" }
-mimalloc = "0.1.41"
-parking_lot = "0.12.2"
-prometheus-client = "0.21.2"
-rustls-pemfile = "2.1.2"
-scopeguard = "1.2.0"
+nativelink-metric = { path = "nativelink-metric" }
+nativelink-metric-collector = { path = "nativelink-metric-collector" }
+async-lock = { version = "3.4.0", features = ["std"], default-features = false }
+axum = { version = "0.7.5", default-features = false }
+clap = { version = "4.5.9", features = ["derive"] }
+futures = { version = "0.3.30", default-features = false }
+hyper = "1.4.1"
+hyper-util = "0.1.6"
+mimalloc = "0.1.43"
+parking_lot = "0.12.3"
+rustls-pemfile = { version = "2.1.2", default-features = false }
+scopeguard = { version = "1.2.0", default-features = false }
 serde_json5 = "0.1.0"
-tokio = { version = "1.37.0", features = ["rt-multi-thread", "signal"] }
-tokio-rustls = "0.25.0"
-tonic = { version = "0.11.0", features = ["gzip", "tls"] }
-tower = "0.4.13"
-tracing = "0.1.40"
+tokio = { version = "1.38.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
+tokio-rustls = { version = "0.25.0", default-features = false, features = [
+  "ring",
+] }
+tonic = { version = "0.12.0", features = ["transport", "tls"], default-features = false }
+tower = { version = "0.4.13", default-features = false }
+tracing = { version = "0.1.40", default-features = false }
+opentelemetry_sdk = { version = "0.23.0", default-features = false }
+tracing-subscriber = { version = "0.3.18", default-features = false }
+opentelemetry = { version = "0.23.0", default-features = false }
+prometheus = { version = "0.13.4", default-features = false }
+opentelemetry-prometheus = "0.16.0"
+serde_json = "1.0.120"
+
+[workspace.cargo-features-manager.keep]
+async-lock = ["std"]
+aws-sdk-s3 = ["rt-tokio"]
+aws-smithy-runtime = ["test-util"]
+# This causes blake3 to detect SIMD capabilities at runtime.
+blake3 = ["std"]
+pretty_assertions = ["std"]
+redis-test = ["aio"]
+serial_test = ["async"]
+tokio = ["fs", "rt-multi-thread", "signal", "io-util"]
+tokio-stream = ["fs"]
+tonic-build = ["prost"]
+tonic = ["transport", "tls"]
+uuid = ["v4", "serde"]

@@ -1,11 +1,8 @@
-# Configuration
+# Configuration examples
 
 NativeLink uses a JSON file as the configuration format.
 
-To view the available fields please refer to [stores.rs](https://github.com/tracemachina/nativelink/blob/master/nativelink-config/stores.rs) and [`cas_server`](https://github.com/tracemachina/nativelink/blob/master/nativelink-config/cas_server.rs).
-
-These two files should have enough documentation in them on what each field does
-and where each field goes.
+To view the available fields please refer to the [configuration reference](../../reference/nativelink-config).
 
 ## Examples
 

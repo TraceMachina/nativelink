@@ -1,14 +1,12 @@
 [package]
 name = "nativelink-macro"
-version = "0.3.0"
+version = "0.5.1"
 edition = "2021"
 
 [lib]
-crate_type = ["proc-macro"]
+proc-macro = true
 
 [dependencies]
-# TODO(allada) We currently need to pin these to specific version.
-# Some down-stream can't be upgraded just yet.
-proc-macro2 = "=1.0.78"
-quote = "=1.0.35"
-syn = "=2.0.52"
+proc-macro2 = { version = "1.0.86", default-features = false }
+quote = { version = "1.0.36", default-features = false }
+syn = { version = "2.0.71", default-features = false }

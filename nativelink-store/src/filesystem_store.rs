@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
 use async_lock::RwLock;
@@ -27,14 +27,14 @@ use filetime::{set_file_atime, FileTime};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::time::{sleep, timeout, Sleep};
@@ -48,14 +48,17 @@ const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
 // Default block size of all major filesystems is 4KB
 const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024;
 
-#[derive(Debug)]
+#[derive(Debug, MetricsComponent)]
 pub struct SharedContext {
     // Used in testing to know how many active drop() spawns are running.
     // TODO(allada) It is probably a good idea to use a spin lock during
     // destruction of the store to ensure that all files are actually
     // deleted (similar to how it is done in tests).
+    #[metric(help = "Number of active drop spawns")]
     pub active_drop_spawns: AtomicU64,
+    #[metric(help = "Path to the configured temp path")]
     temp_path: String,
+    #[metric(help = "Path to the configured content path")]
     content_path: String,
 }
 
@@ -132,16 +135,15 @@ fn to_full_path_from_digest(folder: &str, digest: &DigestInfo) -> OsString {
     format!("{}/{}-{}", folder, digest.hash_str(), digest.size_bytes).into()
 }
 
-#[async_trait]
 pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     /// Responsible for creating the underlying FileEntry.
     fn create(data_size: u64, block_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self;
 
     /// Creates a (usually) temp file, opens it and returns the path to the temp file.
-    async fn make_and_open_file(
+    fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(Self, fs::ResumeableFileSlot, OsString), Error>
+    ) -> impl Future<Output = Result<(Self, fs::ResumeableFileSlot, OsString), Error>> + Send
     where
         Self: Sized;
 
@@ -155,11 +157,11 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     fn get_encoded_file_path(&self) -> &RwLock<EncodedFilePath>;
 
     /// Returns a reader that will read part of the underlying file.
-    async fn read_file_part(
+    fn read_file_part(
         &self,
         offset: u64,
         length: u64,
-    ) -> Result<fs::ResumeableFileSlot, Error>;
+    ) -> impl Future<Output = Result<fs::ResumeableFileSlot, Error>> + Send;
 
     /// This function is a safe way to extract the file name of the underlying file. To protect users from
     /// accidentally creating undefined behavior we encourage users to do the logic they need to do with
@@ -167,14 +169,14 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     /// This is because the filename is not guaranteed to exist after this function returns, however inside
     /// the callback the file is always guaranteed to exist and immutable.
     /// DO NOT USE THIS FUNCTION TO EXTRACT THE FILENAME AND STORE IT FOR LATER USE.
-    async fn get_file_path_locked<
+    fn get_file_path_locked<
         T,
         Fut: Future<Output = Result<T, Error>> + Send,
         F: FnOnce(OsString) -> Fut + Send,
     >(
         &self,
         handler: F,
-    ) -> Result<T, Error>;
+    ) -> impl Future<Output = Result<T, Error>> + Send;
 }
 
 pub struct FileEntryImpl {
@@ -189,7 +191,6 @@ impl FileEntryImpl {
     }
 }
 
-#[async_trait]
 impl FileEntry for FileEntryImpl {
     fn create(data_size: u64, block_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self {
         Self {
@@ -307,7 +308,6 @@ fn make_temp_digest(digest: &mut DigestInfo) {
     );
 }
 
-#[async_trait]
 impl LenEntry for FileEntryImpl {
     #[inline]
     fn len(&self) -> usize {
@@ -401,13 +401,13 @@ pub fn digest_from_filename(file_name: &str) -> Result<DigestInfo, Error> {
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
 async fn add_files_to_cache<Fe: FileEntry>(
-    evicting_map: &EvictingMap<Arc<Fe>, SystemTime>,
+    evicting_map: &EvictingMap<DigestInfo, Arc<Fe>, SystemTime>,
     anchor_time: &SystemTime,
     shared_context: &Arc<SharedContext>,
     block_size: u64,
 ) -> Result<(), Error> {
     async fn process_entry<Fe: FileEntry>(
-        evicting_map: &EvictingMap<Arc<Fe>, SystemTime>,
+        evicting_map: &EvictingMap<DigestInfo, Arc<Fe>, SystemTime>,
         file_name: &str,
         atime: SystemTime,
         data_size: u64,
@@ -517,17 +517,25 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(MetricsComponent)]
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
+    #[metric]
     shared_context: Arc<SharedContext>,
-    evicting_map: Arc<EvictingMap<Arc<Fe>, SystemTime>>,
+    #[metric(group = "evicting_map")]
+    evicting_map: Arc<EvictingMap<DigestInfo, Arc<Fe>, SystemTime>>,
+    #[metric(help = "Block size of the configured filesystem")]
     block_size: u64,
+    #[metric(help = "Size of the configured read buffer size")]
     read_buffer_size: usize,
+    weak_self: Weak<Self>,
     sleep_fn: fn(Duration) -> Sleep,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
-    pub async fn new(config: &nativelink_config::stores::FilesystemStore) -> Result<Self, Error> {
+    pub async fn new(
+        config: &nativelink_config::stores::FilesystemStore,
+    ) -> Result<Arc<Self>, Error> {
         Self::new_with_timeout_and_rename_fn(config, sleep, |from, to| std::fs::rename(from, to))
             .await
     }
@@ -536,7 +544,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         config: &nativelink_config::stores::FilesystemStore,
         sleep_fn: fn(Duration) -> Sleep,
         rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Arc<Self>, Error> {
         let now = SystemTime::now();
 
         let empty_policy = nativelink_config::stores::EvictionPolicy::default();
@@ -569,15 +577,19 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         } else {
             config.read_buffer_size as usize
         };
-        let store = Self {
+        Ok(Arc::new_cyclic(|weak_self| Self {
             shared_context,
             evicting_map,
             block_size,
             read_buffer_size,
+            weak_self: weak_self.clone(),
             sleep_fn,
             rename_fn,
-        };
-        Ok(store)
+        }))
+    }
+
+    pub fn get_arc(&self) -> Option<Arc<Self>> {
+        self.weak_self.upgrade()
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
@@ -714,25 +726,32 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 }
 
 #[async_trait]
-impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
+impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.evicting_map.sizes_for_keys(digests, results).await;
+        // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
+        // existence_cache. We need to convert the digests to owned values to be able to
+        // insert them into the cache. In theory it should be able to elide this conversion
+        // but it seems to be a bit tricky to get right.
+        let keys: Vec<_> = keys.iter().map(|v| v.borrow().into_digest()).collect();
+        self.evicting_map
+            .sizes_for_keys(&keys, results, false /* peek */)
+            .await;
         // We need to do a special pass to ensure our zero files exist.
         // If our results failed and the result was a zero file, we need to
         // create the file by spec.
-        for (digest, result) in digests.iter().zip(results.iter_mut()) {
+        for (digest, result) in keys.iter().zip(results.iter_mut()) {
             if result.is_some() || !is_zero_digest(digest) {
                 continue;
             }
             let (mut tx, rx) = make_buf_channel_pair();
             let send_eof_result = tx.send_eof();
-            self.update(*digest, rx, UploadSizeInfo::ExactSize(0))
+            self.update(digest.into(), rx, UploadSizeInfo::ExactSize(0))
                 .await
-                .err_tip(|| format!("Failed to create zero file for digest {digest:?}"))
+                .err_tip(|| format!("Failed to create zero file for key {digest:?}"))
                 .merge(
                     send_eof_result
                         .err_tip(|| "Failed to send zero file EOF in filesystem store has"),
@@ -745,10 +764,11 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
+        let digest = key.into_digest();
         let mut temp_digest = digest;
         make_temp_digest(&mut temp_digest);
 
@@ -773,10 +793,11 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
 
     async fn update_with_whole_file(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         mut file: fs::ResumeableFileSlot,
         upload_size: UploadSizeInfo,
     ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
+        let digest = key.into_digest();
         let path = file.get_path().as_os_str().to_os_string();
         let file_size = match upload_size {
             UploadSizeInfo::ExactSize(size) => size as u64,
@@ -811,20 +832,21 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
         return Ok(None);
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        if is_zero_digest(&digest) {
-            self.has(digest)
+        let digest = key.into_digest();
+        if is_zero_digest(digest) {
+            self.has(digest.into())
                 .await
                 .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
             writer
                 .send_eof()
-                .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
             return Ok(());
         }
 
@@ -886,11 +908,7 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 
@@ -902,38 +920,8 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
         self
     }
 
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        registry.register_collector(Box::new(Collector::new(&self)));
-    }
-
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
-    }
-}
-
-impl<Fe: FileEntry> MetricsComponent for FilesystemStore<Fe> {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish(
-            "read_buff_size_bytes",
-            &self.read_buffer_size,
-            "Size of the configured read buffer size",
-        );
-        c.publish(
-            "active_drop_spawns_total",
-            &self.shared_context.active_drop_spawns,
-            "Number of active drop spawns",
-        );
-        c.publish(
-            "temp_path",
-            &self.shared_context.temp_path,
-            "Path to the configured temp path",
-        );
-        c.publish(
-            "content_path",
-            &self.shared_context.content_path,
-            "Path to the configured content path",
-        );
-        c.publish("evicting_map", self.evicting_map.as_ref(), "");
     }
 }
 
@@ -944,6 +932,6 @@ impl<Fe: FileEntry> HealthStatusIndicator for FilesystemStore<Fe> {
     }
 
     async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
-        Store::check_health(Pin::new(self), namespace).await
+        StoreDriver::check_health(Pin::new(self), namespace).await
     }
 }

@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,6 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::pin::Pin;
-use std::sync::Arc;
 
 use bytes::BytesMut;
 use nativelink_config::cas_server::{AcStoreConfig, InstanceName};
@@ -30,14 +28,15 @@ use nativelink_store::ac_utils::{get_and_decode_digest, ESTIMATED_DIGEST_SIZE};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::Store;
+use nativelink_util::digest_hasher::make_ctx_for_hash_func;
+use nativelink_util::store_trait::{Store, StoreLike};
 use prost::Message;
 use tonic::{Request, Response, Status};
-use tracing::{event, instrument, Level};
+use tracing::{error_span, event, instrument, Level};
 
 #[derive(Clone)]
 pub struct AcStoreInfo {
-    store: Arc<dyn Store>,
+    store: Store,
     read_only: bool,
 }
 
@@ -80,44 +79,39 @@ impl AcServer {
 
     async fn inner_get_action_result(
         &self,
-        grpc_request: Request<GetActionResultRequest>,
+        request: GetActionResultRequest,
     ) -> Result<Response<ActionResult>, Error> {
-        let get_action_request = grpc_request.into_inner();
-
-        let instance_name = &get_action_request.instance_name;
+        let instance_name = &request.instance_name;
         let store_info = self
             .stores
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
 
         // TODO(blaise.bruer) We should write a test for these errors.
-        let digest: DigestInfo = get_action_request
+        let digest: DigestInfo = request
             .action_digest
             .clone()
             .err_tip(|| "Action digest was not set in message")?
             .try_into()?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store_info.store.inner_store(Some(digest)).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
-            return grpc_store
-                .get_action_result(Request::new(get_action_request))
-                .await;
+        if let Some(grpc_store) = store_info
+            .store
+            .downcast_ref::<GrpcStore>(Some(digest.into()))
+        {
+            return grpc_store.get_action_result(Request::new(request)).await;
         }
 
         Ok(Response::new(
-            get_and_decode_digest::<ActionResult>(Pin::new(store_info.store.as_ref()), &digest)
-                .await?,
+            get_and_decode_digest::<ActionResult>(&store_info.store, digest.into()).await?,
         ))
     }
 
     async fn inner_update_action_result(
         &self,
-        grpc_request: Request<UpdateActionResultRequest>,
+        request: UpdateActionResultRequest,
     ) -> Result<Response<ActionResult>, Error> {
-        let update_action_request = grpc_request.into_inner();
-
-        let instance_name = &update_action_request.instance_name;
+        let instance_name = &request.instance_name;
         let store_info = self
             .stores
             .get(instance_name)
@@ -130,21 +124,21 @@ impl AcServer {
             ));
         }
 
-        let digest: DigestInfo = update_action_request
+        let digest: DigestInfo = request
             .action_digest
             .clone()
             .err_tip(|| "Action digest was not set in message")?
             .try_into()?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store_info.store.inner_store(Some(digest)).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
-            return grpc_store
-                .update_action_result(Request::new(update_action_request))
-                .await;
+        if let Some(grpc_store) = store_info
+            .store
+            .downcast_ref::<GrpcStore>(Some(digest.into()))
+        {
+            return grpc_store.update_action_result(Request::new(request)).await;
         }
 
-        let action_result = update_action_request
+        let action_result = request
             .action_result
             .err_tip(|| "Action result was not set in message")?;
 
@@ -153,7 +147,8 @@ impl AcServer {
             .encode(&mut store_data)
             .err_tip(|| "Provided ActionResult could not be serialized")?;
 
-        Pin::new(store_info.store.as_ref())
+        store_info
+            .store
             .update_oneshot(digest, store_data.freeze())
             .await
             .err_tip(|| "Failed to update in action cache")?;
@@ -174,7 +169,16 @@ impl ActionCache for AcServer {
         &self,
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        let resp = self.inner_get_action_result(grpc_request).await;
+        let request = grpc_request.into_inner();
+        let resp = make_ctx_for_hash_func(request.digest_function)
+            .err_tip(|| "In AcServer::get_action_result")?
+            .wrap_async(
+                error_span!("ac_server_get_action_result"),
+                self.inner_get_action_result(request),
+            )
+            .await;
+
+        // let resp = self.inner_get_action_result(grpc_request).await;
         if resp.is_err() && resp.as_ref().err().unwrap().code != Code::NotFound {
             event!(Level::ERROR, return = ?resp);
         }
@@ -193,7 +197,13 @@ impl ActionCache for AcServer {
         &self,
         grpc_request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        self.inner_update_action_result(grpc_request)
+        let request = grpc_request.into_inner();
+        make_ctx_for_hash_func(request.digest_function)
+            .err_tip(|| "In AcServer::update_action_result")?
+            .wrap_async(
+                error_span!("ac_server_update_action_result"),
+                self.inner_update_action_result(request),
+            )
             .await
             .map_err(|e| e.into())
     }

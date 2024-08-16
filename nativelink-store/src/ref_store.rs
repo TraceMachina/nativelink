@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,16 +18,16 @@ use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use tracing::{event, Level};
 
 use crate::store_manager::StoreManager;
 
 #[repr(C, align(8))]
-struct AlignedStoreCell(UnsafeCell<Option<Arc<dyn Store>>>);
+struct AlignedStoreCell(UnsafeCell<Option<Store>>);
 
 struct StoreReference {
     cell: AlignedStoreCell,
@@ -36,7 +36,9 @@ struct StoreReference {
 
 unsafe impl Sync for StoreReference {}
 
+#[derive(MetricsComponent)]
 pub struct RefStore {
+    #[metric(help = "The store we are referencing")]
     ref_store_name: String,
     store_manager: Weak<StoreManager>,
     ref_store: StoreReference,
@@ -46,15 +48,15 @@ impl RefStore {
     pub fn new(
         config: &nativelink_config::stores::RefStore,
         store_manager: Weak<StoreManager>,
-    ) -> Self {
-        RefStore {
+    ) -> Arc<Self> {
+        Arc::new(RefStore {
             ref_store_name: config.name.clone(),
             store_manager,
             ref_store: StoreReference {
                 mux: Mutex::new(()),
                 cell: AlignedStoreCell(UnsafeCell::new(None)),
             },
-        }
+        })
     }
 
     // This will get the store or populate it if needed. It is designed to be quite fast on the
@@ -65,7 +67,7 @@ impl RefStore {
     // 2. It should only happen on platforms that are < 64 bit address space
     // 3. It is likely that the internals of how Option work protect us anyway.
     #[inline]
-    fn get_store(&self) -> Result<&Arc<dyn Store>, Error> {
+    fn get_store(&self) -> Result<&Store, Error> {
         let ref_store = self.ref_store.cell.0.get();
         unsafe {
             if let Some(ref store) = *ref_store {
@@ -87,7 +89,7 @@ impl RefStore {
             .err_tip(|| "Store manager is gone")?;
         if let Some(store) = store_manager.get_store(&self.ref_store_name) {
             unsafe {
-                *ref_store = Some(store.clone());
+                *ref_store = Some(store);
                 return Ok((*ref_store).as_ref().unwrap());
             }
         }
@@ -99,68 +101,41 @@ impl RefStore {
 }
 
 #[async_trait]
-impl Store for RefStore {
+impl StoreDriver for RefStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        let store = self.get_store()?;
-        Pin::new(store.as_ref())
-            .has_with_results(digests, results)
-            .await
+        self.get_store()?.has_with_results(keys, results).await
     }
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let store = self.get_store()?;
-        Pin::new(store.as_ref())
-            .update(digest, reader, size_info)
-            .await
+        self.get_store()?.update(key, reader, size_info).await
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        let store = self.get_store()?;
-        Pin::new(store.as_ref())
-            .get_part_ref(digest, writer, offset, length)
+        self.get_store()?
+            .get_part(key, writer, offset, length)
             .await
     }
 
-    fn inner_store(&self, digest: Option<DigestInfo>) -> &'_ dyn Store {
+    fn inner_store(&self, key: Option<StoreKey>) -> &'_ dyn StoreDriver {
         match self.get_store() {
-            Ok(store) => store.inner_store(digest),
+            Ok(store) => store.inner_store(key),
             Err(err) => {
-                event!(
-                    Level::ERROR,
-                    ?digest,
-                    ?err,
-                    "Failed to get store for digest",
-                );
-                self
-            }
-        }
-    }
-
-    fn inner_store_arc(self: Arc<Self>, digest: Option<DigestInfo>) -> Arc<dyn Store> {
-        match self.get_store() {
-            Ok(store) => store.clone().inner_store_arc(digest),
-            Err(err) => {
-                event!(
-                    Level::ERROR,
-                    ?digest,
-                    ?err,
-                    "Failed to get store for digest",
-                );
+                event!(Level::ERROR, ?key, ?err, "Failed to get store for key",);
                 self
             }
         }

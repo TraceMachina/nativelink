@@ -1,6 +1,7 @@
 load(
     "@rules_rust//rust:defs.bzl",
     "rust_doc",
+    "rust_doc_test",
     "rust_proc_macro",
 )
 
@@ -19,5 +20,12 @@ rust_proc_macro(
 
 rust_doc(
     name = "docs",
+    crate = ":nativelink-macro",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
     crate = ":nativelink-macro",
 )

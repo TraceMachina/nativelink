@@ -3,12 +3,14 @@ package clusters
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"log"
+	"runtime"
 	"text/template"
 
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	git "github.com/go-git/go-git/v5"
 	"sigs.k8s.io/kind/pkg/cluster"
@@ -46,64 +48,76 @@ func gitSrcRoot() string {
 //     store available to e.g. pipelines running in the cluster. This way such
 //     pipelines don't need to build rebuild anything that was built on the host
 //     already.
-//  3. Nodes are set up to be compatible with CubeFS. By default these configs
-//     are unused. However, if CubeFS is deployed to the cluster, the data in
-//     these volumes persists beyond cluster destruction. Combined with CubeFS's
-//     CSI driver this allows creating realistic PersistentVolumes on the fly and
-//     in combination with the S3 endpoints allows simulating S3 storage buckets.
-//  4. Containerd in the nodes is patched to be compatible with a pass-through
+//  3. Containerd in the nodes is patched to be compatible with a pass-through
 //     container registry. This allows creating a registry that attaches to both
 //     the hosts default "bridge" network and the cluster's "kind" network so
 //     that images copied to the host's local registry become available to the
 //     kind nodes as well.
-func CreateLocalKindConfig() bytes.Buffer {
-	kindConfigTemplate, err := template.New("kind-config.yaml").Parse(`
----
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-- role: control-plane
-- role: worker
-  extraMounts:
-    - hostPath:  {{ .GitSrcRoot }}
-      containerPath: /mnt/src_root
-    - hostPath: /nix
-      containerPath: /nix
-      readOnly: true
-- role: worker
-  extraMounts:
-    - hostPath:  {{ .GitSrcRoot }}
-      containerPath: /mnt/src_root
-    - hostPath: /nix
-      containerPath: /nix
-      readOnly: true
-- role: worker
-  extraMounts:
-    - hostPath:  {{ .GitSrcRoot }}
-      containerPath: /mnt/src_root
-    - hostPath: /nix
-      containerPath: /nix
-      readOnly: true
-networking:
-  disableDefaultCNI: true
-  kubeProxyMode: none
-containerdConfigPatches:
-  - |-
-    [plugins."io.containerd.grpc.v1.cri".registry]
-      config_path = "/etc/containerd/certs.d"
-`)
+
+//go:embed kind-config.template.yaml
+var kindTemplate string
+
+// Define the WorkerNode struct.
+type WorkerNodes []struct {
+	ExtraMounts []ExtraMount
+}
+
+// Define the ExtraMount struct.
+type ExtraMount struct {
+	HostPath      string
+	ContainerPath string
+	ReadOnly      bool
+}
+
+// Populate the Kind config template with WorkerNodes data.
+func populateKindConfig(workerNodes WorkerNodes) (bytes.Buffer, error) {
+	tmpl, err := template.New("kindConfig").Parse(kindTemplate)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Error parsing config template: %v", err)
 	}
 
-	var kindConfig bytes.Buffer
-	if err = kindConfigTemplate.Execute(
-		&kindConfig,
-		map[string]interface{}{
-			"GitSrcRoot": gitSrcRoot(),
-		},
-	); err != nil {
-		log.Fatal(err)
+	var populatedConfig bytes.Buffer
+	if err := tmpl.Execute(&populatedConfig, workerNodes); err != nil {
+		return populatedConfig, fmt.Errorf(
+			"failed to populate kind config: %w",
+			err,
+		)
+	}
+
+	return populatedConfig, nil
+}
+
+func CreateLocalKindConfig() bytes.Buffer {
+	numNodes := 3
+
+	// Initialize the WorkerNodes struct
+	workerNodes := make(WorkerNodes, numNodes)
+
+	// Populate ExtraMounts for each node
+	for workerNode := range workerNodes {
+		workerNodes[workerNode].ExtraMounts = append(
+			workerNodes[workerNode].ExtraMounts,
+			ExtraMount{
+				HostPath:      gitSrcRoot(),
+				ContainerPath: "/mnt/src_root",
+				ReadOnly:      true,
+			},
+		)
+		// Nix caching doesn't work on MacOS yet.
+		if runtime.GOOS == "linux" {
+			workerNodes[workerNode].ExtraMounts = append(
+				workerNodes[workerNode].ExtraMounts, ExtraMount{
+					HostPath:      "/nix",
+					ContainerPath: "/nix",
+					ReadOnly:      false,
+				},
+			)
+		}
+	}
+
+	kindConfig, err := populateKindConfig(workerNodes)
+	if err != nil {
+		log.Fatalf("Error marshalling config to YAML: %v", err)
 	}
 
 	return kindConfig
@@ -196,7 +210,7 @@ func createRegistryConfigInNode(
 ) error {
 	config := fmt.Sprintf("[host.\"http://%s:%d\"]", regName, internalPort)
 	regDir := fmt.Sprintf("/etc/containerd/certs.d/localhost:%d", externalPort)
-	execConfig := types.ExecConfig{
+	execConfig := container.ExecOptions{
 		Cmd: []string{
 			"sh",
 			"-c",
@@ -218,7 +232,7 @@ func createRegistryConfigInNode(
 		)
 	}
 
-	if err := cli.ContainerExecStart(ctx, execID.ID, types.ExecStartCheck{}); err != nil {
+	if err := cli.ContainerExecStart(ctx, execID.ID, container.ExecAttachOptions{}); err != nil {
 		return fmt.Errorf(
 			"error starting exec command on node %s: %w",
 			nodeName,

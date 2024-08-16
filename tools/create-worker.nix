@@ -1,13 +1,16 @@
 {
-  pkgs,
-  nativelink,
+  bash,
+  buildEnv,
   buildImage,
+  coreutils,
+  lib,
+  runCommand,
+  runtimeShell,
   self,
-  ...
 }: let
   # A temporary directory. Note that this doesn't set any permissions. Those
   # need to be added explicitly in the final image arguments.
-  mkTmp = pkgs.runCommand "mkTmp" {} ''
+  mkTmp = runCommand "mkTmp" {} ''
     mkdir -p $out/tmp
   '';
 
@@ -21,7 +24,7 @@
   };
 
   # Enable the shebang `#!/usr/bin/env bash`.
-  mkEnvSymlink = pkgs.runCommand "mkEnvSymlink" {} ''
+  mkEnvSymlink = runCommand "mkEnvSymlink" {} ''
     mkdir -p $out/usr/bin
     ln -s /bin/env $out/usr/bin/env
   '';
@@ -31,10 +34,10 @@
   uid = "1000";
   gid = "1000";
 
-  mkUser = pkgs.runCommand "mkUser" {} ''
+  mkUser = runCommand "mkUser" {} ''
     mkdir -p $out/etc/pam.d
 
-    echo "root:x:0:0::/root:${pkgs.runtimeShell}" > $out/etc/passwd
+    echo "root:x:0:0::/root:${runtimeShell}" > $out/etc/passwd
     echo "${user}:x:${uid}:${gid}:::" >> $out/etc/passwd
 
     echo "root:!x:::::::" > $out/etc/shadow
@@ -62,8 +65,8 @@
     path = mkUser;
     regex = "/home/${user}";
     mode = "0755";
-    uid = pkgs.lib.toInt uid;
-    gid = pkgs.lib.toInt gid;
+    uid = lib.toInt uid;
+    gid = lib.toInt gid;
     uname = user;
     gname = group;
   };
@@ -80,9 +83,9 @@ in
         mkUser
         mkTmp
         mkEnvSymlink
-        (pkgs.buildEnv {
+        (buildEnv {
           name = "${image.imageName}-buildEnv";
-          paths = [nativelink pkgs.coreutils pkgs.bash];
+          paths = [coreutils bash];
           pathsToLink = ["/bin"];
         })
       ];
@@ -92,9 +95,9 @@ in
         mkTmpPerms
       ];
 
-      # Override the final image tag with the one from the base image. This way
-      # the nativelink executable doesn't influence this tag and and changes to
-      # its codebase don't invalidate existing toolchain containers.
+      # Override the final image tag with the one from the base image to make
+      # the relationship between the toolchain and the worker extension more
+      # obvious.
       tag = image.imageTag;
 
       config = {

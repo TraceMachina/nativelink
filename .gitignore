@@ -12,8 +12,9 @@ __pycache__
 .DS_Store
 .pre-commit-config.yaml
 result
-.bazelrc.user
+user.bazelrc
 MODULE.bazel.lock
 trivy-results.sarif
 Pulumi.dev.yaml
-.bazelrc.lre
+lre.bazelrc
+rust-project.json

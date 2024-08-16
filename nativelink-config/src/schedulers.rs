@@ -1,4 +1,4 @@
-// Copyright 2023-2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::serde_utils::convert_numeric_with_shellexpand;
+use crate::serde_utils::{convert_duration_with_shellexpand, convert_numeric_with_shellexpand};
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
 #[allow(non_camel_case_types)]
@@ -87,7 +87,7 @@ pub struct SimpleScheduler {
     /// The property names here must match the property keys provided by the
     /// worker nodes when they join the pool. In other words, the workers will
     /// publish their capabilities to the scheduler when they join the worker
-    /// pool. If the worker fails to notify the scheduler of it's (for example)
+    /// pool. If the worker fails to notify the scheduler of its (for example)
     /// "cpu_arch", the scheduler will never send any jobs to it, if all jobs
     /// have the "cpu_arch" label. There is no special treatment of any platform
     /// property labels other and entirely driven by worker configs and this
@@ -97,13 +97,13 @@ pub struct SimpleScheduler {
     /// The amount of time to retain completed actions in memory for in case
     /// a WaitExecution is called after the action has completed.
     /// Default: 60 (seconds)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
-    pub retain_completed_for_s: u64,
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub retain_completed_for_s: u32,
 
     /// Remove workers from pool once the worker has not responded in this
     /// amount of time in seconds.
     /// Default: 5 (seconds)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub worker_timeout_s: u64,
 
     /// If a job returns an internal error or times out this many times when

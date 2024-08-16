@@ -1,0 +1,12 @@
+diff --git a/pkgs/tools/admin/pulumi/default.nix b/pkgs/tools/admin/pulumi/default.nix
+index d63bef2a0270..512ca00dec18 100644
+--- a/pkgs/tools/admin/pulumi/default.nix
++++ b/pkgs/tools/admin/pulumi/default.nix
+@@ -78,6 +78,7 @@ buildGoModule rec {
+     export PULUMI_HOME=$(mktemp -d)
+   '';
+
++  doCheck = false;
+   checkFlags =
+     let
+       disabledTests = [

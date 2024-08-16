@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,24 +16,32 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::{make_input_err, Error};
-use nativelink_scheduler::action_scheduler::ActionScheduler;
-use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
-use tokio::sync::{mpsc, watch, Mutex};
+use nativelink_metric::{MetricsComponent, RootMetricsComponent};
+use nativelink_util::{
+    action_messages::{ActionInfo, OperationId},
+    known_platform_property_provider::KnownPlatformPropertyProvider,
+    operation_state_manager::{
+        ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
+    },
+};
+use tokio::sync::{mpsc, Mutex};
 
 #[allow(clippy::large_enum_variant)]
+#[allow(dead_code)] // See https://github.com/rust-lang/rust/issues/46379
 enum ActionSchedulerCalls {
-    GetPlatformPropertyManager(String),
-    AddAction(ActionInfo),
-    FindExistingAction(ActionInfoHashKey),
+    GetGetKnownProperties(String),
+    AddAction((OperationId, ActionInfo)),
+    FilterOperations(OperationFilter),
 }
 
+#[allow(dead_code)] // See https://github.com/rust-lang/rust/issues/46379
 enum ActionSchedulerReturns {
-    GetPlatformPropertyManager(Result<Arc<PlatformPropertyManager>, Error>),
-    AddAction(Result<watch::Receiver<Arc<ActionState>>, Error>),
-    FindExistingAction(Option<watch::Receiver<Arc<ActionState>>>),
+    GetGetKnownProperties(Result<Vec<String>, Error>),
+    AddAction(Result<Box<dyn ActionStateResult>, Error>),
+    FilterOperations(Result<ActionStateResultStream<'static>, Error>),
 }
 
+#[derive(MetricsComponent)]
 pub struct MockActionScheduler {
     rx_call: Mutex<mpsc::UnboundedReceiver<ActionSchedulerCalls>>,
     tx_call: mpsc::UnboundedSender<ActionSchedulerCalls>,
@@ -60,20 +68,18 @@ impl MockActionScheduler {
         }
     }
 
-    pub async fn expect_get_platform_property_manager(
-        &self,
-        result: Result<Arc<PlatformPropertyManager>, Error>,
-    ) -> String {
+    #[allow(dead_code)] // See https://github.com/rust-lang/rust/issues/46379
+    pub async fn expect_get_known_properties(&self, result: Result<Vec<String>, Error>) -> String {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let ActionSchedulerCalls::GetPlatformPropertyManager(req) = rx_call_lock
+        let ActionSchedulerCalls::GetGetKnownProperties(req) = rx_call_lock
             .recv()
             .await
             .expect("Could not receive msg in mpsc")
         else {
-            panic!("Got incorrect call waiting for get_platform_property_manager")
+            panic!("Got incorrect call waiting for get_known_properties")
         };
         self.tx_resp
-            .send(ActionSchedulerReturns::GetPlatformPropertyManager(result))
+            .send(ActionSchedulerReturns::GetGetKnownProperties(result))
             .map_err(|_| make_input_err!("Could not send request to mpsc"))
             .unwrap();
         req
@@ -81,15 +87,15 @@ impl MockActionScheduler {
 
     pub async fn expect_add_action(
         &self,
-        result: Result<watch::Receiver<Arc<ActionState>>, Error>,
-    ) -> ActionInfo {
+        result: Result<Box<dyn ActionStateResult>, Error>,
+    ) -> (OperationId, ActionInfo) {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::AddAction(req) = rx_call_lock
             .recv()
             .await
             .expect("Could not receive msg in mpsc")
         else {
-            panic!("Got incorrect call waiting for get_platform_property_manager")
+            panic!("Got incorrect call waiting for get_known_properties")
         };
         self.tx_resp
             .send(ActionSchedulerReturns::AddAction(result))
@@ -98,20 +104,20 @@ impl MockActionScheduler {
         req
     }
 
-    pub async fn expect_find_existing_action(
+    pub async fn expect_filter_operations(
         &self,
-        result: Option<watch::Receiver<Arc<ActionState>>>,
-    ) -> ActionInfoHashKey {
+        result: Result<ActionStateResultStream<'static>, Error>,
+    ) -> OperationFilter {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let ActionSchedulerCalls::FindExistingAction(req) = rx_call_lock
+        let ActionSchedulerCalls::FilterOperations(req) = rx_call_lock
             .recv()
             .await
             .expect("Could not receive msg in mpsc")
         else {
-            panic!("Got incorrect call waiting for find_existing_action")
+            panic!("Got incorrect call waiting for find_by_client_operation_id")
         };
         self.tx_resp
-            .send(ActionSchedulerReturns::FindExistingAction(result))
+            .send(ActionSchedulerReturns::FilterOperations(result))
             .map_err(|_| make_input_err!("Could not send request to mpsc"))
             .unwrap();
         req
@@ -119,13 +125,10 @@ impl MockActionScheduler {
 }
 
 #[async_trait]
-impl ActionScheduler for MockActionScheduler {
-    async fn get_platform_property_manager(
-        &self,
-        instance_name: &str,
-    ) -> Result<Arc<PlatformPropertyManager>, Error> {
+impl KnownPlatformPropertyProvider for MockActionScheduler {
+    async fn get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error> {
         self.tx_call
-            .send(ActionSchedulerCalls::GetPlatformPropertyManager(
+            .send(ActionSchedulerCalls::GetGetKnownProperties(
                 instance_name.to_string(),
             ))
             .expect("Could not send request to mpsc");
@@ -135,17 +138,24 @@ impl ActionScheduler for MockActionScheduler {
             .await
             .expect("Could not receive msg in mpsc")
         {
-            ActionSchedulerReturns::GetPlatformPropertyManager(result) => result,
-            _ => panic!("Expected get_platform_property_manager return value"),
+            ActionSchedulerReturns::GetGetKnownProperties(result) => result,
+            _ => panic!("Expected get_known_properties return value"),
         }
     }
+}
 
+#[async_trait]
+impl ClientStateManager for MockActionScheduler {
     async fn add_action(
         &self,
-        action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+    ) -> Result<Box<dyn ActionStateResult>, Error> {
         self.tx_call
-            .send(ActionSchedulerCalls::AddAction(action_info))
+            .send(ActionSchedulerCalls::AddAction((
+                client_operation_id,
+                action_info.as_ref().clone(),
+            )))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
         match rx_resp_lock
@@ -158,14 +168,12 @@ impl ActionScheduler for MockActionScheduler {
         }
     }
 
-    async fn find_existing_action(
-        &self,
-        unique_qualifier: &ActionInfoHashKey,
-    ) -> Option<watch::Receiver<Arc<ActionState>>> {
+    async fn filter_operations<'a>(
+        &'a self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream<'a>, Error> {
         self.tx_call
-            .send(ActionSchedulerCalls::FindExistingAction(
-                unique_qualifier.clone(),
-            ))
+            .send(ActionSchedulerCalls::FilterOperations(filter))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
         match rx_resp_lock
@@ -173,10 +181,14 @@ impl ActionScheduler for MockActionScheduler {
             .await
             .expect("Could not receive msg in mpsc")
         {
-            ActionSchedulerReturns::FindExistingAction(result) => result,
-            _ => panic!("Expected find_existing_action return value"),
+            ActionSchedulerReturns::FilterOperations(result) => result,
+            _ => panic!("Expected find_by_client_operation_id return value"),
         }
     }
 
-    async fn clean_recently_completed_actions(&self) {}
+    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
+        Some(self)
+    }
 }
+
+impl RootMetricsComponent for MockActionScheduler {}

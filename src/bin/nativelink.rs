@@ -20,14 +20,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
-use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
-use futures::stream::FuturesUnordered;
-use futures::{FutureExt, StreamExt};
-use hyper::server::conn::Http;
+use futures::future::{select_all, BoxFuture, Either, OptionFuture, TryFutureExt};
 use hyper::{Response, StatusCode};
+use hyper_util::rt::tokio::TokioIo;
+use hyper_util::server::conn::auto;
+use hyper_util::service::TowerToHyperService;
 use mimalloc::MiMalloc;
 use nativelink_config::cas_server::{
-    CasConfig, CompressionAlgorithm, GlobalConfig, ListenerConfig, ServerConfig, WorkerConfig,
+    CasConfig, GlobalConfig, HttpCompressionAlgorithm, ListenerConfig, ServerConfig, WorkerConfig,
 };
 use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{make_err, Code, Error, ResultExt};
@@ -36,7 +36,13 @@ use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
 use nativelink_scheduler::operations::Operations;
 use nativelink_scheduler::worker::WorkerId;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
+use nativelink_metric::{
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, RootMetricsComponent,
+};
+use nativelink_metric_collector::{otel_export, MetricsCollectorLayer};
+use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
 use nativelink_service::ac_server::AcServer;
+use nativelink_service::bep_server::BepServer;
 use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_service::capabilities_server::CapabilitiesServer;
 use nativelink_service::cas_server::CasServer;
@@ -46,13 +52,12 @@ use nativelink_service::operations_server::OperationsServer;
 use nativelink_service::worker_api_server::WorkerApiServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::action_messages::WorkerId;
 use nativelink_util::common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
 use nativelink_util::digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
 use nativelink_util::health_utils::HealthRegistryBuilder;
-use nativelink_util::metrics_utils::{
-    set_metrics_enabled_for_this_thread, Collector, CollectorState, Counter, MetricsComponent,
-    Registry,
-};
+use nativelink_util::metrics_utils::{set_metrics_enabled_for_this_thread, Counter};
+use nativelink_util::operation_state_manager::ClientStateManager;
 use nativelink_util::origin_context::OriginContext;
 use nativelink_util::store_trait::{
     set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
@@ -60,7 +65,10 @@ use nativelink_util::store_trait::{
 use nativelink_util::task::TaskExecutor;
 use nativelink_util::{background_spawn, init_tracing, spawn, spawn_blocking};
 use nativelink_worker::local_worker::new_local_worker;
-use parking_lot::Mutex;
+use opentelemetry::metrics::MeterProvider;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
+use parking_lot::{Mutex, RwLock};
+use prometheus::{Encoder, TextEncoder};
 use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
 use scopeguard::guard;
 use tokio::net::TcpListener;
@@ -72,8 +80,8 @@ use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
 use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
-use tower::util::ServiceExt;
 use tracing::{error_span, event, trace_span, Level};
+use tracing_subscriber::layer::SubscriberExt;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -104,11 +112,61 @@ struct Args {
     config_file: String,
 }
 
+/// The root metrics collector struct. All metrics will be
+/// collected from this struct traversing down each child
+/// component.
+#[derive(MetricsComponent)]
+struct RootMetrics {
+    #[metric(group = "stores")]
+    stores: Arc<dyn RootMetricsComponent>,
+    #[metric(group = "servers")]
+    servers: HashMap<String, Arc<dyn RootMetricsComponent>>,
+    #[metric(group = "workers")]
+    workers: HashMap<String, Arc<dyn RootMetricsComponent>>,
+    // TODO(allada) We cannot upcast these to RootMetricsComponent because
+    // of https://github.com/rust-lang/rust/issues/65991.
+    // TODO(allada) To prevent output from being too verbose we only
+    // print the action_schedulers.
+    #[metric(group = "action_schedulers")]
+    schedulers: HashMap<String, Arc<dyn ClientStateManager>>,
+}
+
+impl RootMetricsComponent for RootMetrics {}
+
+/// Wrapper to allow us to hash `SocketAddr` for metrics.
+#[derive(Hash, PartialEq, Eq)]
+struct SocketAddrWrapper(SocketAddr);
+
+impl MetricsComponent for SocketAddrWrapper {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        _field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        Ok(MetricPublishKnownKindData::String(self.0.to_string()))
+    }
+}
+
+impl RootMetricsComponent for SocketAddrWrapper {}
+
+/// Simple wrapper to enable us to register the Hashmap so it can
+/// report metrics about what clients are connected.
+#[derive(MetricsComponent)]
+struct ConnectedClientsMetrics {
+    #[metric(group = "currently_connected_clients")]
+    inner: Mutex<HashSet<SocketAddrWrapper>>,
+    #[metric(help = "Total client connections since server started")]
+    counter: Counter,
+    #[metric(help = "Timestamp when the server started")]
+    server_start_ts: u64,
+}
+
+impl RootMetricsComponent for ConnectedClientsMetrics {}
+
 async fn inner_main(
     cfg: CasConfig,
     server_start_timestamp: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut root_metrics_registry = <Registry>::with_prefix("nativelink");
     let health_registry_builder = Arc::new(AsyncMutex::new(HealthRegistryBuilder::new(
         "nativelink".into(),
     )));
@@ -116,24 +174,15 @@ async fn inner_main(
     let store_manager = Arc::new(StoreManager::new());
     {
         let mut health_registry_lock = health_registry_builder.lock().await;
-        let root_store_metrics = root_metrics_registry.sub_registry_with_prefix("stores");
 
         for (name, store_cfg) in cfg.stores {
             let health_component_name = format!("stores/{name}");
             let mut health_register_store =
                 health_registry_lock.sub_builder(health_component_name.into());
-            let store_metrics = root_store_metrics.sub_registry_with_prefix(&name);
-            store_manager.add_store(
-                &name,
-                store_factory(
-                    &store_cfg,
-                    &store_manager,
-                    Some(store_metrics),
-                    Some(&mut health_register_store),
-                )
+            let store = store_factory(&store_cfg, &store_manager, Some(&mut health_register_store))
                 .await
-                .err_tip(|| format!("Failed to create store '{name}'"))?,
-            );
+                .err_tip(|| format!("Failed to create store '{name}'"))?;
+            store_manager.add_store(&name, store);
         }
     }
 
@@ -141,17 +190,16 @@ async fn inner_main(
     let mut worker_schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
     let mut operations_schedulers: HashMap<String, Arc<dyn Operations>> = HashMap::new();
     if let Some(schedulers_cfg) = cfg.schedulers {
-        let root_scheduler_metrics = root_metrics_registry.sub_registry_with_prefix("schedulers");
         for (name, scheduler_cfg) in schedulers_cfg {
             let scheduler_metrics = root_scheduler_metrics.sub_registry_with_prefix(&name);
             let (maybe_action_scheduler, maybe_worker_scheduler, maybe_scheduler_operations) =
                 scheduler_factory(&scheduler_cfg, &store_manager, scheduler_metrics)
                     .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
             if let Some(action_scheduler) = maybe_action_scheduler {
-                action_schedulers.insert(name.clone(), action_scheduler);
+                action_schedulers.insert(name.clone(), action_scheduler.clone());
             }
             if let Some(worker_scheduler) = maybe_worker_scheduler {
-                worker_schedulers.insert(name.clone(), worker_scheduler);
+                worker_schedulers.insert(name.clone(), worker_scheduler.clone());
             }
             if let Some(scheduler_operations) = maybe_scheduler_operations {
                 operations_schedulers.insert(name.clone(), scheduler_operations);
@@ -159,46 +207,14 @@ async fn inner_main(
         }
     }
 
-    fn into_encoding(from: &CompressionAlgorithm) -> Option<CompressionEncoding> {
+    fn into_encoding(from: &HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
-            CompressionAlgorithm::gzip => Some(CompressionEncoding::Gzip),
-            CompressionAlgorithm::none => None,
+            HttpCompressionAlgorithm::gzip => Some(CompressionEncoding::Gzip),
+            HttpCompressionAlgorithm::none => None,
         }
     }
 
-    /// Simple wrapper to enable us to register the Hashmap so it can
-    /// report metrics about what clients are connected.
-    struct ConnectedClientsMetrics {
-        inner: Mutex<HashSet<SocketAddr>>,
-        counter: Counter,
-        server_start_ts: u64,
-    }
-    impl MetricsComponent for ConnectedClientsMetrics {
-        fn gather_metrics(&self, c: &mut CollectorState) {
-            c.publish(
-                "server_start_time",
-                &self.server_start_ts,
-                "Timestamp when the server started",
-            );
-
-            let connected_clients = self.inner.lock();
-            for client in connected_clients.iter() {
-                c.publish_with_labels(
-                    "connected_clients",
-                    &1,
-                    "The endpoint of the connected clients",
-                    vec![("endpoint".into(), format!("{client}").into())],
-                );
-            }
-
-            c.publish(
-                "total_client_connections",
-                &self.counter,
-                "Total client connections since server started",
-            );
-        }
-    }
-
+    let mut server_metrics: HashMap<String, Arc<dyn RootMetricsComponent>> = HashMap::new();
     // Registers all the ConnectedClientsMetrics to the registries
     // and zips them in. It is done this way to get around the need
     // for `root_metrics_registry` to become immutable in the loop.
@@ -217,9 +233,7 @@ async fn inner_main(
                 counter: Counter::default(),
                 server_start_ts: server_start_timestamp,
             });
-            let server_metrics =
-                root_metrics_registry.sub_registry_with_prefix(format!("server_{name}"));
-            server_metrics.register_collector(Box::new(Collector::new(&connected_clients_mux)));
+            server_metrics.insert(name.clone(), connected_clients_mux.clone());
 
             (server_cfg, connected_clients_mux)
         })
@@ -227,8 +241,13 @@ async fn inner_main(
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
 
-    // Lock our registry as immutable and clonable.
-    let root_metrics_registry = Arc::new(AsyncMutex::new(root_metrics_registry));
+    let root_metrics = Arc::new(RwLock::new(RootMetrics {
+        stores: store_manager.clone(),
+        servers: server_metrics,
+        workers: HashMap::new(), // Will be filled in later.
+        schedulers: action_schedulers.clone(),
+    }));
+
     for (server_cfg, connected_clients_mux) in servers_and_clients {
         let services = server_cfg.services.ok_or("'services' must be configured")?;
 
@@ -246,7 +265,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                                into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -272,7 +291,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                                into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -304,7 +323,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                                into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -330,7 +349,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                                into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -370,7 +389,7 @@ async fn inner_main(
                     let mut service = v.into_service();
                     let send_algo = &http_config.compression.send_compression_algorithm;
                     if let Some(encoding) =
-                        into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                        into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                     {
                         service = service.send_compressed(encoding);
                     }
@@ -394,7 +413,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                                into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -413,6 +432,7 @@ async fn inner_main(
                     .err_tip(|| "Could not create WorkerApi service")?,
             )
             .add_optional_service(
+// come back to this <<<<<<< adams/operations_server
                 services_execution
                     .clone()
                     .map_or(Ok(None), |cfg| {
@@ -427,6 +447,16 @@ async fn inner_main(
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
                                 into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+// come back to this =======
+                services
+                    .experimental_bep
+                    .map_or(Ok(None), |cfg| {
+                        BepServer::new(&cfg, &store_manager).map(|v| {
+                            let mut service = v.into_service();
+                            let send_algo = &http_config.compression.send_compression_algorithm;
+                            if let Some(encoding) =
+                                into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
+// come back to this >>>>>>> main
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -442,7 +472,11 @@ async fn inner_main(
                             Some(service)
                         })
                     })
+// come back <<<<<<< adams/operations_server
                     .err_tip(|| "Could not create Operations service")?,
+// come back =======
+                    .err_tip(|| "Could not create BEP service")?,
+// come back >>>>>>> main
             );
         // .add_optional_service(services.operations.map_or(None, |cfg| {
         //     OperationsServer::new(&cfg, &operations_schedulers)
@@ -453,12 +487,12 @@ async fn inner_main(
         //         .ok()?
         // }));
 
-        let root_metrics_registry = root_metrics_registry.clone();
         let health_registry = health_registry_builder.lock().await.build();
 
         let mut svc = Router::new()
+            .merge(tonic_services.into_router())
             // This is the default service that executes if no other endpoint matches.
-            .fallback_service(tonic_services.into_service().map_err(|e| panic!("{e}")));
+            .fallback((StatusCode::NOT_FOUND, "Not Found"));
 
         if let Some(health_cfg) = services.health {
             let path = if health_cfg.path.is_empty() {
@@ -470,8 +504,8 @@ async fn inner_main(
         }
 
         if let Some(prometheus_cfg) = services.experimental_prometheus {
-            fn error_to_response<E: std::error::Error>(e: E) -> Response<String> {
-                let mut response = Response::new(format!("Error: {e:?}"));
+            fn error_to_response<E: std::error::Error>(e: E) -> Response<axum::body::Body> {
+                let mut response = Response::new(format!("Error: {e:?}").into());
                 *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
                 response
             }
@@ -480,9 +514,12 @@ async fn inner_main(
             } else {
                 &prometheus_cfg.path
             };
+
+            let root_metrics_clone = root_metrics.clone();
+
             svc = svc.route_service(
                 path,
-                axum::routing::get(move |_request: hyper::Request<hyper::Body>| {
+                axum::routing::get(move |request: hyper::Request<axum::body::Body>| {
                     Arc::new(OriginContext::new()).wrap_async(
                         trace_span!("prometheus_ctx"),
                         async move {
@@ -490,19 +527,93 @@ async fn inner_main(
                             // collection. This allows it to call functions like `tokio::block_in_place`
                             // if it needs to wait on a future.
                             spawn_blocking!("prometheus_metrics", move || {
-                                let mut buf = String::new();
-                                let root_metrics_registry_guard =
-                                    futures::executor::block_on(root_metrics_registry.lock());
-                                prometheus_client::encoding::text::encode(
-                                    &mut buf,
-                                    &root_metrics_registry_guard,
+                                let (layer, output_metrics) = MetricsCollectorLayer::new();
+
+                                // Traverse all the MetricsComponent's. The `MetricsCollectorLayer` will
+                                // collect all the metrics and store them in `output_metrics`.
+                                tracing::subscriber::with_default(
+                                    tracing_subscriber::registry().with(layer),
+                                    || {
+                                        let metrics_component = root_metrics_clone.read();
+                                        MetricsComponent::publish(
+                                            &*metrics_component,
+                                            MetricKind::Component,
+                                            MetricFieldData::default(),
+                                        )
+                                    },
                                 )
-                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                                .map(|_| {
-                                    // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
-                                    buf = buf.replace("nativelink_nativelink_stores_", "");
-                                    buf = buf.replace("nativelink_nativelink_workers_", "");
-                                    let mut response = Response::new(buf);
+                                .map_err(|e| make_err!(Code::Internal, "{e}"))
+                                .err_tip(|| "While processing prometheus metrics")?;
+
+                                // Convert the collected metrics into OpenTelemetry metrics then
+                                // encode them into Prometheus format and populate them into a
+                                // hyper::Response.
+                                let response = {
+                                    let registry = prometheus::Registry::new();
+                                    let exporter = opentelemetry_prometheus::exporter()
+                                        .with_registry(registry.clone())
+                                        .without_counter_suffixes()
+                                        .without_scope_info()
+                                        .build()
+                                        .map_err(|e| make_err!(Code::Internal, "{e}"))
+                                        .err_tip(|| {
+                                            "While creating OpenTelemetry Prometheus exporter"
+                                        })?;
+
+                                    // Prepare our OpenTelemetry collector/exporter.
+                                    let provider =
+                                        SdkMeterProvider::builder().with_reader(exporter).build();
+                                    let meter = provider.meter("nativelink");
+
+                                    // TODO(allada) We should put this as part of the config instead of a magic
+                                    // request header.
+                                    if let Some(json_type) =
+                                        request.headers().get("x-nativelink-json")
+                                    {
+                                        let json_data = if json_type == "pretty" {
+                                            serde_json::to_string_pretty(&*output_metrics.lock())
+                                                .map_err(|e| {
+                                                    make_err!(
+                                                        Code::Internal,
+                                                        "Could not convert to json {e:?}"
+                                                    )
+                                                })?
+                                        } else {
+                                            serde_json::to_string(&*output_metrics.lock()).map_err(
+                                                |e| {
+                                                    make_err!(
+                                                        Code::Internal,
+                                                        "Could not convert to json {e:?}"
+                                                    )
+                                                },
+                                            )?
+                                        };
+                                        let mut response =
+                                            Response::new(axum::body::Body::from(json_data));
+                                        response.headers_mut().insert(
+                                            hyper::header::CONTENT_TYPE,
+                                            hyper::header::HeaderValue::from_static(
+                                                "application/json",
+                                            ),
+                                        );
+                                        return Ok(response);
+                                    }
+
+                                    // Export the metrics to OpenTelemetry.
+                                    otel_export(
+                                        "nativelink".to_string(),
+                                        &meter,
+                                        &output_metrics.lock(),
+                                    );
+
+                                    // Translate the OpenTelemetry metrics to Prometheus format and encode
+                                    // them into a hyper::Response.
+                                    let mut result = vec![];
+                                    TextEncoder::new()
+                                        .encode(&registry.gather(), &mut result)
+                                        .unwrap();
+                                    let mut response =
+                                        Response::new(axum::body::Body::from(result));
                                     // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
                                     // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
                                     // However, this makes debugging more difficult, so we use the old text/plain instead.
@@ -512,11 +623,12 @@ async fn inner_main(
                                             "text/plain; version=0.0.4; charset=utf-8",
                                         ),
                                     );
-                                    response
-                                })
-                                .unwrap_or_else(error_to_response)
+                                    Result::<_, Error>::Ok(response)
+                                };
+                                response
                             })
                             .await
+                            .unwrap_or_else(|e| Ok(error_to_response(e)))
                             .unwrap_or_else(error_to_response)
                         },
                     )
@@ -560,7 +672,7 @@ async fn inner_main(
                                     })?
                                     .clone()
                                     .set_drain_worker(
-                                        WorkerId::try_from(worker_id.clone())?,
+                                        &WorkerId::try_from(worker_id.clone())?,
                                         is_draining,
                                     )
                                     .await?;
@@ -662,45 +774,49 @@ async fn inner_main(
 
         let socket_addr = http_config.socket_address.parse::<SocketAddr>()?;
         let tcp_listener = TcpListener::bind(&socket_addr).await?;
-        let mut http = Http::new();
+        let mut http = auto::Builder::new(TaskExecutor::default());
+
         let http_config = &http_config.advanced_http;
         if let Some(value) = http_config.http2_keep_alive_interval {
-            http.http2_keep_alive_interval(Duration::from_secs(u64::from(value)));
+            http.http2()
+                .keep_alive_interval(Duration::from_secs(u64::from(value)));
         }
 
         if let Some(value) = http_config.experimental_http2_max_pending_accept_reset_streams {
-            http.http2_max_pending_accept_reset_streams(usize::try_from(value).err_tip(|| {
-                "Could not convert experimental_http2_max_pending_accept_reset_streams"
-            })?);
+            http.http2()
+                .max_pending_accept_reset_streams(usize::try_from(value).err_tip(|| {
+                    "Could not convert experimental_http2_max_pending_accept_reset_streams"
+                })?);
         }
         if let Some(value) = http_config.experimental_http2_initial_stream_window_size {
-            http.http2_initial_stream_window_size(value);
+            http.http2().initial_stream_window_size(value);
         }
         if let Some(value) = http_config.experimental_http2_initial_connection_window_size {
-            http.http2_initial_connection_window_size(value);
+            http.http2().initial_connection_window_size(value);
         }
         if let Some(value) = http_config.experimental_http2_adaptive_window {
-            http.http2_adaptive_window(value);
+            http.http2().adaptive_window(value);
         }
         if let Some(value) = http_config.experimental_http2_max_frame_size {
-            http.http2_max_frame_size(value);
+            http.http2().max_frame_size(value);
         }
         if let Some(value) = http_config.experimental_http2_max_concurrent_streams {
-            http.http2_max_concurrent_streams(value);
+            http.http2().max_concurrent_streams(value);
         }
         if let Some(value) = http_config.experimental_http2_keep_alive_timeout {
-            http.http2_keep_alive_timeout(Duration::from_secs(u64::from(value)));
+            http.http2()
+                .keep_alive_timeout(Duration::from_secs(u64::from(value)));
         }
         if let Some(value) = http_config.experimental_http2_max_send_buf_size {
-            http.http2_max_send_buf_size(
+            http.http2().max_send_buf_size(
                 usize::try_from(value).err_tip(|| "Could not convert http2_max_send_buf_size")?,
             );
         }
         if let Some(true) = http_config.experimental_http2_enable_connect_protocol {
-            http.http2_enable_connect_protocol();
+            http.http2().enable_connect_protocol();
         }
         if let Some(value) = http_config.experimental_http2_max_header_list_size {
-            http.http2_max_header_list_size(value);
+            http.http2().max_header_list_size(value);
         }
 
         event!(Level::WARN, "Ready, listening on {socket_addr}",);
@@ -721,7 +837,10 @@ async fn inner_main(
                     ?socket_addr,
                     "Client connected"
                 );
-                connected_clients_mux.inner.lock().insert(remote_addr);
+                connected_clients_mux
+                    .inner
+                    .lock()
+                    .insert(SocketAddrWrapper(remote_addr));
                 connected_clients_mux.counter.inc();
 
                 // This is the safest way to guarantee that if our future
@@ -737,10 +856,14 @@ async fn inner_main(
                             "Client disconnected"
                         );
                         if let Some(connected_clients_mux) = weak_connected_clients_mux.upgrade() {
-                            connected_clients_mux.inner.lock().remove(&remote_addr);
+                            connected_clients_mux
+                                .inner
+                                .lock()
+                                .remove(&SocketAddrWrapper(remote_addr));
                         }
                     },
                 );
+
                 let (http, svc, maybe_tls_acceptor) =
                     (http.clone(), svc.clone(), maybe_tls_acceptor.clone());
                 Arc::new(OriginContext::new()).background_spawn(
@@ -757,57 +880,31 @@ async fn inner_main(
                     fut: async move {
                         // Move it into our spawn, so if our spawn dies the cleanup happens.
                         let _guard = scope_guard;
-                        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-                        let http = http.with_executor(TaskExecutor::new(tx));
-                        let mut http_svc_fut = if let Some(tls_acceptor) = maybe_tls_acceptor {
-                            let tls_stream = match tls_acceptor.accept(tcp_stream).await {
-                                Ok(result) => result,
+                        let serve_connection = if let Some(tls_acceptor) = maybe_tls_acceptor {
+                            match tls_acceptor.accept(tcp_stream).await {
+                                Ok(tls_stream) => Either::Left(http.serve_connection(
+                                    TokioIo::new(tls_stream),
+                                    TowerToHyperService::new(svc),
+                                )),
                                 Err(err) => {
                                     event!(Level::ERROR, ?err, "Failed to accept tls stream");
                                     return;
                                 }
-                            };
-                            http.serve_connection(tls_stream, svc).left_future()
+                            }
                         } else {
-                            http.serve_connection(tcp_stream, svc).right_future()
+                            Either::Right(http.serve_connection(
+                                TokioIo::new(tcp_stream),
+                                TowerToHyperService::new(svc),
+                            ))
                         };
-                        let mut futures = FuturesUnordered::new();
-                        futures.push(futures::future::pending().right_future());
-                        loop {
-                            tokio::select! {
-                                maybe_new_future = rx.recv() => {
-                                    maybe_new_future.map(|fut| futures.push(fut.left_future())).unwrap_or_else(|| {
-                                        event!(
-                                            target: "nativelink::services",
-                                            Level::DEBUG,
-                                            ?remote_addr,
-                                            "Dropped new_future_receiver",
-                                        )
-                                    });
-                                },
-                                result = &mut http_svc_fut => {
-                                    if let Err(err) = result.map_err(|err| {
-                                        use std::error::Error;
-                                        if let Some(inner_err) = err.source() {
-                                            if let Some(io_err) = inner_err.downcast_ref::<std::io::Error>() {
-                                                if io_err.kind() == std::io::ErrorKind::NotConnected {
-                                                    return Ok(());
-                                                }
-                                            }
-                                        }
-                                        Err(err)
-                                    }) {
-                                        event!(
-                                            target: "nativelink::services",
-                                            Level::ERROR,
-                                            ?err,
-                                            "Failed running service"
-                                        );
-                                    }
-                                    return; // Once the service is done, we don't have any more work to do.
-                                },
-                                _ = futures.next() => { /* This just pulls a pool of futures. */ },
-                            };
+
+                        if let Err(err) = serve_connection.await {
+                            event!(
+                                target: "nativelink::services",
+                                Level::ERROR,
+                                ?err,
+                                "Failed running service"
+                            );
                         }
                     },
                     target: "nativelink::services",
@@ -822,9 +919,8 @@ async fn inner_main(
         // We start workers after our TcpListener is setup so if our worker connects to one
         // of these services it will be able to connect.
         let worker_cfgs = cfg.workers.unwrap_or_default();
-        let mut root_metrics_registry_guard = root_metrics_registry.lock().await;
-        let root_worker_metrics = root_metrics_registry_guard.sub_registry_with_prefix("workers");
         let mut worker_names = HashSet::with_capacity(worker_cfgs.len());
+        let mut worker_metrics: HashMap<String, Arc<dyn RootMetricsComponent>> = HashMap::new();
         for (i, worker_cfg) in worker_cfgs.into_iter().enumerate() {
             let spawn_fut = match worker_cfg {
                 WorkerConfig::local(local_worker_cfg) => {
@@ -860,7 +956,7 @@ async fn inner_main(
                     } else {
                         fast_slow_store.clone()
                     };
-                    let local_worker = new_local_worker(
+                    let (local_worker, metrics) = new_local_worker(
                         Arc::new(local_worker_cfg),
                         fast_slow_store,
                         maybe_ac_store,
@@ -880,9 +976,8 @@ async fn inner_main(
                             name
                         )))?;
                     }
-                    let worker_metrics = root_worker_metrics.sub_registry_with_prefix(&name);
-                    local_worker.register_metrics(worker_metrics);
                     worker_names.insert(name.clone());
+                    worker_metrics.insert(name.clone(), metrics);
                     let fut = Arc::new(OriginContext::new())
                         .wrap_async(trace_span!("worker_ctx"), local_worker.run());
                     spawn!("worker", fut, ?name)
@@ -890,6 +985,7 @@ async fn inner_main(
             };
             root_futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));
         }
+        root_metrics.write().workers = worker_metrics;
     }
 
     if let Err(e) = select_all(root_futures).await.0 {

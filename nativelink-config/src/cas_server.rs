@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ use serde::Deserialize;
 
 use crate::schedulers::SchedulerConfig;
 use crate::serde_utils::{
+    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
     convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
     convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
     convert_vec_string_with_shellexpand,
@@ -33,7 +34,7 @@ pub type InstanceName = String;
 
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug, Default, Clone, Copy)]
-pub enum CompressionAlgorithm {
+pub enum HttpCompressionAlgorithm {
     /// No compression.
     #[default]
     none,
@@ -53,15 +54,15 @@ pub enum CompressionAlgorithm {
 /// and cloud-clients to use another.
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
-pub struct CompressionConfig {
+pub struct HttpCompressionConfig {
     /// The compression algorithm that the server will use when sending
     /// responses to clients. Enabling this will likely save a lot of
     /// data transfer, but will consume a lot of CPU and add a lot of
     /// latency.
     /// see: <https://github.com/tracemachina/nativelink/issues/109>
     ///
-    /// Default: CompressionAlgorithm::None
-    pub send_compression_algorithm: Option<CompressionAlgorithm>,
+    /// Default: `HttpCompressionAlgorithm::none`
+    pub send_compression_algorithm: Option<HttpCompressionAlgorithm>,
 
     /// The compression algorithm that the server will accept from clients.
     /// The server will broadcast the supported compression algorithms to
@@ -70,8 +71,8 @@ pub struct CompressionConfig {
     /// will consume a lot of CPU and add a lot of latency.
     /// see: <https://github.com/tracemachina/nativelink/issues/109>
     ///
-    /// Defaults: {no supported compression}
-    pub accepted_compression_algorithms: Vec<CompressionAlgorithm>,
+    /// Default: {no supported compression}
+    pub accepted_compression_algorithms: Vec<HttpCompressionAlgorithm>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -128,7 +129,7 @@ pub struct ExecutionConfig {
     pub scheduler: SchedulerRefName,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
@@ -138,17 +139,23 @@ pub struct ByteStreamConfig {
     /// According to <https://github.com/grpc/grpc.github.io/issues/371>
     /// 16KiB - 64KiB is optimal.
     ///
-    /// Defaults: 64KiB
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    ///
+    /// Default: 64KiB
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_bytes_per_stream: usize,
+
+    /// Maximum number of bytes to decode on each grpc stream chunk.
+    /// Default: 4 MiB
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_decoding_message_size: usize,
 
     /// In the event a client disconnects while uploading a blob, we will hold
     /// the internal stream open for this many seconds before closing it.
     /// This allows clients that disconnect to reconnect and continue uploading
     /// the same blob.
     ///
-    /// Defaults: 10 (seconds)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    /// Default: 10 (seconds)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub persist_stream_on_disconnect_timeout: usize,
 }
 
@@ -197,6 +204,14 @@ pub struct HealthConfig {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct BepConfig {
+    /// The store to publish build events to.
+    /// The store name referenced in the `stores` map in the main config.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub store: StoreRefName,
+}
+
+#[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct OperationsConfig {
     /// The scheduler name referenced in the `schedulers` map in the main config.
@@ -240,6 +255,11 @@ pub struct ServicesConfig {
     /// risk, as workers have a different permission set than a client
     /// that makes the remote execution/cache requests.
     pub worker_api: Option<WorkerApiConfig>,
+
+    /// Experimental - Build Event Protocol (BEP) configuration. This is
+    /// the service that will consume build events from the client and
+    /// publish them to a store for processing by an external service.
+    pub experimental_bep: Option<BepConfig>,
 
     /// Experimental - Prometheus metrics configuration. Metrics are gathered
     /// as a singleton but may be served on multiple endpoints.
@@ -368,7 +388,7 @@ pub struct HttpListener {
 
     /// Data transport compression configuration to use for this service.
     #[serde(default)]
-    pub compression: CompressionConfig,
+    pub compression: HttpCompressionConfig,
 
     /// Advanced Http server configuration.
     #[serde(default)]
@@ -532,8 +552,9 @@ pub struct UploadActionResultConfig {
     /// - {action_digest_size} - Action digest size.
     /// - {historical_results_hash} - HistoricalExecuteResponse digest hash.
     /// - {historical_results_size} - HistoricalExecuteResponse digest size.
-    /// A common use case of this is to provide a link to the web page that contains more
-    /// useful information for the user.
+    ///
+    /// A common use case of this is to provide a link to the web page that
+    /// contains more useful information for the user.
     ///
     /// An example that is fully compatible with `bb_browser` is:
     /// <https://example.com/my-instance-name-here/blobs/{digest_function}/action/{action_digest_hash}-{action_digest_size}/>
@@ -568,7 +589,7 @@ pub struct LocalWorkerConfig {
     /// longer than this time limit, the task will be rejected. Value in seconds.
     ///
     /// Default: 1200 (seconds / 20 mins)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_action_timeout: usize,
 
     /// If timeout is handled in `entrypoint` or another wrapper script.
@@ -678,7 +699,7 @@ pub struct GlobalConfig {
     /// a new file descriptor because the limit has been reached.
     ///
     /// Default: 1000 (1 second)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub idle_file_descriptor_timeout_millis: u64,
 
     /// This flag can be used to prevent metrics from being collected at runtime.
@@ -706,7 +727,7 @@ pub struct GlobalConfig {
     /// digest.
     ///
     /// Default: 1024*1024 (1MiB)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub default_digest_size_health_check: usize,
 }
 

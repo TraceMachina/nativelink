@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
 
+use byte_unit::Byte;
+use humantime::parse_duration;
 use serde::{de, Deserialize, Deserializer};
 
 /// Helper for serde macro so you can use shellexpand variables in the json configuration
@@ -57,7 +59,7 @@ where
     deserializer.deserialize_any(USizeVisitor::<T>(PhantomData::<T> {}))
 }
 
-/// Same as convert_numeric_with_shellexpand, but supports Option<T>.
+/// Same as convert_numeric_with_shellexpand, but supports `Option<T>`.
 pub fn convert_optional_numeric_with_shellexpand<'de, D, T, E>(
     deserializer: D,
 ) -> Result<Option<T>, D::Error>
@@ -111,7 +113,7 @@ pub fn convert_string_with_shellexpand<'de, D: Deserializer<'de>>(
     Ok((*(shellexpand::env(&value).map_err(de::Error::custom)?)).to_string())
 }
 
-/// Same as convert_string_with_shellexpand, but supports Vec<String>.
+/// Same as convert_string_with_shellexpand, but supports `Vec<String>`.
 pub fn convert_vec_string_with_shellexpand<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<String>, D::Error> {
@@ -125,7 +127,7 @@ pub fn convert_vec_string_with_shellexpand<'de, D: Deserializer<'de>>(
         .collect()
 }
 
-/// Same as convert_string_with_shellexpand, but supports Option<String>.
+/// Same as convert_string_with_shellexpand, but supports `Option<String>`.
 pub fn convert_optional_string_with_shellexpand<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
@@ -137,4 +139,82 @@ pub fn convert_optional_string_with_shellexpand<'de, D: Deserializer<'de>>(
     } else {
         Ok(None)
     }
+}
+
+pub fn convert_data_size_with_shellexpand<'de, D, T, E>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    E: fmt::Display,
+    T: TryFrom<i64> + FromStr<Err = E>,
+    <T as TryFrom<i64>>::Error: fmt::Display,
+{
+    // define a visitor that deserializes
+    // `ActualData` encoded as json within a string
+    struct USizeVisitor<T: TryFrom<i64>>(PhantomData<T>);
+
+    impl<'de, T, FromStrErr> de::Visitor<'de> for USizeVisitor<T>
+    where
+        FromStrErr: fmt::Display,
+        T: TryFrom<i64> + FromStr<Err = FromStrErr>,
+        <T as TryFrom<i64>>::Error: fmt::Display,
+    {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string containing json data")
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            v.try_into().map_err(de::Error::custom)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let expanded = (*shellexpand::env(v).map_err(de::Error::custom)?).to_string();
+            let byte_size = Byte::parse_str(expanded, true).map_err(de::Error::custom)?;
+            let byte_size_u128 = byte_size.as_u128();
+            T::try_from(byte_size_u128.try_into().map_err(de::Error::custom)?)
+                .map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(USizeVisitor::<T>(PhantomData::<T> {}))
+}
+
+pub fn convert_duration_with_shellexpand<'de, D, T, E>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    E: fmt::Display,
+    T: TryFrom<i64> + FromStr<Err = E>,
+    <T as TryFrom<i64>>::Error: fmt::Display,
+{
+    // define a visitor that deserializes
+    // `ActualData` encoded as json within a string
+    struct USizeVisitor<T: TryFrom<i64>>(PhantomData<T>);
+
+    impl<'de, T, FromStrErr> de::Visitor<'de> for USizeVisitor<T>
+    where
+        FromStrErr: fmt::Display,
+        T: TryFrom<i64> + FromStr<Err = FromStrErr>,
+        <T as TryFrom<i64>>::Error: fmt::Display,
+    {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string containing json data")
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            v.try_into().map_err(de::Error::custom)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let expanded = (*shellexpand::env(v).map_err(de::Error::custom)?).to_string();
+            let duration = parse_duration(&expanded).map_err(de::Error::custom)?;
+            let duration_secs = duration.as_secs();
+            T::try_from(duration_secs.try_into().map_err(de::Error::custom)?)
+                .map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(USizeVisitor::<T>(PhantomData::<T> {}))
 }

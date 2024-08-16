@@ -1,0 +1,12 @@
+[package]
+name = "nativelink-metric-macro-derive"
+version = "0.4.0"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { version = "1.0.86", default-features = false }
+quote = { version = "1.0.36", default-features = false }
+syn = { version = "2.0.68", default-features = false }

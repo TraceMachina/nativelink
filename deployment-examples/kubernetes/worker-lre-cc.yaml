@@ -14,30 +14,40 @@ spec:
         app: nativelink-worker-lre-cc
     spec:
       initContainers:
-      - name: setup-entrypoint
-        image: nixpkgs/nix-flakes:latest
-        command: ["/bin/sh", "-c"]
-        # The kind setup mounts the nativelink repository into the kind nodes at
-        # `/mnt/src_root`. This ensures that the tags between the worker configs
-        # and bazel toolchains match when this setup is run in CI.
-        #
-        # WARNING: The platform is *not* necessarily the container that is
-        # actually deployed here. The generator container in this example was
-        # `rbe-autogen-lre-cc:<sometag>` and the platform was modified
-        # after the fact to be `lre-cc:<sometag>`. The deployed container
-        # we use as worker is
-        # `nativelink-worker-lre-cc:<some_potentially_other_tag>` which is a
-        # completely separate extension of the `lre-cc` base image.
-        args:
-          - |
-            NATIVELINK_WORKER_PLATFORM=docker://lre-cc:$(nix eval /mnt/src_root#lre-cc.imageTag --raw) &&
-            printf '#!/bin/sh\nexport NATIVELINK_WORKER_PLATFORM=%s\nexec "$@"' "$NATIVELINK_WORKER_PLATFORM" > /entrypoint/entrypoint.sh &&
-            chmod +x /entrypoint/entrypoint.sh
-        volumeMounts:
-          - name: entrypoint
-            mountPath: /entrypoint
-          - name: mnt
-            mountPath: /mnt
+        - name: setup-entrypoint
+          image: nixpkgs/nix-flakes:latest
+          command: ["/bin/sh", "-c"]
+          # The kind setup mounts the nativelink repository into the kind nodes
+          # at `/mnt/src_root`. This ensures that the tags between the worker
+          # configs and bazel toolchains match when this setup is run in CI.
+          #
+          # WARNING: The platform is *not* necessarily the container that is
+          # actually deployed here. The generator container in this example was
+          # `rbe-autogen-lre-cc:<sometag>` and the platform was modified
+          # after the fact to be `lre-cc:<sometag>`. The deployed container
+          # we use as worker is
+          # `nativelink-worker-lre-cc:<some_potentially_other_tag>` which is a
+          # completely separate extension of the `lre-cc` base image.
+          args:
+            - |
+              git config --global --add safe.directory "*"
+              NATIVELINK_WORKER_PLATFORM=docker://lre-cc:$(nix eval /mnt/src_root#lre-cc.imageTag --raw) &&
+              printf '#!/bin/sh\nexport NATIVELINK_WORKER_PLATFORM=%s\nexec "$@"' "$NATIVELINK_WORKER_PLATFORM" > /entrypoint/entrypoint.sh &&
+              chmod +x /entrypoint/entrypoint.sh
+          volumeMounts:
+            - name: entrypoint
+              mountPath: /entrypoint
+            - name: mnt
+              mountPath: /mnt
+
+        - name: nativelink-worker-init
+          # This image will be edited by kustomize.
+          image: nativelink-worker-init
+          args: ["/shared/nativelink"]
+          volumeMounts:
+            - name: shared
+              mountPath: /shared
+
       containers:
         - name: nativelink-worker-lre-cc
           # This image will be edited by kustomize.
@@ -55,9 +65,13 @@ spec:
               subPath: worker.json
             - name: entrypoint
               mountPath: /entrypoint
+            - name: shared
+              mountPath: /shared
           command: ["/entrypoint/entrypoint.sh"]
-          args: ["/bin/nativelink", "/worker.json"]
+          args: ["/shared/nativelink", "/worker.json"]
       volumes:
+        - name: shared
+          emptyDir: {}
         - name: entrypoint
           emptyDir: {}
         - name: worker-config

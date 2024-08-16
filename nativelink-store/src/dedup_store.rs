@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,11 +21,12 @@ use bincode::config::{FixintEncoding, WithOtherIntEncoding};
 use bincode::{DefaultOptions, Options};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
@@ -43,10 +44,14 @@ pub struct DedupIndex {
     pub entries: Vec<DigestInfo>,
 }
 
+#[derive(MetricsComponent)]
 pub struct DedupStore {
-    index_store: Arc<dyn Store>,
-    content_store: Arc<dyn Store>,
+    #[metric(group = "index_store")]
+    index_store: Store,
+    #[metric(group = "content_store")]
+    content_store: Store,
     fast_cdc_decoder: FastCDC,
+    #[metric(help = "Maximum number of concurrent fetches per get")]
     max_concurrent_fetch_per_get: usize,
     bincode_options: WithOtherIntEncoding<DefaultOptions, FixintEncoding>,
 }
@@ -54,9 +59,9 @@ pub struct DedupStore {
 impl DedupStore {
     pub fn new(
         config: &nativelink_config::stores::DedupStore,
-        index_store: Arc<dyn Store>,
-        content_store: Arc<dyn Store>,
-    ) -> Self {
+        index_store: Store,
+        content_store: Store,
+    ) -> Arc<Self> {
         let min_size = if config.min_size == 0 {
             DEFAULT_MIN_SIZE
         } else {
@@ -77,26 +82,22 @@ impl DedupStore {
         } else {
             config.max_concurrent_fetch_per_get as usize
         };
-        Self {
+        Arc::new(Self {
             index_store,
             content_store,
             fast_cdc_decoder: FastCDC::new(min_size, normal_size, max_size),
             max_concurrent_fetch_per_get,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
-        }
+        })
     }
 
-    fn pin_index_store(&self) -> Pin<&dyn Store> {
-        Pin::new(self.index_store.as_ref())
-    }
-
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<usize>, Error> {
         // First we need to load the index that contains where the individual parts actually
         // can be fetched from.
         let index_entries = {
             let maybe_data = self
-                .pin_index_store()
-                .get_part_unchunked(digest, 0, None)
+                .index_store
+                .get_part_unchunked(key.borrow(), 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store");
             let data = match maybe_data {
@@ -113,7 +114,7 @@ impl DedupStore {
                 Err(err) => {
                     event!(
                         Level::WARN,
-                        ?digest,
+                        ?key,
                         ?err,
                         "Failed to deserialize index in dedup store",
                     );
@@ -124,16 +125,15 @@ impl DedupStore {
             }
         };
 
-        let digests: Vec<DigestInfo> = index_entries
+        let digests: Vec<_> = index_entries
             .entries
             .into_iter()
-            .map(|index_entry| DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes))
+            .map(|index_entry| {
+                DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes).into()
+            })
             .collect();
         let mut sum = 0;
-        for size in Pin::new(self.content_store.as_ref())
-            .has_many(&digests)
-            .await?
-        {
+        for size in self.content_store.has_many(&digests).await? {
             let Some(size) = size else {
                 // A part is missing so return None meaning not-found.
                 // This will abort all in-flight queries related to this request.
@@ -146,17 +146,17 @@ impl DedupStore {
 }
 
 #[async_trait]
-impl Store for DedupStore {
+impl StoreDriver for DedupStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        digests: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
         digests
             .iter()
             .zip(results.iter_mut())
-            .map(|(digest, result)| async move {
-                match self.has(*digest).await {
+            .map(|(key, result)| async move {
+                match self.has(key.borrow()).await {
                     Ok(maybe_size) => {
                         *result = maybe_size;
                         Ok(())
@@ -166,25 +166,24 @@ impl Store for DedupStore {
             })
             .collect::<FuturesOrdered<_>>()
             .try_collect()
-            .await?;
-        Ok(())
+            .await
     }
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         let mut bytes_reader = StreamReader::new(reader);
         let frame_reader = FramedRead::new(&mut bytes_reader, self.fast_cdc_decoder.clone());
-        let content_store_pin = Pin::new(self.content_store.as_ref());
         let index_entries = frame_reader
             .map(|r| r.err_tip(|| "Failed to decode frame from fast_cdc"))
             .map_ok(|frame| async move {
                 let hash = blake3::hash(&frame[..]).into();
                 let index_entry = DigestInfo::new(hash, frame.len() as i64);
-                if content_store_pin
+                if self
+                    .content_store
                     .has(index_entry)
                     .await
                     .err_tip(|| "Failed to call .has() in DedupStore::update()")?
@@ -193,7 +192,7 @@ impl Store for DedupStore {
                     // If our store has this digest, we don't need to upload it.
                     return Result::<_, Error>::Ok(index_entry);
                 }
-                content_store_pin
+                self.content_store
                     .update_oneshot(index_entry, frame)
                     .await
                     .err_tip(|| "Failed to update content store in dedup_store")?;
@@ -216,17 +215,17 @@ impl Store for DedupStore {
                 )
             })?;
 
-        self.pin_index_store()
-            .update_oneshot(digest, serialized_index.into())
+        self.index_store
+            .update_oneshot(key, serialized_index.into())
             .await
             .err_tip(|| "Failed to insert our index entry to index_store in dedup_store")?;
 
         Ok(())
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
@@ -242,8 +241,8 @@ impl Store for DedupStore {
         // can be fetched from.
         let index_entries = {
             let data = self
-                .pin_index_store()
-                .get_part_unchunked(digest, 0, None)
+                .index_store
+                .get_part_unchunked(key, 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store")?;
 
@@ -296,17 +295,14 @@ impl Store for DedupStore {
         // Note: We will buffer our data here up to:
         // `config.max_size * config.max_concurrent_fetch_per_get` per `get_part()` request.
         let mut entries_stream = stream::iter(entries)
-            .map(move |index_entry| {
-                let content_store = self.content_store.clone();
+            .map(move |index_entry| async move {
+                let data = self
+                    .content_store
+                    .get_part_unchunked(index_entry, 0, None)
+                    .await
+                    .err_tip(|| "Failed to get_part in content_store in dedup_store")?;
 
-                async move {
-                    let data = Pin::new(content_store.as_ref())
-                        .get_part_unchunked(index_entry, 0, None)
-                        .await
-                        .err_tip(|| "Failed to get_part in content_store in dedup_store")?;
-
-                    Result::<_, Error>::Ok(data)
-                }
+                Result::<_, Error>::Ok(data)
             })
             .buffered(self.max_concurrent_fetch_per_get);
 
@@ -343,11 +339,7 @@ impl Store for DedupStore {
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 

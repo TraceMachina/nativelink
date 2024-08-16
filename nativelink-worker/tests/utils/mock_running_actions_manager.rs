@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,15 +15,12 @@
 use std::sync::Arc;
 
 use async_lock::Mutex;
-use async_trait::async_trait;
 use nativelink_error::{make_input_err, Error};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
-use nativelink_util::action_messages::ActionResult;
+use nativelink_util::action_messages::{ActionResult, OperationId};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_worker::running_actions_manager::{
-    ActionId, Metrics, RunningAction, RunningActionsManager,
-};
+use nativelink_worker::running_actions_manager::{Metrics, RunningAction, RunningActionsManager};
 use tokio::sync::mpsc;
 
 #[derive(Debug)]
@@ -46,8 +43,8 @@ pub struct MockRunningActionsManager {
     rx_kill_all: Mutex<mpsc::UnboundedReceiver<()>>,
     tx_kill_all: mpsc::UnboundedSender<()>,
 
-    rx_kill_action: Mutex<mpsc::UnboundedReceiver<ActionId>>,
-    tx_kill_action: mpsc::UnboundedSender<ActionId>,
+    rx_kill_operation: Mutex<mpsc::UnboundedReceiver<OperationId>>,
+    tx_kill_operation: mpsc::UnboundedSender<OperationId>,
     metrics: Arc<Metrics>,
 }
 
@@ -62,7 +59,7 @@ impl MockRunningActionsManager {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
         let (tx_kill_all, rx_kill_all) = mpsc::unbounded_channel();
-        let (tx_kill_action, rx_kill_action) = mpsc::unbounded_channel();
+        let (tx_kill_operation, rx_kill_operation) = mpsc::unbounded_channel();
         Self {
             rx_call: Mutex::new(rx_call),
             tx_call,
@@ -70,8 +67,8 @@ impl MockRunningActionsManager {
             tx_resp,
             rx_kill_all: Mutex::new(rx_kill_all),
             tx_kill_all,
-            rx_kill_action: Mutex::new(rx_kill_action),
-            tx_kill_action,
+            rx_kill_operation: Mutex::new(rx_kill_operation),
+            tx_kill_operation,
             metrics: Arc::new(Metrics::default()),
         }
     }
@@ -117,16 +114,15 @@ impl MockRunningActionsManager {
             .expect("Could not receive msg in mpsc");
     }
 
-    pub async fn expect_kill_action(&self) -> ActionId {
-        let mut rx_kill_action_lock = self.rx_kill_action.lock().await;
-        rx_kill_action_lock
+    pub async fn expect_kill_operation(&self) -> OperationId {
+        let mut rx_kill_operation_lock = self.rx_kill_operation.lock().await;
+        rx_kill_operation_lock
             .recv()
             .await
             .expect("Could not receive msg in mpsc")
     }
 }
 
-#[async_trait]
 impl RunningActionsManager for MockRunningActionsManager {
     type RunningAction = MockRunningAction;
 
@@ -167,9 +163,9 @@ impl RunningActionsManager for MockRunningActionsManager {
         Ok(())
     }
 
-    async fn kill_action(&self, action_id: ActionId) -> Result<(), Error> {
-        self.tx_kill_action
-            .send(action_id)
+    async fn kill_operation(&self, operation_id: &OperationId) -> Result<(), Error> {
+        self.tx_kill_operation
+            .send(operation_id.clone())
             .expect("Could not send request to mpsc");
         Ok(())
     }
@@ -345,9 +341,8 @@ impl MockRunningAction {
     }
 }
 
-#[async_trait]
 impl RunningAction for MockRunningAction {
-    fn get_action_id(&self) -> &ActionId {
+    fn get_operation_id(&self) -> &OperationId {
         unreachable!("not implemented for tests");
     }
 

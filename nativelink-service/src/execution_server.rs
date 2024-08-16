@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures::stream::unfold;
 use futures::{Stream, StreamExt};
 use nativelink_config::cas_server::{ExecutionConfig, InstanceName};
 use nativelink_error::{make_input_err, Error, ResultExt};
@@ -31,11 +32,13 @@ use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, OperationId, DEFAULT_EXECUTION_PRIORITY,
 };
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::platform_properties::PlatformProperties;
+use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
+use nativelink_util::operation_state_manager::{
+    ActionStateResult, ClientStateManager, OperationFilter,
+};
 use nativelink_util::store_trait::Store;
 use rand::{thread_rng, Rng};
 use tokio::sync::watch;
@@ -47,21 +50,44 @@ use nativelink_proto::google::longrunning::operations_server::OperationsServer;
 use nativelink_proto::google::longrunning::operations_server::Operations;
 use nativelink_scheduler::operations::{Operations as SchedulerOperations};
 
+type InstanceInfoName = String;
+
+struct NativelinkOperationId {
+    instance_name: InstanceInfoName,
+    client_operation_id: OperationId,
+}
+
+impl NativelinkOperationId {
+    fn from_name(name: &str) -> Result<Self, Error> {
+        let (instance_name, name) = name
+            .split_once('/')
+            .err_tip(|| "Expected instance_name and name to be separated by '/'")?;
+        Ok(Self {
+            instance_name: instance_name.to_string(),
+            client_operation_id: OperationId::from_raw_string(name.to_string()),
+        })
+    }
+
+    fn into_string(self) -> String {
+        format!(
+            "{}/{}",
+            self.instance_name,
+            self.client_operation_id.into_string()
+        )
+    }
+}
+
 struct InstanceInfo {
-    scheduler: Arc<dyn ActionScheduler>,
-    cas_store: Arc<dyn Store>,
+    scheduler: Arc<dyn ClientStateManager>,
+    cas_store: Store,
 }
 
 impl InstanceInfo {
-    fn cas_pin(&self) -> Pin<&dyn Store> {
-        Pin::new(self.cas_store.as_ref())
-    }
-
     async fn build_action_info(
         &self,
         instance_name: String,
         action_digest: DigestInfo,
-        action: &Action,
+        action: Action,
         priority: i32,
         skip_cache_lookup: bool,
         digest_function: DigestHasherFunc,
@@ -82,62 +108,47 @@ impl InstanceInfo {
         )?;
         let timeout = action
             .timeout
-            .clone()
             .map(|v| Duration::new(v.seconds as u64, v.nanos as u32))
             .unwrap_or(Duration::MAX);
 
         let mut platform_properties = HashMap::new();
-        if let Some(platform) = &action.platform {
-            for property in &platform.properties {
-                let platform_property = self
-                    .scheduler
-                    .get_platform_property_manager(&instance_name)
-                    .await
-                    .err_tip(|| "Failed to get platform properties in build_action_info")?
-                    .make_prop_value(&property.name, &property.value)
-                    .err_tip(|| "Failed to convert platform property in build_action_info")?;
-                platform_properties.insert(property.name.clone(), platform_property);
+        if let Some(platform) = action.platform {
+            for property in platform.properties {
+                platform_properties.insert(property.name, property.value);
             }
         }
 
         // Goma puts the properties in the Command.
         if platform_properties.is_empty() {
-            let command = get_and_decode_digest::<Command>(self.cas_pin(), &command_digest).await?;
-            if let Some(platform) = &command.platform {
-                for property in &platform.properties {
-                    let platform_property = self
-                        .scheduler
-                        .get_platform_property_manager(&instance_name)
-                        .await
-                        .err_tip(|| "Failed to get platform properties in build_action_info")?
-                        .make_prop_value(&property.name, &property.value)
-                        .err_tip(|| {
-                            "Failed to convert command platform property in build_action_info"
-                        })?;
-                    platform_properties.insert(property.name.clone(), platform_property);
+            let command =
+                get_and_decode_digest::<Command>(&self.cas_store, command_digest.into()).await?;
+            if let Some(platform) = command.platform {
+                for property in platform.properties {
+                    platform_properties.insert(property.name, property.value);
                 }
             }
         }
+
+        let action_key = ActionUniqueKey {
+            instance_name,
+            digest_function,
+            digest: action_digest,
+        };
+        let unique_qualifier = if skip_cache_lookup {
+            ActionUniqueQualifier::Uncachable(action_key)
+        } else {
+            ActionUniqueQualifier::Cachable(action_key)
+        };
 
         Ok(ActionInfo {
             command_digest,
             input_root_digest,
             timeout,
-            platform_properties: PlatformProperties::new(platform_properties),
+            platform_properties,
             priority,
             load_timestamp: UNIX_EPOCH,
             insert_timestamp: SystemTime::now(),
-            unique_qualifier: ActionInfoHashKey {
-                instance_name,
-                digest: action_digest,
-                salt: if action.do_not_cache {
-                    thread_rng().gen::<u64>()
-                } else {
-                    0
-                },
-            },
-            skip_cache_lookup,
-            digest_function,
+            unique_qualifier,
         })
     }
 }
@@ -147,13 +158,14 @@ pub struct ExecutionServer {
     scheduler_operations: HashMap<InstanceName, Arc<dyn SchedulerOperations>>
 }
 
-type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + Sync + 'static>>;
+type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + 'static>>;
 
 impl ExecutionServer {
     pub fn new(
         config: &HashMap<InstanceName, ExecutionConfig>,
         scheduler_map: &HashMap<String, Arc<dyn ActionScheduler>>,
         operations_schedulers: &HashMap<String, Arc<dyn SchedulerOperations>>,
+        scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
         let mut instance_infos = HashMap::with_capacity(config.len());
@@ -201,22 +213,49 @@ impl ExecutionServer {
         Server::new(self)
     }
 
-    pub fn into_operations_service(self) -> OperationsServer<ExecutionServer> { OperationsServer::new(self) }
-
-    fn to_execute_stream(receiver: watch::Receiver<Arc<ActionState>>) -> Response<ExecuteStream> {
-        let receiver_stream = Box::pin(WatchStream::new(receiver).map(|action_update| {
-            event!(Level::INFO, ?action_update, "Execute Resp Stream",);
-            Ok(Into::<Operation>::into(action_update.as_ref().clone()))
-        }));
+    fn to_execute_stream(
+        nl_client_operation_id: NativelinkOperationId,
+        action_listener: Box<dyn ActionStateResult>,
+    ) -> Response<ExecuteStream> {
+        let client_operation_id_string = nl_client_operation_id.into_string();
+        let receiver_stream = Box::pin(unfold(
+            Some(action_listener),
+            move |maybe_action_listener| {
+                let client_operation_id_string = client_operation_id_string.clone();
+                async move {
+                    let mut action_listener = maybe_action_listener?;
+                    match action_listener.changed().await {
+                        Ok(action_update) => {
+                            event!(Level::INFO, ?action_update, "Execute Resp Stream");
+                            let client_operation_id =
+                                OperationId::from_raw_string(client_operation_id_string.clone());
+                            // If the action is finished we won't be sending any more updates.
+                            let maybe_action_listener = if action_update.stage.is_finished() {
+                                None
+                            } else {
+                                Some(action_listener)
+                            };
+                            Some((
+                                Ok(action_update.as_operation(client_operation_id)),
+                                maybe_action_listener,
+                            ))
+                        }
+                        Err(err) => {
+                            event!(Level::ERROR, ?err, "Error in action_listener stream");
+                            Some((Err(err.into()), None))
+                        }
+                    }
+                }
+            },
+        ));
         tonic::Response::new(receiver_stream)
     }
 
     async fn inner_execute(
         &self,
-        request: Request<ExecuteRequest>,
+        request: ExecuteRequest,
     ) -> Result<Response<ExecuteStream>, Error> {
-        let execute_req = request.into_inner();
-        let instance_name = execute_req.instance_name;
+        let instance_name = request.instance_name;
 
         let instance_info = self
             .instance_infos
@@ -224,60 +263,85 @@ impl ExecutionServer {
             .err_tip(|| "Instance name '{}' not configured")?;
 
         let digest = DigestInfo::try_from(
-            execute_req
+            request
                 .action_digest
                 .err_tip(|| "Expected action_digest to exist")?,
         )
         .err_tip(|| "Failed to unwrap action cache")?;
 
-        let priority = execute_req
+        let priority = request
             .execution_policy
             .map_or(DEFAULT_EXECUTION_PRIORITY, |p| p.priority);
 
-        let action = get_and_decode_digest::<Action>(instance_info.cas_pin(), &digest).await?;
+        let action =
+            get_and_decode_digest::<Action>(&instance_info.cas_store, digest.into()).await?;
         let action_info = instance_info
             .build_action_info(
-                instance_name,
+                instance_name.clone(),
                 digest,
-                &action,
+                action,
                 priority,
-                execute_req.skip_cache_lookup,
-                execute_req
+                request.skip_cache_lookup,
+                request
                     .digest_function
                     .try_into()
                     .err_tip(|| "Could not convert digest function in inner_execute()")?,
             )
             .await?;
 
-        let rx = instance_info
+        let action_listener = instance_info
             .scheduler
-            .add_action(action_info)
+            .add_action(OperationId::default(), Arc::new(action_info))
             .await
             .err_tip(|| "Failed to schedule task")?;
 
-        Ok(Self::to_execute_stream(rx))
+        Ok(Self::to_execute_stream(
+            NativelinkOperationId {
+                instance_name,
+                client_operation_id: action_listener
+                    .as_state()
+                    .await
+                    .err_tip(|| "In ExecutionServer::inner_execute")?
+                    .operation_id
+                    .clone(),
+            },
+            action_listener,
+        ))
     }
 
     async fn inner_wait_execution(
         &self,
         request: Request<WaitExecutionRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
-        let unique_qualifier = ActionInfoHashKey::try_from(request.into_inner().name.as_str())
-            .err_tip(|| "Decoding operation name into ActionInfoHashKey")?;
-        let Some(instance_info) = self.instance_infos.get(&unique_qualifier.instance_name) else {
+        let (instance_name, client_operation_id) =
+            NativelinkOperationId::from_name(&request.into_inner().name)
+                .map(|v| (v.instance_name, v.client_operation_id))
+                .err_tip(|| "Failed to parse operation_id in ExecutionServer::wait_execution")?;
+        let Some(instance_info) = self.instance_infos.get(&instance_name) else {
             return Err(Status::not_found(format!(
-                "No scheduler with the instance name {}",
-                unique_qualifier.instance_name
+                "No scheduler with the instance name {instance_name}"
             )));
         };
         let Some(rx) = instance_info
             .scheduler
-            .find_existing_action(&unique_qualifier)
+            .filter_operations(OperationFilter {
+                client_operation_id: Some(client_operation_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .err_tip(|| "Error running find_existing_action in ExecutionServer::wait_execution")?
+            .next()
             .await
         else {
             return Err(Status::not_found("Failed to find existing task"));
         };
-        Ok(Self::to_execute_stream(rx))
+        Ok(Self::to_execute_stream(
+            NativelinkOperationId {
+                instance_name,
+                client_operation_id,
+            },
+            rx,
+        ))
     }
 }
 
@@ -297,7 +361,13 @@ impl Execution for ExecutionServer {
         &self,
         grpc_request: Request<ExecuteRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
-        self.inner_execute(grpc_request)
+        let request = grpc_request.into_inner();
+        make_ctx_for_hash_func(request.digest_function)
+            .err_tip(|| "In ExecutionServer::execute")?
+            .wrap_async(
+                error_span!("execution_server_execute"),
+                self.inner_execute(request),
+            )
             .await
             .err_tip(|| "Failed on execute() command")
             .map_err(|e| e.into())

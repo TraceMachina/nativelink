@@ -16,7 +16,8 @@ rust_binary(
     deps = [
         "//nativelink-config",
         "//nativelink-error",
-        "//nativelink-proto",
+        "//nativelink-metric",
+        "//nativelink-metric-collector",
         "//nativelink-scheduler",
         "//nativelink-service",
         "//nativelink-store",
@@ -26,18 +27,54 @@ rust_binary(
         "@crates//:axum",
         "@crates//:clap",
         "@crates//:futures",
-        "@crates//:hyper",
+        "@crates//:hyper-1.4.1",
+        "@crates//:hyper-util",
         "@crates//:mimalloc",
+        "@crates//:opentelemetry",
+        "@crates//:opentelemetry-prometheus",
+        "@crates//:opentelemetry_sdk",
         "@crates//:parking_lot",
-        "@crates//:prometheus-client",
+        "@crates//:prometheus",
         "@crates//:rustls-pemfile",
         "@crates//:scopeguard",
+        "@crates//:serde_json",
         "@crates//:serde_json5",
         "@crates//:tokio",
         "@crates//:tokio-rustls",
         "@crates//:tonic",
         "@crates//:tower",
         "@crates//:tracing",
+        "@crates//:tracing-subscriber",
+    ],
+)
+
+filegroup(
+    name = "docs",
+    srcs = [
+        "//nativelink-config:docs",
+        "//nativelink-error:docs",
+        "//nativelink-macro:docs",
+        "//nativelink-proto:docs",
+        "//nativelink-scheduler:docs",
+        "//nativelink-service:docs",
+        "//nativelink-store:docs",
+        "//nativelink-util:docs",
+        "//nativelink-worker:docs",
+    ],
+)
+
+test_suite(
+    name = "doctests",
+    tests = [
+        "//nativelink-config:doc_test",
+        "//nativelink-error:doc_test",
+        "//nativelink-macro:doc_test",
+        "//nativelink-proto:doc_test",
+        "//nativelink-scheduler:doc_test",
+        "//nativelink-service:doc_test",
+        "//nativelink-store:doc_test",
+        "//nativelink-util:doc_test",
+        "//nativelink-worker:doc_test",
     ],
 )
 

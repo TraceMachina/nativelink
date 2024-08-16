@@ -9,14 +9,18 @@ load(
 rust_library(
     name = "nativelink-scheduler",
     srcs = [
-        "src/action_scheduler.rs",
+        "src/api_worker_scheduler.rs",
+        "src/awaited_action_db/awaited_action.rs",
+        "src/awaited_action_db/mod.rs",
         "src/cache_lookup_scheduler.rs",
         "src/default_scheduler_factory.rs",
         "src/grpc_scheduler.rs",
         "src/lib.rs",
+        "src/memory_awaited_action_db.rs",
         "src/platform_property_manager.rs",
         "src/property_modifier_scheduler.rs",
         "src/simple_scheduler.rs",
+        "src/simple_scheduler_state_manager.rs",
         "src/worker.rs",
         "src/worker_scheduler.rs",
     ],
@@ -27,23 +31,24 @@ rust_library(
     deps = [
         "//nativelink-config",
         "//nativelink-error",
+        "//nativelink-metric",
         "//nativelink-proto",
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:async-lock",
-        "@crates//:blake3",
+        "@crates//:bytes",
         "@crates//:futures",
-        "@crates//:hashbrown",
         "@crates//:lru",
         "@crates//:parking_lot",
-        "@crates//:prost",
         "@crates//:rand",
         "@crates//:scopeguard",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:static_assertions",
         "@crates//:tokio",
         "@crates//:tokio-stream",
         "@crates//:tonic",
         "@crates//:tracing",
-        "@crates//:uuid",
     ],
 )
 
@@ -68,20 +73,24 @@ rust_test_suite(
         ":nativelink-scheduler",
         "//nativelink-config",
         "//nativelink-error",
+        "//nativelink-metric",
         "//nativelink-proto",
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:futures",
+        "@crates//:mock_instant",
         "@crates//:pretty_assertions",
         "@crates//:prost",
         "@crates//:tokio",
         "@crates//:tokio-stream",
+        "@crates//:uuid",
     ],
 )
 
 rust_doc(
     name = "docs",
     crate = ":nativelink-scheduler",
+    visibility = ["//visibility:public"],
 )
 
 rust_doc_test(

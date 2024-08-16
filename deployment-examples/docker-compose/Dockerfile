@@ -18,7 +18,7 @@ ARG OS_VERSION=22.04
 ARG OPT_LEVEL=opt
 # Additional bazel flags.
 ARG ADDITIONAL_BAZEL_FLAGS=
-# Bash arguments my be passed in here to install any additional dependencies
+# Bash arguments may be passed in here to install any additional dependencies
 # needed by the user. Useful if your worker needs specific dependencies installed.
 ARG ADDITIONAL_SETUP_WORKER_CMD=
 
@@ -29,7 +29,7 @@ RUN apt-get update \
         DEBIAN_FRONTEND=noninteractive \
         apt-get install --no-install-recommends -y \
             npm=8.5.1~ds-1 \
-            git=1:2.34.1-1ubuntu1.10 \
+            git=1:2.34.1-1ubuntu1.11 \
             gcc=4:11.2.0-1ubuntu1 \
             g++=4:11.2.0-1ubuntu1 \
             python3=3.10.6-1~22.04 \
@@ -38,7 +38,7 @@ RUN apt-get update \
         DEBIAN_FRONTEND=noninteractive \
         apt-get install --no-install-recommends -y \
             npm=6.14.4+ds-1ubuntu2 \
-            git=1:2.25.1-1ubuntu3.11 \
+            git=1:2.25.1-1ubuntu3.13 \
             gcc=4:9.3.0-1ubuntu2 \
             g++=4:9.3.0-1ubuntu2 \
             python3=3.8.2-0ubuntu2 \
