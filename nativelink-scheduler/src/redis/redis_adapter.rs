@@ -108,7 +108,7 @@ impl RedisAdapter {
                 store.clone(),
                 tasks_or_workers_change_notify,
             ),
-            store,
+            store
         }
     }
 
