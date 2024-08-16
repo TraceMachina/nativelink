@@ -215,6 +215,8 @@
 
         local-image-test = pkgs.callPackage ./tools/local-image-test.nix {};
 
+        nativelink-prevent-store-conflict-test = pkgs.callPackage ./tools/nativelink-prevent-store-conflict-test.nix {inherit nativelink;};
+
         nativelink-is-executable-test = pkgs.callPackage ./tools/nativelink-is-executable-test.nix {inherit nativelink;};
 
         rbe-configs-gen = pkgs.callPackage ./local-remote-execution/rbe-configs-gen.nix {};
@@ -357,6 +359,7 @@
               nativelink-debug
               nativelink-image
               nativelink-is-executable-test
+              nativelink-prevent-store-conflict-test
               nativelink-worker-init
               nativelink-x86_64-linux
               publish-ghcr
