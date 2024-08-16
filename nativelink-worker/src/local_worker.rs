@@ -364,6 +364,7 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
     connection_factory: ConnectionFactory<T>,
     sleep_fn: Option<Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>>,
     metrics: Arc<Metrics>,
+    version: String,
 }
 
 /// Creates a new `LocalWorker`. The `cas_store` must be an instance of
@@ -373,6 +374,7 @@ pub async fn new_local_worker(
     cas_store: Store,
     ac_store: Option<Store>,
     historical_store: Store,
+    version: String,
 ) -> Result<
     (
         LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>,
@@ -450,6 +452,7 @@ pub async fn new_local_worker(
             })
         }),
         Box::new(move |d| Box::pin(sleep(d))),
+        version,
     );
     let metrics = local_worker.metrics.clone();
     Ok((local_worker, metrics))
@@ -461,6 +464,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         running_actions_manager: Arc<U>,
         connection_factory: ConnectionFactory<T>,
         sleep_fn: Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>,
+        version: String,
     ) -> Self {
         let metrics = Arc::new(Metrics::new(Arc::downgrade(
             running_actions_manager.metrics(),
@@ -471,6 +475,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             connection_factory,
             sleep_fn: Some(sleep_fn),
             metrics,
+            version,
         }
     }
 
@@ -483,7 +488,8 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         client: &mut T,
     ) -> Result<(String, Streaming<UpdateForWorker>), Error> {
         let supported_properties =
-            make_supported_properties(&self.config.platform_properties).await?;
+            make_supported_properties(&self.config.platform_properties, self.version.clone())
+                .await?;
         let mut update_for_worker_stream = client
             .connect_worker(supported_properties)
             .await
@@ -498,7 +504,18 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             .update;
 
         let worker_id = match first_msg_update {
-            Some(Update::ConnectionResult(connection_result)) => connection_result.worker_id,
+            Some(Update::ConnectionResult(connection_result)) => {
+                if self.version != connection_result.scheduler_version {
+                    event!(
+                        Level::ERROR,
+                        worker_id = connection_result.worker_id,
+                        "Worker's version {} does not match with the scheduler's version {}",
+                        self.version,
+                        connection_result.scheduler_version
+                    );
+                }
+                connection_result.worker_id
+            }
             other => {
                 return Err(make_input_err!(
                     "Expected first response from scheduler to be a ConnectResult got : {:?}",

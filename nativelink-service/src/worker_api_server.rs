@@ -45,6 +45,7 @@ pub type NowFn = Box<dyn Fn() -> Result<Duration, Error> + Send + Sync>;
 
 pub struct WorkerApiServer {
     scheduler: Arc<dyn WorkerScheduler>,
+    version: String,
     now_fn: NowFn,
 }
 
@@ -52,6 +53,7 @@ impl WorkerApiServer {
     pub fn new(
         config: &WorkerApiConfig,
         schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
+        version: String,
     ) -> Result<Self, Error> {
         for scheduler in schedulers.values() {
             // This will protect us from holding a reference to the scheduler forever in the
@@ -83,6 +85,7 @@ impl WorkerApiServer {
         Self::new_with_now_fn(
             config,
             schedulers,
+            version,
             Box::new(move || {
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -96,6 +99,7 @@ impl WorkerApiServer {
     pub fn new_with_now_fn(
         config: &WorkerApiConfig,
         schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
+        version: String,
         now_fn: NowFn,
     ) -> Result<Self, Error> {
         let scheduler = schedulers
@@ -107,7 +111,11 @@ impl WorkerApiServer {
                 )
             })?
             .clone();
-        Ok(Self { scheduler, now_fn })
+        Ok(Self {
+            scheduler,
+            version,
+            now_fn,
+        })
     }
 
     pub fn into_service(self) -> Server<WorkerApiServer> {
@@ -151,6 +159,16 @@ impl WorkerApiServer {
                 .err_tip(|| "Failed to add worker in inner_connect_worker()")?;
             worker_id
         };
+
+        if self.version != supported_properties.version {
+            event!(
+                Level::ERROR,
+                "Scheduler's version {} does not match with the worker \"{}\"'s version {}",
+                self.version,
+                worker_id,
+                supported_properties.version
+            );
+        }
 
         Ok(Response::new(Box::pin(unfold(
             (rx, worker_id),
