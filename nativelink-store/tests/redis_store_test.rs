@@ -28,7 +28,7 @@ use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{RedisStore, READ_CHUNK_SIZE};
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 
 const VALID_HASH1: &str = "3031323334353637383961626364656630303030303030303030303030303030";
@@ -327,6 +327,30 @@ async fn upload_empty_data_with_prefix() -> Result<(), Error> {
         result.is_some(),
         "Expected redis store to have hash: {VALID_HASH1}",
     );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn unsucessfull_redis_connection() -> Result<(), Error> {
+    let store = {
+        let mut builder = Builder::default_centralized();
+        builder.set_policy(fred::types::ReconnectPolicy::Constant {
+            attempts: 1,
+            max_attempts: 10,
+            delay: 10,
+            jitter: 10,
+        });
+
+        RedisStore::new_from_builder_and_parts(builder, None, || String::from(""), String::new())?
+    };
+
+    let keys: Vec<StoreKey> = vec!["abc".into()];
+    let mut sizes = vec![];
+
+    let has = store.has_with_results(&keys, &mut sizes).await;
+
+    assert!(has.is_err());
 
     Ok(())
 }
