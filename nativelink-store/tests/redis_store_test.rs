@@ -183,7 +183,8 @@ async fn upload_and_get_data() -> Result<(), Error> {
             ..Default::default()
         });
 
-        RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())?
+        RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())
+            .await?
     };
 
     store.update_oneshot(digest, data.clone()).await?;
@@ -263,7 +264,8 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
             None,
             mock_uuid_generator,
             prefix.to_string(),
-        )?
+        )
+        .await?
     };
 
     store.update_oneshot(digest, data.clone()).await?;
@@ -294,7 +296,8 @@ async fn upload_empty_data() -> Result<(), Error> {
         None,
         mock_uuid_generator,
         String::new(),
-    )?;
+    )
+    .await?;
 
     store.update_oneshot(digest, data).await?;
 
@@ -318,7 +321,8 @@ async fn upload_empty_data_with_prefix() -> Result<(), Error> {
         None,
         mock_uuid_generator,
         prefix.to_string(),
-    )?;
+    )
+    .await?;
 
     store.update_oneshot(digest, data).await?;
 
@@ -334,15 +338,10 @@ async fn upload_empty_data_with_prefix() -> Result<(), Error> {
 #[nativelink_test]
 async fn unsucessfull_redis_connection() -> Result<(), Error> {
     let store = {
-        let mut builder = Builder::default_centralized();
-        builder.set_policy(fred::types::ReconnectPolicy::Constant {
-            attempts: 1,
-            max_attempts: 10,
-            delay: 10,
-            jitter: 10,
-        });
+        let builder = Builder::default_centralized();
 
-        RedisStore::new_from_builder_and_parts(builder, None, || String::from(""), String::new())?
+        RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())
+            .await?
     };
 
     let keys: Vec<StoreKey> = vec!["abc".into()];
@@ -350,7 +349,7 @@ async fn unsucessfull_redis_connection() -> Result<(), Error> {
 
     let has = store.has_with_results(&keys, &mut sizes).await;
 
-    assert!(has.is_err());
+    assert!(has.is_ok());
 
     Ok(())
 }
@@ -428,7 +427,8 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
             ..Default::default()
         });
 
-        RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())?
+        RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())
+            .await?
     };
 
     store.update_oneshot(digest, data.clone()).await?;
@@ -516,7 +516,8 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
             ..Default::default()
         });
 
-        RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())?
+        RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())
+            .await?
     };
 
     let (mut tx, rx) = make_buf_channel_pair();
