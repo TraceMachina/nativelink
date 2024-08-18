@@ -342,7 +342,7 @@ async fn unsucessfull_redis_connection() -> Result<(), Error> {
             jitter: 10,
         });
 
-        RedisStore::new_from_builder_and_parts(builder, None, || String::from(""), String::new())?
+        RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())?
     };
 
     let keys: Vec<StoreKey> = vec!["abc".into()];
