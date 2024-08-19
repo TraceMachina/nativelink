@@ -328,6 +328,7 @@
             patches = [
               ./tools/nixpkgs_link_libunwind_and_libcxx.diff
               ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
+              ./tools/nixpkgs_bun.diff
               ./tools/nixpkgs_playwright.diff
             ];
           };
@@ -417,10 +418,15 @@
             '';
           in
             [
-              # Development tooling goes here.
-              bazel
-              stable-rust-native.default
+              # Development tooling
+              pkgs.git
               pkgs.pre-commit
+
+              # Rust Stack
+              stable-rust-native.default
+              bazel
+
+              ## Infrastructure
               pkgs.awscli2
               pkgs.skopeo
               pkgs.dive
@@ -437,7 +443,11 @@
               pkgs.pulumiPackages.pulumi-language-go
               pkgs.go
               pkgs.kustomize
-              pkgs.nodePackages.pnpm
+
+              ## Web
+              pkgs.bun # got patched to the newest version (v.1.1.25)
+              pkgs.deno
+              pkgs.lychee
 
               # Additional tools from within our development environment.
               local-image-test
@@ -471,6 +481,7 @@
             + pkgs.lib.optionalString (!pkgs.stdenv.isDarwin) ''
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
               export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
+              export PATH=$HOME/.deno/bin:$PATH
             '';
         };
       };
