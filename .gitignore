@@ -1,6 +1,7 @@
 bazel-*
 target/
 .vscode/
+.zed
 .cache
 .terraform*
 .config
