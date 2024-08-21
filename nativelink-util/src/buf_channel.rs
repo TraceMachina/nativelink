@@ -210,45 +210,43 @@ impl DropCloserReadHalf {
         self.rx.is_empty()
     }
 
-    /// Receive a chunk of data.
-    pub async fn recv(&mut self) -> Result<Bytes, Error> {
-        let maybe_chunk = match self.queued_data.pop_front() {
-            // `queued_data` is allowed to have empty bytes that represent EOF (as
-            // returned in the None case below), but `self.rx.recv()` should
-            // never respond with empty bytes as EOF.  If `queued_data` is empty,
-            // then pass None to simulate the stream's version of EOF.
-            Some(Ok(result_bytes)) => (!result_bytes.is_empty()).then(|| Ok(result_bytes)),
-            Some(Err(cached_error)) => Some(Err(cached_error)),
-            None => self.rx.recv().await,
+    fn recv_inner(&mut self, data: Result<Bytes, Error>) -> Result<Bytes, Error> {
+        let chunk = data
+            .map_err(|e| make_err!(Code::Internal, "Received erroneous queued_data chunk: {e}"))?;
+
+        // `queued_data` is allowed to have empty bytes that represent EOF
+        if chunk.is_empty() {
+            if !self.eof_sent.load(Ordering::Acquire) {
+                return Err(make_err!(
+                    Code::Internal,
+                    "Sender dropped before sending EOF"
+                ));
+            };
+
+            self.maybe_populate_recent_data(&ZERO_DATA);
+            return Ok(ZERO_DATA);
         };
-        match maybe_chunk {
-            Some(Ok(chunk)) => {
-                let chunk_len = chunk.len() as u64;
-                error_if!(
-                    chunk_len == 0,
-                    "Chunk should never be EOF, expected None in this case"
-                );
-                self.bytes_received += chunk_len;
-                self.maybe_populate_recent_data(&chunk);
-                Ok(chunk)
-            }
 
-            Some(Err(e)) => Err(make_err!(
-                Code::Internal,
-                "Received erroneous queued_data chunk: {e}"
-            )),
+        self.bytes_received += chunk.len() as u64;
+        self.maybe_populate_recent_data(&chunk);
+        Ok(chunk)
+    }
 
-            // None is a safe EOF received.
-            None => {
-                if !self.eof_sent.load(Ordering::Acquire) {
-                    return Err(make_err!(
-                        Code::Internal,
-                        "Sender dropped before sending EOF"
-                    ));
-                }
-                self.maybe_populate_recent_data(&ZERO_DATA);
-                Ok(ZERO_DATA)
-            }
+    /// Try to receive a chunk of data, returning `None` if none is available.
+    pub fn try_recv(&mut self) -> Option<Result<Bytes, Error>> {
+        self.queued_data
+            .pop_front()
+            .map(|result| self.recv_inner(result))
+    }
+
+    /// Receive a chunk of data, waiting asynchronously until some is available.
+    pub async fn recv(&mut self) -> Result<Bytes, Error> {
+        if let Some(result) = self.try_recv() {
+            result
+        } else {
+            // `None` here indicates EOF, which we represent as Zero data
+            let data = self.rx.recv().await.unwrap_or(Ok(ZERO_DATA));
+            self.recv_inner(data)
         }
     }
 
