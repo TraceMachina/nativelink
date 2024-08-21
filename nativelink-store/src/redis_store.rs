@@ -273,39 +273,49 @@ impl StoreDriver for RedisStore {
         // As a result of this, there will be a span of time where a key in Redis has only partial data. We want other
         // observers to notice atomic updates to keys, rather than partial updates, so we first write to a temporary key
         // and then rename that key once we're done appending data.
-        //
-        // TODO(caass): Remove potential for infinite loop (https://reviewable.io/reviews/TraceMachina/nativelink/1188#-O2pu9LV5ux4ILuT6MND)
-        'outer: loop {
-            let mut expecting_first_chunk = true;
+        let mut is_first_chunk = true;
+        let mut eof_reached = false;
+
+        while !eof_reached {
             let pipe = client.pipeline();
+            let chunk = reader
+                .recv()
+                .await
+                .err_tip(|| "Failed to reach chunk in update in redis store")?;
 
-            while expecting_first_chunk || !reader.is_empty() {
-                let chunk = reader
-                    .recv()
-                    .await
-                    .err_tip(|| "Failed to reach chunk in update in redis store")?;
-
-                if chunk.is_empty() {
-                    if is_zero_digest(key.borrow()) {
-                        return Ok(());
-                    }
-
-                    // Reader sent empty chunk, we're done here.
-                    break 'outer;
+            if chunk.is_empty() {
+                // We don't need to actually push up anything if this is an empty key, so let's return early.
+                if is_first_chunk && is_zero_digest(key.borrow()) {
+                    return Ok(());
                 }
 
-                // Queue the append, but don't execute until we've received all the chunks.
-                pipe.append::<(), _, _>(&temp_key, chunk)
-                    .await
-                    .err_tip(|| "Failed to append to temp key in RedisStore::update")?;
-                expecting_first_chunk = false;
-
-                // Give other tasks a chance to run to populate the reader's
-                // buffer if possible.
-                tokio::task::yield_now().await;
+                eof_reached = true;
+                continue;
             }
 
-            // Here the reader is empty but more data is expected.
+            // Queue the append, but don't execute until we've received all the chunks.
+            pipe.append::<(), _, _>(&temp_key, chunk)
+                .await
+                .err_tip(|| "Failed to append to temp key in RedisStore::update")?;
+            is_first_chunk = false;
+
+            // Opportunistically grab any other chunks already in the reader.
+            'inner: while let Some(chunk) = reader
+                .try_recv()
+                .transpose()
+                .err_tip(|| "Failed to reach chunk in update in redis store")?
+            {
+                if chunk.is_empty() {
+                    eof_reached = true;
+                    break 'inner;
+                } else {
+                    pipe.append::<(), _, _>(&temp_key, chunk)
+                        .await
+                        .err_tip(|| "Failed to append to temp key in RedisStore::update")?;
+                }
+            }
+
+            // We've exhausted the reader, but more data is expected.
             // Executing the queued commands appends the data we just received to the temp key.
             pipe.all::<()>()
                 .await
