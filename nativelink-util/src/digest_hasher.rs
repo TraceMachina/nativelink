@@ -98,8 +98,8 @@ impl DigestHasherFunc {
 impl From<ConfigDigestHashFunction> for DigestHasherFunc {
     fn from(value: ConfigDigestHashFunction) -> Self {
         match value {
-            ConfigDigestHashFunction::sha256 => Self::Sha256,
-            ConfigDigestHashFunction::blake3 => Self::Blake3,
+            ConfigDigestHashFunction::Sha256 => Self::Sha256,
+            ConfigDigestHashFunction::Blake3 => Self::Blake3,
         }
     }
 }

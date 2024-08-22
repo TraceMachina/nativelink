@@ -49,47 +49,47 @@ pub fn store_factory<'a>(
 ) -> Pin<FutureMaybeStore<'a>> {
     Box::pin(async move {
         let store: Arc<dyn StoreDriver> = match backend {
-            StoreConfig::memory(config) => MemoryStore::new(config),
-            StoreConfig::experimental_s3_store(config) => {
+            StoreConfig::Memory(config) => MemoryStore::new(config),
+            StoreConfig::ExperimentalS3Store(config) => {
                 S3Store::new(config, SystemTime::now).await?
             }
-            StoreConfig::redis_store(config) => RedisStore::new(config)?,
-            StoreConfig::verify(config) => VerifyStore::new(
+            StoreConfig::Redis(config) => RedisStore::new(config)?,
+            StoreConfig::Verify(config) => VerifyStore::new(
                 config,
                 store_factory(&config.backend, store_manager, None).await?,
             ),
-            StoreConfig::compression(config) => CompressionStore::new(
+            StoreConfig::Compression(config) => CompressionStore::new(
                 *config.clone(),
                 store_factory(&config.backend, store_manager, None).await?,
             )?,
-            StoreConfig::dedup(config) => DedupStore::new(
+            StoreConfig::Dedup(config) => DedupStore::new(
                 config,
                 store_factory(&config.index_store, store_manager, None).await?,
                 store_factory(&config.content_store, store_manager, None).await?,
             ),
-            StoreConfig::existence_cache(config) => ExistenceCacheStore::new(
+            StoreConfig::ExistenceCache(config) => ExistenceCacheStore::new(
                 config,
                 store_factory(&config.backend, store_manager, None).await?,
             ),
-            StoreConfig::completeness_checking(config) => CompletenessCheckingStore::new(
+            StoreConfig::CompletenessChecking(config) => CompletenessCheckingStore::new(
                 store_factory(&config.backend, store_manager, None).await?,
                 store_factory(&config.cas_store, store_manager, None).await?,
             ),
-            StoreConfig::fast_slow(config) => FastSlowStore::new(
+            StoreConfig::FastSlow(config) => FastSlowStore::new(
                 config,
                 store_factory(&config.fast, store_manager, None).await?,
                 store_factory(&config.slow, store_manager, None).await?,
             ),
-            StoreConfig::filesystem(config) => <FilesystemStore>::new(config).await?,
-            StoreConfig::ref_store(config) => RefStore::new(config, Arc::downgrade(store_manager)),
-            StoreConfig::size_partitioning(config) => SizePartitioningStore::new(
+            StoreConfig::Filesystem(config) => <FilesystemStore>::new(config).await?,
+            StoreConfig::Ref(config) => RefStore::new(config, Arc::downgrade(store_manager)),
+            StoreConfig::SizePartitioning(config) => SizePartitioningStore::new(
                 config,
                 store_factory(&config.lower_store, store_manager, None).await?,
                 store_factory(&config.upper_store, store_manager, None).await?,
             ),
-            StoreConfig::grpc(config) => GrpcStore::new(config).await?,
-            StoreConfig::noop => NoopStore::new(),
-            StoreConfig::shard(config) => {
+            StoreConfig::Grpc(config) => GrpcStore::new(config).await?,
+            StoreConfig::Noop => NoopStore::new(),
+            StoreConfig::Shard(config) => {
                 let stores = config
                     .stores
                     .iter()

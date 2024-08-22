@@ -100,8 +100,8 @@ async fn setup_stores() -> Result<
     let ac_store = MemoryStore::new(&slow_config);
     let cas_store = FastSlowStore::new(
         &nativelink_config::stores::FastSlowStore {
-            fast: nativelink_config::stores::StoreConfig::filesystem(fast_config),
-            slow: nativelink_config::stores::StoreConfig::memory(slow_config),
+            fast: nativelink_config::stores::StoreConfig::Filesystem(fast_config),
+            slow: nativelink_config::stores::StoreConfig::Memory(slow_config),
         },
         Store::new(fast_store.clone()),
         Store::new(slow_store.clone()),
@@ -432,7 +432,7 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -547,7 +547,7 @@ async fn ensure_output_files_full_directories_are_created_test(
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -664,7 +664,7 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -837,7 +837,7 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1011,7 +1011,7 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1211,7 +1211,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1338,7 +1338,7 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1497,7 +1497,7 @@ exit 0
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1636,15 +1636,15 @@ exit 0
                 additional_environment: Some(HashMap::from([
                     (
                         "PROPERTY".to_string(),
-                        EnvironmentSource::property("property_name".to_string()),
+                        EnvironmentSource::Property("property_name".to_string()),
                     ),
                     (
                         "VALUE".to_string(),
-                        EnvironmentSource::value("raw_value".to_string()),
+                        EnvironmentSource::Value("raw_value".to_string()),
                     ),
                     (
                         "INNER_TIMEOUT".to_string(),
-                        EnvironmentSource::timeout_millis,
+                        EnvironmentSource::TimeoutMillis,
                     ),
                 ])),
             },
@@ -1653,7 +1653,7 @@ exit 0
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1799,7 +1799,7 @@ exit 1
                 entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                 additional_environment: Some(HashMap::from([(
                     "SIDE_CHANNEL_FILE".to_string(),
-                    EnvironmentSource::side_channel_file,
+                    EnvironmentSource::SideChannelFile,
                 )])),
             },
             cas_store: cas_store.clone(),
@@ -1807,7 +1807,7 @@ exit 1
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1883,7 +1883,7 @@ async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn std::error
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1954,7 +1954,7 @@ async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn st
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::everything,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Everything,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -2025,7 +2025,7 @@ async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn std::e
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
                 ),
                 success_message_template: "{historical_results_hash}-{historical_results_size}"
                     .to_string(),
@@ -2124,7 +2124,7 @@ async fn failure_does_not_cache_in_historical_results() -> Result<(), Box<dyn st
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
                 ),
                 success_message_template: "{historical_results_hash}-{historical_results_size}"
                     .to_string(),
@@ -2164,7 +2164,7 @@ async fn infra_failure_does_cache_in_historical_results() -> Result<(), Box<dyn 
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::failures_only,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::FailuresOnly,
                 ),
                 failure_message_template: "{historical_results_hash}-{historical_results_size}"
                     .to_string(),
@@ -2231,7 +2231,7 @@ async fn action_result_has_used_in_message() -> Result<(), Box<dyn std::error::E
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
                 success_message_template: "{action_digest_hash}-{action_digest_size}".to_string(),
                 ..Default::default()
             },
@@ -2343,7 +2343,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                         ..Default::default()
                     },
                 max_action_timeout: MAX_TIMEOUT_DURATION,
@@ -2423,7 +2423,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                         ..Default::default()
                     },
                 max_action_timeout: MAX_TIMEOUT_DURATION,
@@ -2503,7 +2503,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                         ..Default::default()
                     },
                 max_action_timeout: MAX_TIMEOUT_DURATION,
@@ -2579,7 +2579,7 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -2703,7 +2703,7 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -2864,7 +2864,7 @@ async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -2958,7 +2958,7 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -3063,7 +3063,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -3244,7 +3244,7 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,

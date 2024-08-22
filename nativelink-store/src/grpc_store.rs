@@ -145,7 +145,7 @@ impl GrpcStore {
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -170,7 +170,7 @@ impl GrpcStore {
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -195,7 +195,7 @@ impl GrpcStore {
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -220,7 +220,7 @@ impl GrpcStore {
         grpc_request: Request<GetTreeRequest>,
     ) -> Result<Response<Streaming<GetTreeResponse>>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -276,7 +276,7 @@ impl GrpcStore {
         grpc_request: impl IntoRequest<ReadRequest>,
     ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -296,7 +296,7 @@ impl GrpcStore {
         E: Into<Error> + 'static,
     {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -358,7 +358,7 @@ impl GrpcStore {
         grpc_request: Request<QueryWriteStatusRequest>,
     ) -> Result<Response<QueryWriteStatusResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -512,7 +512,7 @@ impl StoreDriver for GrpcStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             keys.iter()
                 .zip(results.iter_mut())
                 .map(|(key, result)| async move {
@@ -579,7 +579,7 @@ impl StoreDriver for GrpcStore {
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
-        if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
 
@@ -659,7 +659,7 @@ impl StoreDriver for GrpcStore {
         length: Option<usize>,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
-        if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             return self
                 .get_action_result_as_part(digest, writer, offset, length)
                 .await;

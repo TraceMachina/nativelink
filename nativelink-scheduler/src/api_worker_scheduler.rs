@@ -162,11 +162,11 @@ impl ApiWorkerSchedulerImpl {
         let mut workers_iter = self.workers.iter();
         let workers_iter = match self.allocation_strategy {
             // Use rfind to get the least recently used that satisfies the properties.
-            WorkerAllocationStrategy::least_recently_used => workers_iter.rfind(|(_, w)| {
+            WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter.rfind(|(_, w)| {
                 w.can_accept_work() && platform_properties.is_satisfied_by(&w.platform_properties)
             }),
             // Use find to get the most recently used that satisfies the properties.
-            WorkerAllocationStrategy::most_recently_used => workers_iter.find(|(_, w)| {
+            WorkerAllocationStrategy::MostRecentlyUsed => workers_iter.find(|(_, w)| {
                 w.can_accept_work() && platform_properties.is_satisfied_by(&w.platform_properties)
             }),
         };
