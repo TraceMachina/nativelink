@@ -349,6 +349,7 @@ pub enum StoreConfig {
     /// }
     /// ```
     ///
+    #[serde(rename = "ref_store")]
     Ref(RefStore),
 
     /// Uses the size field of the digest to separate which store to send the
@@ -417,6 +418,7 @@ pub enum StoreConfig {
     /// }
     /// ```
     ///
+    #[serde(rename = "redis_store")]
     Redis(RedisStore),
 
     /// Noop store is a store that sends streams into the void and all data
