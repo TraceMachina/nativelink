@@ -3,7 +3,7 @@
 This deployment sets up a 4-container deployment with separate CAS, scheduler
 and worker. Don't use this example deployment in production. It's insecure.
 
-In this example we're using `kind` to set up the cluster `cilium` to provide a
+This example uses `kind` to set up the cluster `cilium` to provide a
 `LoadBalancer` and `GatewayController`.
 
 First set up a local development cluster:
@@ -16,7 +16,7 @@ native up
 > The `native up` command uses Pulumi under the hood. You can view and delete
 > the stack with `pulumi stack` and `pulumi destroy`.
 
-Next start a few standard deployments. This part also builds the remote
+Next start some standard deployments. This part also builds the remote
 execution containers and makes them available to the cluster:
 
 ```bash
@@ -28,7 +28,7 @@ execution containers and makes them available to the cluster:
 > `nativelink` and worker images. You can view the state of the pipelines with
 > `tkn pr ls` and `tkn pr logs`/`tkn pr logs --follow`.
 
-Finally, deploy NativeLink:
+Time to deploy NativeLink:
 
 ```bash
 ./02_application.sh
@@ -86,7 +86,7 @@ kind delete cluster
 
 ## Use a published image
 
-[Published images](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink) can be found under the Container registry, which uses the namespace `https://ghcr.io`. When using the Container registry, you can select prebuilt images and avoid building the image yourself.
+Find [Published images](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink) under the Container registry, which uses the namespace `https://ghcr.io`. When using the Container registry, you can select prebuilt images and avoid building the image yourself.
 
 To pull an existing image, you can run:
 
@@ -102,13 +102,13 @@ To derive the tag of the NativeLink image at a specific commit, run the below co
 nix eval github:TraceMachina/nativelink/someCommit#image.imageTag --raw
 ```
 
-Alternatively, the tag can be derived from the upstream sources at the current state of the upstream main branch by running this command:
+You can also derive the tag from the upstream sources at the current state of the upstream main branch by running this command:
 
 ```sh
 nix eval github:TraceMachina/nativelink#image.imageTag --raw
 ```
 
-Similarly, you can also clone or checkout a specific version or commit of the NativeLink git repository to evaluate the output of the entire NativeLink flake. For example, assuming you've done the [NativeLink Getting Started Guide](https://github.com/TraceMachina/nativelink?tab=readme-ov-file#getting-started-with-nativelink) and cloned the repository, you can run these sample commands:
+Similarly, you can also clone or checkout a specific version or commit of the NativeLink git repository to inspect the output of the entire NativeLink flake. For example, assuming you've done the [NativeLink Getting Started Guide](https://github.com/TraceMachina/nativelink?tab=readme-ov-file#getting-started-with-nativelink) and cloned the repository, you can run these sample commands:
 
 ```sh
 git log
@@ -118,7 +118,7 @@ nix eval .#image.imageTag --raw
 The `--raw` removes the surrounding quotes from the output string.
 
 > [!WARNING]
-> We don't recommend using this command to
+> Don't use this command to
 > retrieve an image:
 > ```sh
 > nix eval github:TraceMachina/nativelink#image.imageTag --raw
@@ -151,7 +151,7 @@ IMAGE_TAG=$(nix eval .#image.imageTag --raw)
 nix run .#image.copyTo docker-daemon:"${IMAGE_NAME}":"${IMAGE_TAG}"
 ```
 
-You can find more about details around [nix](https://github.com/nlewo/nix2container). Published images are signed using `cosign`. For more details of the verification process of publishing OCI images see [SECURITY.md](https://github.com/TraceMachina/nativelink/blob/main/SECURITY.md)
+You can find more about details around [nix](https://github.com/nlewo/nix2container). `cosign` signs the published images. For more details of the verification process of publishing OCI images see [SECURITY.md](https://github.com/TraceMachina/nativelink/blob/main/SECURITY.md)
 
 ## NativeLink Community
 

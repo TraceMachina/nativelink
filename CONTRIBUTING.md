@@ -1,17 +1,17 @@
 # Contributing to NativeLink
 
 NativeLink welcomes contribution from everyone. Here are the guidelines if you
-are thinking of helping us:
+are thinking of helping:
 
 ## Contributions
 
-Contributions to NativeLink or its dependencies should be made in the form of
-GitHub pull requests. Each pull request will be reviewed by a core contributor
-(someone with permission to land patches) and either landed in the main tree or
-given feedback for changes that would be required. All contributions should
+You can contribute to NativeLink or its dependencies via GitHub pull
+requests. Each pull request will undergo review by a core contributor
+(someone with permission to land patches) and either land in the main tree
+or receive feedback for required changes. All contributions should
 follow this format, even those from core contributors.
 
-Should you wish to work on an issue, please claim it first by commenting on
+To work on an issue, please claim it first by commenting on
 the GitHub issue that you want to work on it. This is to prevent duplicated
 efforts from contributors on the same issue.
 
@@ -19,7 +19,7 @@ efforts from contributors on the same issue.
 
 NativeLink has a somewhat specific contribution process to ensure consistent
 quality across all commits. If anything in the following guide is unclear to you
-please raise an issue so that we can clarify this document.
+please raise an issue to help clarify this document.
 
 1. In your [GitHub settings](https://github.com/settings/keys), set up distinct
    authentication and signing keys. For further information see:
@@ -65,8 +65,8 @@ please raise an issue so that we can clarify this document.
 > upstream     git@github.com:TraceMachina/nativelink (push)
 > ```
 
-6. Finally, configure `git` to sign your commits with the keys you set up
-   previously. Create a `.gitconfig` file in your home directory like so:
+6. For the last step, configure `git` to sign your commits with the keys
+   you set up. Create a `.gitconfig` file in your home directory like so:
 
     ```ini
     [user]
@@ -86,15 +86,16 @@ please raise an issue so that we can clarify this document.
 
 ## Local development setup
 
-NativeLink ships almost all of its tooling in a nix flake which is configured
-via a [`flake.nix`](https://github.com/tracemachina/nativelink/tree/main/flake.nix) file in the root of the repository. While it's
+NativeLink ships most of its tooling in a nix flake configured
+via a [`flake.nix`](https://github.com/tracemachina/nativelink/tree/main/flake.nix)
+file in the root of the repository. While it's
 possible to work on some parts of the codebase without this environment, it'll
 make your life much easier since it lets you reproduce most of CI locally.
 
 1. Install Nix with flakes: https://github.com/NixOS/experimental-nix-installer
    For further information on Nix Flakes see: https://nixos.wiki/wiki/Flakes.
 2. Optionally (but highly recommended), install [`direnv`](https://direnv.net/docs/installation.html) and
-   hook it into your shell:
+   integrate it into your shell:
 
    ```bash
    nix profile install nixpkgs#direnv
@@ -166,13 +167,13 @@ NativeLink doesn't allow direct commits or human-created side branches in the
 
    - Use a capital letter to start the commit and use an imperative tone for the
      title.
-   - Don't end the title with a period.
+   - Don't end the title with a punctuation.
    - Keep the first line as short as possible. If your feature is complex, add
-     additional information in the commit message body.
+     extra information in the commit message body.
    - If you feel like you need the word `and` in the commit title, the commit
-     might try to do too many things at once and you should consider splitting
+     might try to do a lot of things at once and you should consider splitting
      it into separate commits.
-   - The commit message body should have a maximum line length of 72 characters.
+   - The length of commit message's body shouldn't exceed 72 characters.
      This is to keep the `git log` readable with raw terminals.
 
    ```bash
@@ -210,7 +211,7 @@ NativeLink doesn't allow direct commits or human-created side branches in the
    remaining issues. Feel free to ask for help if you have trouble getting CI
    for your pull request green.
 
-8. If you need to make additional changes, don't use a regular `git commit` on
+8. If you need to make further changes, don't use a regular `git commit` on
    the pull request branch. Instead use `git commit --amend` and `git push -f`
    to update the commit in-place. The changes between the commit versions will
    remain visible in the Reviewable UI.
@@ -302,14 +303,16 @@ add the changed files manually to the staging area.
 
 ### Setting up rust-analyzer
 
-[rust-analyzer](https://rust-analyzer.github.io/) works reasonably well out of the box due to picking up the manifest for the `nativelink` crate, but it isn't integrated with Bazel by default. In order to generate a project configuration for rust-analyzer,
+[rust-analyzer](https://rust-analyzer.github.io/) works reasonably well out of the box due to picking up the manifest for the `nativelink` crate, but it isn't integrated with Bazel by default. To generate a project configuration for rust-analyzer,
 run the `@rules_rust//tools/rust_analyzer:gen_rust_project` target:
 
 ```sh
 bazel run @rules_rust//tools/rust_analyzer:gen_rust_project
 ```
 
-This will generate a `rust-project.json` file in the root directory. This file needs to be regenerated every time new files or dependencies are added in order to stay up-to-date. You can configure rust-analyzer can pick it up by setting the [`rust-analyzer.linkedProjects`](https://rust-analyzer.github.io/manual.html#rust-analyzer.linkedProjects) [configuration option](https://rust-analyzer.github.io/manual.html#configuration).
+This will generate a `rust-project.json` file in the root directory.
+
+To stay up-to-date, you need to regenerate this file every time new files or dependencies get added. You can configure rust-analyzer to pick it up by setting the [`rust-analyzer.linkedProjects`](https://rust-analyzer.github.io/manual.html#rust-analyzer.linkedProjects) [configuration option](https://rust-analyzer.github.io/manual.html#configuration).
 
 If you use VS Code, you can configure the following `tasks.json` file to automatically generate this file when you open the editor:
 
@@ -388,11 +391,11 @@ bazel test doctests
 
 ## Writing documentation
 
-NativeLink largely follows the [Microsoft Style Guide](https://learn.microsoft.com/en-us/style-guide/welcome/).
+NativeLink primarily follows the [Microsoft Style Guide](https://learn.microsoft.com/en-us/style-guide/welcome/).
 
 NativeLink implements its documentation style guide via Vale. The pre-commit
-hooks forbid errors but permit warnings and suggestions. To view all of Vale's
-suggestions invoke it directly:
+hooks forbid errors but permit warnings and suggestions. To view every Vale
+suggestion, invoke Vale directly:
 
 ```
 vale somefile
@@ -400,10 +403,11 @@ vale somefile
 
 ## Creating releases
 
-To keep the release process in line with best practices for open source
-repositories, not all steps are automated. Specifically, tags should be signed
-and pushed manually and the release notes should be human readable beyond what
-most automatically generated changelogs provide.
+
+To align the release process with best practices for open source repositories,
+some steps remain un-automated. Specifically, you should sign and push tags manually,
+and ensure the release notes are human-readable, offering more detail than most
+automatically generated changelogs.
 
 1. Bump the current version in the following files:
 
@@ -418,7 +422,7 @@ most automatically generated changelogs provide.
 
 3. Create the commit and PR. Call it `Release NativeLink v0.x.y`.
 
-4. Once the PR is merged, update your local repository and origin:
+4. After merging the PR, update your local repository and origin:
 
    ```bash
    git switch main
@@ -442,7 +446,7 @@ most automatically generated changelogs provide.
    git push origin v0.x.y
    ```
 
-7. Pushing the tag triggers an additional GHA workflow which should create the
+7. Pushing the tag triggers an extra GHA workflow which should create the
    container images in your own fork. Check that this workflow is functional. If
    the CI job in your fork passes, push the tag to upstream:
 
@@ -450,7 +454,8 @@ most automatically generated changelogs provide.
    git push upstream v0.x.y
    ```
 
-8. The images for the release are now being created. Go to the [Tags](https://github.com/TraceMachina/nativelink/tags)
+8. The images for the release are now getting created. Go to the
+   [Tags](https://github.com/TraceMachina/nativelink/tags)
    tab in GitHub and double-check that the tag has a green `Verified` marker
    next to it. If it does, select `Create a release from tag` and create release
    notes. You can use previous release notes as template by clicking on the
@@ -460,7 +465,7 @@ most automatically generated changelogs provide.
    Make sure to include migration instructions for all breaking changes.
 
    Explicitly list whatever changes you think are worth mentioning as `Major
-   changes`. This is a fairly free-form section that doesn't have any explicit
+   changes`. This is a free-form section that doesn't have any explicit
    requirements other than being a best-effort summary of notable changes.
 
 9. Once all notes are in line, click `Publish Release`.

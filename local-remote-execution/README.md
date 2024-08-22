@@ -1,10 +1,10 @@
 # Local Remote Execution
 
 NativeLink's Local Remote Execution is a framework to build, distribute, and
-rapidly iterate on custom toolchain setups that are transparent, fully hermetic,
+iterate on custom toolchain setups that are transparent, fully hermetic,
 and reproducible across machines of the same system architecture.
 
-Local Remote Execution mirrors toolchains for remote execution in your local
+LRE mirrors toolchains for remote execution in your local
 development environment. This lets you reuse build artifacts with virtually
 perfect cache hit rate across different repositories, developers, and CI.
 
@@ -14,7 +14,7 @@ perfect cache hit rate across different repositories, developers, and CI.
 > Slack if you have any questions or ideas for improvement.
 
 > [!NOTE]
-> At the moment LRE only works on `x86_64-linux`.
+> At the moment LRE doesn't work on systems other than `x86_64-linux`.
 
 ##  Pre-Requisites
 
@@ -59,7 +59,7 @@ imports = [
 ];
 ```
 
-Finally, add the `lre.bazelrc` generator in your `devShell`'s `shellHook`:
+For the last step, add the `lre.bazelrc` generator in your `devShell`'s `shellHook`:
 
 ```nix
 devShells.default = pkgs.mkShell {
@@ -97,8 +97,8 @@ build --extra_execution_platforms=@local-remote-execution//generated-cc/config:p
 build --extra_toolchains=@local-remote-execution//generated-cc/config:cc-toolchain
 ```
 
-In the snippet above you can see a warning that no local toolchain is
-configured. LRE needs to know the remote toolchain configuration to make it
+In the snippet above you can see a warning about the absence of a configured local toolchain.
+LRE needs to know the remote toolchain configuration to make it
 available locally. The `local-remote-execution` settings take an `Env` input and
 an optional `prefix` input to configure the generated `lre.bazelrc`:
 
@@ -145,11 +145,11 @@ Bazel's toolchain creates, but for nix to be able to generate the store paths
 it needs to fetch the files to your local system. In other words, all paths
 printed in `lre.bazelrc` will be available on your local system.
 
-Let's move on to Bazel's configuration.
+Next up is Bazel's configuration.
 
 ## 🌱 Bazel-side setup
 
-First, hook the generated `lre.bazelrc` into the main `.bazelrc` with a
+First, integrate the generated `lre.bazelrc` into the main `.bazelrc` with a
 `try-import`:
 
 ```bash
@@ -187,7 +187,7 @@ git_override(
 )
 ```
 
-Let's use NativeLink's Kubernetes example to verify that the setup worked.
+Next, verify that the setup worked using NativeLink's Kubernetes example.
 
 ## 🚢 Testing with local K8s
 
@@ -195,7 +195,7 @@ Start the cluster and set up NativeLink in an LRE configuration. For details on
 this refer to the [Kubernetes example](https://github.com/tracemachina/nativelink/tree/main/deployment-examples/kubernetes):
 
 > [!TIP]
-> NativeLink's `native` CLI tool is self-contained and can be imported into
+> NativeLink's `native` CLI tool is self-contained and integrates into
 > other nix flakes by adding `inputs.nativelink.packages.${system}.native-cli`
 > to the `nativeBuildInputs` of your `devShell`.
 
@@ -289,7 +289,7 @@ INFO: 11 processes: 9 internal, <<<2 remote>>>.
 INFO: Build completed successfully, 11 total actions
 ```
 
-Now let's disable remote execution and attempt a local rebuild, but keep access
+Now disable remote execution and attempt a local rebuild, but keep access
 to the remote cache:
 
 ```bash
@@ -322,7 +322,7 @@ INFO: Build completed successfully, 11 total actions
 > [!TIP]
 > You can also do this the other way around, that is, run a local build and
 > upload artifacts to the remote cache and have a remote build reuse those
-> artifacts. Or you can only run local builds on different machines that all
+> artifacts. Or you can run local builds on different machines that all
 > share the same cache.
 >
 > If you set up all your projects to use the same LRE configuration you'll be
@@ -330,7 +330,7 @@ INFO: Build completed successfully, 11 total actions
 
 ## 🛠️ Rebuilding the toolchains
 
-This is only relevant if you're updating the base toolchains in the `nativelink`
+This is relevant if you're updating the base toolchains in the `nativelink`
 repository itself. If you run `nix flake update` in the `nativelink` repository
 you need to update the generated Bazel toolchains as well:
 
@@ -340,8 +340,8 @@ generate-toolchains
 
 ## 📐 Architecture
 
-The original C++ and Java toolchain containers are never really instantiated.
-Instead, their container environments are used and passed through transforming
+The original C++ and Java toolchain containers are never instantiated.
+Instead, their container environments pass through transforming
 functions that take a container schematic as input and generate some other
 output.
 
@@ -355,8 +355,8 @@ flowchart LR
         --> |deploy| K{Kubernetes}
 ```
 
-In the case of LRE the base image is built with Nix for perfect reproducibility.
-However, you could use a more classic toolchain container like an Ubuntu base
+For LRE, the base image gets built with Nix for perfect reproducibility, though
+you could use a more classic toolchain container like an Ubuntu base
 image as well:
 
 ```mermaid
@@ -378,8 +378,8 @@ flowchart LR
         --> |custom toolchain generation logic| B[RBE client configuration]
 ```
 
-In many classic setups the RBE client configurations are handwritten. In the
-case of LRE we're generating Bazel toolchains and platforms using a pipeline of
+In classic setups the RBE client configurations are handwritten. In the
+case of LRE, Bazel toolchains and platforms get generated using a pipeline of
 custom image generators and the `rbe_configs_gen` tool:
 
 ```mermaid
@@ -392,13 +392,13 @@ flowchart LR
 When you then invoke your RBE client with the configuration set up to use these
 toolchains, the NativeLink scheduler matches actions to the worker they require.
 
-In Bazel's case this scheduler endpoint is set via the `--remote_executor` flag.
+In Bazel's case, the `--remote_executor` flag sets this scheduler endpoint.
 
 ## 🦜 Custom toolchains
 
-The general approach described works for arbitrary toolchain containers. You
-might need to implement your own logic to get from the toolchain container to
-some usable RBE configuration files (or write them manually), but this can be
-considered an implementation detail specific to your requirements.
+The general approach described works for arbitrary toolchain containers. You might
+need to create your own logic to get from the toolchain container to some usable RBE
+configuration files (or write them manually), but this is an implementation detail
+specific to your requirements.
 
 TODO(aaronmondal): Add an example of a custom toolchain extension around lre-cc.
