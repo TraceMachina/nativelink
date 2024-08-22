@@ -72,8 +72,7 @@ impl VerifyStore {
                 .err_tip(|| "Failed to read chunk in check_update in verify store")?;
             sum_size += chunk.len() as u64;
 
-            let mut done = chunk.is_empty(); // Is EOF.
-
+            // Ensure if a user sends us too much data we fail quickly.
             if let Some(expected_size) = maybe_expected_digest_size {
                 match sum_size.cmp(&expected_size) {
                     std::cmp::Ordering::Greater => {
@@ -85,24 +84,25 @@ impl VerifyStore {
                         ));
                     }
                     std::cmp::Ordering::Equal => {
-                        let eof_chunk = rx
-                            .recv()
-                            .await
-                            .err_tip(|| "Failed to read eof_chunk in verify store")?;
-                        if !eof_chunk.is_empty() {
-                            self.size_verification_failures.inc();
-                            return Err(make_input_err!(
-                                "Expected EOF chunk when exact size was hit on insert in verify store - {}",
-                                expected_size,
-                            ));
+                        // Ensure our next chunk is the EOF chunk.
+                        // If this was an error it'll be caught on the .recv()
+                        // on next cycle.
+                        if let Ok(eof_chunk) = rx.peek().await {
+                            if !eof_chunk.is_empty() {
+                                self.size_verification_failures.inc();
+                                return Err(make_input_err!(
+                                    "Expected EOF chunk when exact size was hit on insert in verify store - {}",
+                                    expected_size,
+                                ));
+                            }
                         }
-                        done = true;
                     }
                     std::cmp::Ordering::Less => {}
                 }
             }
 
-            if done {
+            // If is EOF.
+            if chunk.is_empty() {
                 if let Some(expected_size) = maybe_expected_digest_size {
                     if sum_size != expected_size {
                         self.size_verification_failures.inc();
@@ -124,9 +124,6 @@ impl VerifyStore {
                         ));
                     }
                 }
-            }
-
-            if chunk.is_empty() {
                 tx.send_eof().err_tip(|| "In verify_store::check_update")?;
                 break;
             }
@@ -141,13 +138,6 @@ impl VerifyStore {
             write_future
                 .await
                 .err_tip(|| "Failed to write chunk to inner store in verify store")?;
-
-            // If are done, but not an empty `chunk`, it means we are at the exact
-            // size match and already received the EOF chunk above.
-            if done {
-                tx.send_eof().err_tip(|| "In verify_store::check_update")?;
-                break;
-            }
         }
         Ok(())
     }

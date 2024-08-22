@@ -351,3 +351,31 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
     );
     Ok(())
 }
+
+#[nativelink_test]
+async fn verify_size_and_hash_suceeds_on_small_data() -> Result<(), Error> {
+    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let store = VerifyStore::new(
+        &nativelink_config::stores::VerifyStore {
+            backend: nativelink_config::stores::StoreConfig::memory(
+                nativelink_config::stores::MemoryStore::default(),
+            ),
+            verify_size: true,
+            verify_hash: true,
+        },
+        Store::new(inner_store.clone()),
+    );
+
+    /// This value is sha256("123").
+    const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
+    const VALUE: &str = "123";
+    let digest = DigestInfo::try_new(HASH, 3).unwrap();
+    let result = store.update_oneshot(digest, VALUE.into()).await;
+    assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
+    assert_eq!(
+        inner_store.has(digest).await,
+        Ok(Some(VALUE.len())),
+        "Expected data to exist in store after update"
+    );
+    Ok(())
+}
