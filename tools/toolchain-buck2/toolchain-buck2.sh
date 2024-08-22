@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Creates a custom toolchain for building https://github.com/RobotLocomotion/drake
+# Creates a custom toolchain for building https://github.com/facebook/buck2
 # source tree and pushing it to Amazon Elastic Container Registry (ECR).
 
 set -xeuo pipefail
@@ -23,6 +23,7 @@ ECR_PROFILE=${ECR_PROFILE:?Error: ECR_PROFILE is not set}
 ECR_USER=${ECR_USER:?Error: ECR_USER is not set}
 ECR_REGION=${ECR_REGION:?Error: ECR_REGION is not set}
 BUILDX_NO_CACHE=${BUILDX_NO_CACHE:-true}
+ECR_PUBLISH=${ECR_PUBLISH:-true}
 
 SRC_ROOT=$(git rev-parse --show-toplevel)
 FLAKE_NIX_FILE="${SRC_ROOT}/flake.nix"
@@ -30,18 +31,21 @@ echo "WARNING: This script will modify and revert the flake.nix"
 sleep 3
 
 function ecr_login() {
-    aws ecr get-login-password --profile ${ECR_PROFILE} --region ${ECR_REGION} | docker login --username ${ECR_USER} --password-stdin ${ECR}
+    aws ecr get-login-password --profile ${ECR_PROFILE} --region ${ECR_REGION} | \
+    docker login --username ${ECR_USER} --password-stdin ${ECR}
 }
 
-# Build a base image for drake actions.
+# Build a base image for buck2 actions.
+# Base image is published to the local docker engine
+# from the Dockerfile.
 docker buildx build --no-cache=${BUILDX_NO_CACHE} \
     --platform linux/amd64 \
-    -t localhost:5001/toolchain-drake:latest \
+    -t localhost:5001/toolchain-buck2:latest \
     --push \
-    ${SRC_ROOT}/tools/toolchain-drake
+    ${SRC_ROOT}/tools/toolchain-buck2
 
 # Parse out the repo digests sha hash to be used as image digest.
-FULL_IMAGE_PATH=$(docker inspect localhost:5001/toolchain-drake:latest | jq '.[].RepoDigests[0]')
+FULL_IMAGE_PATH=$(docker inspect localhost:5001/toolchain-buck2:latest | jq '.[].RepoDigests[0]')
 IMAGE_DIGEST=$(echo $FULL_IMAGE_PATH | awk -F'[@"]' '{print $3}')
 if [ -z "$IMAGE_DIGEST" ]; then
     echo "Unable to parse RepoDigests"
@@ -52,7 +56,7 @@ fi
 ORIGINAL_FLAKE_CONTENT=$(cat "${FLAKE_NIX_FILE}")
 
 # Patch flake.nix with image digest.
-sed -i -E "s|imageDigest = \"\"; # DO NOT COMMIT DRAKE IMAGE_DIGEST VALUE|imageDigest = \"${IMAGE_DIGEST}\"; # DO NOT COMMIT DRAKE IMAGE_DIGEST VALUE|" "${FLAKE_NIX_FILE}"
+sed -i -E "s|imageDigest = \"\"; # DO NOT COMMIT BUCK2 IMAGE_DIGEST VALUE|imageDigest = \"${IMAGE_DIGEST}\"; # DO NOT COMMIT BUCK2 IMAGE_DIGEST VALUE|" "${FLAKE_NIX_FILE}"
 
 # Bail if flake wasn't updated
 PATCHED_FLAKE_CONTENT=$(cat "${FLAKE_NIX_FILE}")
@@ -70,8 +74,10 @@ fi
 # Get the sha256 value, this will fail due to empty string in the sha256 field.
 set +o pipefail
 SHA256_HASH=$(
-    nix run .#nativelink-worker-toolchain-drake.copyTo docker://localhost:5001/nativelink-toolchain-drake:latest -- --dest-tls-verify=false 2>&1 |
-    grep "got:" |
+    nix run .#nativelink-worker-toolchain-buck2.copyTo \
+    docker://localhost:5001/nativelink-toolchain-buck2:latest \
+    -- --dest-tls-verify=false 2>&1 | \
+    grep "got:" | \
     grep -o 'sha256-[^[:space:]]*'
 )
 set -o pipefail
@@ -80,7 +86,7 @@ set -o pipefail
 ORIGINAL_FLAKE_CONTENT=$(cat "${FLAKE_NIX_FILE}")
 
 # Patch flake.nix with sha256 value.
-sed -i -E "s|sha256 = \"\"; # DO NOT COMMIT DRAKE SHA256 VALUE|sha256 = \"${SHA256_HASH}\"; # DO NOT COMMIT DRAKE SHA256 VALUE|" "${FLAKE_NIX_FILE}"
+sed -i -E "s|sha256 = \"\"; # DO NOT COMMIT BUCK2 SHA256 VALUE|sha256 = \"${SHA256_HASH}\"; # DO NOT COMMIT BUCK2 SHA256 VALUE|" "${FLAKE_NIX_FILE}"
 
 # Bail if flake wasn't updated.
 PATCHED_FLAKE_CONTENT=$(cat "${FLAKE_NIX_FILE}")
@@ -95,19 +101,19 @@ else
     popd
 fi
 
-# Wrap it with nativelink to turn it into a worker.
-nix run .#nativelink-worker-toolchain-drake.copyTo \
-    docker://localhost:5001/nativelink-toolchain-drake:latest \
+# Add worker specific files and configurations.
+nix run .#nativelink-worker-toolchain-buck2.copyTo \
+    docker://localhost:5001/nativelink-toolchain-buck2:latest \
     -- \
     --dest-tls-verify=false
 
-# Pull in to local docker and tag.
-docker pull localhost:5001/nativelink-toolchain-drake:latest
-docker tag localhost:5001/nativelink-toolchain-drake:latest ${ECR}
-
-# Push to ECR.
-ecr_login
-docker push ${ECR}
+# Publish image to ECR.
+if [ "$ECR_PUBLISH" = "true" ]; then
+    ecr_login
+    nix run .#nativelink-worker-toolchain-buck2.copyTo ${ECR}
+else
+    echo "Skipping ECR publishing"
+fi
 
 # Restore changes.
 git restore "${FLAKE_NIX_FILE}"
