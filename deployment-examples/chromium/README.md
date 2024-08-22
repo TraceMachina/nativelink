@@ -6,18 +6,18 @@ and worker. Don't use this example deployment in production. It's insecure.
 > [!WARNING]
 > - The client build request is best done from a Ubuntu image, `./03_build_chrome_tests.sh`. It will check if the image is Ubuntu and
 > fail otherwise.
-> - This tutorial has been tested in a Nix environment of version `2.
+> - This tutorial underwent testing in a Nix environment of version `2.
 > 21.0`.
 > - You need to install the [Docker](https://docs.docker.com/engine/install/ubuntu/) Engine in Ubuntu.
 > - To get your Nix environment set up see the [official Nix installation documentation](https://nix.dev/install-nix).
 
-All commands should be run from nix to ensure all dependencies exist in the environment.
+Run all commands from nix to ensure all dependencies exist in the environment.
 
 ```bash
 nix develop
 ```
 
-In this example we're using `kind` to set up the cluster `cilium` to provide a
+This example uses `kind` to set up the cluster `cilium` to provide a
 `LoadBalancer` and `GatewayController`.
 
 First set up a local development cluster:
@@ -30,8 +30,7 @@ native up
 > The `native up` command uses Pulumi under the hood. You can view and delete
 > the stack with `pulumi stack` and `pulumi destroy`.
 
-Next start a few standard deployments. This part also builds the remote
-execution containers and makes them available to the cluster:
+Next, start some standard deployments. This step includes building and preparing the remote containers for use in the cluster.:
 
 ```bash
 ./01_operations.sh
@@ -42,7 +41,7 @@ execution containers and makes them available to the cluster:
 > `nativelink` and worker images. You can view the state of the pipelines with
 > `tkn pr ls` and `tkn pr logs`/`tkn pr logs --follow`.
 
-Finally, deploy NativeLink:
+Time to deploy NativeLink:
 
 ```bash
 ./02_application.sh
@@ -74,7 +73,7 @@ in [linux/build_instructions.md](https://chromium.googlesource.com/chromium/src/
 ```
 
 > [!TIP]
-> You can monitor the logs of container groups with `kubectl logs`:
+> Use `kubectl logs` to view container group logs:
 > ```bash
 > kubectl logs -f -l app=nativelink-cas
 > kubectl logs -f -l app=nativelink-scheduler

@@ -9,8 +9,7 @@ vulnerabilities. Please send a report if something doesn't look right.
 ## Supported versions
 
 At the moment no version of `nativelink` is officially supported. Consider
-using the latest commit on the `main` branch until official production binaries
-are released.
+using the latest commit on the `main` branch until the release of official production binaries.
 
 ## Reporting a vulnerability
 
@@ -31,9 +30,9 @@ for publicly disclosed vulnerabilities.
 See the published [OCI images](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
 for pull commands.
 
-Images are tagged by nix derivation hash. The most recently pushed image
-corresponds to the `main` branch. Images are signed by the GitHub action that
-produced the image. Note that the [OCI workflow](https://github.com/TraceMachina/nativelink/actions/workflows/image.yaml) might take a few minutes to publish the latest image.
+Nix derivation hash tag the images. The latest pushed image
+corresponds to the `main` branch. GitHub action producing an image signs that
+image. Note that the [OCI workflow](https://github.com/TraceMachina/nativelink/actions/workflows/image.yaml) might take some time to publish the latest image.
 
 ### Get the tag for the latest commit
 ```sh
@@ -58,6 +57,6 @@ export PINNED_TAG=$(nix eval github:TraceMachina/nativelink/<revision>#image.ima
 > [!TIP]
 > The images are reproducible on `X86_64-unknown-linux-gnu`. If you're on such a
 > system you can produce a binary-identical image by building the `.#image`
-> flake output locally. Make sure that your `git status` is completely clean and
+> flake output locally. Make sure that your `git status` is clean and
 > aligned with the commit you want to reproduce. Otherwise the image will be
 > tainted with a `"dirty"` revision label.
