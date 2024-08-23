@@ -15,8 +15,9 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
+use serde_with::serde_as;
 
-use crate::serde_utils::{convert_duration_with_shellexpand, convert_numeric_with_shellexpand};
+use crate::deser::{ShellExpand, ShellExpandSeconds};
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
 #[derive(Deserialize, Debug)]
@@ -65,6 +66,7 @@ pub enum WorkerAllocationStrategy {
     MostRecentlyUsed,
 }
 
+#[serde_as]
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SimpleScheduler {
@@ -97,13 +99,15 @@ pub struct SimpleScheduler {
     /// The amount of time to retain completed actions in memory for in case
     /// a WaitExecution is called after the action has completed.
     /// Default: 60 (seconds)
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde_as(as = "ShellExpandSeconds")]
+    #[serde(default)]
     pub retain_completed_for_s: u32,
 
     /// Remove workers from pool once the worker has not responded in this
     /// amount of time in seconds.
     /// Default: 5 (seconds)
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde_as(as = "ShellExpandSeconds")]
+    #[serde(default)]
     pub worker_timeout_s: u64,
 
     /// If a job returns an internal error or times out this many times when
@@ -113,7 +117,8 @@ pub struct SimpleScheduler {
     /// resources when the task itself is the one causing the server to go
     /// into a bad state.
     /// Default: 3
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
+    #[serde(default)]
     pub max_job_retries: usize,
 
     /// The strategy used to assign workers jobs.

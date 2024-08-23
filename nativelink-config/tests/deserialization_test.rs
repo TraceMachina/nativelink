@@ -12,21 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use nativelink_config::serde_utils::{
-    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
-};
+use nativelink_config::deser::{ShellExpandBytes, ShellExpandSeconds};
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
+use serde_with::serde_as;
 
+#[serde_as]
 #[derive(Deserialize)]
 struct DurationEntity {
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde_as(as = "ShellExpandSeconds")]
+    #[serde(default)]
     duration: usize,
 }
 
+#[serde_as]
 #[derive(Deserialize)]
 struct DataSizeEntity {
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde_as(as = "ShellExpandBytes")]
+    #[serde(default)]
     data_size: usize,
 }
 

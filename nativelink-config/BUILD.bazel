@@ -10,9 +10,10 @@ rust_library(
     name = "nativelink-config",
     srcs = [
         "src/cas_server.rs",
+        "src/deser/mod.rs",
+        "src/deser/shellexpand.rs",
         "src/lib.rs",
         "src/schedulers.rs",
-        "src/serde_utils.rs",
         "src/stores.rs",
     ],
     compile_data = [
@@ -23,6 +24,7 @@ rust_library(
         "@crates//:byte-unit",
         "@crates//:humantime",
         "@crates//:serde",
+        "@crates//:serde_with",
         "@crates//:shellexpand",
     ],
 )
@@ -41,6 +43,7 @@ rust_test_suite(
         "@crates//:pretty_assertions",
         "@crates//:serde",
         "@crates//:serde_json5",
+        "@crates//:serde_with",
     ],
 )
 
@@ -63,4 +66,7 @@ rust_doc_test(
     name = "doc_test",
     timeout = "short",
     crate = ":nativelink-config",
+    deps = [
+        "@crates//:serde_json5",
+    ],
 )
