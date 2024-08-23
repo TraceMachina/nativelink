@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod cas_server;
-pub mod deser;
-pub mod schedulers;
-pub mod stores;
+//! Deserialization utilities for use in parsing and deserializing nativelink configs.
+
+mod shellexpand;
+
+pub use self::shellexpand::{ShellExpand, ShellExpandBytes, ShellExpandSeconds};
