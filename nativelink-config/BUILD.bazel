@@ -43,6 +43,7 @@ rust_test_suite(
         "@crates//:pretty_assertions",
         "@crates//:serde",
         "@crates//:serde_json5",
+        "@crates//:serde_with",
     ],
 )
 
@@ -65,4 +66,7 @@ rust_doc_test(
     name = "doc_test",
     timeout = "short",
     crate = ":nativelink-config",
+    deps = [
+        "@crates//:serde_json5",
+    ],
 )

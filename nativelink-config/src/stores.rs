@@ -13,12 +13,9 @@
 // limitations under the License.
 
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
-use crate::serde_utils::{
-    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
-    convert_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
-    convert_string_with_shellexpand, convert_vec_string_with_shellexpand,
-};
+use crate::deser::{ShellExpand, ShellExpandBytes, ShellExpandSeconds};
 
 /// Name of the store. This type will be used when referencing a store
 /// in the `CasConfig::stores`'s map key.
@@ -456,11 +453,12 @@ pub struct ShardStore {
     pub stores: Vec<ShardConfig>,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct SizePartitioningStore {
     /// Size to partition the data on.
-    #[serde(deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde_as(as = "ShellExpandBytes")]
     pub size: u64,
 
     /// Store to send data when object is < (less than) size.
@@ -470,14 +468,16 @@ pub struct SizePartitioningStore {
     pub upper_store: StoreConfig,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct RefStore {
     /// Name of the store under the root "stores" config object.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub name: String,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct FilesystemStore {
@@ -486,7 +486,7 @@ pub struct FilesystemStore {
     /// On service bootup this folder will be scanned and all files will be
     /// added to the cache. In the event one of the files doesn't match the
     /// criteria, the file will be deleted.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub content_path: String,
 
     /// A temporary location of where files that are being uploaded or
@@ -494,13 +494,14 @@ pub struct FilesystemStore {
     /// accurate. This location must be on the same block device as
     /// `content_path` so atomic moves can happen (ie: move without copy).
     /// All files in this folder will be deleted on every startup.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub temp_path: String,
 
     /// Buffer size to use when reading files. Generally this should be left
     /// to the default value except for testing.
     /// Default: 32k.
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde_as(as = "ShellExpandBytes")]
+    #[serde(default)]
     pub read_buffer_size: u32,
 
     /// Policy used to evict items out of the store. Failure to set this
@@ -512,7 +513,8 @@ pub struct FilesystemStore {
     /// value is used to determine an entry's actual size on disk consumed
     /// For a 4KB block size filesystem, a 1B file actually consumes 4KB
     /// Default: 4096
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde_as(as = "ShellExpandBytes")]
+    #[serde(default)]
     pub block_size: u64,
 }
 
@@ -537,6 +539,7 @@ pub struct MemoryStore {
     pub eviction_policy: Option<EvictionPolicy>,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct DedupStore {
@@ -554,7 +557,8 @@ pub struct DedupStore {
     /// deciding where to partition the data.
     ///
     /// Default: 65536 (64k)
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde_as(as = "ShellExpandBytes")]
+    #[serde(default)]
     pub min_size: u32,
 
     /// A best-effort attempt will be made to keep the average size
@@ -568,13 +572,15 @@ pub struct DedupStore {
     /// details.
     ///
     /// Default: 262144 (256k)
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde_as(as = "ShellExpandBytes")]
+    #[serde(default)]
     pub normal_size: u32,
 
     /// Maximum size a chunk is allowed to be.
     ///
     /// Default: 524288 (512k)
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde_as(as = "ShellExpandBytes")]
+    #[serde(default)]
     pub max_size: u32,
 
     /// Due to implementation detail, we want to prefer to download
@@ -588,7 +594,8 @@ pub struct DedupStore {
     /// request is: `max_concurrent_fetch_per_get * max_size`.
     ///
     /// Default: 10
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
+    #[serde(default)]
     pub max_concurrent_fetch_per_get: u32,
 }
 
@@ -645,6 +652,7 @@ pub struct CompletenessCheckingStore {
     pub cas_store: StoreConfig,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 pub struct Lz4Config {
@@ -653,7 +661,8 @@ pub struct Lz4Config {
     /// compression ratios.
     ///
     /// Default: 65536 (64k).
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde_as(as = "ShellExpandBytes")]
+    #[serde(default)]
     pub block_size: u32,
 
     /// Maximum size allowed to attempt to deserialize data into.
@@ -664,7 +673,8 @@ pub struct Lz4Config {
     /// allow you to specify the maximum that we'll attempt deserialize.
     ///
     /// Default: value in `block_size`.
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde_as(as = "ShellExpandBytes")]
+    #[serde(default)]
     pub max_decode_block_size: u32,
 }
 
@@ -699,42 +709,50 @@ pub struct CompressionStore {
 /// is touched it updates the timestamp. Inserts and updates will execute the
 /// eviction policy removing any expired entries and/or the oldest entries
 /// until the store size becomes smaller than max_bytes.
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct EvictionPolicy {
     /// Maximum number of bytes before eviction takes place.
     /// Default: 0. Zero means never evict based on size.
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde_as(as = "ShellExpandBytes")]
+    #[serde(default)]
     pub max_bytes: usize,
 
     /// When eviction starts based on hitting max_bytes, continue until
     /// max_bytes - evict_bytes is met to create a low watermark.  This stops
     /// operations from thrashing when the store is close to the limit.
     /// Default: 0
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde_as(as = "ShellExpandBytes")]
+    #[serde(default)]
     pub evict_bytes: usize,
 
     /// Maximum number of seconds for an entry to live since it was last
     /// accessed before it is evicted.
     /// Default: 0. Zero means never evict based on time.
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde_as(as = "ShellExpandSeconds")]
+    #[serde(default)]
     pub max_seconds: u32,
 
     /// Maximum size of the store before an eviction takes place.
     /// Default: 0. Zero means never evict based on count.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
+    #[serde(default)]
     pub max_count: u64,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct S3Store {
     /// S3 region. Usually us-east-1, us-west-2, af-south-1, exc...
-    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
+    #[serde(default)]
     pub region: String,
 
     /// Bucket name to use as the backend.
-    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
+    #[serde(default)]
     pub bucket: String,
 
     /// If you wish to prefix the location on s3. If None, no prefix will be used.
@@ -756,7 +774,8 @@ pub struct S3Store {
     /// around for a few days is generally a good idea.
     ///
     /// Default: 0. Zero means never consider an object expired.
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde_as(as = "ShellExpandSeconds")]
+    #[serde(default)]
     pub consider_expired_after_s: u32,
 
     /// The maximum buffer size to retain in case of a retryable error
@@ -798,26 +817,28 @@ pub enum StoreType {
     Ac,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientTlsConfig {
     /// Path to the certificate authority to use to validate the remote.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub ca_file: String,
 
     /// Path to the certificate file for client authentication.
-    #[serde(deserialize_with = "convert_optional_string_with_shellexpand")]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub cert_file: Option<String>,
 
     /// Path to the private key file for client authentication.
-    #[serde(deserialize_with = "convert_optional_string_with_shellexpand")]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub key_file: Option<String>,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct GrpcEndpoint {
     /// The endpoint address (i.e. grpc(s)://example.com:443).
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub address: String,
     /// The TLS configuration to use to connect to the endpoint (if grpcs).
     pub tls_config: Option<ClientTlsConfig>,
@@ -825,11 +846,13 @@ pub struct GrpcEndpoint {
     pub concurrency_limit: Option<usize>,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct GrpcStore {
     /// Instance name for GRPC calls. Proxy calls will have the instance_name changed to this.
-    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
+    #[serde(default)]
     pub instance_name: String,
 
     /// The endpoint of the grpc connection.
@@ -876,12 +899,13 @@ pub enum ErrorCode {
     // Note: This list is duplicated from nativelink-error/lib.rs.
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RedisStore {
     /// The hostname or IP address of the Redis server.
     /// Ex: ["redis://username:password@redis-server-url:6380/99"]
     /// 99 Represents database ID, 6380 represents the port.
-    #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
+    #[serde_as(as = "Vec<ShellExpand>")]
     pub addresses: Vec<String>,
 
     /// The response timeout for the Redis connection in seconds.
@@ -958,12 +982,14 @@ pub enum RedisMode {
 /// 8         4.8s - 8s
 /// Remember that to get total results is additive, meaning the above results
 /// would mean a single request would have a total delay of 9.525s - 15.875s.
+#[serde_as]
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Retry {
     /// Maximum number of retries until retrying stops.
     /// Setting this to zero will always attempt 1 time, but not retry.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
+    #[serde(default)]
     pub max_retries: usize,
 
     /// Delay in seconds for exponential back off.
