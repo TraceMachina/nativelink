@@ -32,15 +32,15 @@ pub type SchedulerRefName = String;
 /// Used when the config references `instance_name` in the protocol.
 pub type InstanceName = String;
 
+#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug, Default, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
 pub enum HttpCompressionAlgorithm {
     /// No compression.
     #[default]
-    None,
+    none,
 
     /// Zlib compression.
-    Gzip,
+    gzip,
 }
 
 /// Note: Compressing data in the cloud rarely has a benefit, since most
@@ -360,11 +360,11 @@ pub struct HttpServerConfig {
     pub experimental_http2_max_header_list_size: Option<u32>,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
 pub enum ListenerConfig {
     /// Listener for HTTP/HTTPS/HTTP2 sockets.
-    Http(HttpListener),
+    http(HttpListener),
 }
 
 #[derive(Deserialize, Debug)]
@@ -408,18 +408,18 @@ pub struct ServerConfig {
     pub services: Option<ServicesConfig>,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
 pub enum WorkerProperty {
     /// List of static values.
     /// Note: Generally there should only ever be 1 value, but if the platform
     /// property key is PropertyType::Priority it may have more than one value.
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
-    Values(Vec<String>),
+    values(Vec<String>),
 
     /// A dynamic configuration. The string will be executed as a command
     /// (not sell) and will be split by "\n" (new line character).
-    QueryCmd(String),
+    query_cmd(String),
 }
 
 /// Generic config for an endpoint and associated configs.
@@ -438,35 +438,35 @@ pub struct EndpointConfig {
     pub tls_config: Option<ClientTlsConfig>,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Deserialize, Debug, Default)]
-#[serde(rename_all = "snake_case")]
 pub enum UploadCacheResultsStrategy {
     /// Only upload action results with an exit code of 0.
     #[default]
-    SuccessOnly,
+    success_only,
 
     /// Don't upload any action results.
-    Never,
+    never,
 
     /// Upload all action results that complete.
-    Everything,
+    everything,
 
     /// Only upload action results that fail.
-    FailuresOnly,
+    failures_only,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Clone, Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
 pub enum EnvironmentSource {
     /// The name of the platform property in the action to get the value from.
-    Property(String),
+    property(String),
 
     /// The raw value to set.
-    Value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
+    value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
 
     /// The max amount of time in milliseconds the command is allowed to run
     /// (requested by the client).
-    TimeoutMillis,
+    timeout_millis,
 
     /// A special file path will be provided that can be used to comminicate
     /// with the parent process about out-of-band information. This file
@@ -484,7 +484,7 @@ pub enum EnvironmentSource {
     ///
     /// All fields are optional, file does not need to be created and may be
     /// empty.
-    SideChannelFile,
+    side_channel_file,
 
     /// A "root" directory for the action. This directory can be used to
     /// store temporary files that are not needed after the action has
@@ -499,7 +499,7 @@ pub enum EnvironmentSource {
     /// variable, `mkdir $ENV_VAR_NAME/tmp` and `export TMPDIR=$ENV_VAR_NAME/tmp`.
     /// Another example might be to bind-mount the `/tmp` path in a container to
     /// this path in `entrypoint`.
-    ActionDirectory,
+    action_directory,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -653,11 +653,11 @@ pub struct LocalWorkerConfig {
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
 pub enum WorkerConfig {
     /// A worker type that executes jobs locally on this machine.
-    Local(LocalWorkerConfig),
+    local(LocalWorkerConfig),
 }
 
 #[derive(Deserialize, Debug, Clone, Copy)]

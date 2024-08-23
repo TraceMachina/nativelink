@@ -43,10 +43,10 @@ fn setup_stores(
     let size_part_store = SizePartitioningStore::new(
         &nativelink_config::stores::SizePartitioningStore {
             size,
-            lower_store: nativelink_config::stores::StoreConfig::Memory(
+            lower_store: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
-            upper_store: nativelink_config::stores::StoreConfig::Memory(
+            upper_store: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
         },

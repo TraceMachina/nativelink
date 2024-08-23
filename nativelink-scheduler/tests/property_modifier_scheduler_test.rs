@@ -44,7 +44,7 @@ fn make_modifier_scheduler(modifications: Vec<PropertyModification>) -> TestCont
     let mock_scheduler = Arc::new(MockActionScheduler::new());
     let config = nativelink_config::schedulers::PropertyModifierScheduler {
         modifications,
-        scheduler: Box::new(nativelink_config::schedulers::SchedulerConfig::Simple(
+        scheduler: Box::new(nativelink_config::schedulers::SchedulerConfig::simple(
             nativelink_config::schedulers::SimpleScheduler::default(),
         )),
     };
@@ -60,7 +60,7 @@ async fn add_action_adds_property() -> Result<(), Error> {
     let name = "name".to_string();
     let value = "value".to_string();
     let context =
-        make_modifier_scheduler(vec![PropertyModification::Add(PlatformPropertyAddition {
+        make_modifier_scheduler(vec![PropertyModification::add(PlatformPropertyAddition {
             name: name.clone(),
             value: value.clone(),
         })]);
@@ -98,7 +98,7 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
     let original_value = "value".to_string();
     let replaced_value = "replaced".to_string();
     let context =
-        make_modifier_scheduler(vec![PropertyModification::Add(PlatformPropertyAddition {
+        make_modifier_scheduler(vec![PropertyModification::add(PlatformPropertyAddition {
             name: name.clone(),
             value: replaced_value.clone(),
         })]);
@@ -141,8 +141,8 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
     let name = "name".to_string();
     let value = "value".to_string();
     let context = make_modifier_scheduler(vec![
-        PropertyModification::Remove(name.clone()),
-        PropertyModification::Add(PlatformPropertyAddition {
+        PropertyModification::remove(name.clone()),
+        PropertyModification::add(PlatformPropertyAddition {
             name: name.clone(),
             value: value.clone(),
         }),
@@ -180,11 +180,11 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
     let name = "name".to_string();
     let value = "value".to_string();
     let context = make_modifier_scheduler(vec![
-        PropertyModification::Add(PlatformPropertyAddition {
+        PropertyModification::add(PlatformPropertyAddition {
             name: name.clone(),
             value: value.clone(),
         }),
-        PropertyModification::Remove(name.clone()),
+        PropertyModification::remove(name.clone()),
     ]);
     let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
@@ -219,7 +219,7 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
 async fn add_action_property_remove() -> Result<(), Error> {
     let name = "name".to_string();
     let value = "value".to_string();
-    let context = make_modifier_scheduler(vec![PropertyModification::Remove(name.clone())]);
+    let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
     let mut action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest())
         .as_ref()
         .clone();
@@ -279,7 +279,7 @@ async fn find_by_client_operation_id_call_passed() -> Result<(), Error> {
 #[nativelink_test]
 async fn remove_adds_to_underlying_manager() -> Result<(), Error> {
     let name = "name".to_string();
-    let context = make_modifier_scheduler(vec![PropertyModification::Remove(name.clone())]);
+    let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
     let known_properties = Vec::new();
     let instance_name_fut = context
         .mock_scheduler
@@ -296,7 +296,7 @@ async fn remove_adds_to_underlying_manager() -> Result<(), Error> {
 #[nativelink_test]
 async fn remove_retains_type_in_underlying_manager() -> Result<(), Error> {
     let name = "name".to_string();
-    let context = make_modifier_scheduler(vec![PropertyModification::Remove(name.clone())]);
+    let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
     let known_properties = vec![name.clone()];
     let instance_name_fut = context
         .mock_scheduler

@@ -516,7 +516,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
     let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
 
     let mut prop_defs = HashMap::new();
-    prop_defs.insert("prop".to_string(), PropertyType::Exact);
+    prop_defs.insert("prop".to_string(), PropertyType::exact);
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler {
             supported_platform_properties: Some(prop_defs),
@@ -1269,7 +1269,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
     let mut supported_props = HashMap::new();
-    supported_props.insert("prop1".to_string(), PropertyType::Minimum);
+    supported_props.insert("prop1".to_string(), PropertyType::minimum);
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler {
             supported_platform_properties: Some(supported_props),
@@ -1420,7 +1420,7 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
     let mut supported_props = HashMap::new();
-    supported_props.insert("prop1".to_string(), PropertyType::Minimum);
+    supported_props.insert("prop1".to_string(), PropertyType::minimum);
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler {
             supported_platform_properties: Some(supported_props),

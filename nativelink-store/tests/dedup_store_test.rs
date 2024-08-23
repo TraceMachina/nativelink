@@ -24,10 +24,10 @@ use rand::{Rng, SeedableRng};
 
 fn make_default_config() -> nativelink_config::stores::DedupStore {
     nativelink_config::stores::DedupStore {
-        index_store: nativelink_config::stores::StoreConfig::Memory(
+        index_store: nativelink_config::stores::StoreConfig::memory(
             nativelink_config::stores::MemoryStore::default(),
         ),
-        content_store: nativelink_config::stores::StoreConfig::Memory(
+        content_store: nativelink_config::stores::StoreConfig::memory(
             nativelink_config::stores::MemoryStore::default(),
         ),
         min_size: 8 * 1024,
@@ -169,10 +169,10 @@ async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test
 ) -> Result<(), Error> {
     let store = DedupStore::new(
         &nativelink_config::stores::DedupStore {
-            index_store: nativelink_config::stores::StoreConfig::Memory(
+            index_store: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
-            content_store: nativelink_config::stores::StoreConfig::Memory(
+            content_store: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
             min_size: 5,
@@ -221,10 +221,10 @@ async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test
 async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
     let store = DedupStore::new(
         &nativelink_config::stores::DedupStore {
-            index_store: nativelink_config::stores::StoreConfig::Memory(
+            index_store: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
-            content_store: nativelink_config::stores::StoreConfig::Memory(
+            content_store: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
             min_size: 5,
