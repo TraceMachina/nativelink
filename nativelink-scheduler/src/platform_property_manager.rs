@@ -77,7 +77,7 @@ impl PlatformPropertyManager {
     pub fn make_prop_value(&self, key: &str, value: &str) -> Result<PlatformPropertyValue, Error> {
         if let Some(prop_type) = self.known_properties.get(key) {
             return match prop_type {
-                PropertyType::Minimum => Ok(PlatformPropertyValue::Minimum(
+                PropertyType::minimum => Ok(PlatformPropertyValue::Minimum(
                     value.parse::<u64>().err_tip_with_code(|e| {
                         (
                             Code::InvalidArgument,
@@ -85,8 +85,8 @@ impl PlatformPropertyManager {
                         )
                     })?,
                 )),
-                PropertyType::Exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
-                PropertyType::Priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
+                PropertyType::exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
+                PropertyType::priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
             };
         }
         Err(make_input_err!("Unknown platform property '{}'", key))

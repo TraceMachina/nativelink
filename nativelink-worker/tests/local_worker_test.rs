@@ -78,15 +78,15 @@ async fn platform_properties_smoke_test() -> Result<(), Error> {
     let mut platform_properties = HashMap::new();
     platform_properties.insert(
         "foo".to_string(),
-        WorkerProperty::Values(vec!["bar1".to_string(), "bar2".to_string()]),
+        WorkerProperty::values(vec!["bar1".to_string(), "bar2".to_string()]),
     );
     platform_properties.insert(
         "baz".to_string(),
         // Note: new lines will result in two entries for same key.
         #[cfg(target_family = "unix")]
-        WorkerProperty::QueryCmd("printf 'hello\ngoodbye'".to_string()),
+        WorkerProperty::query_cmd("printf 'hello\ngoodbye'".to_string()),
         #[cfg(target_family = "windows")]
-        WorkerProperty::QueryCmd("cmd /C \"echo hello && echo goodbye\"".to_string()),
+        WorkerProperty::query_cmd("cmd /C \"echo hello && echo goodbye\"".to_string()),
     );
     let mut test_context = setup_local_worker(platform_properties).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
@@ -407,10 +407,10 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn st
     let cas_store = Store::new(FastSlowStore::new(
         &nativelink_config::stores::FastSlowStore {
             // Note: These are not needed for this test, so we put dummy memory stores here.
-            fast: nativelink_config::stores::StoreConfig::Memory(
+            fast: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
-            slow: nativelink_config::stores::StoreConfig::Memory(
+            slow: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
         },
@@ -455,10 +455,10 @@ async fn new_local_worker_removes_work_directory_before_start_test(
     let cas_store = Store::new(FastSlowStore::new(
         &nativelink_config::stores::FastSlowStore {
             // Note: These are not needed for this test, so we put dummy memory stores here.
-            fast: nativelink_config::stores::StoreConfig::Memory(
+            fast: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
-            slow: nativelink_config::stores::StoreConfig::Memory(
+            slow: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
         },

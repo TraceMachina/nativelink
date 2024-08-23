@@ -65,10 +65,10 @@ impl PropertyModifierScheduler {
         );
         for modification in &self.modifications {
             match modification {
-                PropertyModification::Remove(name) => {
+                PropertyModification::remove(name) => {
                     known_properties.insert(name.clone());
                 }
-                PropertyModification::Add(_) => (),
+                PropertyModification::add(_) => (),
             }
         }
         let final_known_properties: Vec<String> = known_properties.into_iter().collect();
@@ -87,10 +87,10 @@ impl PropertyModifierScheduler {
         let action_info_mut = Arc::make_mut(&mut action_info);
         for modification in &self.modifications {
             match modification {
-                PropertyModification::Add(addition) => action_info_mut
+                PropertyModification::add(addition) => action_info_mut
                     .platform_properties
                     .insert(addition.name.clone(), addition.value.clone()),
-                PropertyModification::Remove(name) => {
+                PropertyModification::remove(name) => {
                     action_info_mut.platform_properties.remove(name)
                 }
             };

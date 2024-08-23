@@ -24,20 +24,20 @@ use crate::serde_utils::{
 /// in the `CasConfig::stores`'s map key.
 pub type StoreRefName = String;
 
+#[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
 pub enum ConfigDigestHashFunction {
     /// Use the sha256 hash function.
     /// <https://en.wikipedia.org/wiki/SHA-2>
-    Sha256,
+    sha256,
 
     /// Use the blake3 hash function.
     /// <https://en.wikipedia.org/wiki/BLAKE_(hash_function)>
-    Blake3,
+    blake3,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
 pub enum StoreConfig {
     /// Memory store will store all data in a hashmap in memory.
     ///
@@ -52,7 +52,7 @@ pub enum StoreConfig {
     /// }
     /// ```
     ///
-    Memory(MemoryStore),
+    memory(MemoryStore),
 
     /// S3 store will use Amazon's S3 service as a backend to store
     /// the files. This configuration can be used to share files
@@ -76,7 +76,7 @@ pub enum StoreConfig {
     /// }
     /// ```
     ///
-    ExperimentalS3Store(S3Store),
+    experimental_s3_store(S3Store),
 
     /// Verify store is used to apply verifications to an underlying
     /// store implementation. It is strongly encouraged to validate
@@ -100,7 +100,7 @@ pub enum StoreConfig {
     /// }
     /// ```
     ///
-    Verify(Box<VerifyStore>),
+    verify(Box<VerifyStore>),
 
     /// Completeness checking store verifies if the
     /// output files & folders exist in the CAS before forwarding
@@ -128,7 +128,7 @@ pub enum StoreConfig {
     ///   }
     /// ```
     ///
-    CompletenessChecking(Box<CompletenessCheckingStore>),
+    completeness_checking(Box<CompletenessCheckingStore>),
 
     /// A compression store that will compress the data inbound and
     /// outbound. There will be a non-trivial cost to compress and
@@ -156,7 +156,7 @@ pub enum StoreConfig {
     ///   }
     /// ```
     ///
-    Compression(Box<CompressionStore>),
+    compression(Box<CompressionStore>),
 
     /// A dedup store will take the inputs and run a rolling hash
     /// algorithm on them to slice the input into smaller parts then
@@ -221,7 +221,7 @@ pub enum StoreConfig {
     ///   }
     /// ```
     ///
-    Dedup(Box<DedupStore>),
+    dedup(Box<DedupStore>),
 
     /// Existence store will wrap around another store and cache calls
     /// to has so that subsequent has_with_results calls will be
@@ -248,7 +248,7 @@ pub enum StoreConfig {
     ///   }
     /// ```
     ///
-    ExistenceCache(Box<ExistenceCacheStore>),
+    existence_cache(Box<ExistenceCacheStore>),
 
     /// FastSlow store will first try to fetch the data from the `fast`
     /// store and then if it does not exist try the `slow` store.
@@ -291,7 +291,7 @@ pub enum StoreConfig {
     ///   }
     /// ```
     ///
-    FastSlow(Box<FastSlowStore>),
+    fast_slow(Box<FastSlowStore>),
 
     /// Shards the data to multiple stores. This is useful for cases
     /// when you want to distribute the load across multiple stores.
@@ -313,7 +313,7 @@ pub enum StoreConfig {
     /// }
     /// ```
     ///
-    Shard(ShardStore),
+    shard(ShardStore),
 
     /// Stores the data on the filesystem. This store is designed for
     /// local persistent storage. Restarts of this program should restore
@@ -334,7 +334,7 @@ pub enum StoreConfig {
     /// }
     /// ```
     ///
-    Filesystem(FilesystemStore),
+    filesystem(FilesystemStore),
 
     /// Store used to reference a store in the root store manager.
     /// This is useful for cases when you want to share a store in different
@@ -349,8 +349,7 @@ pub enum StoreConfig {
     /// }
     /// ```
     ///
-    #[serde(rename = "ref_store")]
-    Ref(RefStore),
+    ref_store(RefStore),
 
     /// Uses the size field of the digest to separate which store to send the
     /// data. This is useful for cases when you'd like to put small objects
@@ -378,7 +377,7 @@ pub enum StoreConfig {
     ///   }
     /// ```
     ///
-    SizePartitioning(Box<SizePartitioningStore>),
+    size_partitioning(Box<SizePartitioningStore>),
 
     /// This store will pass-through calls to another GRPC store. This store
     /// is not designed to be used as a sub-store of another store, but it
@@ -401,7 +400,7 @@ pub enum StoreConfig {
     ///   }
     /// ```
     ///
-    Grpc(GrpcStore),
+    grpc(GrpcStore),
 
     /// Stores data in any stores compatible with Redis APIs.
     ///
@@ -418,8 +417,7 @@ pub enum StoreConfig {
     /// }
     /// ```
     ///
-    #[serde(rename = "redis_store")]
-    Redis(RedisStore),
+    redis_store(RedisStore),
 
     /// Noop store is a store that sends streams into the void and all data
     /// retrieval will return 404 (NotFound). This can be useful for cases
@@ -431,7 +429,7 @@ pub enum StoreConfig {
     /// "noop": {}
     /// ```
     ///
-    Noop,
+    noop,
 }
 
 /// Configuration for an individual shard of the store.
@@ -668,8 +666,8 @@ pub struct Lz4Config {
     pub max_decode_block_size: u32,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-#[serde(rename_all = "snake_case")]
 pub enum CompressionAlgorithm {
     /// LZ4 compression algorithm is extremely fast for compression and
     /// decompression, however does not perform very well in compression
@@ -678,7 +676,7 @@ pub enum CompressionAlgorithm {
     /// compressible.
     ///
     /// see: <https://lz4.github.io/lz4/>
-    Lz4(Lz4Config),
+    lz4(Lz4Config),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -789,13 +787,13 @@ pub struct S3Store {
     pub disable_http2: bool,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
 pub enum StoreType {
     /// The store is content addressable storage.
-    Cas,
+    cas,
     /// The store is an action cache.
-    Ac,
+    ac,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

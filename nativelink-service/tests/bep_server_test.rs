@@ -53,7 +53,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         BEP_STORE_NAME,
         store_factory(
-            &nativelink_config::stores::StoreConfig::Memory(
+            &nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
             &store_manager,

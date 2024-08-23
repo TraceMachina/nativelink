@@ -43,10 +43,10 @@ fn make_stores() -> (Store, Store, Store) {
     ));
     let fast_slow_store = Store::new(FastSlowStore::new(
         &nativelink_config::stores::FastSlowStore {
-            fast: nativelink_config::stores::StoreConfig::Memory(
+            fast: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
-            slow: nativelink_config::stores::StoreConfig::Memory(
+            slow: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
         },
@@ -333,10 +333,10 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
     let fast_slow_store = FastSlowStore::new(
         &nativelink_config::stores::FastSlowStore {
-            fast: nativelink_config::stores::StoreConfig::Memory(
+            fast: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
-            slow: nativelink_config::stores::StoreConfig::Memory(
+            slow: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
         },
@@ -382,10 +382,10 @@ async fn ignore_value_in_fast_store() -> Result<(), Error> {
     ));
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &nativelink_config::stores::FastSlowStore {
-            fast: nativelink_config::stores::StoreConfig::Memory(
+            fast: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
-            slow: nativelink_config::stores::StoreConfig::Memory(
+            slow: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
         },
@@ -411,10 +411,10 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
     ));
     let slow_store = Store::new(NoopStore::new());
     let fast_slow_store_config = nativelink_config::stores::FastSlowStore {
-        fast: nativelink_config::stores::StoreConfig::Memory(
+        fast: nativelink_config::stores::StoreConfig::memory(
             nativelink_config::stores::MemoryStore::default(),
         ),
-        slow: nativelink_config::stores::StoreConfig::Noop,
+        slow: nativelink_config::stores::StoreConfig::noop,
     };
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &fast_slow_store_config,

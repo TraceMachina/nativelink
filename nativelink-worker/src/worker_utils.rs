@@ -33,7 +33,7 @@ pub async fn make_supported_properties<S: BuildHasher>(
     for (property_name, worker_property) in worker_properties {
         futures.push(async move {
             match worker_property {
-                WorkerProperty::Values(values) => {
+                WorkerProperty::values(values) => {
                     let mut props = Vec::with_capacity(values.len());
                     for value in values {
                         props.push(Property {
@@ -43,7 +43,7 @@ pub async fn make_supported_properties<S: BuildHasher>(
                     }
                     Ok(props)
                 }
-                WorkerProperty::QueryCmd(cmd) => {
+                WorkerProperty::query_cmd(cmd) => {
                     let maybe_split_cmd = shlex::split(cmd);
                     let (command, args) = match &maybe_split_cmd {
                         Some(split_cmd) => (&split_cmd[0], &split_cmd[1..]),

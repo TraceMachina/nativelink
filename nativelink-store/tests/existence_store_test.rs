@@ -33,7 +33,7 @@ const VALID_HASH1: &str = "0123456789abcdef0000000000000000000100000000000001234
 async fn simple_exist_cache_test() -> Result<(), Error> {
     const VALUE: &str = "123";
     let config = ExistenceCacheStoreConfig {
-        backend: StoreConfig::Noop, // Note: Not used.
+        backend: StoreConfig::noop, // Note: Not used.
         eviction_policy: Default::default(),
     };
     let inner_store = Store::new(MemoryStore::new(
@@ -73,7 +73,7 @@ async fn simple_exist_cache_test() -> Result<(), Error> {
 async fn update_flags_existance_cache_test() -> Result<(), Error> {
     const VALUE: &str = "123";
     let config = ExistenceCacheStoreConfig {
-        backend: StoreConfig::Noop,
+        backend: StoreConfig::noop,
         eviction_policy: Default::default(),
     };
     let inner_store = Store::new(MemoryStore::new(
@@ -98,7 +98,7 @@ async fn update_flags_existance_cache_test() -> Result<(), Error> {
 async fn get_part_caches_if_exact_size_set() -> Result<(), Error> {
     const VALUE: &str = "123";
     let config = ExistenceCacheStoreConfig {
-        backend: StoreConfig::Noop,
+        backend: StoreConfig::noop,
         eviction_policy: Default::default(),
     };
     let inner_store = Store::new(MemoryStore::new(
@@ -135,7 +135,7 @@ async fn ensure_has_requests_eventually_do_let_evictions_happen() -> Result<(), 
         .err_tip(|| "Failed to update store")?;
     let store = ExistenceCacheStore::new_with_time(
         &ExistenceCacheStoreConfig {
-            backend: StoreConfig::Noop,
+            backend: StoreConfig::noop,
             eviction_policy: Some(EvictionPolicy {
                 max_seconds: 10,
                 ..Default::default()
