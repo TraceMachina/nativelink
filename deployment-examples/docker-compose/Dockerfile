@@ -32,7 +32,7 @@ RUN apt-get update \
             git=1:2.34.1-1ubuntu1.11 \
             gcc=4:11.2.0-1ubuntu1 \
             g++=4:11.2.0-1ubuntu1 \
-            python3=3.10.6-1~22.04 \
+            python3=3.10.6-1~22.04.1 \
             ca-certificates=20230311ubuntu0.22.04.1; \
     elif [ "${OS_VERSION}" = "20.04" ]; then \
         DEBIAN_FRONTEND=noninteractive \
