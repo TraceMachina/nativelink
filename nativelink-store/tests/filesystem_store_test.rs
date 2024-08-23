@@ -1420,10 +1420,10 @@ async fn update_with_whole_file_slow_path_when_low_file_descriptors() -> Result<
     let store = FastSlowStore::new(
         // Note: The config is not needed for this test, so use dummy data.
         &nativelink_config::stores::FastSlowStore {
-            fast: nativelink_config::stores::StoreConfig::memory(
+            fast: nativelink_config::stores::StoreConfig::Memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
-            slow: nativelink_config::stores::StoreConfig::memory(
+            slow: nativelink_config::stores::StoreConfig::Memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
         },

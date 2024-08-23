@@ -42,12 +42,12 @@ fn inner_scheduler_factory(
     store_manager: &StoreManager,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
-        SchedulerConfig::simple(config) => {
+        SchedulerConfig::Simple(config) => {
             let (action_scheduler, worker_scheduler) = SimpleScheduler::new(config);
             (Some(action_scheduler), Some(worker_scheduler))
         }
-        SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
-        SchedulerConfig::cache_lookup(config) => {
+        SchedulerConfig::Grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
+        SchedulerConfig::CacheLookup(config) => {
             let ac_store = store_manager
                 .get_store(&config.ac_store)
                 .err_tip(|| format!("'ac_store': '{}' does not exist", config.ac_store))?;
@@ -60,7 +60,7 @@ fn inner_scheduler_factory(
             )?);
             (Some(cache_lookup_scheduler), worker_scheduler)
         }
-        SchedulerConfig::property_modifier(config) => {
+        SchedulerConfig::PropertyModifier(config) => {
             let (action_scheduler, worker_scheduler) =
                 inner_scheduler_factory(&config.scheduler, store_manager)
                     .err_tip(|| "In nested PropertyModifierScheduler construction")?;

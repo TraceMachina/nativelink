@@ -35,7 +35,7 @@ async fn verify_size_false_passes_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
+            backend: nativelink_config::stores::StoreConfig::Memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
             verify_size: false,
@@ -66,7 +66,7 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
+            backend: nativelink_config::stores::StoreConfig::Memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
             verify_size: true,
@@ -106,7 +106,7 @@ async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
+            backend: nativelink_config::stores::StoreConfig::Memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
             verify_size: true,
@@ -132,7 +132,7 @@ async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), E
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
+            backend: nativelink_config::stores::StoreConfig::Memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
             verify_size: true,
@@ -170,7 +170,7 @@ async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
+            backend: nativelink_config::stores::StoreConfig::Memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
             verify_size: false,
@@ -198,7 +198,7 @@ async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
+            backend: nativelink_config::stores::StoreConfig::Memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
             verify_size: false,
@@ -233,7 +233,7 @@ async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
+            backend: nativelink_config::stores::StoreConfig::Memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
             verify_size: false,
@@ -267,7 +267,7 @@ async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
+            backend: nativelink_config::stores::StoreConfig::Memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
             verify_size: false,
@@ -313,7 +313,7 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
+            backend: nativelink_config::stores::StoreConfig::Memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
             verify_size: true,
