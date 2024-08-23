@@ -26,7 +26,7 @@ index 0cc03477db96..2d55c9063c41 100644
        "x86_64-darwin" = fetchurl {
          url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/bun-darwin-x64-baseline.zip";
 -        hash = "sha256-5PLk8q3di5TW8HUfo7P3xrPWLhleAiSv9jp2XeL47Kk=";
-+        hash = "sha256-gaDYzANmTTsjIlTXqqCWcOT7NTscuEUINsrjEb0eTRs=";
++        hash = "sha256-gaDYzANmTTsjIlTXqqCWcOT7NTscuEUINsrjEb0eTRs==";
        };
        "x86_64-linux" = fetchurl {
          url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/bun-linux-x64.zip";
