@@ -180,13 +180,6 @@ impl StoreDriver for RedisStore {
         // TODO(caass): Optimize for the case where `keys.len() == 1`
         let pipeline = self.client_pool.next().pipeline();
 
-        if !pipeline.is_connected() {
-            return Err(Error::new(
-                Code::Unavailable,
-                "Could not connect to Redis Client".to_string(),
-            ));
-        }
-
         results.iter_mut().for_each(|result| *result = None);
 
         for (idx, key) in keys.iter().enumerate() {
