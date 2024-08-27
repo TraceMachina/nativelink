@@ -407,6 +407,7 @@ most automatically generated changelogs provide.
 
 1. Bump the current version in the following files:
 
+   - `flake.nix`
    - `MODULE.bazel`
    - `Cargo.toml`
    - `nativelink-*/Cargo.toml`
