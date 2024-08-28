@@ -74,6 +74,20 @@
           pkgs.libiconv
         ];
 
+        nixosPath = with pkgs; [
+          "/run/current-system/sw/bin"
+          "${binutils.bintools}/bin"
+          "${coreutils}/bin"
+          "${customClang}/bin"
+          "${git}/bin"
+          "${python3Full}/bin"
+        ];
+        nixosPathString = builtins.concatStringsSep ":" nixosPath;
+        nixosBazelrc = pkgs.writeText "nixos.bazelrc" ''
+          build --action_env=PATH=${nixosPathString}
+          build --host_action_env=PATH=${nixosPathString}
+        '';
+
         llvmPackages = pkgs.llvmPackages_18;
 
         customStdenv = pkgs.callPackage ./tools/llvmStdenv.nix {inherit llvmPackages;};
@@ -467,6 +481,13 @@
               #                    this toolchain via nix for bitwise identical
               #                    binaries across machines.
               export CC=clang
+
+              # If on NixOS, generate nixos.bazelrc which adds the required
+              # NixOS binary paths to the bazel environment.
+              if [ -e /etc/nixos ]; then
+                ln -fs ${nixosBazelrc} nixos.bazelrc
+                export CC=customClang
+              fi
             ''
             + pkgs.lib.optionalString (!pkgs.stdenv.isDarwin) ''
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
