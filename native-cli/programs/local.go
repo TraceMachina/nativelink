@@ -71,7 +71,9 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 	tektonPipelines, err := components.AddComponent(
 		ctx,
 		"tekton-pipelines",
-		&components.TektonPipelines{Version: "0.58.0"},
+		&components.TektonPipelines{
+			Version: "0.58.0",
+		},
 	)
 	if err != nil {
 		log.Println(err)
@@ -81,7 +83,12 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 	tektonTriggers, err := components.AddComponent(
 		ctx,
 		"tekton-triggers",
-		&components.TektonTriggers{Version: "0.26.1"},
+		&components.TektonTriggers{
+			Version: "0.26.1",
+			Dependencies: slices.Concat(
+				tektonPipelines,
+			),
+		},
 	)
 	if err != nil {
 		log.Println(err)
@@ -91,7 +98,12 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 	components.Check(components.AddComponent(
 		ctx,
 		"tekton-dashboard",
-		&components.TektonDashboard{Version: "0.45.0"},
+		&components.TektonDashboard{
+			Version: "0.45.0",
+			Dependencies: slices.Concat(
+				tektonPipelines, tektonTriggers,
+			),
+		},
 	))
 
 	components.Check(components.AddComponent(

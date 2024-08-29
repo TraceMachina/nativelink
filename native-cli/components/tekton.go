@@ -64,7 +64,8 @@ func (component *TektonPipelines) Install(
 
 // The configuration for Tekton Triggers.
 type TektonTriggers struct {
-	Version string
+	Version      string
+	Dependencies []pulumi.Resource
 }
 
 // Install installs the Tekton Triggers release and interceptors on the cluster.
@@ -72,12 +73,19 @@ func (component *TektonTriggers) Install(
 	ctx *pulumi.Context,
 	name string,
 ) ([]pulumi.Resource, error) {
-	tektonTriggers, err := yaml.NewConfigFile(ctx, name, &yaml.ConfigFileArgs{
-		File: fmt.Sprintf(
-			"https://storage.googleapis.com/tekton-releases/triggers/previous/v%s/release.yaml",
-			component.Version,
+	tektonTriggers, err := yaml.NewConfigFile(
+		ctx,
+		name,
+		&yaml.ConfigFileArgs{
+			File: fmt.Sprintf(
+				"https://storage.googleapis.com/tekton-releases/triggers/previous/v%s/release.yaml",
+				component.Version,
+			),
+		},
+		pulumi.DependsOn(
+			component.Dependencies,
 		),
-	})
+	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errPulumi, err)
 	}
@@ -91,6 +99,9 @@ func (component *TektonTriggers) Install(
 				component.Version,
 			),
 		},
+		pulumi.DependsOn(
+			[]pulumi.Resource{tektonTriggers},
+		),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errPulumi, err)
@@ -101,7 +112,8 @@ func (component *TektonTriggers) Install(
 
 // Configuration for the Tekton Dashboard.
 type TektonDashboard struct {
-	Version string
+	Version      string
+	Dependencies []pulumi.Resource
 }
 
 // Install installs the Tekton Dashboard on the cluster.
@@ -109,12 +121,19 @@ func (component *TektonDashboard) Install(
 	ctx *pulumi.Context,
 	name string,
 ) ([]pulumi.Resource, error) {
-	tektonDashboard, err := yaml.NewConfigFile(ctx, name, &yaml.ConfigFileArgs{
-		File: fmt.Sprintf(
-			"https://storage.googleapis.com/tekton-releases/dashboard/previous/v%s/release.yaml",
-			component.Version,
+	tektonDashboard, err := yaml.NewConfigFile(
+		ctx,
+		name,
+		&yaml.ConfigFileArgs{
+			File: fmt.Sprintf(
+				"https://storage.googleapis.com/tekton-releases/dashboard/previous/v%s/release.yaml",
+				component.Version,
+			),
+		},
+		pulumi.DependsOn(
+			component.Dependencies,
 		),
-	})
+	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errPulumi, err)
 	}
