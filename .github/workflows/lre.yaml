@@ -60,7 +60,6 @@ jobs:
     name: Remote / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
-    if: false
     steps:
       - name: Checkout
         uses: >- # v4.1.1
