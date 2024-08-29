@@ -36,6 +36,7 @@ pub mod retry;
 pub mod store_trait;
 pub mod task;
 pub mod tls_utils;
+pub mod ultracdc;
 pub mod write_counter;
 
 // Re-export tracing mostly for use in macros.

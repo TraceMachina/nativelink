@@ -34,6 +34,7 @@ rust_library(
         "src/store_trait.rs",
         "src/task.rs",
         "src/tls_utils.rs",
+        "src/ultracdc.rs",
         "src/write_counter.rs",
     ],
     proc_macro_deps = [
@@ -87,6 +88,7 @@ rust_test_suite(
         "tests/proto_stream_utils_test.rs",
         "tests/resource_info_test.rs",
         "tests/retry_test.rs",
+        "tests/ultracdc_test.rs",
     ],
     compile_data = [
         "tests/data/SekienAkashita.jpg",
