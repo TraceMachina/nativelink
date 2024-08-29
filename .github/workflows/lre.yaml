@@ -89,7 +89,11 @@ jobs:
       - name: Start Kubernetes cluster (Operations)
         run: >
           nix develop --impure --command
-          bash -c "./deployment-examples/kubernetes/01_operations.sh"
+          bash -c "
+            ./deployment-examples/kubernetes/01_operations.sh &
+            sleep 5
+            nix develop --impure --command tkn pr logs -f -L
+            wait"
 
       - name: Start Kubernetes cluster (Application)
         run: >
