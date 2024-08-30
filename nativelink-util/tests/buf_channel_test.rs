@@ -301,3 +301,13 @@ async fn bind_buffered_test() -> Result<(), Error> {
     .unwrap();
     Ok(())
 }
+
+#[nativelink_test]
+async fn eof_can_send_twice() -> Result<(), Error> {
+    let (mut tx, _rx) = make_buf_channel_pair();
+    tx.send(DATA1.into()).await.unwrap();
+    tx.send_eof().unwrap();
+    // EOF needs to be able to be sent twice just in case a "retry" is triggered.
+    tx.send_eof().unwrap();
+    Ok(())
+}
