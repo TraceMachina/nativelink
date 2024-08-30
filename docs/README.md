@@ -23,7 +23,7 @@ challenging. Feel free to copy-paste it into your own projects.
 See [`docs/package.json`](https://github.com/TraceMachina/nativelink/blob/main/docs/package.json)
 for build scripts.
 
-This project requires `bun`. The nix flake ships a compatible version.
+This project requires `bun` and `deno`. The nix flake ships a compatible version of `bun`.
 
 ```bash
 # Install dependencies with bun.
