@@ -70,6 +70,10 @@ export const starlightConfig = {
           link: `${docsRoot}/nativelink-cloud/pants`,
         },
         {
+          label: "Remote Build Execution",
+          link: "/nativelink-cloud/rbe/",
+        },
+        {
           label: "API Keys in CI",
           link: `${docsRoot}/nativelink-cloud/api-key`,
         },
