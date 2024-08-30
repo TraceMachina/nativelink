@@ -1,0 +1,67 @@
+---
+title: "Remote Build Execution"
+description: "Utilize Bazel's RBE protocol for remote builds in the NativeLink Cloud"
+pagefind: true
+---
+:::note
+NativeLink Cloud RBE is currently in limited release. Please request access from the
+Remote Execution page in the NativeLink Cloud to enable RBE.
+:::
+
+This guide shows how to configure remote build execution (RBE) for your
+[Bazel](https://bazel.build/) projects with the
+[NativeLink Cloud](https://app.nativelink.com). Before using this guide
+make sure you have followed our [Bazel Quickstart](/nativelink-cloud/bazel).
+
+### Basic Configuration
+To enable RBE all you need to do is add the below flag to your Bazel builds:
+```bash
+--remote_executor=grpcs://scheduler-YOUR_ACCOUNT_HERE.build-faster.nativelink.net:443
+```
+
+This will run your builds on a Ubuntu 22.04 image *without any* dependencies installed.
+For most users we don't expect this to work out of the box as your project most
+likely depends on installations like GCC/Java/etc. To remedy that, continue with the
+instructions below to pass in your own images.
+
+### Custom Images
+To support most RBE builds you will most likely need to pass in your own image with the
+correct toolchains installed to support your build. To implement
+that we've the below flag configuration:
+```bash
+--remote_default_exec_properties="container-image=docker://public.ecr.aws/ubuntu/ubuntu:22.04_stable"
+```
+:::note
+The above uses a public AWS ECR image for example
+:::
+
+#### Private Images
+If your images are in your own private image repository, you can pass your repository
+credentials to allow us to pull your RBE images.
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+<Tabs syncKey="platfomr">
+  <TabItem label="AWS">
+    ```bash
+    --remote_default_exec_properties="container-image=docker://123456789100.dkr.ecr.us-east-2.amazonaws.com/rbe-images:tag"
+    --remote_exec_header=x-nativelink-rbe.container-registry-username=AWS
+    --remote_exec_header=x-nativelink-rbe.container-registry-password="$(aws ecr get-login-password --region YOUR_REGION)"
+    ```
+  </TabItem>
+  <TabItem label="Google Cloud">
+    ```bash
+    --remote_default_exec_properties="container-image=docker://gcr.io/rbe-images/image"
+    --remote_exec_header=x-nativelink-rbe.container-registry-username=_dcgcloud_token
+    --remote_exec_header=x-nativelink-rbe.container-registry-password="$(gcloud auth print-access-token)"
+    ```
+  </TabItem>
+</Tabs>
+
+### Hermetic Bazel Builds
+An alternative option to passing in your own custom image is using a fully hermetic
+Bazel build. This will allow you to use our default Ubuntu 22.04 image and your Bazel
+commands will install all needed dependencies.
+
+You can see a sample of that in the WORKSPACE file of our **Hermetic CC** example
+repository [here](https://github.com/TraceMachina/hermetic_cc_toolchain_rbe_example/blob/main/WORKSPACE).
