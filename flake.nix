@@ -18,8 +18,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nix2container = {
-      # TODO(aaronmondal): Remove this once it lands in nix2container main.
-      url = "github:nlewo/nix2container/80e34774e5904aae7a3542bc3b70dab1fe048587";
+      url = "github:nlewo/nix2container";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
