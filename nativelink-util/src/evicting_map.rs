@@ -28,6 +28,7 @@ use nativelink_metric::MetricsComponent;
 use serde::{Deserialize, Serialize};
 use tracing::{event, Level};
 
+use crate::drop_guard::DropGuard;
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics_utils::{Counter, CounterWithTime};
 
@@ -434,7 +435,11 @@ where
                 data,
             };
 
-            if let Some(old_item) = state.put(key, eviction_item).await {
+            let fut = state.put(key, eviction_item);
+
+            let drop_guard = DropGuard::new(fut);
+
+            if let Some(old_item) = drop_guard.await {
                 replaced_items.push(old_item);
             }
             state.sum_store_size += new_item_size;
