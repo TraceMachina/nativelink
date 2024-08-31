@@ -40,7 +40,11 @@ use hyper::client::connect::{Connected, Connection, HttpConnector};
 use hyper::service::Service;
 use hyper::Uri;
 use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+// Note: S3 store should be very careful about the error codes it returns
+// when in a retryable wrapper. Always prefer Code::Aborted or another
+// retryable code over Code::InvalidArgument or make_input_err!().
+// ie: Don't import make_input_err!() to help prevent this.
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
@@ -732,7 +736,8 @@ where
                             }
                             if let Err(e) = writer.send(bytes).await {
                                 return Some((
-                                    RetryResult::Err(make_input_err!(
+                                    RetryResult::Err(make_err!(
+                                        Code::Aborted,
                                         "Error sending bytes to consumer in S3: {e}"
                                     )),
                                     writer,
@@ -741,7 +746,8 @@ where
                         }
                         Err(e) => {
                             return Some((
-                                RetryResult::Retry(make_input_err!(
+                                RetryResult::Retry(make_err!(
+                                    Code::Aborted,
                                     "Bad bytestream element in S3: {e}"
                                 )),
                                 writer,
@@ -751,7 +757,8 @@ where
                 }
                 if let Err(e) = writer.send_eof() {
                     return Some((
-                        RetryResult::Err(make_input_err!(
+                        RetryResult::Err(make_err!(
+                            Code::Aborted,
                             "Failed to send EOF to consumer in S3: {e}"
                         )),
                         writer,
