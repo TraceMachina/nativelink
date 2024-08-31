@@ -112,6 +112,7 @@ impl ActionStateResult for SimpleSchedulerActionStateResult {
 #[derive(MetricsComponent)]
 pub struct SimpleScheduler {
     /// Manager for matching engine side of the state manager.
+    #[metric(group = "matching_engine_state_manager")]
     matching_engine_state_manager: Arc<dyn MatchingEngineStateManager>,
 
     /// Manager for client state of this scheduler.
@@ -124,6 +125,7 @@ pub struct SimpleScheduler {
 
     /// A `Workers` pool that contains all workers that are available to execute actions in a priority
     /// order based on the allocation strategy.
+    #[metric(group = "worker_scheduler")]
     worker_scheduler: Arc<ApiWorkerScheduler>,
 
     /// Background task that tries to match actions to workers. If this struct
