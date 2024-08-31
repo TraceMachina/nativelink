@@ -242,6 +242,18 @@ pub struct ActionUniqueKey {
     pub digest: DigestInfo,
 }
 
+impl std::fmt::Display for ActionUniqueKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "{}/{}/{}-{}",
+            self.instance_name,
+            self.digest_function,
+            self.digest.hash_str(),
+            self.digest.size_bytes
+        ))
+    }
+}
+
 /// Information needed to execute an action. This struct is used over bazel's proto `Action`
 /// for simplicity and offers a `salt`, which is useful to ensure during hashing (for dicts)
 /// to ensure we never match against another `ActionInfo` (when a task should never be cached).
