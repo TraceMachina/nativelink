@@ -33,11 +33,13 @@ pub type WorkerTimestamp = u64;
 /// These platform properties have the type of the properties as well as
 /// the value of the properties, unlike ActionInfo, which only has the
 /// string value of the properties.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, MetricsComponent)]
 pub struct ActionInfoWithProps {
     /// The action info of the action.
+    #[metric(group = "action_info")]
     pub inner: Arc<ActionInfo>,
     /// The platform properties of the action.
+    #[metric(group = "platform_properties")]
     pub platform_properties: PlatformProperties,
 }
 
@@ -59,12 +61,14 @@ pub struct Worker {
     pub id: WorkerId,
 
     /// Properties that describe the capabilities of this worker.
+    #[metric(group = "platform_properties")]
     pub platform_properties: PlatformProperties,
 
     /// Channel to send commands from scheduler to worker.
     pub tx: UnboundedSender<UpdateForWorker>,
 
-    /// The action info of the running actions on the worker
+    /// The action info of the running actions on the worker.
+    #[metric(group = "running_action_infos")]
     pub running_action_infos: HashMap<OperationId, ActionInfoWithProps>,
 
     /// Timestamp of last time this worker had been communicated with.

@@ -96,6 +96,7 @@ impl LenEntry for ClientAwaitedAction {
 }
 
 /// Actions the AwaitedActionsDb needs to process.
+#[derive(Debug)]
 pub(crate) enum ActionEvent {
     /// A client has sent a keep alive message.
     ClientKeepAlive(OperationId),
@@ -357,6 +358,7 @@ pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
     operation_id_to_awaited_action: BTreeMap<OperationId, watch::Sender<AwaitedAction>>,
 
     /// A lookup table to lookup the state of an action by its unique qualifier.
+    #[metric(group = "action_info_hash_key_to_awaited_action")]
     action_info_hash_key_to_awaited_action: HashMap<ActionUniqueKey, OperationId>,
 
     /// A sorted set of [`AwaitedAction`]s. A wrapper is used to perform sorting
@@ -415,6 +417,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         action_events: impl IntoIterator<Item = ActionEvent>,
     ) -> NoEarlyReturn {
         for action in action_events.into_iter() {
+            event!(Level::DEBUG, ?action, "Handling action");
             match action {
                 ActionEvent::ClientDroppedOperation(operation_id) => {
                     // Cleanup operation_id_to_awaited_action.
@@ -452,6 +455,11 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             .insert(operation_id, connected_clients);
                         continue;
                     }
+                    event!(
+                        Level::DEBUG,
+                        ?operation_id,
+                        "Clearing operation from state manager"
+                    );
                     let awaited_action = tx.borrow().clone();
                     // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
                     match &awaited_action.action_info().unique_qualifier {
@@ -737,6 +745,14 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
 
         let (client_awaited_action, rx) =
             self.make_client_awaited_action(operation_id.clone(), awaited_action);
+
+        event!(
+            Level::DEBUG,
+            ?client_operation_id,
+            ?operation_id,
+            ?client_awaited_action,
+            "Adding action"
+        );
 
         self.client_operation_to_awaited_action
             .insert(client_operation_id.clone(), client_awaited_action)
