@@ -53,10 +53,6 @@ pub enum OperationId {
 }
 
 impl OperationId {
-    pub fn from_raw_string(name: String) -> Self {
-        Self::String(name)
-    }
-
     pub fn into_string(self) -> String {
         match self {
             Self::Uuid(uuid) => uuid.to_string(),

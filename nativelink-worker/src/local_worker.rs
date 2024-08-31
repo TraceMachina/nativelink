@@ -31,7 +31,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     execute_result, ExecuteResult, KeepAliveRequest, UpdateForWorker,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
-use nativelink_util::action_messages::{ActionResult, ActionStage};
+use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
 use nativelink_util::common::fs;
 use nativelink_util::digest_hasher::{DigestHasherFunc, ACTIVE_HASHER_FUNC};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
@@ -211,8 +211,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             self.metrics.keep_alives_received.inc();
                         }
                         Update::KillOperationRequest(kill_operation_request) => {
-                            let operation_id = kill_operation_request
-                                .operation_id.into();
+                            let operation_id = OperationId::from(kill_operation_request.operation_id);
                             if let Err(err) = self.running_actions_manager.kill_operation(&operation_id).await {
                                 event!(
                                     Level::ERROR,

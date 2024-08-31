@@ -157,7 +157,7 @@ impl GrpcScheduler {
             .await
             .err_tip(|| "Recieving response from upstream scheduler")?
         {
-            let client_operation_id = OperationId::from_raw_string(initial_response.name.clone());
+            let client_operation_id = OperationId::from(initial_response.name.as_str());
             // Our operation_id is not needed here is just a place holder to recycle existing object.
             // The only thing that actually matters is the operation_id.
             let operation_id = OperationId::default();
