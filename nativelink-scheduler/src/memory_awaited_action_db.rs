@@ -414,8 +414,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         &mut self,
         action_events: impl IntoIterator<Item = ActionEvent>,
     ) -> NoEarlyReturn {
-        for drop_action in action_events.into_iter() {
-            match drop_action {
+        for action in action_events.into_iter() {
+            match action {
                 ActionEvent::ClientDroppedOperation(operation_id) => {
                     // Cleanup operation_id_to_awaited_action.
                     let Some(tx) = self.operation_id_to_awaited_action.remove(&operation_id) else {
@@ -575,11 +575,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         action_info_hash_key_to_awaited_action: &mut HashMap<ActionUniqueKey, OperationId>,
         new_awaited_action: &AwaitedAction,
     ) -> Result<(), Error> {
-        // Do not allow future subscribes if the action is already completed,
-        // this is the responsibility of the CacheLookupScheduler.
-        // TODO(allad) Once we land the new scheduler onto main, we can remove this check.
-        // It makes sense to allow users to subscribe to already completed items.
-        // This can be changed to `.is_error()` later.
+        // Only process changes if the stage is not finished.
         if !new_awaited_action.state().stage.is_finished() {
             return Ok(());
         }
