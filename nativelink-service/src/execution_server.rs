@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -50,22 +51,27 @@ struct NativelinkOperationId {
 }
 
 impl NativelinkOperationId {
+    fn new(instance_name: InstanceInfoName, client_operation_id: OperationId) -> Self {
+        Self {
+            instance_name,
+            client_operation_id,
+        }
+    }
+
     fn from_name(name: &str) -> Result<Self, Error> {
         let (instance_name, name) = name
             .split_once('/')
             .err_tip(|| "Expected instance_name and name to be separated by '/'")?;
-        Ok(Self {
-            instance_name: instance_name.to_string(),
-            client_operation_id: OperationId::from_raw_string(name.to_string()),
-        })
+        Ok(NativelinkOperationId::new(
+            instance_name.to_string(),
+            OperationId::from(name),
+        ))
     }
+}
 
-    fn into_string(self) -> String {
-        format!(
-            "{}/{}",
-            self.instance_name,
-            self.client_operation_id.into_string()
-        )
+impl fmt::Display for NativelinkOperationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.instance_name, self.client_operation_id)
     }
 }
 
@@ -193,18 +199,16 @@ impl ExecutionServer {
         nl_client_operation_id: NativelinkOperationId,
         action_listener: Box<dyn ActionStateResult>,
     ) -> Response<ExecuteStream> {
-        let client_operation_id_string = nl_client_operation_id.into_string();
+        let client_operation_id = OperationId::from(nl_client_operation_id.to_string());
         let receiver_stream = Box::pin(unfold(
             Some(action_listener),
             move |maybe_action_listener| {
-                let client_operation_id_string = client_operation_id_string.clone();
+                let client_operation_id = client_operation_id.clone();
                 async move {
                     let mut action_listener = maybe_action_listener?;
                     match action_listener.changed().await {
                         Ok(action_update) => {
-                            event!(Level::INFO, ?action_update, "Execute Resp Stream");
-                            let client_operation_id =
-                                OperationId::from_raw_string(client_operation_id_string.clone());
+                            event!(Level::INFO, ?action_update, "Execute Resp Stream");                            
                             // If the action is finished we won't be sending any more updates.
                             let maybe_action_listener = if action_update.stage.is_finished() {
                                 None
@@ -272,15 +276,15 @@ impl ExecutionServer {
             .err_tip(|| "Failed to schedule task")?;
 
         Ok(Self::to_execute_stream(
-            NativelinkOperationId {
+            NativelinkOperationId::new(
                 instance_name,
-                client_operation_id: action_listener
+                action_listener
                     .as_state()
                     .await
                     .err_tip(|| "In ExecutionServer::inner_execute")?
                     .operation_id
                     .clone(),
-            },
+            ),
             action_listener,
         ))
     }
@@ -289,19 +293,18 @@ impl ExecutionServer {
         &self,
         request: Request<WaitExecutionRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
-        let (instance_name, client_operation_id) =
-            NativelinkOperationId::from_name(&request.into_inner().name)
-                .map(|v| (v.instance_name, v.client_operation_id))
-                .err_tip(|| "Failed to parse operation_id in ExecutionServer::wait_execution")?;
-        let Some(instance_info) = self.instance_infos.get(&instance_name) else {
+        let nl_operation_id = NativelinkOperationId::from_name(&request.into_inner().name)
+            .err_tip(|| "Failed to parse operation_id in ExecutionServer::wait_execution")?;
+        let Some(instance_info) = self.instance_infos.get(&nl_operation_id.instance_name) else {
             return Err(Status::not_found(format!(
-                "No scheduler with the instance name {instance_name}"
+                "No scheduler with the instance name {}",
+                nl_operation_id.instance_name,
             )));
         };
         let Some(rx) = instance_info
             .scheduler
             .filter_operations(OperationFilter {
-                client_operation_id: Some(client_operation_id.clone()),
+                client_operation_id: Some(nl_operation_id.client_operation_id.clone()),
                 ..Default::default()
             })
             .await
@@ -311,13 +314,7 @@ impl ExecutionServer {
         else {
             return Err(Status::not_found("Failed to find existing task"));
         };
-        Ok(Self::to_execute_stream(
-            NativelinkOperationId {
-                instance_name,
-                client_operation_id,
-            },
-            rx,
-        ))
+        Ok(Self::to_execute_stream(nl_operation_id, rx))
     }
 }
 

@@ -1508,7 +1508,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
             action_listener.changed().await.unwrap().stage,
             ActionStage::Executing
         );
-        OperationId::from(operation_id)
+        OperationId::from(operation_id.as_str())
     };
 
     let _ = scheduler
@@ -1679,7 +1679,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
             action_listener.changed().await.unwrap().stage,
             ActionStage::Executing
         );
-        OperationId::from(operation_id)
+        OperationId::from(operation_id.as_str())
     };
 
     let _ = scheduler
@@ -1766,8 +1766,8 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         // to trigger eviction logic.
         assert!(scheduler
             .filter_operations(OperationFilter {
-                client_operation_id: Some(OperationId::from_raw_string(
-                    "dummy_client_id".to_string(),
+                client_operation_id: Some(OperationId::from(
+                    "dummy_client_id",
                 )),
                 ..Default::default()
             })
