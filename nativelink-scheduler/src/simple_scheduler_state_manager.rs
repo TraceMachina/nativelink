@@ -299,7 +299,6 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
                 operation_id: operation_id.clone(),
                 action_digest: awaited_action.action_info().digest(),
             }));
-            awaited_action.increment_version();
 
             let update_action_result = self
                 .action_db

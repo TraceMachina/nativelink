@@ -565,7 +565,10 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         }
     }
 
-    fn update_awaited_action(&mut self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
+    fn update_awaited_action(
+        &mut self,
+        mut new_awaited_action: AwaitedAction,
+    ) -> Result<(), Error> {
         let tx = self
             .operation_id_to_awaited_action
             .get(new_awaited_action.operation_id())
@@ -582,7 +585,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
 
             // Do not process changes if the action version is not in sync with
             // what the sender based the update on.
-            if old_awaited_action.version() + 1 != new_awaited_action.version() {
+            if old_awaited_action.version() != new_awaited_action.version() {
                 return Err(make_err!(
                     // From: https://grpc.github.io/grpc/core/md_doc_statuscodes.html
                     // Use ABORTED if the client should retry at a higher level
@@ -590,14 +593,15 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     // indicating the client should restart a read-modify-write
                     // sequence)
                     Code::Aborted,
-                    "{} Expected {:?} but got {:?} for operation_id {:?} - {:?}",
+                    "{} Expected {} but got {} for operation_id {:?} - {:?}",
                     "Tried to update an awaited action with an incorrect version.",
-                    old_awaited_action.version() + 1,
+                    old_awaited_action.version(),
                     new_awaited_action.version(),
                     old_awaited_action,
                     new_awaited_action,
                 ));
             }
+            new_awaited_action.increment_version();
 
             error_if!(
                 old_awaited_action.action_info().unique_qualifier
