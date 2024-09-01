@@ -109,12 +109,16 @@ impl RedisStore {
 
     /// Used for testing when determinism is required.
     pub fn new_from_builder_and_parts(
-        builder: Builder,
+        mut builder: Builder,
         pub_sub_channel: Option<String>,
         temp_name_generator_fn: fn() -> String,
         key_prefix: String,
     ) -> Result<Self, Error> {
         let client_pool = builder
+            .set_performance_config(PerformanceConfig {
+                broadcast_channel_capacity: 4096,
+                ..Default::default()
+            })
             .build_pool(CONNECTION_POOL_SIZE)
             .err_tip(|| "while creating redis connection pool")?;
 
@@ -345,31 +349,14 @@ impl StoreDriver for RedisStore {
         let encoded_key = self.encode_key(&key);
         let encoded_key = encoded_key.as_ref();
 
-        if length == Some(0) {
-            // We're supposed to read 0 bytes, so just check if the key exists.
-            let exists = client
-                .exists(encoded_key)
-                .await
-                .err_tip(|| "In RedisStore::get_part::zero_exists")?;
-
-            return match exists {
-                0u8 => Err(make_err!(
-                    Code::NotFound,
-                    "Data not found in Redis store for digest: {key:?}"
-                )),
-                1 => writer
-                    .send_eof()
-                    .err_tip(|| "Failed to write EOF in redis store get_part"),
-                _ => unreachable!("only checked for existence of a single key"),
-            };
-        }
-
         // N.B. the `-1`'s you see here are because redis GETRANGE is inclusive at both the start and end, so when we
         // do math with indices we change them to be exclusive at the end.
 
         // We want to read the data at the key from `offset` to `offset + length`.
         let data_start = offset;
-        let data_end = data_start.saturating_add(length.unwrap_or(isize::MAX as usize)) - 1;
+        let data_end = data_start
+            .saturating_add(length.unwrap_or(isize::MAX as usize))
+            .saturating_sub(1);
 
         // And we don't ever want to read more than `READ_CHUNK_SIZE` bytes at a time, so we'll need to iterate.
         let mut chunk_start = data_start;
@@ -392,9 +379,7 @@ impl StoreDriver for RedisStore {
                         .err_tip(|| "Failed to write data in RedisStore::get_part")?;
                 }
 
-                return writer
-                    .send_eof()
-                    .err_tip(|| "Failed to write EOF in redis store get_part");
+                break; // No more data to read.
             }
 
             // We received a full chunk's worth of data, so write it...
@@ -407,6 +392,27 @@ impl StoreDriver for RedisStore {
             chunk_start = chunk_end + 1;
             chunk_end = cmp::min(chunk_start.saturating_add(READ_CHUNK_SIZE) - 1, data_end);
         }
+
+        // If we didn't write any data, check if the key exists, if not return a NotFound error.
+        // This is required by spec.
+        if writer.get_bytes_written() == 0 {
+            // We're supposed to read 0 bytes, so just check if the key exists.
+            let exists = client
+                .exists::<bool, _>(encoded_key)
+                .await
+                .err_tip(|| "In RedisStore::get_part::zero_exists")?;
+
+            if !exists {
+                return Err(make_err!(
+                    Code::NotFound,
+                    "Data not found in Redis store for digest: {key:?}"
+                ));
+            }
+        }
+
+        writer
+            .send_eof()
+            .err_tip(|| "Failed to write EOF in redis store get_part")
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {

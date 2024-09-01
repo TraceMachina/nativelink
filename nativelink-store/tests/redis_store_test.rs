@@ -22,7 +22,7 @@ use fred::error::RedisError;
 use fred::mocks::{MockCommand, Mocks};
 use fred::prelude::Builder;
 use fred::types::{RedisConfig, RedisValue};
-use nativelink_error::Error;
+use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{RedisStore, READ_CHUNK_SIZE};
@@ -515,6 +515,55 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
         .await?;
 
     assert_eq!(result, data, "Expected redis store to have updated value",);
+
+    Ok(())
+}
+
+// Regression test for: https://github.com/TraceMachina/nativelink/issues/1286
+#[nativelink_test]
+async fn zero_len_items_exist_check() -> Result<(), Error> {
+    let mocks = Arc::new(MockRedisBackend::new());
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 0)?;
+    let packed_hash_hex = format!("{}-{}", digest.hash_str(), digest.size_bytes);
+    let real_key = RedisValue::Bytes(packed_hash_hex.into());
+
+    mocks
+        .expect(
+            MockCommand {
+                cmd: Str::from_static("GETRANGE"),
+                subcommand: None,
+                args: vec![
+                    real_key.clone(),
+                    RedisValue::Integer(0),
+                    // We expect to be asked for data from `0..READ_CHUNK_SIZE`, but since GETRANGE is inclusive
+                    // the actual call should be from `0..=(READ_CHUNK_SIZE - 1)`.
+                    RedisValue::Integer(READ_CHUNK_SIZE as i64 - 1),
+                ],
+            },
+            Ok(RedisValue::String(Str::from_static(""))),
+        )
+        .expect(
+            MockCommand {
+                cmd: Str::from_static("EXISTS"),
+                subcommand: None,
+                args: vec![real_key],
+            },
+            Ok(RedisValue::Integer(0)),
+        );
+
+    let store = {
+        let mut builder = Builder::default_centralized();
+        builder.set_config(RedisConfig {
+            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            ..Default::default()
+        });
+
+        RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())?
+    };
+
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    assert_eq!(result.unwrap_err().code, Code::NotFound);
 
     Ok(())
 }
