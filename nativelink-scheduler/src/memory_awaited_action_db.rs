@@ -18,18 +18,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_lock::Mutex;
-use async_trait::async_trait;
 use futures::{FutureExt, Stream};
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier, OperationId,
+    ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };
 use nativelink_util::chunked_stream::ChunkedStream;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::operation_state_manager::ActionStateResult;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::{mpsc, watch};
@@ -204,63 +202,6 @@ where
 
     fn borrow(&self) -> AwaitedAction {
         self.awaited_action_rx.borrow().clone()
-    }
-}
-
-pub struct MatchingEngineActionStateResult<T: AwaitedActionSubscriber> {
-    awaited_action_sub: T,
-}
-impl<T: AwaitedActionSubscriber> MatchingEngineActionStateResult<T> {
-    pub fn new(awaited_action_sub: T) -> Self {
-        Self { awaited_action_sub }
-    }
-}
-
-#[async_trait]
-impl<T: AwaitedActionSubscriber> ActionStateResult for MatchingEngineActionStateResult<T> {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
-        Ok(self.awaited_action_sub.borrow().state().clone())
-    }
-
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
-        let awaited_action = self.awaited_action_sub.changed().await.map_err(|e| {
-            make_err!(
-                Code::Internal,
-                "Failed to wait for awaited action to change {e:?}"
-            )
-        })?;
-        Ok(awaited_action.state().clone())
-    }
-
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
-        Ok(self.awaited_action_sub.borrow().action_info().clone())
-    }
-}
-
-pub(crate) struct ClientActionStateResult<T: AwaitedActionSubscriber> {
-    inner: MatchingEngineActionStateResult<T>,
-}
-
-impl<T: AwaitedActionSubscriber> ClientActionStateResult<T> {
-    pub fn new(sub: T) -> Self {
-        Self {
-            inner: MatchingEngineActionStateResult::new(sub),
-        }
-    }
-}
-
-#[async_trait]
-impl<T: AwaitedActionSubscriber> ActionStateResult for ClientActionStateResult<T> {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
-        self.inner.as_state().await
-    }
-
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
-        self.inner.changed().await
-    }
-
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
-        self.inner.as_action_info().await
     }
 }
 
