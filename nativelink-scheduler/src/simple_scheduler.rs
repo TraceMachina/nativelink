@@ -13,17 +13,14 @@
 // limitations under the License.
 
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::Future;
-use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
-use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -37,7 +34,7 @@ use tokio_stream::StreamExt;
 use tracing::{event, Level};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
-use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
+use crate::awaited_action_db::AwaitedActionDb;
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
@@ -46,10 +43,6 @@ use crate::worker_scheduler::WorkerScheduler;
 /// Default timeout for workers in seconds.
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
-
-/// Default timeout for recently completed actions in seconds.
-/// If this changes, remember to change the documentation in the config.
-const DEFAULT_RETAIN_COMPLETED_FOR_S: u32 = 60;
 
 /// Default times a job can retry before failing.
 /// If this changes, remember to change the documentation in the config.
@@ -269,11 +262,14 @@ impl SimpleScheduler {
 }
 
 impl SimpleScheduler {
-    pub fn new(
+    pub fn new<A: AwaitedActionDb>(
         scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
+        awaited_action_db: A,
+        task_change_notify: Arc<Notify>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         Self::new_with_callback(
             scheduler_cfg,
+            awaited_action_db,
             || {
                 // The cost of running `do_try_match()` is very high, but constant
                 // in relation to the number of changes that have happened. This
@@ -285,19 +281,19 @@ impl SimpleScheduler {
                 // scheduled within a future.
                 tokio::time::sleep(Duration::from_millis(1))
             },
-            SystemTime::now,
+            task_change_notify,
         )
     }
 
     pub fn new_with_callback<
         Fut: Future<Output = ()> + Send,
         F: Fn() -> Fut + Send + Sync + 'static,
-        I: InstantWrapper,
-        NowFn: Fn() -> I + Clone + Send + Sync + 'static,
+        A: AwaitedActionDb,
     >(
         scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
+        awaited_action_db: A,
         on_matching_engine_run: F,
-        now_fn: NowFn,
+        task_change_notify: Arc<Notify>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             scheduler_cfg
@@ -311,34 +307,19 @@ impl SimpleScheduler {
             worker_timeout_s = DEFAULT_WORKER_TIMEOUT_S;
         }
 
-        let mut retain_completed_for_s = scheduler_cfg.retain_completed_for_s;
-        if retain_completed_for_s == 0 {
-            retain_completed_for_s = DEFAULT_RETAIN_COMPLETED_FOR_S;
-        }
-
         let mut max_job_retries = scheduler_cfg.max_job_retries;
         if max_job_retries == 0 {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
         }
 
-        let tasks_or_worker_change_notify = Arc::new(Notify::new());
-        let state_manager = SimpleSchedulerStateManager::new(
-            tasks_or_worker_change_notify.clone(),
-            max_job_retries,
-            MemoryAwaitedActionDb::new(
-                &EvictionPolicy {
-                    max_seconds: retain_completed_for_s,
-                    ..Default::default()
-                },
-                now_fn,
-            ),
-        );
+        let worker_change_notify = Arc::new(Notify::new());
+        let state_manager = SimpleSchedulerStateManager::new(max_job_retries, awaited_action_db);
 
         let worker_scheduler = ApiWorkerScheduler::new(
             state_manager.clone(),
             platform_property_manager.clone(),
             scheduler_cfg.allocation_strategy,
-            tasks_or_worker_change_notify.clone(),
+            worker_change_notify.clone(),
             worker_timeout_s,
         );
 
@@ -350,7 +331,12 @@ impl SimpleScheduler {
                 spawn!("simple_scheduler_task_worker_matching", async move {
                     // Break out of the loop only when the inner is dropped.
                     loop {
-                        tasks_or_worker_change_notify.notified().await;
+                        let task_change_fut = task_change_notify.notified();
+                        let worker_change_fut = worker_change_notify.notified();
+                        tokio::pin!(task_change_fut);
+                        tokio::pin!(worker_change_fut);
+                        // Wait for either of these futures to be ready.
+                        let _ = futures::future::select(task_change_fut, worker_change_fut).await;
                         let result = match weak_inner.upgrade() {
                             Some(scheduler) => scheduler.do_try_match().await,
                             // If the inner went away it means the scheduler is shutting

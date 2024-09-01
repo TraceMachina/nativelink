@@ -119,6 +119,17 @@ pub struct SimpleScheduler {
     /// The strategy used to assign workers jobs.
     #[serde(default)]
     pub allocation_strategy: WorkerAllocationStrategy,
+
+    /// The storage backend to use for the scheduler.
+    /// Default: memory
+    pub experimental_backend: Option<ExperimentalSimpleSchedulerBackend>,
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Deserialize, Debug)]
+pub enum ExperimentalSimpleSchedulerBackend {
+    /// Use an in-memory store for the scheduler.
+    memory,
 }
 
 /// A scheduler that simply forwards requests to an upstream scheduler.  This
