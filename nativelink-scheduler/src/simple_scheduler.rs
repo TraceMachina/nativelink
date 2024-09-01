@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::Future;
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
@@ -172,6 +172,10 @@ impl SimpleScheduler {
             .err_tip(|| "In SimpleScheduler::get_queued_operations getting filter result")
     }
 
+    pub async fn do_try_match_for_test(&self) -> Result<(), Error> {
+        self.do_try_match().await
+    }
+
     // TODO(blaise.bruer) This is an O(n*m) (aka n^2) algorithm. In theory we
     // can create a map of capabilities of each worker and then try and match
     // the actions to the worker using the map lookup (ie. map reduce).
@@ -223,10 +227,19 @@ impl SimpleScheduler {
             };
 
             // Tell the matching engine that the operation is being assigned to a worker.
-            matching_engine_state_manager
+            let assign_result = matching_engine_state_manager
                 .assign_operation(&operation_id, Ok(&worker_id))
                 .await
-                .err_tip(|| "Failed to assign operation in do_try_match")?;
+                .err_tip(|| "Failed to assign operation in do_try_match");
+            if let Err(err) = assign_result {
+                if err.code == Code::Aborted {
+                    // If the operation was aborted, it means that the operation was
+                    // cancelled due to another operation being assigned to the worker.
+                    return Ok(());
+                }
+                // Any other error is a real error.
+                return Err(err);
+            }
 
             // Notify the worker to run the action.
             {

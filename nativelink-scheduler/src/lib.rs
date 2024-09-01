@@ -13,11 +13,11 @@
 // limitations under the License.
 
 pub mod api_worker_scheduler;
-mod awaited_action_db;
+pub mod awaited_action_db;
 pub mod cache_lookup_scheduler;
 pub mod default_scheduler_factory;
 pub mod grpc_scheduler;
-mod memory_awaited_action_db;
+pub mod memory_awaited_action_db;
 pub mod platform_property_manager;
 pub mod property_modifier_scheduler;
 pub mod simple_scheduler;
