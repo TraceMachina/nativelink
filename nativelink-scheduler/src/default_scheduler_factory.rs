@@ -13,17 +13,26 @@
 // limitations under the License.
 
 use std::sync::Arc;
+use std::time::SystemTime;
 
-use nativelink_config::schedulers::SchedulerConfig;
+use nativelink_config::schedulers::{ExperimentalSimpleSchedulerBackend, SchedulerConfig};
+use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt};
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::operation_state_manager::ClientStateManager;
+use tokio::sync::Notify;
 
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
 use crate::grpc_scheduler::GrpcScheduler;
+use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
 use crate::simple_scheduler::SimpleScheduler;
 use crate::worker_scheduler::WorkerScheduler;
+
+/// Default timeout for recently completed actions in seconds.
+/// If this changes, remember to change the documentation in the config.
+const DEFAULT_RETAIN_COMPLETED_FOR_S: u32 = 60;
 
 pub type SchedulerFactoryResults = (
     Option<Arc<dyn ClientStateManager>>,
@@ -42,10 +51,7 @@ fn inner_scheduler_factory(
     store_manager: &StoreManager,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
-        SchedulerConfig::simple(config) => {
-            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(config);
-            (Some(action_scheduler), Some(worker_scheduler))
-        }
+        SchedulerConfig::simple(config) => simple_scheduler_factory(config)?,
         SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
         SchedulerConfig::cache_lookup(config) => {
             let ac_store = store_manager
@@ -73,4 +79,48 @@ fn inner_scheduler_factory(
     };
 
     Ok(scheduler)
+}
+
+fn simple_scheduler_factory(
+    config: &nativelink_config::schedulers::SimpleScheduler,
+) -> Result<SchedulerFactoryResults, Error> {
+    match config
+        .experimental_backend
+        .as_ref()
+        .unwrap_or(&ExperimentalSimpleSchedulerBackend::memory)
+    {
+        ExperimentalSimpleSchedulerBackend::memory => {
+            let task_change_notify = Arc::new(Notify::new());
+            let awaited_action_db = memory_awaited_action_db_factory(
+                config.retain_completed_for_s,
+                task_change_notify.clone(),
+                SystemTime::now,
+            );
+            let (action_scheduler, worker_scheduler) =
+                SimpleScheduler::new(config, awaited_action_db, task_change_notify);
+            Ok((Some(action_scheduler), Some(worker_scheduler)))
+        }
+    }
+}
+
+pub fn memory_awaited_action_db_factory<I, NowFn>(
+    mut retain_completed_for_s: u32,
+    task_change_notify: Arc<Notify>,
+    now_fn: NowFn,
+) -> MemoryAwaitedActionDb<I, NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Clone + Send + Sync + 'static,
+{
+    if retain_completed_for_s == 0 {
+        retain_completed_for_s = DEFAULT_RETAIN_COMPLETED_FOR_S;
+    }
+    MemoryAwaitedActionDb::new(
+        &EvictionPolicy {
+            max_seconds: retain_completed_for_s,
+            ..Default::default()
+        },
+        task_change_notify.clone(),
+        now_fn,
+    )
 }

@@ -28,7 +28,6 @@ use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, WorkerStateManager,
 };
-use tokio::sync::Notify;
 use tracing::{event, Level};
 
 use super::awaited_action_db::{
@@ -122,42 +121,12 @@ fn apply_filter_predicate(awaited_action: &AwaitedAction, filter: &OperationFilt
     true
 }
 
-pub struct MatchingEngineActionStateResult<T: AwaitedActionSubscriber> {
-    awaited_action_sub: T,
-}
-impl<T: AwaitedActionSubscriber> MatchingEngineActionStateResult<T> {
-    pub fn new(awaited_action_sub: T) -> Self {
-        Self { awaited_action_sub }
-    }
-}
-
-#[async_trait]
-impl<T: AwaitedActionSubscriber> ActionStateResult for MatchingEngineActionStateResult<T> {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
-        Ok(self.awaited_action_sub.borrow().state().clone())
-    }
-
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
-        let awaited_action = self.awaited_action_sub.changed().await.map_err(|e| {
-            make_err!(
-                Code::Internal,
-                "Failed to wait for awaited action to change {e:?}"
-            )
-        })?;
-        Ok(awaited_action.state().clone())
-    }
-
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
-        Ok(self.awaited_action_sub.borrow().action_info().clone())
-    }
-}
-
-pub(crate) struct ClientActionStateResult<T: AwaitedActionSubscriber> {
+struct ClientActionStateResult<T> {
     inner: MatchingEngineActionStateResult<T>,
 }
 
 impl<T: AwaitedActionSubscriber> ClientActionStateResult<T> {
-    pub fn new(sub: T) -> Self {
+    fn new(sub: T) -> Self {
         Self {
             inner: MatchingEngineActionStateResult::new(sub),
         }
@@ -179,6 +148,33 @@ impl<T: AwaitedActionSubscriber> ActionStateResult for ClientActionStateResult<T
     }
 }
 
+struct MatchingEngineActionStateResult<T> {
+    awaited_action_sub: T,
+}
+impl<T: AwaitedActionSubscriber> MatchingEngineActionStateResult<T> {
+    fn new(awaited_action_sub: T) -> Self {
+        Self { awaited_action_sub }
+    }
+}
+
+#[async_trait]
+impl<T: AwaitedActionSubscriber> ActionStateResult for MatchingEngineActionStateResult<T> {
+    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+        Ok(self.awaited_action_sub.borrow().state().clone())
+    }
+
+    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
+        self.awaited_action_sub
+            .changed()
+            .await
+            .map(|v| v.state().clone())
+    }
+
+    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
+        Ok(self.awaited_action_sub.borrow().action_info().clone())
+    }
+}
+
 /// SimpleSchedulerStateManager is responsible for maintaining the state of the scheduler.
 /// Scheduler state includes the actions that are queued, active, and recently completed.
 /// It also includes the workers that are available to execute actions based on allocation
@@ -189,9 +185,6 @@ pub struct SimpleSchedulerStateManager<T: AwaitedActionDb> {
     #[metric(group = "action_db")]
     action_db: T,
 
-    /// Notify matching engine that work needs to be done.
-    tasks_change_notify: Arc<Notify>,
-
     /// Maximum number of times a job can be retried.
     // TODO(allada) This should be a scheduler decorator instead
     // of always having it on every SimpleScheduler.
@@ -200,14 +193,9 @@ pub struct SimpleSchedulerStateManager<T: AwaitedActionDb> {
 }
 
 impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
-    pub fn new(
-        tasks_change_notify: Arc<Notify>,
-        max_job_retries: usize,
-        action_db: T,
-    ) -> Arc<Self> {
+    pub fn new(max_job_retries: usize, action_db: T) -> Arc<Self> {
         Arc::new(Self {
             action_db,
-            tasks_change_notify,
             max_job_retries,
         })
     }
@@ -224,7 +212,7 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
                 .action_db
                 .get_by_operation_id(operation_id)
                 .await
-                .err_tip(|| "In MemorySchedulerStateManager::update_operation")?;
+                .err_tip(|| "In SimpleSchedulerStateManager::update_operation")?;
             let awaited_action_subscriber = match maybe_awaited_action_subscriber {
                 Some(sub) => sub,
                 // No action found. It is ok if the action was not found. It probably
@@ -252,20 +240,22 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
                 && maybe_worker_id.is_some()
                 && maybe_worker_id != awaited_action.worker_id().as_ref()
             {
+                // If another worker is already assigned to the action, another
+                // worker probably picked up the action. We should not update the
+                // action in this case and abort this operation.
                 let err = make_err!(
-                    Code::Internal,
+                    Code::Aborted,
                     "Worker ids do not match - {:?} != {:?} for {:?}",
                     maybe_worker_id,
                     awaited_action.worker_id(),
                     awaited_action,
                 );
                 event!(
-                    Level::ERROR,
-                    ?operation_id,
-                    ?maybe_worker_id,
-                    ?awaited_action,
-                    "{}",
-                    err.to_string(),
+                    Level::INFO,
+                    "Worker ids do not match - {:?} != {:?} for {:?}. This is probably due to another worker picking up the action.",
+                    maybe_worker_id,
+                    awaited_action.worker_id(),
+                    awaited_action,
                 );
                 return Err(err);
             }
@@ -315,7 +305,7 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
                 .action_db
                 .update_awaited_action(awaited_action)
                 .await
-                .err_tip(|| "In MemorySchedulerStateManager::update_operation");
+                .err_tip(|| "In SimpleSchedulerStateManager::update_operation");
             if let Err(err) = update_action_result {
                 // We use Aborted to signal that the action was not
                 // updated due to the data being set was not the latest
@@ -327,8 +317,6 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
                     return Err(err);
                 }
             }
-
-            self.tasks_change_notify.notify_one();
             return Ok(());
         }
         match last_err {
@@ -346,13 +334,10 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
         new_client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<T::Subscriber, Error> {
-        let rx = self
-            .action_db
+        self.action_db
             .add_action(new_client_operation_id, action_info)
             .await
-            .err_tip(|| "In MemorySchedulerStateManager::add_operation")?;
-        self.tasks_change_notify.notify_one();
-        Ok(rx)
+            .err_tip(|| "In SimpleSchedulerStateManager::add_operation")
     }
 
     async fn inner_filter_operations<'a, F>(
