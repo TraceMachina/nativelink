@@ -27,6 +27,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, Exe
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
+use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -41,7 +42,7 @@ use nativelink_util::operation_state_manager::{
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use utils::scheduler_utils::{make_base_action_info, INSTANCE_NAME};
 use uuid::Uuid;
 
@@ -148,10 +149,16 @@ const WORKER_TIMEOUT_S: u64 = 100;
 async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -200,10 +207,16 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
 async fn find_executing_action() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -270,13 +283,19 @@ async fn find_executing_action() -> Result<(), Error> {
 async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Error> {
     let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
     let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler {
             worker_timeout_s: WORKER_TIMEOUT_S,
             ..Default::default()
         },
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest1 = DigestInfo::new([99u8; 32], 512);
     let action_digest2 = DigestInfo::new([88u8; 32], 512);
@@ -441,10 +460,16 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
 async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -517,13 +542,20 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
 
     let mut prop_defs = HashMap::new();
     prop_defs.insert("prop".to_string(), PropertyType::exact);
+
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler {
             supported_platform_properties: Some(prop_defs),
             ..Default::default()
         },
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
     let mut platform_properties = HashMap::new();
@@ -604,10 +636,16 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
 async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -695,12 +733,18 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(), Error> {
-    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
+    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let rx_from_worker =
@@ -731,13 +775,19 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
 async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
     let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
     let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler {
             worker_timeout_s: WORKER_TIMEOUT_S,
             ..Default::default()
         },
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -849,10 +899,16 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
 async fn update_action_sends_completed_result_to_client_test() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -941,10 +997,16 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
 async fn update_action_sends_completed_result_after_disconnect() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1050,10 +1112,16 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     let good_worker_id: WorkerId = WorkerId(Uuid::new_v4());
     let rogue_worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1139,10 +1207,16 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
 async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1270,13 +1344,19 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
 
     let mut supported_props = HashMap::new();
     supported_props.insert("prop1".to_string(), PropertyType::minimum);
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler {
             supported_platform_properties: Some(supported_props),
             ..Default::default()
         },
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1421,13 +1501,19 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
 
     let mut supported_props = HashMap::new();
     supported_props.insert("prop1".to_string(), PropertyType::minimum);
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler {
             supported_platform_properties: Some(supported_props),
             ..Default::default()
         },
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1481,13 +1567,19 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
 async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler {
             max_job_retries: 1,
             ..Default::default()
         },
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1622,14 +1714,20 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
     // Since the inner spawn owns this callback, we can use the callback to know if the
     // inner spawn was dropped because our callback would be dropped, which dropps our
     // DropChecker.
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         move || {
             // This will ensure dropping happens if this function is ever dropped.
             let _drop_checker = drop_checker.clone();
             async move {}
         },
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     assert_eq!(dropped.load(Ordering::Relaxed), false);
 
@@ -1648,10 +1746,16 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
     let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
     let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1713,10 +1817,19 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
 // https://github.com/TraceMachina/nativelink/issues/1197
 #[nativelink_test]
 async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &nativelink_config::schedulers::SimpleScheduler {
+            worker_timeout_s: WORKER_TIMEOUT_S,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
-        MockInstantWrapped::default,
+        task_change_notify,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
