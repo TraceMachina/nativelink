@@ -15,7 +15,6 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use bytes::Bytes;
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
@@ -102,61 +101,55 @@ impl AwaitedAction {
         }
     }
 
-    pub fn version(&self) -> u64 {
+    pub(crate) fn version(&self) -> u64 {
         self.version.0
     }
 
-    pub fn increment_version(&mut self) {
+    pub(crate) fn increment_version(&mut self) {
         self.version = AwaitedActionVersion(self.version.0 + 1);
     }
 
-    pub fn action_info(&self) -> &Arc<ActionInfo> {
+    pub(crate) fn action_info(&self) -> &Arc<ActionInfo> {
         &self.action_info
     }
 
-    pub fn operation_id(&self) -> &OperationId {
+    pub(crate) fn operation_id(&self) -> &OperationId {
         &self.operation_id
     }
 
-    pub fn sort_key(&self) -> AwaitedActionSortKey {
+    pub(crate) fn sort_key(&self) -> AwaitedActionSortKey {
         self.sort_key
     }
 
-    pub fn state(&self) -> &Arc<ActionState> {
+    pub(crate) fn state(&self) -> &Arc<ActionState> {
         &self.state
     }
 
-    pub fn worker_id(&self) -> Option<WorkerId> {
+    pub(crate) fn worker_id(&self) -> Option<WorkerId> {
         self.worker_id
     }
 
-    pub fn last_worker_updated_timestamp(&self) -> SystemTime {
+    pub(crate) fn last_worker_updated_timestamp(&self) -> SystemTime {
         self.last_worker_updated_timestamp
     }
 
+    pub(crate) fn keep_alive(&mut self, now: SystemTime) {
+        self.last_worker_updated_timestamp = now;
+    }
+
     /// Sets the worker id that is currently processing this action.
-    pub fn set_worker_id(&mut self, new_maybe_worker_id: Option<WorkerId>) {
+    pub(crate) fn set_worker_id(&mut self, new_maybe_worker_id: Option<WorkerId>, now: SystemTime) {
         if self.worker_id != new_maybe_worker_id {
             self.worker_id = new_maybe_worker_id;
-            self.last_worker_updated_timestamp = SystemTime::now();
+            self.keep_alive(now);
         }
     }
 
     /// Sets the current state of the action and notifies subscribers.
     /// Returns true if the state was set, false if there are no subscribers.
-    pub fn set_state(&mut self, mut state: Arc<ActionState>) {
+    pub(crate) fn set_state(&mut self, mut state: Arc<ActionState>, now: SystemTime) {
         std::mem::swap(&mut self.state, &mut state);
-        self.last_worker_updated_timestamp = SystemTime::now();
-    }
-}
-
-impl TryInto<bytes::Bytes> for AwaitedAction {
-    type Error = Error;
-    fn try_into(self) -> Result<Bytes, Self::Error> {
-        serde_json::to_string(&self)
-            .map(Bytes::from)
-            .map_err(|e| make_input_err!("{}", e.to_string()))
-            .err_tip(|| "In AwaitedAction::TryInto::Bytes")
+        self.keep_alive(now);
     }
 }
 
@@ -216,7 +209,7 @@ impl AwaitedActionSortKey {
         Self::new(priority, timestamp)
     }
 
-    pub fn as_u64(&self) -> u64 {
+    pub(crate) fn as_u64(&self) -> u64 {
         self.0
     }
 }

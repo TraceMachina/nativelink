@@ -22,6 +22,7 @@ use mock_instant::{Instant as MockInstant, MockClock};
 pub trait InstantWrapper: Send + Sync + Unpin + 'static {
     fn from_secs(secs: u64) -> Self;
     fn unix_timestamp(&self) -> u64;
+    fn now(&self) -> SystemTime;
     fn elapsed(&self) -> Duration;
     fn sleep(self, duration: Duration) -> impl Future<Output = ()> + Send + Sync + 'static;
 }
@@ -35,6 +36,10 @@ impl InstantWrapper for SystemTime {
 
     fn unix_timestamp(&self) -> u64 {
         self.duration_since(UNIX_EPOCH).unwrap().as_secs()
+    }
+
+    fn now(&self) -> SystemTime {
+        SystemTime::now()
     }
 
     fn elapsed(&self) -> Duration {
@@ -66,6 +71,10 @@ impl InstantWrapper for MockInstantWrapped {
 
     fn unix_timestamp(&self) -> u64 {
         MockClock::time().as_secs()
+    }
+
+    fn now(&self) -> SystemTime {
+        UNIX_EPOCH + MockClock::time()
     }
 
     fn elapsed(&self) -> Duration {

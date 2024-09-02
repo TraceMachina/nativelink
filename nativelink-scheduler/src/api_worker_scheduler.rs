@@ -23,9 +23,12 @@ use nativelink_metric::{
     group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
     RootMetricsComponent,
 };
-use nativelink_util::action_messages::{ActionStage, OperationId, WorkerId};
-use nativelink_util::operation_state_manager::WorkerStateManager;
+use nativelink_util::action_messages::{OperationId, WorkerId};
+use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::platform_properties::PlatformProperties;
+use nativelink_util::spawn;
+use nativelink_util::task::JoinHandleDropGuard;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::Notify;
 use tonic::async_trait;
 use tracing::{event, Level};
@@ -81,6 +84,8 @@ struct ApiWorkerSchedulerImpl {
     allocation_strategy: WorkerAllocationStrategy,
     /// A channel to notify the matching engine that the worker pool has changed.
     worker_change_notify: Arc<Notify>,
+    /// A channel to notify that an operation is still alive.
+    operation_keep_alive_tx: UnboundedSender<(OperationId, WorkerId)>,
 }
 
 impl ApiWorkerSchedulerImpl {
@@ -103,6 +108,20 @@ impl ApiWorkerSchedulerImpl {
             timestamp
         );
         worker.last_update_timestamp = timestamp;
+        for operation_id in worker.running_action_infos.keys() {
+            if self
+                .operation_keep_alive_tx
+                .send((operation_id.clone(), *worker_id))
+                .is_err()
+            {
+                event!(
+                    Level::ERROR,
+                    ?operation_id,
+                    ?worker_id,
+                    "OperationKeepAliveTx stream closed"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -177,7 +196,7 @@ impl ApiWorkerSchedulerImpl {
         &mut self,
         worker_id: &WorkerId,
         operation_id: &OperationId,
-        action_stage: Result<ActionStage, Error>,
+        update: UpdateOperationType,
     ) -> Result<(), Error> {
         let worker = self.workers.get_mut(worker_id).err_tip(|| {
             format!("Worker {worker_id} does not exist in SimpleScheduler::update_action")
@@ -193,11 +212,21 @@ impl ApiWorkerSchedulerImpl {
                 .merge(self.immediate_evict_worker(worker_id, err).await);
         }
 
+        let (is_finished, due_to_backpressure) = match &update {
+            UpdateOperationType::UpdateWithActionStage(action_stage) => {
+                (action_stage.is_finished(), false)
+            }
+            UpdateOperationType::KeepAlive => (false, false),
+            UpdateOperationType::UpdateWithError(err) => {
+                (true, err.code == Code::ResourceExhausted)
+            }
+        };
+
         // Update the operation in the worker state manager.
         {
             let update_operation_res = self
                 .worker_state_manager
-                .update_operation(operation_id, worker_id, action_stage.clone())
+                .update_operation(operation_id, worker_id, update)
                 .await
                 .err_tip(|| "in update_operation on SimpleScheduler::update_action");
             if let Err(err) = update_operation_res {
@@ -212,10 +241,6 @@ impl ApiWorkerSchedulerImpl {
             }
         }
 
-        // We are done if the action is not finished or there was an error.
-        let is_finished = action_stage
-            .as_ref()
-            .map_or_else(|_| true, |action_stage| action_stage.is_finished());
         if !is_finished {
             return Ok(());
         }
@@ -227,9 +252,6 @@ impl ApiWorkerSchedulerImpl {
             // Note: We need to run this before dealing with backpressure logic.
             let complete_action_res = worker.complete_action(operation_id);
 
-            let due_to_backpressure = action_stage
-                .as_ref()
-                .map_or_else(|e| e.code == Code::ResourceExhausted, |_| false);
             // Only pause if there's an action still waiting that will unpause.
             if (was_paused || due_to_backpressure) && worker.has_actions() {
                 worker.is_paused = true;
@@ -296,7 +318,11 @@ impl ApiWorkerSchedulerImpl {
             for (operation_id, _) in worker.running_action_infos.drain() {
                 result = result.merge(
                     self.worker_state_manager
-                        .update_operation(&operation_id, worker_id, Err(err.clone()))
+                        .update_operation(
+                            &operation_id,
+                            worker_id,
+                            UpdateOperationType::UpdateWithError(err.clone()),
+                        )
                         .await,
                 );
             }
@@ -319,6 +345,7 @@ pub struct ApiWorkerScheduler {
         help = "Timeout of how long to evict workers if no response in this given amount of time in seconds."
     )]
     worker_timeout_s: u64,
+    _operation_keep_alive_spawn: JoinHandleDropGuard<()>,
 }
 
 impl ApiWorkerScheduler {
@@ -329,15 +356,45 @@ impl ApiWorkerScheduler {
         worker_change_notify: Arc<Notify>,
         worker_timeout_s: u64,
     ) -> Arc<Self> {
+        let (operation_keep_alive_tx, mut operation_keep_alive_rx) = mpsc::unbounded_channel();
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
-                worker_state_manager,
+                worker_state_manager: worker_state_manager.clone(),
                 allocation_strategy,
                 worker_change_notify,
+                operation_keep_alive_tx,
             }),
             platform_property_manager,
             worker_timeout_s,
+            _operation_keep_alive_spawn: spawn!(
+                "simple_scheduler_operation_keep_alive",
+                async move {
+                    const RECV_MANY_LIMIT: usize = 256;
+                    let mut messages = Vec::with_capacity(RECV_MANY_LIMIT);
+                    loop {
+                        messages.clear();
+                        operation_keep_alive_rx
+                            .recv_many(&mut messages, RECV_MANY_LIMIT)
+                            .await;
+                        if messages.is_empty() {
+                            return; // Looks like our sender has been dropped.
+                        }
+                        for (operation_id, worker_id) in messages.drain(..) {
+                            let update_operation_res = worker_state_manager
+                                .update_operation(
+                                    &operation_id,
+                                    &worker_id,
+                                    UpdateOperationType::KeepAlive,
+                                )
+                                .await;
+                            if let Err(err) = update_operation_res {
+                                event!(Level::WARN, ?err, "Error while running worker_keep_alive_received, maybe job is done?");
+                            }
+                        }
+                    }
+                }
+            ),
         })
     }
 
@@ -408,12 +465,10 @@ impl WorkerScheduler for ApiWorkerScheduler {
         &self,
         worker_id: &WorkerId,
         operation_id: &OperationId,
-        action_stage: Result<ActionStage, Error>,
+        update: UpdateOperationType,
     ) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
-        inner
-            .update_action(worker_id, operation_id, action_stage)
-            .await
+        inner.update_action(worker_id, operation_id, update).await
     }
 
     async fn worker_keep_alive_received(

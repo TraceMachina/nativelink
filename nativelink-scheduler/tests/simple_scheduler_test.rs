@@ -47,7 +47,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ClientStateManager, OperationFilter,
+    ActionStateResult, ClientStateManager, OperationFilter, UpdateOperationType,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
@@ -1276,7 +1276,9 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         .update_action(
             &worker_id,
             &OperationId::from(operation_id),
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await?;
 
@@ -1380,7 +1382,9 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         .update_action(
             &worker_id,
             &operation_id,
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await?;
 
@@ -1477,7 +1481,9 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         .update_action(
             &rogue_worker_id,
             &OperationId::default(),
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await;
 
@@ -1607,7 +1613,9 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         .update_action(
             &worker_id,
             &operation_id,
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await
         .unwrap();
@@ -1739,7 +1747,9 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         .update_action(
             &worker_id,
             &operation_id1,
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await
         .unwrap();
@@ -1780,7 +1790,9 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         .update_action(
             &worker_id,
             &operation_id2,
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await
         .unwrap();
@@ -1915,7 +1927,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         .update_action(
             &worker_id,
             &operation_id,
-            Err(make_err!(Code::Internal, "Some error")),
+            UpdateOperationType::UpdateWithError(make_err!(Code::Internal, "Some error")),
         )
         .await;
 
@@ -1950,7 +1962,11 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     let err = make_err!(Code::Internal, "Some error");
     // Send internal error from worker again.
     let _ = scheduler
-        .update_action(&worker_id, &operation_id, Err(err.clone()))
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(err.clone()),
+        )
         .await;
 
     {
@@ -2100,7 +2116,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         .update_action(
             &worker_id1,
             &operation_id,
-            Err(make_err!(Code::NotFound, "Some error")),
+            UpdateOperationType::UpdateWithError(make_err!(Code::NotFound, "Some error")),
         )
         .await;
 

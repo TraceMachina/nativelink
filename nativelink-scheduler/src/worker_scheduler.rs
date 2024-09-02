@@ -15,7 +15,8 @@
 use async_trait::async_trait;
 use nativelink_error::Error;
 use nativelink_metric::RootMetricsComponent;
-use nativelink_util::action_messages::{ActionStage, OperationId, WorkerId};
+use nativelink_util::action_messages::{OperationId, WorkerId};
+use nativelink_util::operation_state_manager::UpdateOperationType;
 
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{Worker, WorkerTimestamp};
@@ -35,7 +36,7 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         &self,
         worker_id: &WorkerId,
         operation_id: &OperationId,
-        action_stage: Result<ActionStage, Error>,
+        update: UpdateOperationType,
     ) -> Result<(), Error>;
 
     /// Event for when the keep alive message was received from the worker.
