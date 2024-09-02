@@ -255,8 +255,9 @@ where
             event!(
                 Level::WARN,
                 ?awaited_action,
-                "OperationId {} timed out after {} seconds issuing a retry",
+                "OperationId {} / {} timed out after {} seconds issuing a retry",
                 awaited_action.operation_id(),
+                awaited_action.state().client_operation_id,
                 self.no_event_action_timeout.as_secs_f32(),
             );
 
@@ -504,10 +505,13 @@ where
             awaited_action.set_state(
                 Arc::new(ActionState {
                     stage,
-                    operation_id: operation_id.clone(),
+                    // Client id is not known here, it is the responsibility of
+                    // the the subscriber impl to replace this with the
+                    // correct client id.
+                    client_operation_id: operation_id.clone(),
                     action_digest: awaited_action.action_info().digest(),
                 }),
-                now,
+                Some(now),
             );
 
             let update_action_result = self

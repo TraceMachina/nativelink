@@ -53,6 +53,8 @@ pub struct AwaitedAction {
     action_info: Arc<ActionInfo>,
 
     /// The operation id of the action.
+    // If you need the client operation id, it may be set in
+    // ActionState::operation_id.
     #[metric(help = "The operation id of the AwaitedAction")]
     operation_id: OperationId,
 
@@ -86,7 +88,12 @@ impl AwaitedAction {
         );
         let state = Arc::new(ActionState {
             stage,
-            operation_id: operation_id.clone(),
+            // Note: We don't use the real client_operation_id here because
+            // the only place AwaitedAction::new should ever be called is
+            // when the action is first created and this struct will be stored
+            // in the database, so we don't want to accidentally leak the
+            // client_operation_id to all clients.
+            client_operation_id: operation_id.clone(),
             action_digest: action_info.unique_qualifier.digest(),
         });
         Self {
@@ -147,9 +154,11 @@ impl AwaitedAction {
 
     /// Sets the current state of the action and notifies subscribers.
     /// Returns true if the state was set, false if there are no subscribers.
-    pub(crate) fn set_state(&mut self, mut state: Arc<ActionState>, now: SystemTime) {
+    pub(crate) fn set_state(&mut self, mut state: Arc<ActionState>, now: Option<SystemTime>) {
         std::mem::swap(&mut self.state, &mut state);
-        self.keep_alive(now);
+        if let Some(now) = now {
+            self.keep_alive(now);
+        }
     }
 }
 

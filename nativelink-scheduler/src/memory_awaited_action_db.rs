@@ -161,7 +161,7 @@ where
     NowFn: Fn() -> I + Send + Sync + 'static,
 {
     async fn changed(&mut self) -> Result<AwaitedAction, Error> {
-        {
+        let client_operation_id = {
             let changed_fut = self.awaited_action_rx.changed().map(|r| {
                 r.map_err(|e| {
                     make_err!(
@@ -194,15 +194,27 @@ where
                         // let the database know that we are still listening to prevent
                         // the action from being dropped.
                     }
-
                 }
             }
-        }
-        Ok(self.awaited_action_rx.borrow().clone())
+            client_info.client_operation_id.clone()
+        };
+        // At this stage we know that this event is a client request, so we need
+        // to populate the client_operation_id.
+        let mut awaited_action = self.awaited_action_rx.borrow().clone();
+        let mut state = awaited_action.state().as_ref().clone();
+        state.client_operation_id = client_operation_id;
+        awaited_action.set_state(Arc::new(state), None);
+        Ok(awaited_action)
     }
 
     fn borrow(&self) -> AwaitedAction {
-        self.awaited_action_rx.borrow().clone()
+        let mut awaited_action = self.awaited_action_rx.borrow().clone();
+        if let Some(client_info) = self.client_info.as_ref() {
+            let mut state = awaited_action.state().as_ref().clone();
+            state.client_operation_id = client_info.client_operation_id.clone();
+            awaited_action.set_state(Arc::new(state), None);
+        }
+        awaited_action
     }
 }
 

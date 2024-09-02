@@ -246,13 +246,13 @@ impl CacheLookupScheduler {
                         return; // Nobody is waiting for this action anymore.
                     };
                     let mut action_state = ActionState {
-                        operation_id: OperationId::default(),
+                        client_operation_id: OperationId::default(),
                         stage: ActionStage::CompletedFromCache(action_result),
                         action_digest: action_info.unique_qualifier.digest(),
                     };
 
                     for (client_operation_id, pending_tx) in pending_txs {
-                        action_state.operation_id = client_operation_id;
+                        action_state.client_operation_id = client_operation_id;
                         // Ignore errors here, as the other end may have hung up.
                         let _ = pending_tx.send(Ok(Box::new(CacheLookupActionStateResult {
                             action_state: Arc::new(action_state.clone()),

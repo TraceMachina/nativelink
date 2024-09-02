@@ -39,7 +39,7 @@ async fn action_state_any_url_test() -> Result<(), Error> {
     let client_id = OperationId::default();
     let operation_id = OperationId::default();
     let action_state = ActionState {
-        operation_id: operation_id.clone(),
+        client_operation_id: operation_id.clone(),
         // Result is only populated if has_action_result.
         stage: ActionStage::Completed(ActionResult::default()),
         action_digest,

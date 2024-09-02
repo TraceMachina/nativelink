@@ -1055,7 +1055,7 @@ pub struct ActionState {
     #[metric(help = "The current stage of the action.")]
     pub stage: ActionStage,
     #[metric(help = "The unique identifier of the action.")]
-    pub operation_id: OperationId,
+    pub client_operation_id: OperationId,
     #[metric(help = "The digest of the action.")]
     pub action_digest: DigestInfo,
 }
@@ -1063,7 +1063,7 @@ pub struct ActionState {
 impl ActionState {
     pub fn try_from_operation(
         operation: Operation,
-        operation_id: OperationId,
+        client_operation_id: OperationId,
     ) -> Result<Self, Error> {
         let metadata = from_any::<ExecuteOperationMetadata>(
             &operation
@@ -1110,7 +1110,7 @@ impl ActionState {
             .err_tip(|| "Could not convert action_digest into DigestInfo")?;
 
         Ok(Self {
-            operation_id,
+            client_operation_id,
             stage,
             action_digest,
         })
