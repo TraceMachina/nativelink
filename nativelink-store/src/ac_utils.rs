@@ -51,13 +51,14 @@ pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
     store: &impl StoreLike,
     key: impl Into<StoreKey<'_>>,
 ) -> Result<(T, usize), Error> {
+    let key = key.into();
     // Note: For unknown reasons we appear to be hitting:
     // https://github.com/rust-lang/rust/issues/92096
     // or a smiliar issue if we try to use the non-store driver function, so we
     // are using the store driver function here.
     let mut store_data_resp = store
         .as_store_driver_pin()
-        .get_part_unchunked(key.into(), 0, Some(MAX_ACTION_MSG_SIZE))
+        .get_part_unchunked(key.borrow(), 0, Some(MAX_ACTION_MSG_SIZE))
         .await;
     if let Err(err) = &mut store_data_resp {
         if err.code == Code::NotFound {
@@ -74,7 +75,7 @@ pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
         .err_tip_with_code(|e| {
             (
                 Code::NotFound,
-                format!("Stored value appears to be corrupt: {e}"),
+                format!("Stored value appears to be corrupt: {e} - {key:?}"),
             )
         })
         .map(|v| (v, store_data_len))

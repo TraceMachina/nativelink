@@ -213,6 +213,8 @@ impl std::fmt::Display for ActionUniqueQualifier {
             Self::Uncachable(action) => (false, action),
         };
         f.write_fmt(format_args!(
+            // Note: We use underscores because it makes escaping easier
+            // for redis.
             "{}/{}/{}-{}/{}",
             unique_key.instance_name,
             unique_key.digest_function,
