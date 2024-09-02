@@ -67,7 +67,7 @@ async fn add_action_adds_property() -> Result<(), Error> {
     let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
-            operation_id: OperationId::default(),
+            client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));
@@ -111,7 +111,7 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
     let action_info = Arc::new(action_info);
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
-            operation_id: OperationId::default(),
+            client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));
@@ -150,7 +150,7 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
     let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
-            operation_id: OperationId::default(),
+            client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));
@@ -189,7 +189,7 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
     let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
-            operation_id: OperationId::default(),
+            client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));
@@ -227,7 +227,7 @@ async fn add_action_property_remove() -> Result<(), Error> {
     let action_info = Arc::new(action_info);
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
-            operation_id: OperationId::default(),
+            client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));

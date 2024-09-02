@@ -70,7 +70,7 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
         .await?;
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
-            operation_id: OperationId::default(),
+            client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));

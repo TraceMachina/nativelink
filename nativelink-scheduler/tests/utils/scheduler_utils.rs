@@ -75,7 +75,7 @@ impl TokioWatchActionStateResult {
 impl ActionStateResult for TokioWatchActionStateResult {
     async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
         let mut action_state = self.rx.borrow().clone();
-        Arc::make_mut(&mut action_state).operation_id = self.client_operation_id.clone();
+        Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
         Ok(action_state)
     }
 
@@ -87,7 +87,7 @@ impl ActionStateResult for TokioWatchActionStateResult {
             )
         })?;
         let mut action_state = self.rx.borrow().clone();
-        Arc::make_mut(&mut action_state).operation_id = self.client_operation_id.clone();
+        Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
         Ok(action_state)
     }
 
