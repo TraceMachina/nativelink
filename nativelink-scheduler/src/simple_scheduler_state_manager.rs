@@ -13,8 +13,10 @@
 // limitations under the License.
 
 use std::ops::Bound;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+use std::time::{Duration, SystemTime};
 
+use async_lock::Mutex;
 use async_trait::async_trait;
 use futures::{future, stream, StreamExt, TryStreamExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
@@ -23,6 +25,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
     OperationId, WorkerId,
 };
+use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -121,20 +124,48 @@ fn apply_filter_predicate(awaited_action: &AwaitedAction, filter: &OperationFilt
     true
 }
 
-struct ClientActionStateResult<T> {
-    inner: MatchingEngineActionStateResult<T>,
+struct ClientActionStateResult<U, T, I, NowFn>
+where
+    U: AwaitedActionSubscriber,
+    T: AwaitedActionDb,
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+{
+    inner: MatchingEngineActionStateResult<U, T, I, NowFn>,
 }
 
-impl<T: AwaitedActionSubscriber> ClientActionStateResult<T> {
-    fn new(sub: T) -> Self {
+impl<U, T, I, NowFn> ClientActionStateResult<U, T, I, NowFn>
+where
+    U: AwaitedActionSubscriber,
+    T: AwaitedActionDb,
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+{
+    fn new(
+        sub: U,
+        simple_scheduler_state_manager: Weak<SimpleSchedulerStateManager<T, I, NowFn>>,
+        no_event_action_timeout: Duration,
+        now_fn: NowFn,
+    ) -> Self {
         Self {
-            inner: MatchingEngineActionStateResult::new(sub),
+            inner: MatchingEngineActionStateResult::new(
+                sub,
+                simple_scheduler_state_manager,
+                no_event_action_timeout,
+                now_fn,
+            ),
         }
     }
 }
 
 #[async_trait]
-impl<T: AwaitedActionSubscriber> ActionStateResult for ClientActionStateResult<T> {
+impl<U, T, I, NowFn> ActionStateResult for ClientActionStateResult<U, T, I, NowFn>
+where
+    U: AwaitedActionSubscriber,
+    T: AwaitedActionDb,
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+{
     async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
         self.inner.as_state().await
     }
@@ -148,26 +179,101 @@ impl<T: AwaitedActionSubscriber> ActionStateResult for ClientActionStateResult<T
     }
 }
 
-struct MatchingEngineActionStateResult<T> {
-    awaited_action_sub: T,
+struct MatchingEngineActionStateResult<U, T, I, NowFn>
+where
+    U: AwaitedActionSubscriber,
+    T: AwaitedActionDb,
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+{
+    awaited_action_sub: U,
+    simple_scheduler_state_manager: Weak<SimpleSchedulerStateManager<T, I, NowFn>>,
+    no_event_action_timeout: Duration,
+    now_fn: NowFn,
 }
-impl<T: AwaitedActionSubscriber> MatchingEngineActionStateResult<T> {
-    fn new(awaited_action_sub: T) -> Self {
-        Self { awaited_action_sub }
+impl<U, T, I, NowFn> MatchingEngineActionStateResult<U, T, I, NowFn>
+where
+    U: AwaitedActionSubscriber,
+    T: AwaitedActionDb,
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+{
+    fn new(
+        awaited_action_sub: U,
+        simple_scheduler_state_manager: Weak<SimpleSchedulerStateManager<T, I, NowFn>>,
+        no_event_action_timeout: Duration,
+        now_fn: NowFn,
+    ) -> Self {
+        Self {
+            awaited_action_sub,
+            simple_scheduler_state_manager,
+            no_event_action_timeout,
+            now_fn,
+        }
     }
 }
 
 #[async_trait]
-impl<T: AwaitedActionSubscriber> ActionStateResult for MatchingEngineActionStateResult<T> {
+impl<U, T, I, NowFn> ActionStateResult for MatchingEngineActionStateResult<U, T, I, NowFn>
+where
+    U: AwaitedActionSubscriber,
+    T: AwaitedActionDb,
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+{
     async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
         Ok(self.awaited_action_sub.borrow().state().clone())
     }
 
     async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
-        self.awaited_action_sub
-            .changed()
-            .await
-            .map(|v| v.state().clone())
+        let mut timeout_attempts = 0;
+        loop {
+            tokio::select! {
+                awaited_action_result = self.awaited_action_sub.changed() => {
+                    return awaited_action_result
+                        .err_tip(|| "In MatchingEngineActionStateResult::changed")
+                        .map(|v| v.state().clone());
+                }
+                _ = (self.now_fn)().sleep(self.no_event_action_timeout) => {
+                    // Timeout happened, do additional checks below.
+                }
+            }
+
+            let awaited_action = self.awaited_action_sub.borrow();
+
+            if matches!(awaited_action.state().stage, ActionStage::Queued) {
+                // Actions in queued state do not get periodically updated,
+                // so we don't need to timeout them.
+                continue;
+            }
+
+            let simple_scheduler_state_manager = self
+                .simple_scheduler_state_manager
+                .upgrade()
+                .err_tip(|| format!("Failed to upgrade weak reference to SimpleSchedulerStateManager in MatchingEngineActionStateResult::changed at attempt: {timeout_attempts}"))?;
+
+            event!(
+                Level::WARN,
+                ?awaited_action,
+                "OperationId {} timed out after {} seconds issuing a retry",
+                awaited_action.operation_id(),
+                self.no_event_action_timeout.as_secs_f32(),
+            );
+
+            simple_scheduler_state_manager
+                .timeout_operation_id(awaited_action.operation_id())
+                .await
+                .err_tip(|| "In MatchingEngineActionStateResult::changed")?;
+
+            if timeout_attempts >= MAX_UPDATE_RETRIES {
+                return Err(make_err!(
+                    Code::Internal,
+                    "Failed to update action after {} retries with no error set in MatchingEngineActionStateResult::changed",
+                    MAX_UPDATE_RETRIES,
+                ));
+            }
+            timeout_attempts += 1;
+        }
     }
 
     async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
@@ -180,7 +286,12 @@ impl<T: AwaitedActionSubscriber> ActionStateResult for MatchingEngineActionState
 /// It also includes the workers that are available to execute actions based on allocation
 /// strategy.
 #[derive(MetricsComponent)]
-pub struct SimpleSchedulerStateManager<T: AwaitedActionDb> {
+pub struct SimpleSchedulerStateManager<T, I, NowFn>
+where
+    T: AwaitedActionDb,
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+{
     /// Database for storing the state of all actions.
     #[metric(group = "action_db")]
     action_db: T,
@@ -190,14 +301,101 @@ pub struct SimpleSchedulerStateManager<T: AwaitedActionDb> {
     // of always having it on every SimpleScheduler.
     #[metric(help = "Maximum number of times a job can be retried")]
     max_job_retries: usize,
+
+    /// Duration after which an action is considered to be timed out if
+    /// no event is received.
+    #[metric(
+        help = "Duration after which an action is considered to be timed out if no event is received"
+    )]
+    no_event_action_timeout: Duration,
+
+    // A lock to ensure only one timeout operation is running at a time
+    // on this service.
+    timeout_operation_mux: Mutex<()>,
+
+    /// Weak reference to self.
+    weak_self: Weak<Self>,
+
+    /// Function to get the current time.
+    now_fn: NowFn,
 }
 
-impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
-    pub fn new(max_job_retries: usize, action_db: T) -> Arc<Self> {
-        Arc::new(Self {
+impl<T, I, NowFn> SimpleSchedulerStateManager<T, I, NowFn>
+where
+    T: AwaitedActionDb,
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+{
+    pub fn new(
+        max_job_retries: usize,
+        no_event_action_timeout: Duration,
+        action_db: T,
+        now_fn: NowFn,
+    ) -> Arc<Self> {
+        Arc::new_cyclic(|weak_self| Self {
             action_db,
             max_job_retries,
+            no_event_action_timeout,
+            timeout_operation_mux: Mutex::new(()),
+            weak_self: weak_self.clone(),
+            now_fn,
         })
+    }
+
+    /// Let the scheduler know that an operation has timed out from
+    /// the client side (ie: worker has not updated in a while).
+    async fn timeout_operation_id(&self, operation_id: &OperationId) -> Result<(), Error> {
+        // Ensure that only one timeout operation is running at a time.
+        // Failing to do this could result in the same operation being
+        // timed out multiple times at the same time.
+        // Note: We could implement this on a per-operation_id basis, but it is quite
+        // complex to manage the locks.
+        let _lock = self.timeout_operation_mux.lock().await;
+
+        let awaited_action_subscriber = self
+            .action_db
+            .get_by_operation_id(operation_id)
+            .await
+            .err_tip(|| "In SimpleSchedulerStateManager::timeout_operation_id")?
+            .err_tip(|| {
+                format!("Operation id {operation_id} does not exist in SimpleSchedulerStateManager::timeout_operation_id")
+            })?;
+
+        let awaited_action = awaited_action_subscriber.borrow();
+
+        // If the action is not executing, we should not timeout the action.
+        if !matches!(awaited_action.state().stage, ActionStage::Executing) {
+            return Ok(());
+        }
+
+        let last_worker_updated = awaited_action
+            .last_worker_updated_timestamp()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to convert last_worker_updated to duration since epoch {e:?}"
+                )
+            })?;
+        let worker_should_update_before = last_worker_updated
+            .checked_add(self.no_event_action_timeout)
+            .err_tip(|| "Timestamp too big in SimpleSchedulerStateManager::timeout_operation_id")?;
+        if worker_should_update_before < (self.now_fn)().elapsed() {
+            // The action was updated recently, we should not timeout the action.
+            // This is to prevent timing out actions that have recently been updated
+            // (like multiple clients timeout the same action at the same time).
+            return Ok(());
+        }
+
+        self.assign_operation(
+            operation_id,
+            Err(make_err!(
+                Code::DeadlineExceeded,
+                "Operation timed out after {} seconds",
+                self.no_event_action_timeout.as_secs_f32(),
+            )),
+        )
+        .await
     }
 
     async fn inner_update_operation(
@@ -222,16 +420,6 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
             };
 
             let mut awaited_action = awaited_action_subscriber.borrow();
-
-            // Make sure we don't update an action that is already completed.
-            if awaited_action.state().stage.is_finished() {
-                return Err(make_err!(
-                    Code::Internal,
-                    "Action {operation_id:?} is already completed with state {:?} - maybe_worker_id: {:?}",
-                    awaited_action.state().stage,
-                    maybe_worker_id,
-                ));
-            }
 
             // Make sure the worker id matches the awaited action worker id.
             // This might happen if the worker sending the update is not the
@@ -258,6 +446,16 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
                     awaited_action,
                 );
                 return Err(err);
+            }
+
+            // Make sure we don't update an action that is already completed.
+            if awaited_action.state().stage.is_finished() {
+                return Err(make_err!(
+                    Code::Internal,
+                    "Action {operation_id:?} is already completed with state {:?} - maybe_worker_id: {:?}",
+                    awaited_action.state().stage,
+                    maybe_worker_id,
+                ));
             }
 
             let stage = match &action_stage_result {
@@ -450,7 +648,12 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
 }
 
 #[async_trait]
-impl<T: AwaitedActionDb> ClientStateManager for SimpleSchedulerStateManager<T> {
+impl<T, I, NowFn> ClientStateManager for SimpleSchedulerStateManager<T, I, NowFn>
+where
+    T: AwaitedActionDb,
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+{
     async fn add_action(
         &self,
         client_operation_id: OperationId,
@@ -460,15 +663,27 @@ impl<T: AwaitedActionDb> ClientStateManager for SimpleSchedulerStateManager<T> {
             .inner_add_operation(client_operation_id.clone(), action_info.clone())
             .await?;
 
-        Ok(Box::new(ClientActionStateResult::new(sub)))
+        Ok(Box::new(ClientActionStateResult::new(
+            sub,
+            self.weak_self.clone(),
+            self.no_event_action_timeout,
+            self.now_fn.clone(),
+        )))
     }
 
     async fn filter_operations<'a>(
         &'a self,
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream<'a>, Error> {
-        self.inner_filter_operations(filter, move |rx| Box::new(ClientActionStateResult::new(rx)))
-            .await
+        self.inner_filter_operations(filter, move |rx| {
+            Box::new(ClientActionStateResult::new(
+                rx,
+                self.weak_self.clone(),
+                self.no_event_action_timeout,
+                self.now_fn.clone(),
+            ))
+        })
+        .await
     }
 
     fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
@@ -477,7 +692,12 @@ impl<T: AwaitedActionDb> ClientStateManager for SimpleSchedulerStateManager<T> {
 }
 
 #[async_trait]
-impl<T: AwaitedActionDb> WorkerStateManager for SimpleSchedulerStateManager<T> {
+impl<T, I, NowFn> WorkerStateManager for SimpleSchedulerStateManager<T, I, NowFn>
+where
+    T: AwaitedActionDb,
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+{
     async fn update_operation(
         &self,
         operation_id: &OperationId,
@@ -490,13 +710,23 @@ impl<T: AwaitedActionDb> WorkerStateManager for SimpleSchedulerStateManager<T> {
 }
 
 #[async_trait]
-impl<T: AwaitedActionDb> MatchingEngineStateManager for SimpleSchedulerStateManager<T> {
+impl<T, I, NowFn> MatchingEngineStateManager for SimpleSchedulerStateManager<T, I, NowFn>
+where
+    T: AwaitedActionDb,
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+{
     async fn filter_operations<'a>(
         &'a self,
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream<'a>, Error> {
         self.inner_filter_operations(filter, |rx| {
-            Box::new(MatchingEngineActionStateResult::new(rx))
+            Box::new(MatchingEngineActionStateResult::new(
+                rx,
+                self.weak_self.clone(),
+                self.no_event_action_timeout,
+                self.now_fn.clone(),
+            ))
         })
         .await
     }
