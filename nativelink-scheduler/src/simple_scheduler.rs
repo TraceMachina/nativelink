@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::Future;
@@ -21,6 +22,7 @@ use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
+use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -295,6 +297,7 @@ impl SimpleScheduler {
                 tokio::time::sleep(Duration::from_millis(1))
             },
             task_change_notify,
+            SystemTime::now,
         )
     }
 
@@ -302,11 +305,14 @@ impl SimpleScheduler {
         Fut: Future<Output = ()> + Send,
         F: Fn() -> Fut + Send + Sync + 'static,
         A: AwaitedActionDb,
+        I: InstantWrapper,
+        NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
     >(
         scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
         awaited_action_db: A,
         on_matching_engine_run: F,
         task_change_notify: Arc<Notify>,
+        now_fn: NowFn,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             scheduler_cfg
@@ -326,7 +332,13 @@ impl SimpleScheduler {
         }
 
         let worker_change_notify = Arc::new(Notify::new());
-        let state_manager = SimpleSchedulerStateManager::new(max_job_retries, awaited_action_db);
+        let state_manager = SimpleSchedulerStateManager::new(
+            max_job_retries,
+            // TODO(allada) This should probably have its own config.
+            Duration::from_secs(worker_timeout_s),
+            awaited_action_db,
+            now_fn,
+        );
 
         let worker_scheduler = ApiWorkerScheduler::new(
             state_manager.clone(),
