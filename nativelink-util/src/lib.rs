@@ -21,7 +21,6 @@ pub mod connection_manager;
 pub mod default_store_key_subscribe;
 pub mod digest_hasher;
 pub mod evicting_map;
-pub mod fastcdc;
 pub mod fs;
 pub mod health_utils;
 pub mod instant_wrapper;

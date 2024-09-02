@@ -19,7 +19,7 @@ impl State {
     }
 }
 
-/// This algorithm will take an input stream and build frames based on FastCDC algorithm.
+/// This algorithm will take an input stream and build frames based on UltraCDC algorithm.
 /// see: <https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf>
 ///
 /// In layman's terms this means we can take an input of unknown size and composition
@@ -30,7 +30,7 @@ impl State {
 /// normal conditions all the chunk boundaries will be identical except the ones near
 /// the mutations.
 ///
-/// This is not very useful on it's own, but is extremely useful because we can pair
+/// This is not very useful on its own, but is extremely useful because we can pair
 /// this together with a hash algorithm (like sha256) to then hash each chunk and
 /// then check to see if we already have the sha256 somewhere before attempting to
 /// upload the file. If the file does exist, we can skip the chunk and continue then
@@ -173,7 +173,7 @@ impl Decoder for UltraCDC {
 
 impl Clone for UltraCDC {
     /// Clone configuration but with new state. This is useful where you can create
-    /// a base FastCDC object then clone it when you want to process a new stream.
+    /// a base UltraCDC object then clone it when you want to process a new stream.
     fn clone(&self) -> Self {
         Self {
             min_size: self.min_size,
