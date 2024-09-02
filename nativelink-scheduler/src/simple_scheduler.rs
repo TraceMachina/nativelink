@@ -19,14 +19,12 @@ use async_trait::async_trait;
 use futures::Future;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
-use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
-};
+use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
-    OperationFilter, OperationStageFlags, OrderDirection,
+    OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
@@ -438,10 +436,10 @@ impl WorkerScheduler for SimpleScheduler {
         &self,
         worker_id: &WorkerId,
         operation_id: &OperationId,
-        action_stage: Result<ActionStage, Error>,
+        update: UpdateOperationType,
     ) -> Result<(), Error> {
         self.worker_scheduler
-            .update_action(worker_id, operation_id, action_stage)
+            .update_action(worker_id, operation_id, update)
             .await
     }
 

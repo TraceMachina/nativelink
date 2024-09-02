@@ -38,11 +38,11 @@ use nativelink_scheduler::worker::ActionInfoWithProps;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_service::worker_api_server::{ConnectWorkerStream, NowFn, WorkerApiServer};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
+    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::operation_state_manager::WorkerStateManager;
+use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use pretty_assertions::assert_eq;
 use tokio::join;
 use tokio::sync::{mpsc, Notify};
@@ -54,7 +54,7 @@ const BASE_WORKER_TIMEOUT_S: u64 = 100;
 
 #[derive(Debug)]
 enum WorkerStateManagerCalls {
-    UpdateOperation((OperationId, WorkerId, Result<ActionStage, Error>)),
+    UpdateOperation((OperationId, WorkerId, UpdateOperationType)),
 }
 
 #[derive(Debug)]
@@ -85,7 +85,7 @@ impl MockWorkerStateManager {
     pub async fn expect_update_operation(
         &self,
         result: Result<(), Error>,
-    ) -> (OperationId, WorkerId, Result<ActionStage, Error>) {
+    ) -> (OperationId, WorkerId, UpdateOperationType) {
         let mut rx_call_lock = self.rx_call.lock().await;
         let recv = rx_call_lock.recv();
         let WorkerStateManagerCalls::UpdateOperation(req) =
@@ -103,13 +103,13 @@ impl WorkerStateManager for MockWorkerStateManager {
         &self,
         operation_id: &OperationId,
         worker_id: &WorkerId,
-        action_stage: Result<ActionStage, Error>,
+        update: UpdateOperationType,
     ) -> Result<(), Error> {
         self.tx_call
             .send(WorkerStateManagerCalls::UpdateOperation((
                 operation_id.clone(),
                 *worker_id,
-                action_stage,
+                update,
             )))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
@@ -501,7 +501,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
 
     {
         // Ensure our state manager got the same result as the server.
-        let (execution_response_result, (operation_id, worker_id, client_given_state)) = join!(
+        let (execution_response_result, (operation_id, worker_id, client_given_update)) = join!(
             test_context
                 .worker_api_server
                 .execution_response(Request::new(result.clone())),
@@ -511,8 +511,15 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
 
         assert_eq!(operation_id, expected_operation_id);
         assert_eq!(worker_id, test_context.worker_id);
-        assert_eq!(client_given_state, Ok(execute_response.clone().try_into()?));
-        assert_eq!(execute_response, client_given_state.unwrap().into());
+        assert_eq!(
+            client_given_update,
+            UpdateOperationType::UpdateWithActionStage(execute_response.clone().try_into()?)
+        );
+        let client_given_state = match client_given_update {
+            UpdateOperationType::UpdateWithActionStage(action_stage) => action_stage,
+            _ => unreachable!(),
+        };
+        assert_eq!(execute_response, client_given_state.into());
     }
     Ok(())
 }

@@ -29,7 +29,7 @@ use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
-    OperationFilter, OperationStageFlags, OrderDirection, WorkerStateManager,
+    OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
 };
 use tracing::{event, Level};
 
@@ -268,8 +268,10 @@ where
             if timeout_attempts >= MAX_UPDATE_RETRIES {
                 return Err(make_err!(
                     Code::Internal,
-                    "Failed to update action after {} retries with no error set in MatchingEngineActionStateResult::changed",
+                    "Failed to update action after {} retries with no error set in MatchingEngineActionStateResult::changed - {} {:?}",
                     MAX_UPDATE_RETRIES,
+                    awaited_action.operation_id(),
+                    awaited_action.state().stage,
                 ));
             }
             timeout_attempts += 1;
@@ -314,6 +316,9 @@ where
     timeout_operation_mux: Mutex<()>,
 
     /// Weak reference to self.
+    // We use a weak reference to reduce the risk of a memory leak from
+    // future changes. If this becomes some kind of perforamnce issue,
+    // we can consider using a strong reference.
     weak_self: Weak<Self>,
 
     /// Function to get the current time.
@@ -402,7 +407,7 @@ where
         &self,
         operation_id: &OperationId,
         maybe_worker_id: Option<&WorkerId>,
-        action_stage_result: Result<ActionStage, Error>,
+        update: UpdateOperationType,
     ) -> Result<(), Error> {
         let mut last_err = None;
         for _ in 0..MAX_UPDATE_RETRIES {
@@ -458,9 +463,17 @@ where
                 ));
             }
 
-            let stage = match &action_stage_result {
-                Ok(stage) => stage.clone(),
-                Err(err) => {
+            let stage = match &update {
+                UpdateOperationType::KeepAlive => {
+                    awaited_action.keep_alive((self.now_fn)().now());
+                    return self
+                        .action_db
+                        .update_awaited_action(awaited_action)
+                        .await
+                        .err_tip(|| "Failed to send KeepAlive in SimpleSchedulerStateManager::update_operation");
+                }
+                UpdateOperationType::UpdateWithActionStage(stage) => stage.clone(),
+                UpdateOperationType::UpdateWithError(err) => {
                     // Don't count a backpressure failure as an attempt for an action.
                     let due_to_backpressure = err.code == Code::ResourceExhausted;
                     if !due_to_backpressure {
@@ -485,18 +498,22 @@ where
                     }
                 }
             };
+            let now = (self.now_fn)().now();
             if matches!(stage, ActionStage::Queued) {
                 // If the action is queued, we need to unset the worker id regardless of
                 // which worker sent the update.
-                awaited_action.set_worker_id(None);
+                awaited_action.set_worker_id(None, now);
             } else {
-                awaited_action.set_worker_id(maybe_worker_id.copied());
+                awaited_action.set_worker_id(maybe_worker_id.copied(), now);
             }
-            awaited_action.set_state(Arc::new(ActionState {
-                stage,
-                operation_id: operation_id.clone(),
-                action_digest: awaited_action.action_info().digest(),
-            }));
+            awaited_action.set_state(
+                Arc::new(ActionState {
+                    stage,
+                    operation_id: operation_id.clone(),
+                    action_digest: awaited_action.action_info().digest(),
+                }),
+                now,
+            );
 
             let update_action_result = self
                 .action_db
@@ -702,9 +719,9 @@ where
         &self,
         operation_id: &OperationId,
         worker_id: &WorkerId,
-        action_stage_result: Result<ActionStage, Error>,
+        update: UpdateOperationType,
     ) -> Result<(), Error> {
-        self.inner_update_operation(operation_id, Some(worker_id), action_stage_result)
+        self.inner_update_operation(operation_id, Some(worker_id), update)
             .await
     }
 }
@@ -736,11 +753,14 @@ where
         operation_id: &OperationId,
         worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error> {
-        let (maybe_worker_id, stage_result) = match worker_id_or_reason_for_unsassign {
-            Ok(worker_id) => (Some(worker_id), Ok(ActionStage::Executing)),
-            Err(err) => (None, Err(err)),
+        let (maybe_worker_id, update) = match worker_id_or_reason_for_unsassign {
+            Ok(worker_id) => (
+                Some(worker_id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Executing),
+            ),
+            Err(err) => (None, UpdateOperationType::UpdateWithError(err)),
         };
-        self.inner_update_operation(operation_id, maybe_worker_id, stage_result)
+        self.inner_update_operation(operation_id, maybe_worker_id, update)
             .await
     }
 }

@@ -54,16 +54,6 @@ impl TryFrom<ActionStage> for SortedAwaitedActionState {
     }
 }
 
-impl std::fmt::Display for SortedAwaitedActionState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SortedAwaitedActionState::CacheCheck => write!(f, "CacheCheck"),
-            SortedAwaitedActionState::Queued => write!(f, "Queued"),
-            SortedAwaitedActionState::Executing => write!(f, "Executing"),
-            SortedAwaitedActionState::Completed => write!(f, "Completed"),
-        }
-    }
-}
 /// A struct pointing to an AwaitedAction that can be sorted.
 #[derive(Debug, Clone, Serialize, Deserialize, MetricsComponent)]
 pub struct SortedAwaitedAction {
