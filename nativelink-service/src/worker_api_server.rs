@@ -31,6 +31,7 @@ use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::background_spawn;
 use nativelink_util::action_messages::{OperationId, WorkerId};
+use nativelink_util::operation_state_manager::UpdateOperationType;
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::mpsc;
 use tokio::time::interval;
@@ -210,13 +211,21 @@ impl WorkerApiServer {
                     .try_into()
                     .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?;
                 self.scheduler
-                    .update_action(&worker_id, &operation_id, Ok(action_stage))
+                    .update_action(
+                        &worker_id,
+                        &operation_id,
+                        UpdateOperationType::UpdateWithActionStage(action_stage),
+                    )
                     .await
                     .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
             }
             execute_result::Result::InternalError(e) => {
                 self.scheduler
-                    .update_action(&worker_id, &operation_id, Err(e.into()))
+                    .update_action(
+                        &worker_id,
+                        &operation_id,
+                        UpdateOperationType::UpdateWithError(e.into()),
+                    )
                     .await
                     .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
             }
