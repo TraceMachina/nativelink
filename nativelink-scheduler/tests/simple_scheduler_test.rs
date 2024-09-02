@@ -869,11 +869,11 @@ impl AwaitedActionSubscriber for MockAwaitedActionSubscriber {
         unreachable!();
     }
 
-    fn borrow(&self) -> AwaitedAction {
-        AwaitedAction::new(
+    async fn borrow(&self) -> Result<AwaitedAction, Error> {
+        Ok(AwaitedAction::new(
             OperationId::default(),
             make_base_action_info(SystemTime::UNIX_EPOCH, DigestInfo::zero_digest()),
-        )
+        ))
     }
 }
 
@@ -933,8 +933,8 @@ impl AwaitedActionDb for MockAwaitedAction {
 
     async fn get_all_awaited_actions(
         &self,
-    ) -> impl Stream<Item = Result<Self::Subscriber, Error>> + Send {
-        futures::stream::empty()
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        Ok(futures::stream::empty())
     }
 
     async fn get_by_operation_id(
@@ -953,12 +953,12 @@ impl AwaitedActionDb for MockAwaitedAction {
         _start: Bound<SortedAwaitedAction>,
         _end: Bound<SortedAwaitedAction>,
         _desc: bool,
-    ) -> impl Stream<Item = Result<Self::Subscriber, Error>> + Send {
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
         let mut rx_get_range_of_actions = self.rx_get_range_of_actions.lock().await;
         let items = rx_get_range_of_actions
             .try_recv()
             .expect("Could not receive msg in mpsc");
-        futures::stream::iter(items)
+        Ok(futures::stream::iter(items))
     }
 
     async fn update_awaited_action(&self, _new_awaited_action: AwaitedAction) -> Result<(), Error> {
