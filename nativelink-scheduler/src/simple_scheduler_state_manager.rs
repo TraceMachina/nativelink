@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime};
 
 use async_lock::Mutex;
 use async_trait::async_trait;
-use futures::{future, stream, StreamExt, TryStreamExt};
+use futures::{future, stream, FutureExt, StreamExt, TryStreamExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
@@ -222,7 +222,13 @@ where
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
     async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
-        Ok(self.awaited_action_sub.borrow().state().clone())
+        Ok(self
+            .awaited_action_sub
+            .borrow()
+            .await
+            .err_tip(|| "In MatchingEngineActionStateResult::as_state")?
+            .state()
+            .clone())
     }
 
     async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
@@ -239,7 +245,11 @@ where
                 }
             }
 
-            let awaited_action = self.awaited_action_sub.borrow();
+            let awaited_action = self
+                .awaited_action_sub
+                .borrow()
+                .await
+                .err_tip(|| "In MatchingEngineActionStateResult::changed")?;
 
             if matches!(awaited_action.state().stage, ActionStage::Queued) {
                 // Actions in queued state do not get periodically updated,
@@ -278,7 +288,13 @@ where
     }
 
     async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
-        Ok(self.awaited_action_sub.borrow().action_info().clone())
+        Ok(self
+            .awaited_action_sub
+            .borrow()
+            .await
+            .err_tip(|| "In MatchingEngineActionStateResult::as_action_info")?
+            .action_info()
+            .clone())
     }
 }
 
@@ -362,7 +378,10 @@ where
                 format!("Operation id {operation_id} does not exist in SimpleSchedulerStateManager::timeout_operation_id")
             })?;
 
-        let awaited_action = awaited_action_subscriber.borrow();
+        let awaited_action = awaited_action_subscriber
+            .borrow()
+            .await
+            .err_tip(|| "In SimpleSchedulerStateManager::timeout_operation_id")?;
 
         // If the action is not executing, we should not timeout the action.
         if !matches!(awaited_action.state().stage, ActionStage::Executing) {
@@ -420,7 +439,10 @@ where
                 None => return Ok(()),
             };
 
-            let mut awaited_action = awaited_action_subscriber.borrow();
+            let mut awaited_action = awaited_action_subscriber
+                .borrow()
+                .await
+                .err_tip(|| "In SimpleSchedulerStateManager::update_operation")?;
 
             // Make sure the worker id matches the awaited action worker id.
             // This might happen if the worker sending the update is not the
@@ -574,67 +596,81 @@ where
         }
 
         if let Some(operation_id) = &filter.operation_id {
-            return Ok(self
+            let maybe_subscriber = self
                 .action_db
                 .get_by_operation_id(operation_id)
                 .await
-                .err_tip(|| "In MemorySchedulerStateManager::filter_operations")?
-                .filter(|awaited_action_rx| {
-                    let awaited_action = awaited_action_rx.borrow();
-                    apply_filter_predicate(&awaited_action, &filter)
-                })
-                .map(|awaited_action| -> ActionStateResultStream {
-                    Box::pin(stream::once(async move {
-                        to_action_state_result(awaited_action)
-                    }))
-                })
-                .unwrap_or_else(|| Box::pin(stream::empty())));
+                .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
+            let Some(subscriber) = maybe_subscriber else {
+                return Ok(Box::pin(stream::empty()));
+            };
+            let awaited_action = subscriber
+                .borrow()
+                .await
+                .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
+            if !apply_filter_predicate(&awaited_action, &filter) {
+                return Ok(Box::pin(stream::empty()));
+            }
+            return Ok(Box::pin(stream::once(async move {
+                to_action_state_result(subscriber)
+            })));
         }
         if let Some(client_operation_id) = &filter.client_operation_id {
-            return Ok(self
+            let maybe_subscriber = self
                 .action_db
                 .get_awaited_action_by_id(client_operation_id)
                 .await
-                .err_tip(|| "In MemorySchedulerStateManager::filter_operations")?
-                .filter(|awaited_action_rx| {
-                    let awaited_action = awaited_action_rx.borrow();
-                    apply_filter_predicate(&awaited_action, &filter)
-                })
-                .map(|awaited_action| -> ActionStateResultStream {
-                    Box::pin(stream::once(async move {
-                        to_action_state_result(awaited_action)
-                    }))
-                })
-                .unwrap_or_else(|| Box::pin(stream::empty())));
+                .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
+            let Some(subscriber) = maybe_subscriber else {
+                return Ok(Box::pin(stream::empty()));
+            };
+            let awaited_action = subscriber
+                .borrow()
+                .await
+                .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
+            if !apply_filter_predicate(&awaited_action, &filter) {
+                return Ok(Box::pin(stream::empty()));
+            }
+            return Ok(Box::pin(stream::once(async move {
+                to_action_state_result(subscriber)
+            })));
         }
 
         let Some(sorted_awaited_action_state) =
             sorted_awaited_action_state_for_flags(filter.stages)
         else {
-            let mut all_items: Vec<T::Subscriber> = self
+            let mut all_items: Vec<_> = self
                 .action_db
                 .get_all_awaited_actions()
                 .await
-                .try_filter(|awaited_action_subscriber| {
-                    future::ready(apply_filter_predicate(
-                        &awaited_action_subscriber.borrow(),
-                        &filter,
-                    ))
+                .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?
+                .and_then(|awaited_action_subscriber| async move {
+                    let awaited_action = awaited_action_subscriber
+                        .borrow()
+                        .await
+                        .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
+                    Ok((awaited_action_subscriber, awaited_action))
+                })
+                .try_filter_map(|(subscriber, awaited_action)| {
+                    if apply_filter_predicate(&awaited_action, &filter) {
+                        future::ready(Ok(Some((subscriber, awaited_action.sort_key()))))
+                            .left_future()
+                    } else {
+                        future::ready(Result::<_, Error>::Ok(None)).right_future()
+                    }
                 })
                 .try_collect()
                 .await
-                .err_tip(|| "In MemorySchedulerStateManager::filter_operations")?;
+                .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
             match filter.order_by_priority_direction {
-                Some(OrderDirection::Asc) => {
-                    all_items.sort_unstable_by_key(|a| a.borrow().sort_key())
-                }
-                Some(OrderDirection::Desc) => {
-                    all_items.sort_unstable_by_key(|a| std::cmp::Reverse(a.borrow().sort_key()))
-                }
+                Some(OrderDirection::Asc) => all_items.sort_unstable_by(|(_, a), (_, b)| a.cmp(b)),
+                Some(OrderDirection::Desc) => all_items.sort_unstable_by(|(_, a), (_, b)| b.cmp(a)),
                 None => {}
             }
             return Ok(Box::pin(stream::iter(
-                all_items.into_iter().map(to_action_state_result),
+                all_items
+                    .into_iter()
+                    .map(move |(subscriber, _)| to_action_state_result(subscriber)),
             )));
         };
 
@@ -642,7 +678,6 @@ where
             filter.order_by_priority_direction,
             Some(OrderDirection::Desc)
         );
-        let filter = filter.clone();
         let stream = self
             .action_db
             .get_range_of_actions(
@@ -652,7 +687,21 @@ where
                 desc,
             )
             .await
-            .try_filter(move |sub| future::ready(apply_filter_predicate(&sub.borrow(), &filter)))
+            .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?
+            .and_then(|awaited_action_subscriber| async move {
+                let awaited_action = awaited_action_subscriber
+                    .borrow()
+                    .await
+                    .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
+                Ok((awaited_action_subscriber, awaited_action))
+            })
+            .try_filter_map(move |(subscriber, awaited_action)| {
+                if apply_filter_predicate(&awaited_action, &filter) {
+                    future::ready(Ok(Some(subscriber))).left_future()
+                } else {
+                    future::ready(Result::<_, Error>::Ok(None)).right_future()
+                }
+            })
             .map(move |result| -> Box<dyn ActionStateResult> {
                 result.map_or_else(
                     |e| -> Box<dyn ActionStateResult> { Box::new(ErrorActionStateResult(e)) },
