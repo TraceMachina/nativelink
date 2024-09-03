@@ -3,7 +3,7 @@ resolver = "2"
 
 [package]
 name = "nativelink"
-version = "0.5.1"
+version = "0.5.3"
 edition = "2021"
 rust-version = "1.79.0"
 
@@ -44,6 +44,8 @@ nativelink-worker = { path = "nativelink-worker" }
 nativelink-metric = { path = "nativelink-metric" }
 nativelink-metric-collector = { path = "nativelink-metric-collector" }
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
+aws-sdk-s3 = { version = "=1.42.0", features = ["rt-tokio"] }
+aws-smithy-runtime = { version = "=1.6.2", features = ["test-util"] }
 axum = { version = "0.7.5", default-features = false }
 clap = { version = "4.5.9", features = ["derive"] }
 futures = { version = "0.3.30", default-features = false }
@@ -71,7 +73,7 @@ serde_json = "1.0.120"
 [workspace.cargo-features-manager.keep]
 async-lock = ["std"]
 aws-sdk-s3 = ["rt-tokio"]
-aws-smithy-runtime = ["test-util"]
+aws-smithy-runtime = { version = "=1.6.2", features = ["test-util"] }
 # This causes blake3 to detect SIMD capabilities at runtime.
 blake3 = ["std"]
 pretty_assertions = ["std"]
