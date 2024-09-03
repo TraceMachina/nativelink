@@ -13,6 +13,7 @@ LLVM
 Machina
 [Mm]onorepo
 NVMe
+hello@nativelink.com
 NativeLink
 OCI
 OSSF
@@ -55,3 +56,15 @@ Grafana
 GitHub
 Deno
 shipstorm
+hermiticity
+performant
+unscalable
+Warewulf
+Apptainer
+Verissimo
+Delangue
+Lackriet
+Wainer
+Gert
+Bruer
+Eagan

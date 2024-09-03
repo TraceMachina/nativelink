@@ -1,9 +1,9 @@
 <div id="logo" align="center">
   <a href="https://www.nativelink.com">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/src/assets/logo-dark.svg" />
-      <source media="(prefers-color-scheme: light)" srcset="docs/src/assets/logo-light.svg" />
-      <img alt="NativeLink" src="docs/src/assets/logo-light.svg" width="376" height="100" />
+      <source media="(prefers-color-scheme: dark)" srcset="web/platform/src/assets/logo-dark.svg" />
+      <source media="(prefers-color-scheme: light)" srcset="web/platform/src/assets/logo-light.svg" />
+      <img alt="NativeLink" src="web/platform/src/assets/logo-light.svg" width="376" height="100" />
     </picture>
   </a>
 

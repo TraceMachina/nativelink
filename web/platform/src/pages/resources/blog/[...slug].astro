@@ -1,0 +1,43 @@
+---
+import { getCollection } from "astro:content";
+
+import Layout from "../../../layouts/Layout.astro";
+import MarkdownLayout from "../../../layouts/MarkdownLayout.astro";
+
+export async function getStaticPaths() {
+  const blogEntries = await getCollection("posts");
+
+  const sortedEntries = blogEntries.sort(
+    (a, b) =>
+      new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime(),
+  );
+
+  // Map through the sorted entries to assign prevEntry and nextEntry
+  return sortedEntries.map((entry, index) => {
+    const prevEntry = sortedEntries[index - 1] || null;
+    const nextEntry = sortedEntries[index + 1] || null;
+
+    return {
+      params: { slug: entry.slug },
+      props: {
+        entry,
+        prevEntry,
+        nextEntry,
+        slug: entry.slug,
+      },
+    };
+  });
+}
+
+const { entry, prevEntry, nextEntry } = Astro.props;
+const { Content } = await entry.render();
+const pageTitle = `NativeLink News | ${entry.slug}`;
+
+export const prerender = true;
+---
+
+<Layout title={pageTitle}>
+    <MarkdownLayout frontmatter={entry.data} prevEntry={prevEntry} nextEntry={nextEntry} slug={entry.slug}>
+        <Content />
+    </MarkdownLayout>
+</Layout>

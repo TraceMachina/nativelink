@@ -1,0 +1,32 @@
+---
+import "@styles/global.css";
+import "@styles/tailwind.css";
+
+import ViewTransitions from "astro/components/ViewTransitions.astro";
+import { ScrollTracker } from "@qwik/components/scroll"
+import { Header } from "@qwik/components/header"
+import { Footer } from "@qwik/components/footer"
+
+const { title } = Astro.props;
+
+const scrolled = false;
+---
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<link rel="sitemap" href="/sitemap-index.xml" />
+		<link rel="icon" sizes="192x192" type="image/png" href="https://static.wixstatic.com/media/b37b63_04b2ef1a25334a4fa0b83f6609065563%7Emv2.png/v1/fill/w_192%2Ch_192%2Clg_1%2Cusm_0.66_1.00_0.01/b37b63_04b2ef1a25334a4fa0b83f6609065563%7Emv2.png" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+		<meta name="description" content="NativeLink" />
+		<meta name="generator" content={Astro.generator} />
+		<title>{title}</title>
+    	<ViewTransitions />
+	</head>
+	<body class="bg-black w-screen">
+		<ScrollTracker scrolled={scrolled} />
+		<Header pathName={Astro.url.pathname}/>
+		<slot />
+    	<Footer />
+	</body>
+</html>

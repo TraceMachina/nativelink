@@ -1,0 +1,33 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+import { LinearGradient } from "@qwik/components/text";
+---
+
+<Layout title="NativeLink Compliance">
+    <div class="bg-black px-8 py-24 md:pt-40 gap-5 self-auto flex flex-col justify-center items-center w-screen md:px-[25vw] text-white ">
+        <div class="flex flex-col justify-center items-center py-4 gap-2">
+            <LinearGradient text="Compliance" class="text-5xl mb-4" />
+            <div class="flex flex-col justify-center items-center">
+                <span class="text-sm text-primary">NativeLink Compliance</span>
+                <span class="text-sm text-primary">Last Updated August 19, 2024</span>
+            </div>
+       </div>
+       <div>
+            At Nativelink, our mission is to empower developers to maximize their productivity.
+            Your data security is our top priority,  allowing you to concentrate on what truly matters: creating exceptional products. <br />
+            <br />
+            We are thrilled to announce that Nativelink has achieved SOC 2 certification!
+            This rigorous audit signifies our commitment to the highest standards of security, processing integrity, and risk management. <br />
+            <br />
+            Our SOC 2 Report provides detailed insights into our robust practices, including how we encrypt customer data,
+            manage system access, conduct vulnerability scans, respond to incidents, and much more. <br />
+            <br />
+            We’re more than happy to discuss our security policies in greater detail. For more information,
+            please don’t hesitate to reach out to us at hello@nativelink.com! <br />
+            <br />
+            <a class="underline" href="https://www.nativelink.com/_files/ugd/b37b63_b22d7486c5a14540ab009bdb69fcdda2.pdf">Soc2 Report - Download Here</a>
+       </div>
+
+    </div>
+</Layout>
