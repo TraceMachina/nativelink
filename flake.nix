@@ -42,6 +42,7 @@
       imports = [
         inputs.git-hooks.flakeModule
         ./local-remote-execution/flake-module.nix
+        ./nixos/flake-module.nix
       ];
       perSystem = {
         config,
@@ -422,6 +423,16 @@
             else lre-cc.meta.Env;
           prefix = "lre";
         };
+        nixos.settings = {
+          path = with pkgs; [
+            "/run/current-system/sw/bin"
+            "${binutils.bintools}/bin"
+            "${uutils-coreutils-noprefix}/bin"
+            "${customClang}/bin"
+            "${git}/bin"
+            "${python3}/bin"
+          ];
+        };
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = let
             bazel = pkgs.writeShellScriptBin "bazel" ''
@@ -480,6 +491,13 @@
               #                    this toolchain via nix for bitwise identical
               #                    binaries across machines.
               export CC=clang
+
+              # If on NixOS, generate nixos.bazelrc which adds the required
+              # NixOS binary paths to the bazel environment.
+              if [ -e /etc/nixos ]; then
+                ${config.nixos.installationScript}
+                export CC=customClang
+              fi
             ''
             + pkgs.lib.optionalString (!pkgs.stdenv.isDarwin) ''
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
@@ -489,6 +507,7 @@
       };
     }
     // {
-      flakeModule = ./local-remote-execution/flake-module.nix;
+      flakeModules.default = ./local-remote-execution/flake-module.nix;
+      flakeModules.nixos = ./nixos/flake-module.nix;
     };
 }
