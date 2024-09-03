@@ -1,0 +1,146 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+import { LinearGradient, Label } from "@qwik/components/text";
+
+import { CodeTabs } from '@qwik/components/codeTabs';
+
+import { Features } from "@qwik/sections/feature"
+import { Benefits } from "@qwik/sections/benefits";
+
+import { FAQ } from "@react/faq"
+
+const screenList = ["w-full", "h-auto"]
+const flexCol = ["flex", "flex-col"]
+const flexStart = ["flex", "flex-col", "justify-start", "items-center"]
+
+const paddings = ["p-4"]
+---
+
+<Layout title="NativeLink Products">
+   <div class="w-screen p-2 py-24 gap-3 bg-black overflow-hidden">
+     <div class="gap-5 text-primary" class:list={[screenList, flexStart, paddings]}>
+      <div class="gap-5 flex flex-col md:flex-row md:w-[1300px] md:items-center md:justify-center md:h-96">
+        <LinearGradient
+        text="Simulation infrastructure for testing before deployment"
+        class="text-3xl md:text-6xl md:w-1/2"
+        />
+        <div class="flex flex-col gap-5 md:w-1/2">
+          <span>NativeLink's architecture is built on Rust for stability and performance. It supports Unix-based operating systems and Windows, and it communicates using the Remote Execution protocol compatible with Bazel, Buck2, Goma, and Reclient.</span>
+          <span>
+            Our system powers over one billion requests per month, ensuring reliable and efficient operation for your production workloads.
+          </span>
+
+        </div>
+
+      </div>
+
+      <picture>
+        <source
+          srcset="https://static.wixstatic.com/media/e16379_a162a7e6486d4192b484d9651704d8fa~mv2.png/v1/fill/w_2178,h_1218,fp_0.51_0.04,q_95,usm_0.66_1.00_0.01,enc_auto/Mockup.png"
+          media="(min-width: 768px)"
+        />
+        <source
+          srcset="https://static.wixstatic.com/media/e16379_a162a7e6486d4192b484d9651704d8fa~mv2.png/v1/fill/w_958,h_858,fp_0.51_0.04,q_90,usm_0.66_1.00_0.01,enc_auto/Mockup.png"
+          media="(max-width: 767px)"
+        />
+        <img
+          fetchpriority="high"
+          src="https://static.wixstatic.com/media/e16379_a162a7e6486d4192b484d9651704d8fa~mv2.png/v1/fill/w_2178,h_1218,fp_0.51_0.04,q_95,usm_0.66_1.00_0.01,enc_auto/Mockup.png"
+          alt="Mockup"
+          class="object-fit md:w-[1000px] py-8 md:py-2"
+        />
+      </picture>
+
+        <div class="relative w-full flex flex-col md:flex-row-reverse md:w-[1200px] md:pt-56 md:gap-20">
+
+          <div class="z-0 absolute inset-0">
+            <div class="w-96 md:w-3/4 md:h-[80svh] h-96 bg-primarybg rounded-full blur-3xl opacity-50 absolute top-28 -left-20 md:-left-96"></div>
+          </div>
+          <div class="z-0 absolute inset-0">
+            <div class="w-96 h-96 md:w-[70svw] md:h-[80svh] bg-secondarybg rounded-full blur-3xl opacity-90 absolute top-64 md:top-96 -right-20 md:-right-[30vw]"></div>
+          </div>
+
+          <div class="z-10 pb-16 gap-5 w-full md:w-1/2 md:pr-16 md:justify-center" class:list={[screenList, flexCol, paddings]} >
+            <LinearGradient
+            text="Effortless Implementation"
+            class="text-3xl"
+            />
+            <span>Kickstart NativeLink in 10 minutes with an open-source build cache and remote executor tailored for large code bases.</span>
+          </div>
+
+          <CodeTabs class="z-10 md:w-1/2"/>
+        </div>
+
+        <div class="w-full flex gap-10 pt-24 md:pt-56 flex-col md:flex-row md:w-[1200px] md:gap-20">
+          <div class="flex flex-col gap-3 items-start justify-center">
+            <LinearGradient
+            text="Made with love in Rust"
+            class="text-3xl"
+            />
+            <span>Reduce runtime errors, guarantee memory-safety without requiring garbage collection, & eliminate race conditions at any scale.
+            </span>
+          </div>
+
+
+          <div class="z-10 shadow-images border border-gray-600 rounded-xl w-full bg-gray-900 flex justify-center">
+            <picture>
+              <source
+                media="(min-width: 320px) and (max-width: 750px)"
+                srcset="https://static.wixstatic.com/media/2dfb32_676d0414e0c44434b8f652bab63ff5d4~mv2.png/v1/crop/x_0,y_5,w_2576,h_2605/fill/w_684,h_692,fp_0.50_0.50,q_90,usm_0.66_1.00_0.01,enc_auto/Demo_Page_Product_Shot%20(1).png"
+              />
+              <source
+                media="(min-width: 751px)"
+                srcset="https://static.wixstatic.com/media/2dfb32_676d0414e0c44434b8f652bab63ff5d4~mv2.png/v1/crop/x_0,y_0,w_3088,h_2548/fill/w_1224,h_1048,fp_0.50_0.50,q_90,usm_0.66_1.00_0.01,enc_auto/Demo_Page_Product_Shot%20(1).png"
+              />
+              <img
+                fetchpriority="high"
+                class="rounded-xl"
+                src="https://static.wixstatic.com/media/2dfb32_676d0414e0c44434b8f652bab63ff5d4~mv2.png/v1/crop/x_0,y_0,w_3088,h_2548/fill/w_684,h_692,fp_0.50_0.50,q_90,usm_0.66_1.00_0.01,enc_auto/Demo_Page_Product_Shot%20(1).png"
+                alt="Demo_Page_Product_Shot (1).png"
+                class="object-fit md:w-[1000px] py-8 md:py-2"
+                />
+            </picture>
+          </div>
+
+
+        </div>
+
+        <div class="w-full flex gap-10 py-24 md:py-56 flex-col md:flex-row-reverse md:w-[1200px] md:gap-20">
+
+          <div class="pt-16 flex flex-col gap-3">
+            <LinearGradient
+            text="Built for production"
+            class="text-3xl"
+            />
+            <span>Our system powers over one billion requests per month, making it a trusted solution for production workloads.
+            </span>
+
+          </div>
+
+          <div class="shadow-images border border-gray-600 rounded-xl w-full bg-gray-900 flex justify-center">
+            <picture><source media="(min-width: 320px) and (max-width: 750px)" srcset="https://static.wixstatic.com/media/2dfb32_cea7da34802d481997a115d857a5b798~mv2.png/v1/crop/x_11,y_0,w_3015,h_1042/fill/w_683,h_236,al_c,q_85,usm_0.66_1.00_0.01,enc_auto/Cropped_Metrics_Product_Shot_1.png"><img class="rounded-xl" fetchpriority="high" src="https://static.wixstatic.com/media/2dfb32_cea7da34802d481997a115d857a5b798~mv2.png/v1/crop/x_11,y_0,w_3015,h_1042/fill/w_683,h_236,al_c,q_85,usm_0.66_1.00_0.01,enc_auto/Cropped_Metrics_Product_Shot_1.png" alt="Cropped_Metrics_Product_Shot_1.png" style="object-fit: contain; object-position: center center; width: 100%;"></picture>
+          </div>
+
+        </div>
+
+
+        <Features />
+        <Benefits />
+
+        <div class="flex justify-center items-center flex-col">
+          <div class="py-12 ">
+            <Label text="FAQ" class="px-8"/>
+          </div>
+          <LinearGradient text="Frequently Asked Questions" class="text-3xl text-center w-full pl-2"/>
+          <span class="p-2">
+            Find answers to the most common questions about NativeLink, from implementation details to support options.
+          </span>
+          <FAQ client:visible/>
+          <span class="text-[10px]">For more detailed information, you can refer to
+            the <a class="text-white underline" href="/docs/introduction/setup">NativeLink documentation</a>.</span>
+        </div>
+
+     </div>
+   </div>
+</Layout>

@@ -1,0 +1,33 @@
+---
+import { getCollection } from 'astro:content';
+
+import Layout from "../../../layouts/Layout.astro";
+import { LinearGradient } from '@qwik/components/text';
+
+const allPosts = await getCollection("posts");
+const newsPosts = allPosts.filter(post => post.data.tags?.includes('news'));
+---
+
+<Layout title="NativeLink News">
+   <div class="text-white w-screen bg-black flex justify-center items-center flex-col pt-24 gap-10">
+    <LinearGradient text={"The latest"} class="text-thin text-4xl self-start pl-8 md:pl-48" />
+<div class="relative w-screen px-8 md:w-9/12 flex gap-4 snap-x snap-mandatory overflow-x-auto pb-16 mb-6 ">
+    {newsPosts
+      .sort((a, b) => new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime())
+      .map((post) => (
+        <a
+          href={"/resources/blog/" + post.slug}
+          class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-white snap-center"
+        >
+          {post.data.image && (
+            <img src={post.data.image} alt={post.data.title || "Blog post image"} class="w-full h-48 object-cover rounded-t-xl" />
+          )}
+          <div class="w-full h-full flex flex-col justify-between items-start p-6">
+            <LinearGradient text={post.data.title} class="text-lg w-full" />
+            <span>Read More</span>
+          </div>
+        </a>
+      ))}
+  </div>
+   </div>
+</Layout>
