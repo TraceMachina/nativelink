@@ -1,0 +1,14 @@
+diff --git a/pkgs/top-level/all-packages.nix b/pkgs/top-level/all-packages.nix
+index 5886f745ff6d..26e519102905 100644
+--- a/pkgs/top-level/all-packages.nix
++++ b/pkgs/top-level/all-packages.nix
+@@ -11492,8 +11492,8 @@ with pkgs;
+
+   playwright = with python3Packages; toPythonApplication playwright;
+
+-  playwright-driver = callPackage ../development/web/playwright/driver.nix { };
+-  playwright-test = callPackage ../development/web/playwright-test/wrapped.nix { };
++  playwright-driver = (callPackage ../development/web/playwright/driver.nix { }).playwright-core;
++  playwright-test = (callPackage ../development/web/playwright/driver.nix { }).playwright-test;
+
+   please = callPackage ../tools/security/please { };

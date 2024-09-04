@@ -338,9 +338,11 @@
             name = "nixpkgs-patched";
             src = self.inputs.nixpkgs;
             patches = [
+              ./tools/nixpkgs_all-packages.diff
               ./tools/nixpkgs_link_libunwind_and_libcxx.diff
               ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
-              ./tools/nixpkgs_playwright.diff
+              ./tools/nixpkgs_bun.diff
+              ./tools/nixpkgs_playwright_driver.diff
             ];
           };
         in
@@ -430,10 +432,15 @@
             '';
           in
             [
-              # Development tooling goes here.
-              bazel
-              stable-rust-native.default
+              # Development tooling
+              pkgs.git
               pkgs.pre-commit
+
+              # Rust
+              stable-rust-native.default
+              bazel
+
+              ## Infrastructure
               pkgs.awscli2
               pkgs.skopeo
               pkgs.dive
@@ -450,7 +457,14 @@
               pkgs.pulumiPackages.pulumi-language-go
               pkgs.go
               pkgs.kustomize
-              pkgs.nodePackages.pnpm
+
+              ## Web
+              pkgs.bun # got patched to the newest version (v.1.1.25)
+              pkgs.deno
+              pkgs.lychee
+              pkgs.nodejs_22 # For pagefind search
+              pkgs.playwright-driver
+              pkgs.playwright-test
 
               # Additional tools from within our development environment.
               local-image-test
@@ -459,32 +473,26 @@
               native-cli
               docs
             ]
-            ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [
-              # The docs on Mac require a manual setup outside the flake.
-              pkgs.playwright-driver.browsers
-            ]
             ++ maybeDarwinDeps;
-          shellHook =
-            ''
-              # Generate the .pre-commit-config.yaml symlink when entering the
-              # development shell.
-              ${config.pre-commit.installationScript}
+          shellHook = ''
+            # Generate the .pre-commit-config.yaml symlink when entering the
+            # development shell.
+            ${config.pre-commit.installationScript}
 
-              # Generate lre.bazelrc which configures LRE toolchains when running
-              # in the nix environment.
-              ${config.local-remote-execution.installationScript}
+            # Generate lre.bazelrc which configures LRE toolchains when running
+            # in the nix environment.
+            ${config.local-remote-execution.installationScript}
 
-              # The Bazel and Cargo builds in nix require a Clang toolchain.
-              # TODO(aaronmondal): The Bazel build currently uses the
-              #                    irreproducible host C++ toolchain. Provide
-              #                    this toolchain via nix for bitwise identical
-              #                    binaries across machines.
-              export CC=clang
-            ''
-            + pkgs.lib.optionalString (!pkgs.stdenv.isDarwin) ''
-              export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
-              export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
-            '';
+            # The Bazel and Cargo builds in nix require a Clang toolchain.
+            # TODO(aaronmondal): The Bazel build currently uses the
+            #                    irreproducible host C++ toolchain. Provide
+            #                    this toolchain via nix for bitwise identical
+            #                    binaries across machines.
+            export CC=clang
+            export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
+            export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
+            export PATH=$HOME/.deno/bin:$PATH
+          '';
         };
       };
     }
