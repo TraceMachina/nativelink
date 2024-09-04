@@ -73,6 +73,7 @@ use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
 use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
+use tonic::service::Routes;
 use tonic::transport::Server as TonicServer;
 use tracing::{error_span, event, trace_span, Level};
 use tracing_subscriber::layer::SubscriberExt;
@@ -442,7 +443,7 @@ async fn inner_main(
         let health_registry = health_registry_builder.lock().await.build();
 
         let mut svc = Router::new()
-            .merge(tonic_services.into_router())
+            .merge(tonic_services.into_service().into_axum_router())
             // This is the default service that executes if no other endpoint matches.
             .fallback((StatusCode::NOT_FOUND, "Not Found"));
 
