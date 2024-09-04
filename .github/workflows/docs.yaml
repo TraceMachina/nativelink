@@ -31,6 +31,7 @@ jobs:
 
     name: Docs Deployment / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    environment: production
 
     permissions:
       id-token: write
@@ -66,7 +67,9 @@ jobs:
       - name: Production deployment
         if: matrix.os == 'ubuntu-24.04' && github.ref == 'refs/heads/main'
         working-directory: docs
+        env:
+          DENO_DEPLOY_TOKEN: ${{ secrets.DENO_DEPLOY_TOKEN }}
         run: |
           nix develop --impure --command bash -c "
-            bun prod --project=nativelink-docs --org=nativelink
+            bun prod --project=nativelink-docs --org=nativelink --token=$DENO_DEPLOY_TOKEN
           "
