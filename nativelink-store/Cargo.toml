@@ -14,7 +14,7 @@ async-trait = "0.1.80"
 aws-config = { version = "1.5.4", default-features = false, features = [
   "rustls",
 ] }
-aws-sdk-s3 = { version = "=1.42.0", features = [
+aws-sdk-s3 = { version = "=1.48.0", features = [
   "rt-tokio",
 ], default-features = false }
 aws-smithy-runtime = { version = "1.6.2" }
@@ -61,13 +61,13 @@ once_cell = { version = "1.19.0", default-features = false }
 sha2 = { version = "0.10.8", default-features = false }
 http = { version = "1.1.0", default-features = false }
 aws-smithy-types = "1.2.0"
-aws-smithy-runtime = { version = "=1.6.2", features = [
+aws-smithy-runtime = { version = "=1.7.1", features = [
   "test-util",
 ], default-features = false }
 aws-sdk-s3 = { version = "1.41.0", features = [
   "rt-tokio",
 ], default-features = false }
-aws-smithy-runtime-api = "=1.7.1"
+aws-smithy-runtime-api = "=1.7.2"
 serial_test = { version = "3.1.1", features = [
   "async",
 ], default-features = false }
