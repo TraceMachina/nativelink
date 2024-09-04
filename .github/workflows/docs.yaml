@@ -3,8 +3,22 @@ name: Deploy NativeLink Docs
 on:
   push:
     branches: [main]
+    paths:
+      - 'docs/**'
+      - '**/*.md'
+      - 'nativelink-config/**'
+      - 'tools/**'
+      - '**/*.lock'
+      - '**/*.nix'
   pull_request:
     branches: [main]
+    paths:
+      - 'docs/**'
+      - '**/*.md'
+      - 'nativelink-config/**'
+      - 'tools/**'
+      - '**/*.lock'
+      - '**/*.nix'
 
 permissions: read-all
 
@@ -14,8 +28,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-24.04, macos-14 ]
+
     name: Docs Deployment / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - name: Checkout
@@ -30,23 +49,22 @@ jobs:
         uses: >- # v4
           DeterminateSystems/magic-nix-cache-action@fc6aaceb40b9845a02b91e059ec147e78d1b4e41
 
-      - name: Test deployment on Ubuntu
+      - name: Test Build on Ubuntu
         if: matrix.os == 'ubuntu-24.04' && github.event_name == 'pull_request'
         working-directory: docs
         run: |
           nix develop --impure --command bash -c "
-            bun staging --project=nativelink-docs --org=nativelink
+            bun setup && bun docs && bun run build
           "
 
-      - name: Test deployment on macOS
+      - name: Test Build on macOS
         if: matrix.os == 'macos-14' && github.event_name == 'pull_request'
         working-directory: docs
         run: |
           nix develop --impure --command bash -c "bun setup && bun run build"
 
-
       - name: Production deployment
-        if: matrix.os == 'ubuntu-22.04' && github.ref == 'refs/heads/main'
+        if: matrix.os == 'ubuntu-24.04' && github.ref == 'refs/heads/main'
         working-directory: docs
         run: |
           nix develop --impure --command bash -c "
