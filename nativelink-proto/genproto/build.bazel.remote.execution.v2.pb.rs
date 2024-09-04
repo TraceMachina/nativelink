@@ -34,7 +34,6 @@
 /// to understand the caching behaviour. Ideally, all `Action`s will be
 /// reproducible so that serving a result from cache is always desirable and
 /// correct.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Action {
     /// The digest of the [Command][build.bazel.remote.execution.v2.Command]
@@ -107,7 +106,6 @@ pub struct Action {
 /// Except as otherwise required, the environment (such as which system
 /// libraries or binaries are available, and what filesystems are mounted where)
 /// is defined by and specific to the implementation of the remote execution API.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Command {
     /// The arguments to the command.
@@ -262,7 +260,6 @@ pub struct Command {
 pub mod command {
     /// An `EnvironmentVariable` is one variable to set in the running program's
     /// environment.
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct EnvironmentVariable {
         /// The variable name.
@@ -278,7 +275,6 @@ pub mod command {
 /// [Action][build.bazel.remote.execution.v2.Action]'s execution
 /// environment. A `Platform` is represented as a series of key-value pairs
 /// representing the properties that are required of the platform.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Platform {
     /// The properties that make up this platform. In order to ensure that
@@ -312,7 +308,6 @@ pub mod platform {
     /// is implicitly part of the action digest, so even tiny changes in the names
     /// or values (like changing case) may result in different action cache
     /// entries.
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Property {
         /// The property name.
@@ -399,7 +394,6 @@ pub mod platform {
 ///    ]
 /// }
 /// ```
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Directory {
     /// The files in the directory.
@@ -419,7 +413,6 @@ pub struct Directory {
 /// [SymlinkNodes][build.bazel.remote.execution.v2.SymlinkNode]. The server is
 /// responsible for specifying the property `name`s that it accepts. If
 /// permitted by the server, the same `name` may occur multiple times.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NodeProperty {
     /// The property name.
@@ -434,7 +427,6 @@ pub struct NodeProperty {
 /// [SymlinkNodes][build.bazel.remote.execution.v2.SymlinkNode]. The server is
 /// responsible for specifying the properties that it accepts.
 ///
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NodeProperties {
     /// A list of string-based
@@ -449,7 +441,6 @@ pub struct NodeProperties {
     pub unix_mode: ::core::option::Option<u32>,
 }
 /// A `FileNode` represents a single file and associated metadata.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FileNode {
     /// The name of the file.
@@ -467,7 +458,6 @@ pub struct FileNode {
 /// A `DirectoryNode` represents a child of a
 /// [Directory][build.bazel.remote.execution.v2.Directory] which is itself
 /// a `Directory` and its associated metadata.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DirectoryNode {
     /// The name of the directory.
@@ -481,7 +471,6 @@ pub struct DirectoryNode {
     pub digest: ::core::option::Option<Digest>,
 }
 /// A `SymlinkNode` represents a symbolic link.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SymlinkNode {
     /// The name of the symlink.
@@ -532,7 +521,6 @@ pub struct SymlinkNode {
 /// Most protocol buffer implementations will always follow these rules when
 /// serializing, but care should be taken to avoid shortcuts. For instance,
 /// concatenating two messages to merge them may produce duplicate fields.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Digest {
     /// The hash. In the case of SHA-256, it will always be a lowercase hex string
@@ -544,7 +532,6 @@ pub struct Digest {
     pub size_bytes: i64,
 }
 /// ExecutedActionMetadata contains details about a completed execution.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutedActionMetadata {
     /// The name of the worker which ran the execution.
@@ -613,7 +600,6 @@ pub struct ExecutedActionMetadata {
 /// `ActionResult.execution_metadata.Worker`) have a non-default value, to
 /// ensure that the serialized value is non-empty, which can then be used
 /// as a basic data sanity check.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ActionResult {
     /// The output files of the action. For each output file requested in the
@@ -790,7 +776,6 @@ pub struct ActionResult {
 /// [FileNode][build.bazel.remote.execution.v2.FileNode], but it is used as an
 /// output in an `ActionResult`. It allows a full file path rather than
 /// only a name.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OutputFile {
     /// The full path of the file relative to the working directory, including the
@@ -818,7 +803,6 @@ pub struct OutputFile {
 /// A `Tree` contains all the
 /// [Directory][build.bazel.remote.execution.v2.Directory] protos in a
 /// single directory Merkle tree, compressed into one message.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Tree {
     /// The root directory in the tree.
@@ -836,7 +820,6 @@ pub struct Tree {
 }
 /// An `OutputDirectory` is the output in an `ActionResult` corresponding to a
 /// directory's full contents rather than a single file.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OutputDirectory {
     /// The full path of the directory relative to the working directory. The path
@@ -893,7 +876,6 @@ pub struct OutputDirectory {
 /// output in an `ActionResult`.
 ///
 /// `OutputSymlink` is binary-compatible with `SymlinkNode`.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OutputSymlink {
     /// The full path of the symlink relative to the working directory, including the
@@ -912,7 +894,6 @@ pub struct OutputSymlink {
     pub node_properties: ::core::option::Option<NodeProperties>,
 }
 /// An `ExecutionPolicy` can be used to control the scheduling of the action.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ExecutionPolicy {
     /// The priority (relative importance) of this action. Generally, a lower value
@@ -929,7 +910,6 @@ pub struct ExecutionPolicy {
 }
 /// A `ResultsCachePolicy` is used for fine-grained control over how action
 /// outputs are stored in the CAS and Action Cache.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ResultsCachePolicy {
     /// The priority (relative importance) of this content in the overall cache.
@@ -945,7 +925,6 @@ pub struct ResultsCachePolicy {
 }
 /// A request message for
 /// [Execution.Execute][build.bazel.remote.execution.v2.Execution.Execute].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteRequest {
     /// The instance of the execution system to operate against. A server may
@@ -994,7 +973,6 @@ pub struct ExecuteRequest {
     pub digest_function: i32,
 }
 /// A `LogFile` is a log stored in the CAS.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LogFile {
     /// The digest of the log contents.
@@ -1013,7 +991,6 @@ pub struct LogFile {
 /// which will be contained in the [response
 /// field][google.longrunning.Operation.response] of the
 /// [Operation][google.longrunning.Operation].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteResponse {
     /// The result of the action.
@@ -1065,7 +1042,6 @@ pub struct ExecuteResponse {
 /// has reached the COMPLETED stage, it MUST set the [done
 /// field][google.longrunning.Operation.done] of the
 /// [Operation][google.longrunning.Operation] and terminate the stream.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ExecutionStage {}
 /// Nested message and enum types in `ExecutionStage`.
@@ -1126,7 +1102,6 @@ pub mod execution_stage {
 /// will be contained in the [metadata
 /// field][google.longrunning.Operation.response] of the
 /// [Operation][google.longrunning.Operation].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteOperationMetadata {
     /// The current stage of execution.
@@ -1153,7 +1128,6 @@ pub struct ExecuteOperationMetadata {
 }
 /// A request message for
 /// [WaitExecution][build.bazel.remote.execution.v2.Execution.WaitExecution].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WaitExecutionRequest {
     /// The name of the [Operation][google.longrunning.Operation]
@@ -1163,7 +1137,6 @@ pub struct WaitExecutionRequest {
 }
 /// A request message for
 /// [ActionCache.GetActionResult][build.bazel.remote.execution.v2.ActionCache.GetActionResult].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetActionResultRequest {
     /// The instance of the execution system to operate against. A server may
@@ -1203,7 +1176,6 @@ pub struct GetActionResultRequest {
 }
 /// A request message for
 /// [ActionCache.UpdateActionResult][build.bazel.remote.execution.v2.ActionCache.UpdateActionResult].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateActionResultRequest {
     /// The instance of the execution system to operate against. A server may
@@ -1238,7 +1210,6 @@ pub struct UpdateActionResultRequest {
 }
 /// A request message for
 /// [ContentAddressableStorage.FindMissingBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.FindMissingBlobs].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FindMissingBlobsRequest {
     /// The instance of the execution system to operate against. A server may
@@ -1264,7 +1235,6 @@ pub struct FindMissingBlobsRequest {
 }
 /// A response message for
 /// [ContentAddressableStorage.FindMissingBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.FindMissingBlobs].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FindMissingBlobsResponse {
     /// A list of the blobs requested *not* present in the storage.
@@ -1273,7 +1243,6 @@ pub struct FindMissingBlobsResponse {
 }
 /// A request message for
 /// [ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchUpdateBlobsRequest {
     /// The instance of the execution system to operate against. A server may
@@ -1300,7 +1269,6 @@ pub struct BatchUpdateBlobsRequest {
 /// Nested message and enum types in `BatchUpdateBlobsRequest`.
 pub mod batch_update_blobs_request {
     /// A request corresponding to a single blob that the client wants to upload.
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Request {
         /// The digest of the blob. This MUST be the digest of `data`. All
@@ -1320,7 +1288,6 @@ pub mod batch_update_blobs_request {
 }
 /// A response message for
 /// [ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchUpdateBlobsResponse {
     /// The responses to the requests.
@@ -1330,7 +1297,6 @@ pub struct BatchUpdateBlobsResponse {
 /// Nested message and enum types in `BatchUpdateBlobsResponse`.
 pub mod batch_update_blobs_response {
     /// A response corresponding to a single blob that the client tried to upload.
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Response {
         /// The blob digest to which this response corresponds.
@@ -1345,7 +1311,6 @@ pub mod batch_update_blobs_response {
 }
 /// A request message for
 /// [ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchReadBlobsRequest {
     /// The instance of the execution system to operate against. A server may
@@ -1375,7 +1340,6 @@ pub struct BatchReadBlobsRequest {
 }
 /// A response message for
 /// [ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchReadBlobsResponse {
     /// The responses to the requests.
@@ -1385,7 +1349,6 @@ pub struct BatchReadBlobsResponse {
 /// Nested message and enum types in `BatchReadBlobsResponse`.
 pub mod batch_read_blobs_response {
     /// A response corresponding to a single blob that the client tried to download.
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Response {
         /// The digest to which this response corresponds.
@@ -1407,7 +1370,6 @@ pub mod batch_read_blobs_response {
 }
 /// A request message for
 /// [ContentAddressableStorage.GetTree][build.bazel.remote.execution.v2.ContentAddressableStorage.GetTree].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetTreeRequest {
     /// The instance of the execution system to operate against. A server may
@@ -1448,7 +1410,6 @@ pub struct GetTreeRequest {
 }
 /// A response message for
 /// [ContentAddressableStorage.GetTree][build.bazel.remote.execution.v2.ContentAddressableStorage.GetTree].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetTreeResponse {
     /// The directories descended from the requested root.
@@ -1463,7 +1424,6 @@ pub struct GetTreeResponse {
 }
 /// A request message for
 /// [Capabilities.GetCapabilities][build.bazel.remote.execution.v2.Capabilities.GetCapabilities].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetCapabilitiesRequest {
     /// The instance of the execution system to operate against. A server may
@@ -1476,7 +1436,6 @@ pub struct GetCapabilitiesRequest {
 }
 /// A response message for
 /// [Capabilities.GetCapabilities][build.bazel.remote.execution.v2.Capabilities.GetCapabilities].
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerCapabilities {
     /// Capabilities of the remote cache system.
@@ -1499,7 +1458,6 @@ pub struct ServerCapabilities {
 }
 /// The digest function used for converting values into keys for CAS and Action
 /// Cache.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct DigestFunction {}
 /// Nested message and enum types in `DigestFunction`.
@@ -1637,7 +1595,6 @@ pub mod digest_function {
     }
 }
 /// Describes the server/instance capabilities for updating the action cache.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ActionCacheUpdateCapabilities {
     #[prost(bool, tag = "1")]
@@ -1647,7 +1604,6 @@ pub struct ActionCacheUpdateCapabilities {
 /// [ResultsCachePolicy][build.bazel.remoteexecution.v2.ResultsCachePolicy] and
 /// [ExecutionPolicy][build.bazel.remoteexecution.v2.ResultsCachePolicy]
 /// Used for querying both cache and execution valid priority ranges.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PriorityCapabilities {
     #[prost(message, repeated, tag = "1")]
@@ -1656,7 +1612,6 @@ pub struct PriorityCapabilities {
 /// Nested message and enum types in `PriorityCapabilities`.
 pub mod priority_capabilities {
     /// Supported range of priorities, including boundaries.
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, Copy, PartialEq, ::prost::Message)]
     pub struct PriorityRange {
         /// The minimum numeric value for this priority range, which represents the
@@ -1670,7 +1625,6 @@ pub mod priority_capabilities {
     }
 }
 /// Describes how the server treats absolute symlink targets.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SymlinkAbsolutePathStrategy {}
 /// Nested message and enum types in `SymlinkAbsolutePathStrategy`.
@@ -1723,7 +1677,6 @@ pub mod symlink_absolute_path_strategy {
     }
 }
 /// Compression formats which may be supported.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct Compressor {}
 /// Nested message and enum types in `Compressor`.
@@ -1782,7 +1735,6 @@ pub mod compressor {
     }
 }
 /// Capabilities of the remote cache system.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CacheCapabilities {
     /// All the digest functions supported by the remote cache.
@@ -1821,7 +1773,6 @@ pub struct CacheCapabilities {
     pub supported_batch_update_compressors: ::prost::alloc::vec::Vec<i32>,
 }
 /// Capabilities of the remote execution system.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionCapabilities {
     /// Legacy field for indicating which digest function is supported by the
@@ -1857,7 +1808,6 @@ pub struct ExecutionCapabilities {
     pub digest_functions: ::prost::alloc::vec::Vec<i32>,
 }
 /// Details for the tool used to call the API.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ToolDetails {
     /// Name of the tool, e.g. bazel.
@@ -1880,7 +1830,6 @@ pub struct ToolDetails {
 /// Therefore, if the gRPC library is used to pass/retrieve this
 /// metadata, the user may ignore the base64 encoding and assume it is simply
 /// serialized as a binary message.
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RequestMetadata {
     /// The details for the tool invoking the requests.
@@ -1935,8 +1884,8 @@ pub mod execution_client {
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
     {
         pub fn new(inner: T) -> Self {
             let inner = tonic::client::Grpc::new(inner);
@@ -1961,7 +1910,7 @@ pub mod execution_client {
             >,
             <T as tonic::codegen::Service<
                 http::Request<tonic::body::BoxBody>,
-            >>::Error: Into<StdError> + Send + Sync,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ExecutionClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -2182,8 +2131,8 @@ pub mod action_cache_client {
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
     {
         pub fn new(inner: T) -> Self {
             let inner = tonic::client::Grpc::new(inner);
@@ -2208,7 +2157,7 @@ pub mod action_cache_client {
             >,
             <T as tonic::codegen::Service<
                 http::Request<tonic::body::BoxBody>,
-            >>::Error: Into<StdError> + Send + Sync,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ActionCacheClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -2486,8 +2435,8 @@ pub mod content_addressable_storage_client {
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
     {
         pub fn new(inner: T) -> Self {
             let inner = tonic::client::Grpc::new(inner);
@@ -2512,7 +2461,7 @@ pub mod content_addressable_storage_client {
             >,
             <T as tonic::codegen::Service<
                 http::Request<tonic::body::BoxBody>,
-            >>::Error: Into<StdError> + Send + Sync,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ContentAddressableStorageClient::new(
                 InterceptedService::new(inner, interceptor),
@@ -2765,8 +2714,8 @@ pub mod capabilities_client {
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
     {
         pub fn new(inner: T) -> Self {
             let inner = tonic::client::Grpc::new(inner);
@@ -2791,7 +2740,7 @@ pub mod capabilities_client {
             >,
             <T as tonic::codegen::Service<
                 http::Request<tonic::body::BoxBody>,
-            >>::Error: Into<StdError> + Send + Sync,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             CapabilitiesClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -2874,7 +2823,7 @@ pub mod execution_server {
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ExecutionServer.
     #[async_trait]
-    pub trait Execution: Send + Sync + 'static {
+    pub trait Execution: std::marker::Send + std::marker::Sync + 'static {
         /// Server streaming response type for the Execute method.
         type ExecuteStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<
@@ -2882,7 +2831,7 @@ pub mod execution_server {
                     tonic::Status,
                 >,
             >
-            + Send
+            + std::marker::Send
             + 'static;
         /// Execute an action remotely.
         ///
@@ -2968,7 +2917,7 @@ pub mod execution_server {
                     tonic::Status,
                 >,
             >
-            + Send
+            + std::marker::Send
             + 'static;
         /// Wait for an execution operation to complete. When the client initially
         /// makes the request, the server immediately responds with the current status
@@ -3001,14 +2950,14 @@ pub mod execution_server {
     /// information about when the client should retry the request; clients SHOULD
     /// respect the information provided.
     #[derive(Debug)]
-    pub struct ExecutionServer<T: Execution> {
+    pub struct ExecutionServer<T> {
         inner: Arc<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
         max_decoding_message_size: Option<usize>,
         max_encoding_message_size: Option<usize>,
     }
-    impl<T: Execution> ExecutionServer<T> {
+    impl<T> ExecutionServer<T> {
         pub fn new(inner: T) -> Self {
             Self::from_arc(Arc::new(inner))
         }
@@ -3062,8 +3011,8 @@ pub mod execution_server {
     impl<T, B> tonic::codegen::Service<http::Request<B>> for ExecutionServer<T>
     where
         T: Execution,
-        B: Body + Send + 'static,
-        B::Error: Into<StdError> + Send + 'static,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
     {
         type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
@@ -3186,7 +3135,7 @@ pub mod execution_server {
             }
         }
     }
-    impl<T: Execution> Clone for ExecutionServer<T> {
+    impl<T> Clone for ExecutionServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
             Self {
@@ -3198,8 +3147,10 @@ pub mod execution_server {
             }
         }
     }
-    impl<T: Execution> tonic::server::NamedService for ExecutionServer<T> {
-        const NAME: &'static str = "build.bazel.remote.execution.v2.Execution";
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "build.bazel.remote.execution.v2.Execution";
+    impl<T> tonic::server::NamedService for ExecutionServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
     }
 }
 /// Generated server implementations.
@@ -3208,7 +3159,7 @@ pub mod action_cache_server {
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ActionCacheServer.
     #[async_trait]
-    pub trait ActionCache: Send + Sync + 'static {
+    pub trait ActionCache: std::marker::Send + std::marker::Sync + 'static {
         /// Retrieve a cached execution result.
         ///
         /// Implementations SHOULD ensure that any blobs referenced from the
@@ -3266,14 +3217,14 @@ pub mod action_cache_server {
     /// information about when the client should retry the request; clients SHOULD
     /// respect the information provided.
     #[derive(Debug)]
-    pub struct ActionCacheServer<T: ActionCache> {
+    pub struct ActionCacheServer<T> {
         inner: Arc<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
         max_decoding_message_size: Option<usize>,
         max_encoding_message_size: Option<usize>,
     }
-    impl<T: ActionCache> ActionCacheServer<T> {
+    impl<T> ActionCacheServer<T> {
         pub fn new(inner: T) -> Self {
             Self::from_arc(Arc::new(inner))
         }
@@ -3327,8 +3278,8 @@ pub mod action_cache_server {
     impl<T, B> tonic::codegen::Service<http::Request<B>> for ActionCacheServer<T>
     where
         T: ActionCache,
-        B: Body + Send + 'static,
-        B::Error: Into<StdError> + Send + 'static,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
     {
         type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
@@ -3450,7 +3401,7 @@ pub mod action_cache_server {
             }
         }
     }
-    impl<T: ActionCache> Clone for ActionCacheServer<T> {
+    impl<T> Clone for ActionCacheServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
             Self {
@@ -3462,8 +3413,10 @@ pub mod action_cache_server {
             }
         }
     }
-    impl<T: ActionCache> tonic::server::NamedService for ActionCacheServer<T> {
-        const NAME: &'static str = "build.bazel.remote.execution.v2.ActionCache";
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "build.bazel.remote.execution.v2.ActionCache";
+    impl<T> tonic::server::NamedService for ActionCacheServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
     }
 }
 /// Generated server implementations.
@@ -3472,7 +3425,7 @@ pub mod content_addressable_storage_server {
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ContentAddressableStorageServer.
     #[async_trait]
-    pub trait ContentAddressableStorage: Send + Sync + 'static {
+    pub trait ContentAddressableStorage: std::marker::Send + std::marker::Sync + 'static {
         /// Determine if blobs are present in the CAS.
         ///
         /// Clients can use this API before uploading blobs to determine which ones are
@@ -3550,7 +3503,7 @@ pub mod content_addressable_storage_server {
         type GetTreeStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::GetTreeResponse, tonic::Status>,
             >
-            + Send
+            + std::marker::Send
             + 'static;
         /// Fetch the entire directory tree rooted at a node.
         ///
@@ -3724,14 +3677,14 @@ pub mod content_addressable_storage_server {
     /// information about when the client should retry the request; clients SHOULD
     /// respect the information provided.
     #[derive(Debug)]
-    pub struct ContentAddressableStorageServer<T: ContentAddressableStorage> {
+    pub struct ContentAddressableStorageServer<T> {
         inner: Arc<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
         max_decoding_message_size: Option<usize>,
         max_encoding_message_size: Option<usize>,
     }
-    impl<T: ContentAddressableStorage> ContentAddressableStorageServer<T> {
+    impl<T> ContentAddressableStorageServer<T> {
         pub fn new(inner: T) -> Self {
             Self::from_arc(Arc::new(inner))
         }
@@ -3786,8 +3739,8 @@ pub mod content_addressable_storage_server {
     for ContentAddressableStorageServer<T>
     where
         T: ContentAddressableStorage,
-        B: Body + Send + 'static,
-        B::Error: Into<StdError> + Send + 'static,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
     {
         type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
@@ -4012,7 +3965,7 @@ pub mod content_addressable_storage_server {
             }
         }
     }
-    impl<T: ContentAddressableStorage> Clone for ContentAddressableStorageServer<T> {
+    impl<T> Clone for ContentAddressableStorageServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
             Self {
@@ -4024,9 +3977,10 @@ pub mod content_addressable_storage_server {
             }
         }
     }
-    impl<T: ContentAddressableStorage> tonic::server::NamedService
-    for ContentAddressableStorageServer<T> {
-        const NAME: &'static str = "build.bazel.remote.execution.v2.ContentAddressableStorage";
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "build.bazel.remote.execution.v2.ContentAddressableStorage";
+    impl<T> tonic::server::NamedService for ContentAddressableStorageServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
     }
 }
 /// Generated server implementations.
@@ -4035,7 +3989,7 @@ pub mod capabilities_server {
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with CapabilitiesServer.
     #[async_trait]
-    pub trait Capabilities: Send + Sync + 'static {
+    pub trait Capabilities: std::marker::Send + std::marker::Sync + 'static {
         /// GetCapabilities returns the server capabilities configuration of the
         /// remote endpoint.
         /// Only the capabilities of the services supported by the endpoint will
@@ -4061,14 +4015,14 @@ pub mod capabilities_server {
     /// The query may include a particular `instance_name`, in which case the values
     /// returned will pertain to that instance.
     #[derive(Debug)]
-    pub struct CapabilitiesServer<T: Capabilities> {
+    pub struct CapabilitiesServer<T> {
         inner: Arc<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
         max_decoding_message_size: Option<usize>,
         max_encoding_message_size: Option<usize>,
     }
-    impl<T: Capabilities> CapabilitiesServer<T> {
+    impl<T> CapabilitiesServer<T> {
         pub fn new(inner: T) -> Self {
             Self::from_arc(Arc::new(inner))
         }
@@ -4122,8 +4076,8 @@ pub mod capabilities_server {
     impl<T, B> tonic::codegen::Service<http::Request<B>> for CapabilitiesServer<T>
     where
         T: Capabilities,
-        B: Body + Send + 'static,
-        B::Error: Into<StdError> + Send + 'static,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
     {
         type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
@@ -4199,7 +4153,7 @@ pub mod capabilities_server {
             }
         }
     }
-    impl<T: Capabilities> Clone for CapabilitiesServer<T> {
+    impl<T> Clone for CapabilitiesServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
             Self {
@@ -4211,7 +4165,9 @@ pub mod capabilities_server {
             }
         }
     }
-    impl<T: Capabilities> tonic::server::NamedService for CapabilitiesServer<T> {
-        const NAME: &'static str = "build.bazel.remote.execution.v2.Capabilities";
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "build.bazel.remote.execution.v2.Capabilities";
+    impl<T> tonic::server::NamedService for CapabilitiesServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
     }
 }
