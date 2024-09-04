@@ -9,7 +9,8 @@ import (
 
 // The configuration for Flux.
 type Flux struct {
-	Version string
+	Version      string
+	Dependencies []pulumi.Resource
 }
 
 // Install sets up Flux in the cluster.
@@ -22,7 +23,11 @@ func (component *Flux) Install(
 			"https://github.com/fluxcd/flux2/releases/download/v%s/install.yaml",
 			component.Version,
 		),
-	})
+	},
+		pulumi.DependsOn(
+			component.Dependencies,
+		),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errPulumi, err)
 	}

@@ -1,0 +1,117 @@
+---
+apiVersion: operator.tekton.dev/v1alpha1
+kind: TektonConfig
+metadata:
+  name: config
+spec:
+  targetNamespace: tekton-pipelines
+  targetNamespaceMetadata:
+    labels: {}
+    annotations: {}
+  profile: all
+  config:
+    nodeSelector: {}
+    tolerations: []
+    priorityClassName: system-cluster-critical
+  chain:
+    disabled: false
+  pipeline:
+    await-sidecar-readiness: true
+    coschedule: pipelineruns
+    disable-affinity-assistant: true
+    disable-creds-init: false
+    # disable-home-env-overwrite: false
+    # disable-working-directory-overwrite: false
+    # disable-inline-spec: "pipeline,pipelinerun,taskrun"
+    enable-bundles-resolver: true
+    enable-cel-in-whenexpression: false
+    enable-cluster-resolver: true
+    enable-custom-tasks: true
+    enable-git-resolver: true
+    enable-hub-resolver: true
+    enable-param-enum: false
+    enable-provenance-in-status: true
+    enable-step-actions: false
+    enable-tekton-oci-bundles: false
+    enforce-nonfalsifiability: none
+    keep-pod-on-cancel: false
+    max-result-size: 4096
+    metrics.count.enable-reason: false
+    metrics.pipelinerun.duration-type: histogram
+    metrics.pipelinerun.level: pipeline
+    metrics.taskrun.duration-type: histogram
+    metrics.taskrun.level: task
+    require-git-ssh-secret-known-hosts: false
+    results-from: termination-message
+    running-in-environment-with-injected-sidecars: true
+    send-cloudevents-for-runs: false
+    set-security-context: false
+    trusted-resources-verification-no-match-policy: ignore
+    performance:
+      disable-ha: false
+      buckets: 1
+      replicas: 1
+      threads-per-controller: 2
+      kube-api-qps: 5.0
+      kube-api-burst: 10
+    # options:
+    #   disabled: false
+    #   configMaps: {}
+    #   deployments: {}
+    #   webhookConfigurationOptions: {}
+  pruner:
+    disabled: false
+    schedule: "0 8 * * *"
+    # resources:
+    #   - taskrun
+    #   - pipelinerun
+    # keep: 3
+    prune-per-resource: true
+  hub:
+    params:
+      - name: enable-devconsole-integration
+        value: "true"
+    # options:
+    #   disabled: false
+    #   configMaps: {}
+    #   deployments: {}
+    #   webhookConfigurationOptions: {}
+  dashboard:
+    readonly: true
+    # options:
+    #   disabled: false
+    #   configMaps: {}
+    #   deployments: {}
+    #   webhookConfigurationOptions: {}
+  platforms:
+    openshift:
+      pipelinesAsCode:
+        additionalPACControllers:
+          <controllerName>:
+            enable: true
+            configMapName: ""
+            secretName: ""
+            settings: {}
+        enable: true
+        settings:
+          application-name: Pipelines as Code CI
+          auto-configure-new-github-repo: "false"
+          bitbucket-cloud-check-source-ip: "true"
+          custom-console-name: ""
+          custom-console-url: ""
+          custom-console-url-pr-details: ""
+          custom-console-url-pr-tasklog: ""
+          error-detection-from-container-logs: "false"
+          error-detection-max-number-of-lines: "50"
+          error-detection-simple-regexp: ^(?P<filename>[^:]*):(?P<line>[0-9]+):(?P<column>[0-9]+):([ ]*)?(?P<error>.*)
+          error-log-snippet: "true"
+          hub-catalog-name: tekton
+          hub-url: https://api.hub.tekton.dev/v1
+          remote-tasks: "true"
+          secret-auto-create: "true"
+          secret-github-app-token-scoped: "true"
+      # options:
+      #   disabled: false
+      #   configMaps: {}
+      #   deployments: {}
+      #   webhookConfigurationOptions: {}
