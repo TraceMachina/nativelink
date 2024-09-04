@@ -442,7 +442,7 @@ async fn inner_main(
         let health_registry = health_registry_builder.lock().await.build();
 
         let mut svc = Router::new()
-            .merge(tonic_services.into_router())
+            .merge(tonic_services.into_service().into_axum_router())
             // This is the default service that executes if no other endpoint matches.
             .fallback((StatusCode::NOT_FOUND, "Not Found"));
 
