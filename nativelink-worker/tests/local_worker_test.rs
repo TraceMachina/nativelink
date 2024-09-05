@@ -61,6 +61,7 @@ use utils::local_worker_test_utils::{
 use utils::mock_running_actions_manager::MockRunningAction;
 
 const INSTANCE_NAME: &str = "foo";
+const APP_VERSION: &str = "0.1.2";
 
 /// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
 /// not set.
@@ -88,7 +89,7 @@ async fn platform_properties_smoke_test() -> Result<(), Error> {
         #[cfg(target_family = "windows")]
         WorkerProperty::query_cmd("cmd /C \"echo hello && echo goodbye\"".to_string()),
     );
-    let mut test_context = setup_local_worker(platform_properties).await;
+    let mut test_context = setup_local_worker(platform_properties, APP_VERSION.to_string()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
     // Now wait for our client to send `.connect_worker()` (which has our platform properties).
@@ -120,7 +121,8 @@ async fn platform_properties_smoke_test() -> Result<(), Error> {
                     name: "foo".to_string(),
                     value: "bar2".to_string(),
                 }
-            ]
+            ],
+            version: APP_VERSION.to_string()
         }
     );
 
@@ -129,7 +131,7 @@ async fn platform_properties_smoke_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn reconnect_on_server_disconnect_test() -> Result<(), Box<dyn std::error::Error>> {
-    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let mut test_context = setup_local_worker(HashMap::new(), APP_VERSION.to_string()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
     {
@@ -138,7 +140,13 @@ async fn reconnect_on_server_disconnect_test() -> Result<(), Box<dyn std::error:
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, SupportedProperties::default());
+        assert_eq!(
+            props,
+            SupportedProperties {
+                version: APP_VERSION.to_string(),
+                ..Default::default()
+            }
+        );
     }
 
     // Disconnect our grpc stream.
@@ -151,7 +159,13 @@ async fn reconnect_on_server_disconnect_test() -> Result<(), Box<dyn std::error:
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, SupportedProperties::default());
+        assert_eq!(
+            props,
+            SupportedProperties {
+                version: APP_VERSION.to_string(),
+                ..Default::default()
+            }
+        );
     }
 
     Ok(())
@@ -159,7 +173,7 @@ async fn reconnect_on_server_disconnect_test() -> Result<(), Box<dyn std::error:
 
 #[nativelink_test]
 async fn kill_all_called_on_disconnect() -> Result<(), Box<dyn std::error::Error>> {
-    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let mut test_context = setup_local_worker(HashMap::new(), APP_VERSION.to_string()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
     {
@@ -168,7 +182,13 @@ async fn kill_all_called_on_disconnect() -> Result<(), Box<dyn std::error::Error
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, SupportedProperties::default());
+        assert_eq!(
+            props,
+            SupportedProperties {
+                version: APP_VERSION.to_string(),
+                ..Default::default()
+            }
+        );
     }
 
     // Handle registration (kill_all not called unless registered).
@@ -178,6 +198,7 @@ async fn kill_all_called_on_disconnect() -> Result<(), Box<dyn std::error::Error
             .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: "foobar".to_string(),
+                    scheduler_version: APP_VERSION.to_string(),
                 })),
             })?))
             .await
@@ -195,7 +216,7 @@ async fn kill_all_called_on_disconnect() -> Result<(), Box<dyn std::error::Error
 
 #[nativelink_test]
 async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::error::Error>> {
-    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let mut test_context = setup_local_worker(HashMap::new(), APP_VERSION.to_string()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
     {
@@ -204,7 +225,13 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, SupportedProperties::default());
+        assert_eq!(
+            props,
+            SupportedProperties {
+                version: APP_VERSION.to_string(),
+                ..Default::default()
+            }
+        );
     }
 
     let expected_worker_id = "foobar".to_string();
@@ -216,6 +243,7 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
             .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: expected_worker_id.clone(),
+                    scheduler_version: APP_VERSION.to_string(),
                 })),
             })?))
             .await
@@ -277,7 +305,7 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
 
 #[nativelink_test]
 async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Error>> {
-    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let mut test_context = setup_local_worker(HashMap::new(), APP_VERSION.to_string()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
     {
@@ -286,7 +314,13 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, SupportedProperties::default());
+        assert_eq!(
+            props,
+            SupportedProperties {
+                version: APP_VERSION.to_string(),
+                ..Default::default()
+            }
+        );
     }
 
     let expected_worker_id = "foobar".to_string();
@@ -298,6 +332,7 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
             .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: expected_worker_id.clone(),
+                    scheduler_version: APP_VERSION.to_string(),
                 })),
             })?))
             .await
@@ -438,6 +473,7 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn st
         cas_store.clone(),
         Some(ac_store),
         cas_store,
+        APP_VERSION.to_string(),
     )
     .await?;
 
@@ -492,6 +528,7 @@ async fn new_local_worker_removes_work_directory_before_start_test(
         cas_store.clone(),
         Some(ac_store),
         cas_store,
+        APP_VERSION.to_string(),
     )
     .await?;
 
@@ -539,7 +576,8 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
         ..Default::default()
     };
 
-    let mut test_context = setup_local_worker_with_config(local_worker_config).await;
+    let mut test_context =
+        setup_local_worker_with_config(local_worker_config, APP_VERSION.to_string()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
     {
@@ -548,7 +586,13 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, SupportedProperties::default());
+        assert_eq!(
+            props,
+            SupportedProperties {
+                version: APP_VERSION.to_string(),
+                ..Default::default()
+            }
+        );
     }
 
     let expected_worker_id = "foobar".to_string();
@@ -560,6 +604,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
             .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: expected_worker_id.clone(),
+                    scheduler_version: APP_VERSION.to_string(),
                 })),
             })?))
             .await
@@ -625,7 +670,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
 
 #[nativelink_test]
 async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Error>> {
-    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let mut test_context = setup_local_worker(HashMap::new(), APP_VERSION.to_string()).await;
 
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
@@ -635,7 +680,13 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, SupportedProperties::default());
+        assert_eq!(
+            props,
+            SupportedProperties {
+                version: APP_VERSION.to_string(),
+                ..Default::default()
+            }
+        );
     }
 
     // Handle registration (kill_all not called unless registered).
@@ -645,6 +696,7 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
             .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: "foobar".to_string(),
+                    scheduler_version: APP_VERSION.to_string(),
                 })),
             })?))
             .await

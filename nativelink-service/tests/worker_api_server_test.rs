@@ -51,6 +51,7 @@ use tonic::Request;
 
 const BASE_NOW_S: u64 = 10;
 const BASE_WORKER_TIMEOUT_S: u64 = 100;
+const APP_VERSION: &str = "0.1.2";
 
 #[derive(Debug)]
 enum WorkerStateManagerCalls {
@@ -147,6 +148,7 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
         WorkerAllocationStrategy::default(),
         tasks_or_worker_change_notify,
         worker_timeout,
+        APP_VERSION.to_string(),
     );
 
     let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
@@ -156,6 +158,7 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
             scheduler: SCHEDULER_NAME.to_string(),
         },
         &schedulers,
+        APP_VERSION.to_string(),
         now_fn,
     )
     .err_tip(|| "Error creating WorkerApiServer")?;

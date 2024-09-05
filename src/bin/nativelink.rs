@@ -92,6 +92,9 @@ const DEFAULT_HEALTH_STATUS_CHECK_PATH: &str = "/status";
 /// Name of environment variable to disable metrics.
 const METRICS_DISABLE_ENV: &str = "NATIVELINK_DISABLE_METRICS";
 
+/// Release version of the application.
+const APP_RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Backend for bazel remote execution / cache API.
 #[derive(Parser, Debug)]
 #[clap(
@@ -184,9 +187,12 @@ async fn inner_main(
     let mut worker_schedulers = HashMap::new();
     if let Some(schedulers_cfg) = cfg.schedulers {
         for (name, scheduler_cfg) in schedulers_cfg {
-            let (maybe_action_scheduler, maybe_worker_scheduler) =
-                scheduler_factory(&scheduler_cfg, &store_manager)
-                    .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
+            let (maybe_action_scheduler, maybe_worker_scheduler) = scheduler_factory(
+                &scheduler_cfg,
+                &store_manager,
+                APP_RELEASE_VERSION.to_string(),
+            )
+            .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
             if let Some(action_scheduler) = maybe_action_scheduler {
                 action_schedulers.insert(name.clone(), action_scheduler.clone());
             }
@@ -390,7 +396,12 @@ async fn inner_main(
                 services
                     .worker_api
                     .map_or(Ok(None), |cfg| {
-                        WorkerApiServer::new(&cfg, &worker_schedulers).map(|v| {
+                        WorkerApiServer::new(
+                            &cfg,
+                            &worker_schedulers,
+                            APP_RELEASE_VERSION.to_string(),
+                        )
+                        .map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
@@ -913,6 +924,7 @@ async fn inner_main(
                         fast_slow_store,
                         maybe_ac_store,
                         historical_store,
+                        APP_RELEASE_VERSION.to_string(),
                     )
                     .await
                     .err_tip(|| "Could not make LocalWorker")?;

@@ -81,6 +81,9 @@ struct ApiWorkerSchedulerImpl {
     allocation_strategy: WorkerAllocationStrategy,
     /// A channel to notify the matching engine that the worker pool has changed.
     worker_change_notify: Arc<Notify>,
+
+    /// The version of the scheduler.
+    version: String,
 }
 
 impl ApiWorkerSchedulerImpl {
@@ -117,7 +120,7 @@ impl ApiWorkerSchedulerImpl {
         // the multi-threaded runtime works.
         let worker = self.workers.peek_mut(&worker_id).unwrap();
         let res = worker
-            .send_initial_connection_result()
+            .send_initial_connection_result(self.version.clone())
             .err_tip(|| "Failed to send initial connection result to worker");
         if let Err(err) = &res {
             event!(
@@ -328,6 +331,7 @@ impl ApiWorkerScheduler {
         allocation_strategy: WorkerAllocationStrategy,
         worker_change_notify: Arc<Notify>,
         worker_timeout_s: u64,
+        version: String,
     ) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
@@ -335,6 +339,7 @@ impl ApiWorkerScheduler {
                 worker_state_manager,
                 allocation_strategy,
                 worker_change_notify,
+                version,
             }),
             platform_property_manager,
             worker_timeout_s,

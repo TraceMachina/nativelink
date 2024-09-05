@@ -49,6 +49,8 @@ mod utils {
     pub(crate) mod scheduler_utils;
 }
 
+const APP_VERSION: &str = "0.1.2";
+
 fn update_eq(expected: UpdateForWorker, actual: UpdateForWorker, ignore_id: bool) -> bool {
     let Some(expected_update) = expected.update else {
         return actual.update.is_none();
@@ -97,6 +99,7 @@ async fn verify_initial_connection_message(
         update: Some(update_for_worker::Update::ConnectionResult(
             ConnectionResult {
                 worker_id: worker_id.to_string(),
+                scheduler_version: APP_VERSION.to_string(),
             },
         )),
     };
@@ -150,6 +153,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
 
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -202,6 +206,7 @@ async fn find_executing_action() -> Result<(), Error> {
 
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -275,6 +280,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
             worker_timeout_s: WORKER_TIMEOUT_S,
             ..Default::default()
         },
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -443,6 +449,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
 
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -522,6 +529,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
             supported_platform_properties: Some(prop_defs),
             ..Default::default()
         },
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -606,6 +614,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
 
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -698,6 +707,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -736,6 +746,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
             worker_timeout_s: WORKER_TIMEOUT_S,
             ..Default::default()
         },
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -851,6 +862,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
 
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -943,6 +955,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
 
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -1052,6 +1065,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
 
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -1141,6 +1155,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
 
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -1275,6 +1290,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
             supported_platform_properties: Some(supported_props),
             ..Default::default()
         },
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -1426,6 +1442,7 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
             supported_platform_properties: Some(supported_props),
             ..Default::default()
         },
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -1486,6 +1503,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
             max_job_retries: 1,
             ..Default::default()
         },
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -1624,6 +1642,7 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
     // DropChecker.
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        APP_VERSION.to_string(),
         move || {
             // This will ensure dropping happens if this function is ever dropped.
             let _drop_checker = drop_checker.clone();
@@ -1650,6 +1669,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
 
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );
@@ -1715,6 +1735,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
 async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
+        APP_VERSION.to_string(),
         || async move {},
         MockInstantWrapped::default,
     );

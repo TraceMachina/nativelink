@@ -271,9 +271,11 @@ impl SimpleScheduler {
 impl SimpleScheduler {
     pub fn new(
         scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
+        version: String,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         Self::new_with_callback(
             scheduler_cfg,
+            version,
             || {
                 // The cost of running `do_try_match()` is very high, but constant
                 // in relation to the number of changes that have happened. This
@@ -296,6 +298,7 @@ impl SimpleScheduler {
         NowFn: Fn() -> I + Clone + Send + Sync + 'static,
     >(
         scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
+        version: String,
         on_matching_engine_run: F,
         now_fn: NowFn,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
@@ -340,6 +343,7 @@ impl SimpleScheduler {
             scheduler_cfg.allocation_strategy,
             tasks_or_worker_change_notify.clone(),
             worker_timeout_s,
+            version,
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();

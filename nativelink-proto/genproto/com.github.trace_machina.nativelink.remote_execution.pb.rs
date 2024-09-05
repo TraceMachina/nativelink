@@ -45,6 +45,13 @@ pub struct SupportedProperties {
     pub properties: ::prost::alloc::vec::Vec<
         super::super::super::super::super::build::bazel::remote::execution::v2::platform::Property,
     >,
+    /// / Version of the worker.
+    /// /
+    /// / The scheduler should throw a warning if its version doesn't match with
+    /// / the worker's version when the worker sends the initial request to the
+    /// / scheduler.
+    #[prost(string, tag = "2")]
+    pub version: ::prost::alloc::string::String,
 }
 /// / The result of an ExecutionRequest.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -87,6 +94,13 @@ pub struct ConnectionResult {
     /// / The internal ID given to the newly connected node.
     #[prost(string, tag = "1")]
     pub worker_id: ::prost::alloc::string::String,
+    /// / Version of the scheduler.
+    /// /
+    /// / The worker should throw a warning when its version doesn't match with the
+    /// / scheduler version when it receives the result sent back from the scheduler
+    /// / after the initial request.
+    #[prost(string, tag = "2")]
+    pub scheduler_version: ::prost::alloc::string::String,
 }
 /// / Request to kill a running operation sent from the scheduler to a worker.
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -181,7 +181,10 @@ pub fn setup_grpc_stream() -> (
     (tx, Response::new(stream))
 }
 
-pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConfig) -> TestContext {
+pub async fn setup_local_worker_with_config(
+    local_worker_config: LocalWorkerConfig,
+    version: String,
+) -> TestContext {
     let mock_worker_api_client = MockWorkerApiClient::new();
     let mock_worker_api_client_clone = mock_worker_api_client.clone();
     let actions_manager = Arc::new(MockRunningActionsManager::new());
@@ -193,6 +196,7 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
             Box::pin(async move { Ok(mock_worker_api_client) })
         }),
         Box::new(move |_| Box::pin(async move { /* No sleep */ })),
+        version,
     );
     let drop_guard = spawn!("local_worker_spawn", async move { worker.run().await });
 
@@ -210,6 +214,7 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
 
 pub async fn setup_local_worker(
     platform_properties: HashMap<String, WorkerProperty>,
+    version: String,
 ) -> TestContext {
     const ARBITRARY_LARGE_TIMEOUT: f32 = 10000.;
     let local_worker_config = LocalWorkerConfig {
@@ -220,7 +225,7 @@ pub async fn setup_local_worker(
         },
         ..Default::default()
     };
-    setup_local_worker_with_config(local_worker_config).await
+    setup_local_worker_with_config(local_worker_config, version).await
 }
 
 pub struct TestContext {
