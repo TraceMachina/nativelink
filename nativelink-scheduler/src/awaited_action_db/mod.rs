@@ -133,7 +133,7 @@ pub trait AwaitedActionSubscriber: Send + Sync + Sized + 'static {
     fn changed(&mut self) -> impl Future<Output = Result<AwaitedAction, Error>> + Send;
 
     /// Get the current awaited action.
-    fn borrow(&self) -> AwaitedAction;
+    fn borrow(&self) -> impl Future<Output = Result<AwaitedAction, Error>> + Send;
 }
 
 /// A trait that defines the interface for an AwaitedActionDb.
@@ -149,7 +149,9 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + Unpin + 'static {
     /// Get all AwaitedActions. This call should be avoided as much as possible.
     fn get_all_awaited_actions(
         &self,
-    ) -> impl Future<Output = impl Stream<Item = Result<Self::Subscriber, Error>> + Send> + Send;
+    ) -> impl Future<
+        Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error>,
+    > + Send;
 
     /// Get the AwaitedAction by the operation id.
     fn get_by_operation_id(
@@ -164,7 +166,9 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + Unpin + 'static {
         start: Bound<SortedAwaitedAction>,
         end: Bound<SortedAwaitedAction>,
         desc: bool,
-    ) -> impl Future<Output = impl Stream<Item = Result<Self::Subscriber, Error>> + Send> + Send;
+    ) -> impl Future<
+        Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error>,
+    > + Send;
 
     /// Process a change changed AwaitedAction and notify any listeners.
     fn update_awaited_action(

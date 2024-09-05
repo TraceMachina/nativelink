@@ -207,14 +207,14 @@ where
         Ok(awaited_action)
     }
 
-    fn borrow(&self) -> AwaitedAction {
+    async fn borrow(&self) -> Result<AwaitedAction, Error> {
         let mut awaited_action = self.awaited_action_rx.borrow().clone();
         if let Some(client_info) = self.client_info.as_ref() {
             let mut state = awaited_action.state().as_ref().clone();
             state.client_operation_id = client_info.client_operation_id.clone();
             awaited_action.set_state(Arc::new(state), None);
         }
-        awaited_action
+        Ok(awaited_action)
     }
 }
 
@@ -504,22 +504,25 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         &'a self,
         state: SortedAwaitedActionState,
         range: impl RangeBounds<SortedAwaitedAction> + 'b,
-    ) -> impl DoubleEndedIterator<
-        Item = Result<
-            (
-                &'a SortedAwaitedAction,
-                MemoryAwaitedActionSubscriber<I, NowFn>,
-            ),
-            Error,
-        >,
-    > + 'a {
+    ) -> Result<
+        impl DoubleEndedIterator<
+                Item = Result<
+                    (
+                        &'a SortedAwaitedAction,
+                        MemoryAwaitedActionSubscriber<I, NowFn>,
+                    ),
+                    Error,
+                >,
+            > + 'a,
+        Error,
+    > {
         let btree = match state {
             SortedAwaitedActionState::CacheCheck => &self.sorted_action_info_hash_keys.cache_check,
             SortedAwaitedActionState::Queued => &self.sorted_action_info_hash_keys.queued,
             SortedAwaitedActionState::Executing => &self.sorted_action_info_hash_keys.executing,
             SortedAwaitedActionState::Completed => &self.sorted_action_info_hash_keys.completed,
         };
-        btree.range(range).map(|sorted_awaited_action| {
+        Ok(btree.range(range).map(|sorted_awaited_action| {
             let operation_id = &sorted_awaited_action.operation_id;
             self.get_by_operation_id(operation_id)
                 .ok_or_else(|| {
@@ -530,7 +533,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     )
                 })
                 .map(|subscriber| (sorted_awaited_action, subscriber))
-        })
+        }))
     }
 
     fn process_state_changes_for_hash_key_map(
@@ -878,8 +881,10 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
             .await
     }
 
-    async fn get_all_awaited_actions(&self) -> impl Stream<Item = Result<Self::Subscriber, Error>> {
-        ChunkedStream::new(
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>>, Error> {
+        Ok(ChunkedStream::new(
             Bound::Unbounded,
             Bound::Unbounded,
             move |start, end, mut output| async move {
@@ -896,7 +901,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
                 Ok(maybe_new_start
                     .map(|new_start| ((Bound::Excluded(new_start.clone()), end), output)))
             },
-        )
+        ))
     }
 
     async fn get_by_operation_id(
@@ -912,38 +917,44 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
         start: Bound<SortedAwaitedAction>,
         end: Bound<SortedAwaitedAction>,
         desc: bool,
-    ) -> impl Stream<Item = Result<Self::Subscriber, Error>> + Send {
-        ChunkedStream::new(start, end, move |start, end, mut output| async move {
-            let inner = self.inner.lock().await;
-            let mut done = true;
-            let mut new_start = start.as_ref();
-            let mut new_end = end.as_ref();
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        Ok(ChunkedStream::new(
+            start,
+            end,
+            move |start, end, mut output| async move {
+                let inner = self.inner.lock().await;
+                let mut done = true;
+                let mut new_start = start.as_ref();
+                let mut new_end = end.as_ref();
 
-            let iterator = inner.get_range_of_actions(state, (start.as_ref(), end.as_ref()));
-            // TODO(allada) This should probably use the `.left()/right()` pattern,
-            // but that doesn't exist in the std or any libraries we use.
-            if desc {
-                for result in iterator.rev() {
-                    let (sorted_awaited_action, item) =
-                        result.err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
-                    output.push_back(item);
-                    new_end = Bound::Excluded(sorted_awaited_action);
-                    done = false;
+                let iterator = inner
+                    .get_range_of_actions(state, (start.as_ref(), end.as_ref()))
+                    .err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
+                // TODO(allada) This should probably use the `.left()/right()` pattern,
+                // but that doesn't exist in the std or any libraries we use.
+                if desc {
+                    for result in iterator.rev() {
+                        let (sorted_awaited_action, item) =
+                            result.err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
+                        output.push_back(item);
+                        new_end = Bound::Excluded(sorted_awaited_action);
+                        done = false;
+                    }
+                } else {
+                    for result in iterator {
+                        let (sorted_awaited_action, item) =
+                            result.err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
+                        output.push_back(item);
+                        new_start = Bound::Excluded(sorted_awaited_action);
+                        done = false;
+                    }
                 }
-            } else {
-                for result in iterator {
-                    let (sorted_awaited_action, item) =
-                        result.err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
-                    output.push_back(item);
-                    new_start = Bound::Excluded(sorted_awaited_action);
-                    done = false;
+                if done {
+                    return Ok(None);
                 }
-            }
-            if done {
-                return Ok(None);
-            }
-            Ok(Some(((new_start.cloned(), new_end.cloned()), output)))
-        })
+                Ok(Some(((new_start.cloned(), new_end.cloned()), output)))
+            },
+        ))
     }
 
     async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
