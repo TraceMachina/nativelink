@@ -1788,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-collector"
-version = "0.5.3"
+version = "0.5.1"
 dependencies = [
  "nativelink-error",
  "nativelink-metric",
@@ -1825,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "0.5.3"
+version = "0.5.1"
 dependencies = [
  "async-lock",
  "async-trait",
