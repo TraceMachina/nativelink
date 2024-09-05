@@ -26,17 +26,17 @@ instructions below to pass in your own images.
 
 ### Custom Images
 To support most RBE builds you will most likely need to pass in your own image with the
-correct toolchains installed to support your build. To implement
-that we've the below flag configuration:
+correct toolchains installed to support your build. To use your own image you can pass
+it using this configuration:
 ```bash
 --remote_default_exec_properties="container-image=docker://public.ecr.aws/ubuntu/ubuntu:22.04_stable"
 ```
 :::note
-The above uses a public AWS ECR image for example
+The above uses a public image
 :::
 
 #### Private Images
-If your images are in your own private image repository, you can pass your repository
+If your images are in your own private repository, you can pass your repository
 credentials to allow us to pull your RBE images.
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
@@ -45,15 +45,17 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
   <TabItem label="AWS">
     ```bash
     --remote_default_exec_properties="container-image=docker://123456789100.dkr.ecr.us-east-2.amazonaws.com/rbe-images:tag"
-    --remote_exec_header=x-nativelink-rbe.container-registry-username=AWS
-    --remote_exec_header=x-nativelink-rbe.container-registry-password="$(aws ecr get-login-password --region YOUR_REGION)"
+    --remote_exec_header=x-nativelink-registry-server=123456789100.dkr.ecr.us-east-2.amazonaws.com
+    --remote_exec_header=x-nativelink-registry-username=AWS
+    --remote_exec_header=x-nativelink-registry-password="$(aws ecr get-login-password --region YOUR_REGION)"
     ```
   </TabItem>
   <TabItem label="Google Cloud">
     ```bash
     --remote_default_exec_properties="container-image=docker://gcr.io/rbe-images/image"
-    --remote_exec_header=x-nativelink-rbe.container-registry-username=_dcgcloud_token
-    --remote_exec_header=x-nativelink-rbe.container-registry-password="$(gcloud auth print-access-token)"
+    --remote_exec_header=x-nativelink-registry-server=gcr.io
+    --remote_exec_header=x-nativelink-registry-username=_dcgcloud_token
+    --remote_exec_header=x-nativelink-registry-password="$(gcloud auth print-access-token)"
     ```
   </TabItem>
 </Tabs>
