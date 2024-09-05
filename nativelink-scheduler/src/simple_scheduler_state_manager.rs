@@ -34,7 +34,6 @@ use tracing::{event, Level};
 use super::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
 };
-use crate::memory_awaited_action_db::{ClientActionStateResult, MatchingEngineActionStateResult};
 
 /// Maximum number of times an update to the database
 /// can fail before giving up.
@@ -123,7 +122,64 @@ fn apply_filter_predicate(awaited_action: &AwaitedAction, filter: &OperationFilt
     true
 }
 
-/// MemorySchedulerStateManager is responsible for maintaining the state of the scheduler.
+pub struct MatchingEngineActionStateResult<T: AwaitedActionSubscriber> {
+    awaited_action_sub: T,
+}
+impl<T: AwaitedActionSubscriber> MatchingEngineActionStateResult<T> {
+    pub fn new(awaited_action_sub: T) -> Self {
+        Self { awaited_action_sub }
+    }
+}
+
+#[async_trait]
+impl<T: AwaitedActionSubscriber> ActionStateResult for MatchingEngineActionStateResult<T> {
+    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+        Ok(self.awaited_action_sub.borrow().state().clone())
+    }
+
+    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
+        let awaited_action = self.awaited_action_sub.changed().await.map_err(|e| {
+            make_err!(
+                Code::Internal,
+                "Failed to wait for awaited action to change {e:?}"
+            )
+        })?;
+        Ok(awaited_action.state().clone())
+    }
+
+    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
+        Ok(self.awaited_action_sub.borrow().action_info().clone())
+    }
+}
+
+pub(crate) struct ClientActionStateResult<T: AwaitedActionSubscriber> {
+    inner: MatchingEngineActionStateResult<T>,
+}
+
+impl<T: AwaitedActionSubscriber> ClientActionStateResult<T> {
+    pub fn new(sub: T) -> Self {
+        Self {
+            inner: MatchingEngineActionStateResult::new(sub),
+        }
+    }
+}
+
+#[async_trait]
+impl<T: AwaitedActionSubscriber> ActionStateResult for ClientActionStateResult<T> {
+    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+        self.inner.as_state().await
+    }
+
+    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
+        self.inner.changed().await
+    }
+
+    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
+        self.inner.as_action_info().await
+    }
+}
+
+/// SimpleSchedulerStateManager is responsible for maintaining the state of the scheduler.
 /// Scheduler state includes the actions that are queued, active, and recently completed.
 /// It also includes the workers that are available to execute actions based on allocation
 /// strategy.
