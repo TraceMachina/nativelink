@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::ops::Bound;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -45,7 +47,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ClientStateManager, OperationFilter,
+    ActionStateResult, ClientStateManager, OperationFilter, UpdateOperationType,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
@@ -166,6 +168,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -211,6 +214,78 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
+    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &nativelink_config::schedulers::SimpleScheduler {
+            worker_timeout_s: WORKER_TIMEOUT_S,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify.clone(),
+        MockInstantWrapped::default,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let _rx_from_worker =
+        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+    let mut action_listener = setup_action(
+        &scheduler,
+        action_digest,
+        HashMap::new(),
+        make_system_time(1),
+    )
+    .await
+    .unwrap();
+
+    // Trigger a do_try_match to ensure we get a state change.
+    scheduler.do_try_match_for_test().await.unwrap();
+    assert_eq!(
+        action_listener.changed().await.unwrap().stage,
+        ActionStage::Executing
+    );
+
+    async fn advance_time<T>(duration: Duration, poll_fut: &mut Pin<&mut impl Future<Output = T>>) {
+        const STEP_AMOUNT: Duration = Duration::from_millis(100);
+        for _ in 0..(duration.as_millis() / STEP_AMOUNT.as_millis()) {
+            MockClock::advance(STEP_AMOUNT);
+            tokio::task::yield_now().await;
+            assert!(poll!(&mut *poll_fut).is_pending());
+        }
+    }
+
+    let changed_fut = action_listener.changed();
+    tokio::pin!(changed_fut);
+
+    {
+        // No update should have been received yet.
+        assert_eq!(poll!(&mut changed_fut).is_ready(), false);
+    }
+    // Advance our time by just under the timeout.
+    advance_time(Duration::from_secs(WORKER_TIMEOUT_S - 1), &mut changed_fut).await;
+    {
+        // Sill no update should have been received yet.
+        assert_eq!(poll!(&mut changed_fut).is_ready(), false);
+    }
+    // Advance it by just over the timeout.
+    MockClock::advance(Duration::from_secs(2));
+    {
+        // Now we should have received a timeout and the action should have been
+        // put back in the queue.
+        assert_eq!(changed_fut.await.unwrap().stage, ActionStage::Queued);
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn find_executing_action() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
@@ -224,6 +299,7 @@ async fn find_executing_action() -> Result<(), Error> {
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -303,6 +379,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest1 = DigestInfo::new([99u8; 32], 512);
     let action_digest2 = DigestInfo::new([88u8; 32], 512);
@@ -477,6 +554,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -563,6 +641,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
     let mut platform_properties = HashMap::new();
@@ -653,6 +732,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -750,6 +830,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
     let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -904,6 +985,7 @@ async fn matching_engine_fails_sends_abort() -> Result<(), Error> {
             awaited_action,
             || async move {},
             task_change_notify,
+            MockInstantWrapped::default,
         );
         // Initial worker calls do_try_match, so send it no items.
         senders.tx_get_range_of_actions.send(vec![]).unwrap();
@@ -948,6 +1030,7 @@ async fn matching_engine_fails_sends_abort() -> Result<(), Error> {
             awaited_action,
             || async move {},
             task_change_notify,
+            MockInstantWrapped::default,
         );
         // senders.tx_get_awaited_action_by_id.send(Ok(None)).unwrap();
         senders.tx_get_range_of_actions.send(vec![]).unwrap();
@@ -1005,6 +1088,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1126,6 +1210,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1191,7 +1276,9 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         .update_action(
             &worker_id,
             &OperationId::from(operation_id),
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await?;
 
@@ -1224,6 +1311,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1294,7 +1382,9 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         .update_action(
             &worker_id,
             &operation_id,
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await?;
 
@@ -1339,6 +1429,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1390,7 +1481,9 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         .update_action(
             &rogue_worker_id,
             &OperationId::default(),
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await;
 
@@ -1434,6 +1527,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1519,7 +1613,9 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         .update_action(
             &worker_id,
             &operation_id,
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await
         .unwrap();
@@ -1574,6 +1670,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1650,7 +1747,9 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         .update_action(
             &worker_id,
             &operation_id1,
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await
         .unwrap();
@@ -1691,7 +1790,9 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         .update_action(
             &worker_id,
             &operation_id2,
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await
         .unwrap();
@@ -1731,6 +1832,7 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1797,6 +1899,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1824,7 +1927,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         .update_action(
             &worker_id,
             &operation_id,
-            Err(make_err!(Code::Internal, "Some error")),
+            UpdateOperationType::UpdateWithError(make_err!(Code::Internal, "Some error")),
         )
         .await;
 
@@ -1859,7 +1962,11 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     let err = make_err!(Code::Internal, "Some error");
     // Send internal error from worker again.
     let _ = scheduler
-        .update_action(&worker_id, &operation_id, Err(err.clone()))
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(err.clone()),
+        )
         .await;
 
     {
@@ -1945,6 +2052,7 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
             async move {}
         },
         task_change_notify,
+        MockInstantWrapped::default,
     );
     assert_eq!(dropped.load(Ordering::Relaxed), false);
 
@@ -1973,6 +2081,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2007,7 +2116,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         .update_action(
             &worker_id1,
             &operation_id,
-            Err(make_err!(Code::NotFound, "Some error")),
+            UpdateOperationType::UpdateWithError(make_err!(Code::NotFound, "Some error")),
         )
         .await;
 
@@ -2047,6 +2156,7 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         ),
         || async move {},
         task_change_notify,
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 

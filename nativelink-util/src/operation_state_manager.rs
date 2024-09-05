@@ -121,6 +121,19 @@ pub trait ClientStateManager: Sync + Send + Unpin + MetricsComponent + 'static {
     fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider>;
 }
 
+/// The type of update to perform on an operation.
+#[derive(Debug, PartialEq)]
+pub enum UpdateOperationType {
+    /// Notification that the operation is still alive.
+    KeepAlive,
+
+    /// Notification that the operation has been updated.
+    UpdateWithActionStage(ActionStage),
+
+    /// Notification that the operation has been completed.
+    UpdateWithError(Error),
+}
+
 #[async_trait]
 pub trait WorkerStateManager: Sync + Send + MetricsComponent {
     /// Update that state of an operation.
@@ -131,7 +144,7 @@ pub trait WorkerStateManager: Sync + Send + MetricsComponent {
         &self,
         operation_id: &OperationId,
         worker_id: &WorkerId,
-        action_stage: Result<ActionStage, Error>,
+        update: UpdateOperationType,
     ) -> Result<(), Error>;
 }
 
