@@ -30,7 +30,7 @@ use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 use tracing::{event, Level};
 
 use crate::awaited_action_db::{
@@ -125,14 +125,15 @@ pub struct MemoryAwaitedActionSubscriber<I: InstantWrapper, NowFn: Fn() -> I> {
 }
 
 impl<I: InstantWrapper, NowFn: Fn() -> I> MemoryAwaitedActionSubscriber<I, NowFn> {
-    pub fn new(mut awaited_action_rx: watch::Receiver<AwaitedAction>) -> Self {
+    fn new(mut awaited_action_rx: watch::Receiver<AwaitedAction>) -> Self {
         awaited_action_rx.mark_changed();
         Self {
             awaited_action_rx,
             client_info: None,
         }
     }
-    pub fn new_with_client(
+
+    fn new_with_client(
         mut awaited_action_rx: watch::Receiver<AwaitedAction>,
         client_operation_id: OperationId,
         event_tx: mpsc::UnboundedSender<ActionEvent>,
@@ -803,13 +804,18 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
 pub struct MemoryAwaitedActionDb<I: InstantWrapper, NowFn: Fn() -> I> {
     #[metric]
     inner: Arc<Mutex<AwaitedActionDbImpl<I, NowFn>>>,
+    tasks_change_notify: Arc<Notify>,
     _handle_awaited_action_events: JoinHandleDropGuard<()>,
 }
 
 impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
     MemoryAwaitedActionDb<I, NowFn>
 {
-    pub fn new(eviction_config: &EvictionPolicy, now_fn: NowFn) -> Self {
+    pub fn new(
+        eviction_config: &EvictionPolicy,
+        tasks_change_notify: Arc<Notify>,
+        now_fn: NowFn,
+    ) -> Self {
         let (action_event_tx, mut action_event_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Mutex::new(AwaitedActionDbImpl {
             client_operation_to_awaited_action: EvictingMap::new(eviction_config, (now_fn)()),
@@ -823,6 +829,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
         let weak_inner = Arc::downgrade(&inner);
         Self {
             inner,
+            tasks_change_notify,
             _handle_awaited_action_events: spawn!("handle_awaited_action_events", async move {
                 let mut dropped_operation_ids = Vec::with_capacity(MAX_ACTION_EVENTS_RX_PER_CYCLE);
                 loop {
@@ -931,7 +938,9 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
         self.inner
             .lock()
             .await
-            .update_awaited_action(new_awaited_action)
+            .update_awaited_action(new_awaited_action)?;
+        self.tasks_change_notify.notify_one();
+        Ok(())
     }
 
     async fn add_action(
@@ -939,10 +948,13 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
         client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<Self::Subscriber, Error> {
-        self.inner
+        let subscriber = self
+            .inner
             .lock()
             .await
             .add_action(client_operation_id, action_info)
-            .await
+            .await?;
+        self.tasks_change_notify.notify_one();
+        Ok(subscriber)
     }
 }
