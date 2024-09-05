@@ -282,7 +282,7 @@ impl ExecutionServer {
                     .as_state()
                     .await
                     .err_tip(|| "In ExecutionServer::inner_execute")?
-                    .operation_id
+                    .client_operation_id
                     .clone(),
             ),
             action_listener,

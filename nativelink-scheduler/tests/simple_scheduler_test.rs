@@ -203,7 +203,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Executing,
             action_digest: action_state.action_digest,
         };
@@ -314,7 +314,7 @@ async fn find_executing_action() -> Result<(), Error> {
         .as_state()
         .await
         .unwrap()
-        .operation_id
+        .client_operation_id
         .clone();
     // Drop our receiver and look up a new one.
     drop(action_listener);
@@ -352,7 +352,7 @@ async fn find_executing_action() -> Result<(), Error> {
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Executing,
             action_digest: action_state.action_digest,
         };
@@ -594,7 +594,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Queued,
             action_digest: action_state.action_digest,
         };
@@ -610,7 +610,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Executing,
             action_digest: action_state.action_digest,
         };
@@ -668,7 +668,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Queued,
             action_digest: action_state.action_digest,
         };
@@ -702,7 +702,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Executing,
             action_digest: action_state.action_digest,
         };
@@ -736,9 +736,9 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
-    let operation_id = OperationId::default();
+    let client_operation_id = OperationId::default();
     let mut expected_action_state = ActionState {
-        operation_id,
+        client_operation_id,
         stage: ActionStage::Queued,
         action_digest,
     };
@@ -754,15 +754,18 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         // Clients should get notification saying it's been queued.
         let action_state1 = client1_action_listener.changed().await.unwrap();
         let action_state2 = client2_action_listener.changed().await.unwrap();
-        let operation_id1 = action_state1.operation_id.clone();
-        let operation_id2 = action_state2.operation_id.clone();
+        let operation_id1 = action_state1.client_operation_id.clone();
+        let operation_id2 = action_state2.client_operation_id.clone();
         // Name is random so we set force it to be the same.
-        expected_action_state.operation_id = operation_id1.clone();
+        expected_action_state.client_operation_id = operation_id1.clone();
         assert_eq!(action_state1.as_ref(), &expected_action_state);
-        expected_action_state.operation_id = operation_id2.clone();
+        expected_action_state.client_operation_id = operation_id2.clone();
         assert_eq!(action_state2.as_ref(), &expected_action_state);
         // Both clients should have unique operation ID.
-        assert_ne!(action_state2.operation_id, action_state1.operation_id);
+        assert_ne!(
+            action_state2.client_operation_id,
+            action_state1.client_operation_id
+        );
         (operation_id1, operation_id2)
     };
 
@@ -793,12 +796,12 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     {
         // Both client1 and client2 should be receiving the same updates.
         // Most importantly the `name` (which is random) will be the same.
-        expected_action_state.operation_id = operation_id1.clone();
+        expected_action_state.client_operation_id = operation_id1.clone();
         assert_eq!(
             client1_action_listener.changed().await.unwrap().as_ref(),
             &expected_action_state
         );
-        expected_action_state.operation_id = operation_id2.clone();
+        expected_action_state.client_operation_id = operation_id2.clone();
         assert_eq!(
             client2_action_listener.changed().await.unwrap().as_ref(),
             &expected_action_state
@@ -811,7 +814,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         let mut client3_action_listener =
             setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp3).await?;
         let action_state = client3_action_listener.changed().await.unwrap().clone();
-        expected_action_state.operation_id = action_state.operation_id.clone();
+        expected_action_state.client_operation_id = action_state.client_operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
@@ -849,7 +852,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Queued,
             action_digest: action_state.action_digest,
         };
@@ -1141,7 +1144,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         assert_eq!(
             action_state.as_ref(),
             &ActionState {
-                operation_id: action_state.operation_id.clone(),
+                client_operation_id: action_state.client_operation_id.clone(),
                 stage: ActionStage::Executing,
                 action_digest: action_state.action_digest,
             }
@@ -1174,7 +1177,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         assert_eq!(
             action_state.as_ref(),
             &ActionState {
-                operation_id: action_state.operation_id.clone(),
+                client_operation_id: action_state.client_operation_id.clone(),
                 stage: ActionStage::Executing,
                 action_digest: action_state.action_digest,
             }
@@ -1287,7 +1290,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(action_result),
             action_digest: action_state.action_digest,
         };
@@ -1325,7 +1328,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         .as_state()
         .await
         .unwrap()
-        .operation_id
+        .client_operation_id
         .clone();
 
     // Drop our receiver and don't reconnect until completed.
@@ -1404,7 +1407,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(action_result),
             action_digest: action_state.action_digest,
         };
@@ -1531,9 +1534,9 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
-    let operation_id = OperationId::default();
+    let client_operation_id = OperationId::default();
     let mut expected_action_state = ActionState {
-        operation_id,
+        client_operation_id,
         stage: ActionStage::Executing,
         action_digest,
     };
@@ -1580,7 +1583,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         // Client should get notification saying it's being executed.
         let action_state = action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
-        expected_action_state.operation_id = action_state.operation_id.clone();
+        expected_action_state.client_operation_id = action_state.client_operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
@@ -1642,7 +1645,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         expected_action_state.stage = ActionStage::Executing;
         let action_state = action_listener.changed().await.unwrap();
         // The name of the action changed (since it's a new action), so update it.
-        expected_action_state.operation_id = action_state.operation_id.clone();
+        expected_action_state.client_operation_id = action_state.client_operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
@@ -1759,7 +1762,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         let action_state = client1_action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(action_result.clone()),
             action_digest: action_state.action_digest,
         };
@@ -1802,7 +1805,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         let action_state = client2_action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(action_result.clone()),
             action_digest: action_state.action_digest,
         };
@@ -1936,7 +1939,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Queued,
             action_digest: action_state.action_digest,
         };
@@ -1974,7 +1977,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(ActionResult {
                 output_files: Vec::default(),
                 output_folders: Vec::default(),
@@ -2169,7 +2172,7 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         .as_state()
         .await
         .unwrap()
-        .operation_id
+        .client_operation_id
         .clone();
 
     // Simulate client disconnecting.

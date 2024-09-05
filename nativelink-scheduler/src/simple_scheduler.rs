@@ -75,7 +75,7 @@ impl ActionStateResult for SimpleSchedulerActionStateResult {
             .err_tip(|| "In SimpleSchedulerActionStateResult")?;
         // We need to ensure the client is not aware of the downstream
         // operation id, so override it before it goes out.
-        Arc::make_mut(&mut action_state).operation_id = self.client_operation_id.clone();
+        Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
         Ok(action_state)
     }
 
@@ -87,7 +87,7 @@ impl ActionStateResult for SimpleSchedulerActionStateResult {
             .err_tip(|| "In SimpleSchedulerActionStateResult")?;
         // We need to ensure the client is not aware of the downstream
         // operation id, so override it before it goes out.
-        Arc::make_mut(&mut action_state).operation_id = self.client_operation_id.clone();
+        Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
         Ok(action_state)
     }
 
@@ -223,7 +223,7 @@ impl SimpleScheduler {
                     .as_state()
                     .await
                     .err_tip(|| "Failed to get action_info from as_state_result stream")?;
-                action_state.operation_id.clone()
+                action_state.client_operation_id.clone()
             };
 
             // Tell the matching engine that the operation is being assigned to a worker.
