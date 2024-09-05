@@ -45,21 +45,27 @@ GitHub Repository Secrets is the recommended way
 to store your NativeLink Cloud API keys
 for use with GitHub Actions.
 
-[GitHub Repository Secrets Tutorial](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-a-repository)
-
-They can be access via the secrets context i.e.
+The [GitHub repository secrets tutorial](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-a-repository) will show you how to setup a repository secret. You can then access those variables from the secrets context in your GitHub actions:
 ```bash
 ${{ secrets.YourSecretKeyName }}
 ```
 
-:::note
-If your repository uses forks for pull requests (PRs), note that the secrets
-context isn't accessible from PRs originating from forks. To address this,
-we introduced Read-Only keys.
-:::
+#### Repositories that use forks
+If your repository is open source and uses forks for pull requests (PRs), the secrets and vars
+context aren't accessible in the actions for PRs originating from the forks. To address this,
+we recommend using Read-Only keys.
 
-Read-Only keys can be used for PRs and stored in the vars context. For
-merge-to-main actions, use a Read/Write key stored in the secrets context.
+These keys can be generated in the `Settings > API Keys & Certs` sections of the cloud dashboard.
+
+Read-Only keys can be used for PRs and be hard-coded into your GitHub actions. For
+merge-to-main actions, use a Read/Write key stored in the secrets context. An example of this below:
+```bash
+bazel test \
+  --remote_cache=grpcs://cas-account-id.build-faster.nativelink.net \
+  --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER || 'HARD_CODED_READ_ONLY_KEY_HERE' }} \
+  ${{ github.ref == 'refs/heads/main' && ' ' || '--nogenerate_json_trace_profile --remote_upload_local_results=false' }} \
+  //...
+```
 
 ## Read Only keys
 
