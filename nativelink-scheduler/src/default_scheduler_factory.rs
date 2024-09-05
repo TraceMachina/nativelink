@@ -21,6 +21,7 @@ use nativelink_util::operation_state_manager::ClientStateManager;
 
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
 use crate::grpc_scheduler::GrpcScheduler;
+use crate::operations::Operations as SchedulerOperations;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
 use crate::simple_scheduler::SimpleScheduler;
 use crate::worker_scheduler::WorkerScheduler;
@@ -28,6 +29,7 @@ use crate::worker_scheduler::WorkerScheduler;
 pub type SchedulerFactoryResults = (
     Option<Arc<dyn ClientStateManager>>,
     Option<Arc<dyn WorkerScheduler>>,
+    Option<Arc<dyn SchedulerOperations>>,
 );
 
 pub fn scheduler_factory(
@@ -46,29 +48,37 @@ fn inner_scheduler_factory(
             let (action_scheduler, worker_scheduler) = SimpleScheduler::new(config);
             (Some(action_scheduler), Some(worker_scheduler))
         }
-        SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
+        SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None, None),
         SchedulerConfig::cache_lookup(config) => {
             let ac_store = store_manager
                 .get_store(&config.ac_store)
                 .err_tip(|| format!("'ac_store': '{}' does not exist", config.ac_store))?;
-            let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&config.scheduler, store_manager)
+            let (action_scheduler, worker_scheduler, scheduler_operations) =
+                inner_scheduler_factory(&config.scheduler, store_manager, None, visited_schedulers)
                     .err_tip(|| "In nested CacheLookupScheduler construction")?;
             let cache_lookup_scheduler = Arc::new(CacheLookupScheduler::new(
                 ac_store,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
             )?);
-            (Some(cache_lookup_scheduler), worker_scheduler)
+            (
+                Some(cache_lookup_scheduler),
+                worker_scheduler,
+                scheduler_operations,
+            )
         }
         SchedulerConfig::property_modifier(config) => {
-            let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&config.scheduler, store_manager)
+            let (action_scheduler, worker_scheduler, scheduler_operations) =
+                inner_scheduler_factory(&config.scheduler, store_manager, None, visited_schedulers)
                     .err_tip(|| "In nested PropertyModifierScheduler construction")?;
             let property_modifier_scheduler = Arc::new(PropertyModifierScheduler::new(
                 config,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
             ));
-            (Some(property_modifier_scheduler), worker_scheduler)
+            (
+                Some(property_modifier_scheduler),
+                worker_scheduler,
+                scheduler_operations,
+            )
         }
     };
 

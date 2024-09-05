@@ -17,6 +17,7 @@ mod awaited_action_db;
 pub mod cache_lookup_scheduler;
 pub mod default_scheduler_factory;
 pub mod grpc_scheduler;
+pub mod operations;
 mod memory_awaited_action_db;
 pub mod platform_property_manager;
 pub mod property_modifier_scheduler;

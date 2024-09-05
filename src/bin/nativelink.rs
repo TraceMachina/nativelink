@@ -31,6 +31,11 @@ use nativelink_config::cas_server::{
 };
 use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_scheduler::action_scheduler::ActionScheduler;
+use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
+use nativelink_scheduler::operations::Operations;
+use nativelink_scheduler::worker::WorkerId;
+use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, RootMetricsComponent,
 };
@@ -43,6 +48,7 @@ use nativelink_service::capabilities_server::CapabilitiesServer;
 use nativelink_service::cas_server::CasServer;
 use nativelink_service::execution_server::ExecutionServer;
 use nativelink_service::health_server::HealthServer;
+use nativelink_service::operations_server::OperationsServer;
 use nativelink_service::worker_api_server::WorkerApiServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
@@ -180,18 +186,23 @@ async fn inner_main(
         }
     }
 
-    let mut action_schedulers = HashMap::new();
-    let mut worker_schedulers = HashMap::new();
+    let mut action_schedulers: HashMap<String, Arc<dyn ActionScheduler>> = HashMap::new();
+    let mut worker_schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
+    let mut operations_schedulers: HashMap<String, Arc<dyn Operations>> = HashMap::new();
     if let Some(schedulers_cfg) = cfg.schedulers {
         for (name, scheduler_cfg) in schedulers_cfg {
-            let (maybe_action_scheduler, maybe_worker_scheduler) =
-                scheduler_factory(&scheduler_cfg, &store_manager)
+            let scheduler_metrics = root_scheduler_metrics.sub_registry_with_prefix(&name);
+            let (maybe_action_scheduler, maybe_worker_scheduler, maybe_scheduler_operations) =
+                scheduler_factory(&scheduler_cfg, &store_manager, scheduler_metrics)
                     .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
             if let Some(action_scheduler) = maybe_action_scheduler {
                 action_schedulers.insert(name.clone(), action_scheduler.clone());
             }
             if let Some(worker_scheduler) = maybe_worker_scheduler {
                 worker_schedulers.insert(name.clone(), worker_scheduler.clone());
+            }
+            if let Some(scheduler_operations) = maybe_scheduler_operations {
+                operations_schedulers.insert(name.clone(), scheduler_operations);
             }
         }
     }
@@ -242,6 +253,8 @@ async fn inner_main(
 
         // Currently we only support http as our socket type.
         let ListenerConfig::http(http_config) = server_cfg.listener;
+
+        let services_execution = services.execution;
 
         let tonic_services = TonicServer::builder()
             .add_optional_service(
@@ -297,10 +310,16 @@ async fn inner_main(
                     .err_tip(|| "Could not create CAS service")?,
             )
             .add_optional_service(
-                services
-                    .execution
+                services_execution
+                    .clone()
                     .map_or(Ok(None), |cfg| {
-                        ExecutionServer::new(&cfg, &action_schedulers, &store_manager).map(|v| {
+                        ExecutionServer::new(
+                            &cfg,
+                            &action_schedulers,
+                            &operations_schedulers,
+                            &store_manager,
+                        )
+                        .map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
@@ -413,6 +432,22 @@ async fn inner_main(
                     .err_tip(|| "Could not create WorkerApi service")?,
             )
             .add_optional_service(
+// come back to this <<<<<<< adams/operations_server
+                services_execution
+                    .clone()
+                    .map_or(Ok(None), |cfg| {
+                        ExecutionServer::new(
+                            &cfg,
+                            &action_schedulers,
+                            &operations_schedulers,
+                            &store_manager,
+                        )
+                        .map(|v| {
+                            let mut service = v.into_operations_service();
+                            let send_algo = &http_config.compression.send_compression_algorithm;
+                            if let Some(encoding) =
+                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+// come back to this =======
                 services
                     .experimental_bep
                     .map_or(Ok(None), |cfg| {
@@ -421,6 +456,7 @@ async fn inner_main(
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
                                 into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
+// come back to this >>>>>>> main
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -436,8 +472,20 @@ async fn inner_main(
                             Some(service)
                         })
                     })
+// come back <<<<<<< adams/operations_server
+                    .err_tip(|| "Could not create Operations service")?,
+// come back =======
                     .err_tip(|| "Could not create BEP service")?,
+// come back >>>>>>> main
             );
+        // .add_optional_service(services.operations.map_or(None, |cfg| {
+        //     OperationsServer::new(&cfg, &operations_schedulers)
+        //         .map(|v| {
+        //             let mut service = v.into_service();
+        //             Some(service)
+        //         })
+        //         .ok()?
+        // }));
 
         let health_registry = health_registry_builder.lock().await.build();
 

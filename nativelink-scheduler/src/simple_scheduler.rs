@@ -12,11 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Borrow;
+use std::cmp;
+use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
+use std::iter::Map;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::Future;
+use hashbrown::hash_map::Iter;
+use hashbrown::{HashMap, HashSet};
+use lru::LruCache;
+use nativelink_config::schedulers::WorkerAllocationStrategy;
+use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_proto::google::longrunning::Operation;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
@@ -31,11 +43,15 @@ use nativelink_util::operation_state_manager::{
 };
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
+use parking_lot::{Mutex, MutexGuard, RawMutex};
+use tokio::sync::{watch, Notify};
 use tokio::sync::Notify;
 use tokio::time::Duration;
 use tokio_stream::StreamExt;
 use tracing::{event, Level};
 
+use crate::action_scheduler::ActionScheduler;
+use crate::operations::Operations;
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -55,6 +71,29 @@ const DEFAULT_RETAIN_COMPLETED_FOR_S: u32 = 60;
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 
+/// An action that is being awaited on and last known state.
+#[derive(Clone, Debug)]
+struct AwaitedAction {
+    action_info: Arc<ActionInfo>,
+    current_state: Arc<ActionState>,
+    notify_channel: watch::Sender<Arc<ActionState>>,
+
+    /// Number of attempts the job has been tried.
+    attempts: usize,
+    /// Possible last error set by the worker. If empty and attempts is set, it may be due to
+    /// something like a worker timeout.
+    last_error: Option<Error>,
+
+    /// Worker that is currently running this action, None if unassigned.
+    worker_id: Option<WorkerId>,
+}
+
+struct Workers {
+    workers: LruCache<WorkerId, Worker>,
+    /// The allocation strategy for workers.
+    allocation_strategy: WorkerAllocationStrategy,
+}
+
 struct SimpleSchedulerActionStateResult {
     client_operation_id: OperationId,
     action_state_result: Box<dyn ActionStateResult>,
@@ -70,6 +109,98 @@ impl SimpleSchedulerActionStateResult {
             action_state_result,
         }
     }
+
+    /// Refreshes the lifetime of the worker with the given timestamp.
+    fn refresh_lifetime(
+        &mut self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+    ) -> Result<(), Error> {
+        let worker = self.workers.get_mut(worker_id).ok_or_else(|| {
+            make_input_err!(
+                "Worker not found in worker map in refresh_lifetime() {}",
+                worker_id
+            )
+        })?;
+        error_if!(
+            worker.last_update_timestamp > timestamp,
+            "Worker already had a timestamp of {}, but tried to update it with {}",
+            worker.last_update_timestamp,
+            timestamp
+        );
+        worker.last_update_timestamp = timestamp;
+        Ok(())
+    }
+
+    /// Adds a worker to the pool.
+    /// Note: This function will not do any task matching.
+    fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
+        let worker_id = worker.id;
+        self.workers.put(worker_id, worker);
+
+        // Worker is not cloneable, and we do not want to send the initial connection results until
+        // we have added it to the map, or we might get some strange race conditions due to the way
+        // the multi-threaded runtime works.
+        let worker = self.workers.peek_mut(&worker_id).unwrap();
+        let res = worker
+            .send_initial_connection_result()
+            .err_tip(|| "Failed to send initial connection result to worker");
+        if let Err(err) = &res {
+            event!(
+                Level::ERROR,
+                ?worker_id,
+                ?err,
+                "Worker connection appears to have been closed while adding to pool"
+            );
+        }
+        res
+    }
+
+    /// Removes worker from pool.
+    /// Note: The caller is responsible for any rescheduling of any tasks that might be
+    /// running.
+    fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
+        self.workers.pop(worker_id)
+    }
+
+    /// Attempts to find a worker that is capable of running this action.
+    // TODO(blaise.bruer) This algorithm is not very efficient. Simple testing using a tree-like
+    // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
+    // simulation of worst cases in a single threaded environment.
+    fn find_worker_for_action_mut<'a>(
+        &'a mut self,
+        awaited_action: &AwaitedAction,
+    ) -> Option<&'a mut Worker> {
+        assert!(matches!(
+            awaited_action.current_state.stage,
+            ActionStage::Queued
+        ));
+        let action_properties = &awaited_action.action_info.platform_properties;
+        let mut workers_iter = self.workers.iter_mut();
+        let workers_iter = match self.allocation_strategy {
+            // Use rfind to get the least recently used that satisfies the properties.
+            WorkerAllocationStrategy::least_recently_used => workers_iter.rfind(|(_, w)| {
+                w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)
+            }),
+            // Use find to get the most recently used that satisfies the properties.
+            WorkerAllocationStrategy::most_recently_used => workers_iter.find(|(_, w)| {
+                w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)
+            }),
+        };
+        let worker_id = workers_iter.map(|(_, w)| &w.id);
+        // We need to "touch" the worker to ensure it gets re-ordered in the LRUCache, since it was selected.
+        if let Some(&worker_id) = worker_id {
+            self.workers.get_mut(&worker_id)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CompletedAction {
+    completed_time: SystemTime,
+    state: Arc<ActionState>,
 }
 
 #[async_trait]
@@ -447,8 +578,170 @@ impl WorkerScheduler for SimpleScheduler {
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
         self.worker_scheduler.remove_worker(worker_id).await
     }
+}
 
-    async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
+#[async_trait]
+impl Operations for SimpleScheduler {
+    fn list_actions(&self) -> Vec<Operation> {
+        let lock = self.inner.lock();
+        let active_actions: Iter<Arc<ActionInfo>, AwaitedAction> = lock.active_actions.iter();
+        let queued_actions: std::collections::btree_map::Iter<Arc<ActionInfo>, AwaitedAction> =
+            lock.queued_actions.iter();
+        let recently_completed_actions = lock.recently_completed_actions.iter();
+
+        let active_operations: Vec<Operation> = active_actions
+            .map(|(_, awaited_action)| {
+                Operation::from(awaited_action.current_state.as_ref().clone())
+            })
+            .collect();
+        let queued_operations: Vec<Operation> = queued_actions
+            .map(|(_, awaited_action)| {
+                Operation::from(awaited_action.current_state.as_ref().clone())
+            })
+            .collect();
+        let completed_operations: Vec<Operation> = recently_completed_actions
+            .map(|completed_action| Operation::from(completed_action.state.as_ref().clone()))
+            .collect();
+
+        let operations: Vec<Operation> = active_operations
+            .into_iter()
+            .chain(queued_operations)
+            .chain(completed_operations)
+            .collect();
+        operations
+    }
+
+    fn get_action(&self, action_info_hash_key: &ActionInfoHashKey) -> Option<Operation> {
+        let lock: parking_lot::lock_api::MutexGuard<RawMutex, SimpleSchedulerImpl> =
+            self.inner.lock();
+        let active_actions: HashMap<Arc<ActionInfo>, AwaitedAction> = lock.active_actions.clone();
+        let queued_actions: BTreeMap<Arc<ActionInfo>, AwaitedAction> = lock.queued_actions.clone();
+        let queued_actions_set: HashSet<Arc<ActionInfo>> = lock.queued_actions_set.clone();
+        let recently_completed_actions = lock.recently_completed_actions.clone();
+        let action: Option<&ActionState> = queued_actions_set
+            .get(action_info_hash_key)
+            .and_then(|action_info| {
+                queued_actions
+                    .get(action_info)
+                    .map(|queued_action| queued_action.current_state.as_ref())
+            })
+            .or_else(|| {
+                active_actions
+                    .get(action_info_hash_key)
+                    .map(|awaited_action| awaited_action.current_state.as_ref())
+            })
+            .or_else(|| {
+                recently_completed_actions
+                    .get(action_info_hash_key)
+                    .map(|completed_action| completed_action.state.as_ref())
+            });
+        let action: Option<Operation> = action.map(|a| Operation::from(a.clone()));
+        action
+    }
+
+    async fn delete_action(&self) {
+        todo!()
+    }
+
+    async fn cancel_action(&self) {
+        todo!()
+    }
+
+    async fn wait_action(&self) {
+        todo!()
+    }
+}
+
+impl MetricsComponent for SimpleScheduler {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        self.metrics.gather_metrics(c);
+        {
+            // We use the raw lock because we dont gather stats about gathering stats.
+            let inner = self.inner.lock();
+            c.publish(
+                "queued_actions_total",
+                &inner.queued_actions.len(),
+                "The number actions in the queue.",
+            );
+            c.publish(
+                "workers_total",
+                &inner.workers.workers.len(),
+                "The number workers active.",
+            );
+            c.publish(
+                "active_actions_total",
+                &inner.active_actions.len(),
+                "The number of running actions.",
+            );
+            c.publish(
+                "recently_completed_actions_total",
+                &inner.recently_completed_actions.len(),
+                "The number of recently completed actions in the buffer.",
+            );
+            c.publish(
+                "retain_completed_for_seconds",
+                &inner.retain_completed_for,
+                "The duration completed actions are retained for.",
+            );
+            c.publish(
+                "worker_timeout_seconds",
+                &inner.worker_timeout_s,
+                "The configured timeout if workers have not responded for a while.",
+            );
+            c.publish(
+                "max_job_retries",
+                &inner.max_job_retries,
+                "The amount of times a job is allowed to retry from an internal error before it is dropped.",
+            );
+            let mut props = HashMap::<&String, u64>::new();
+            for (_worker_id, worker) in inner.workers.workers.iter() {
+                c.publish_with_labels(
+                    "workers",
+                    worker,
+                    "",
+                    vec![("worker_id".into(), worker.id.to_string().into())],
+                );
+                for (property, prop_value) in &worker.platform_properties.properties {
+                    let current_value = props.get(&property).unwrap_or(&0);
+                    if let PlatformPropertyValue::Minimum(worker_value) = prop_value {
+                        props.insert(property, *current_value + *worker_value);
+                    }
+                }
+            }
+            for (property, prop_value) in props {
+                c.publish(
+                    &format!("{property}_available_properties"),
+                    &prop_value,
+                    format!("Total sum of available properties for {property}"),
+                );
+            }
+            for (_, active_action) in inner.active_actions.iter() {
+                let action_name = active_action
+                    .action_info
+                    .unique_qualifier
+                    .action_name()
+                    .into();
+                let worker_id_str = match active_action.worker_id {
+                    Some(id) => id.to_string(),
+                    None => "Unassigned".to_string(),
+                };
+                c.publish_with_labels(
+                    "active_actions",
+                    active_action,
+                    "",
+                    vec![
+                        ("worker_id".into(), worker_id_str.into()),
+                        ("digest".into(), action_name),
+                    ],
+                );
+            }
+            // Note: We don't publish queued_actions because it can be very large.
+            // Note: We don't publish recently completed actions because it can be very large.
+        }
+      
+  }
+  
+     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
         self.worker_scheduler
             .remove_timedout_workers(now_timestamp)
             .await
