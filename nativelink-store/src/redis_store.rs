@@ -69,13 +69,10 @@ impl RedisStore {
                 "No addresses were specified in redis store configuration."
             ));
         };
-        let [addr] = config.addresses.as_slice() else {
-            return Err(make_err!(Code::Unimplemented, "Connecting directly to multiple redis nodes in a cluster is currently unsupported. Please specify a single URL to a single node, and nativelink will use cluster discover to find the other nodes."));
-        };
         let redis_config = match config.mode {
-            RedisMode::Cluster => RedisConfig::from_url_clustered(addr),
-            RedisMode::Sentinel => RedisConfig::from_url_sentinel(addr),
-            RedisMode::Standard => RedisConfig::from_url_centralized(addr),
+            RedisMode::Cluster => RedisConfig::from_url_clustered(&config.addresses),
+            RedisMode::Sentinel => RedisConfig::from_url_sentinel(&config.addresses),
+            RedisMode::Standard => RedisConfig::from_url_centralized(&config.addresses),
         }
         .err_tip_with_code(|e| {
             (

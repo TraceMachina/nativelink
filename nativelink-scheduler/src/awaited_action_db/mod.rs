@@ -14,9 +14,11 @@
 
 use std::cmp;
 use std::ops::Bound;
+use std::str::from_utf8;
 use std::sync::Arc;
 
 pub use awaited_action::{AwaitedAction, AwaitedActionSortKey};
+use bytes::Bytes;
 use futures::{Future, Stream};
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
@@ -99,7 +101,7 @@ impl std::fmt::Display for SortedAwaitedAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::write(
             f,
-            format_args!("{}-{}", self.sort_key.as_u64(), self.operation_id),
+            format_args!("{}/{}", self.sort_key.as_u64(), self.operation_id),
         )
     }
 }
@@ -119,12 +121,45 @@ impl From<AwaitedAction> for SortedAwaitedAction {
     }
 }
 
-impl TryInto<Vec<u8>> for SortedAwaitedAction {
+impl TryInto<Bytes> for SortedAwaitedAction {
     type Error = Error;
-    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-        serde_json::to_vec(&self)
+    fn try_into(self) -> Result<Bytes, Self::Error> {
+        serde_json::to_string(&self)
+            .map(Bytes::from)
             .map_err(|e| make_input_err!("{}", e.to_string()))
-            .err_tip(|| "In SortedAwaitedAction::TryInto::<Vec<u8>>")
+            .err_tip(|| "In SortedAwaitedAction::TryInto<Bytes>")
+    }
+}
+
+impl TryFrom<&str> for SortedAwaitedAction {
+    type Error = Error;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let mut it = value.split('/');
+        let Some(Ok(sort_key)) = it.next().map(AwaitedActionSortKey::try_from) else {
+            return Err(make_input_err!(
+                "Invalid input to SortedAwaitedAction::TryFrom<&str> - {value}"
+            ));
+        };
+        let Some(OperationId::Uuid(operation_id)) = it.next().map(OperationId::from) else {
+            return Err(make_input_err!(
+                "Invalid input to SortedAwaitedAction::TryFrom<&str> - {value}"
+            ));
+        };
+
+        Ok(Self {
+            sort_key,
+            operation_id: OperationId::Uuid(operation_id),
+        })
+    }
+}
+
+impl TryFrom<&Bytes> for SortedAwaitedAction {
+    type Error = Error;
+    fn try_from(value: &Bytes) -> Result<Self, Self::Error> {
+        let str_val = from_utf8(value)
+            .map_err(|e| make_input_err!("{}", e.to_string()))
+            .err_tip(|| "In SortedAwaitedAction::TryFrom::&Bytes")?;
+        Self::try_from(str_val)
     }
 }
 
@@ -132,8 +167,8 @@ impl TryFrom<&[u8]> for SortedAwaitedAction {
     type Error = Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         serde_json::from_slice(value)
-            .map_err(|e| make_input_err!("{}", e.to_string()))
-            .err_tip(|| "In AwaitedAction::TryFrom::&[u8]")
+            .map_err(|e| make_input_err!("{e:?}"))
+            .err_tip(|| "In SortedAwaitedAction::TryFrom::&[u8]")
     }
 }
 

@@ -17,12 +17,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nativelink_error::{make_input_err, Error};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
-use nativelink_util::{
-    action_messages::{ActionInfo, OperationId},
-    known_platform_property_provider::KnownPlatformPropertyProvider,
-    operation_state_manager::{
-        ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
-    },
+use nativelink_util::action_messages::{ActionInfo, OperationId};
+use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
+use nativelink_util::operation_state_manager::{
+    ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
 use tokio::sync::{mpsc, Mutex};
 

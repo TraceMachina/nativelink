@@ -1,0 +1,93 @@
+{
+  "stores": {
+    "CAS_MAIN_STORE": {
+      "compression": {
+        "compression_algorithm": {
+          "lz4": {}
+        },
+        "backend": {
+          "filesystem": {
+            "content_path": "${CAS_PATH}/content_path",
+            "temp_path": "${CAS_PATH}/tmp_path",
+            "eviction_policy": {
+              // 10gb.
+              "max_bytes": 10000000000,
+            }
+          }
+        }
+      }
+    },
+    "AC_MAIN_STORE": {
+      "filesystem": {
+        "content_path": "${AC_PATH}/content_path",
+        "temp_path": "${AC_PATH}/tmp_path",
+        "eviction_policy": {
+          // 500mb.
+          "max_bytes": 500000000,
+        }
+      }
+    }
+  },
+  "schedulers": {
+    "MAIN_SCHEDULER": {
+      "simple": {
+        "db_backend": {
+          "redis": {
+            "addresses": "redis://${REDIS_HOST:-127.0.0.1}:6379",
+            "mode": "standard"
+          }
+        },
+        "supported_platform_properties": {
+          "cpu_count": "minimum",
+          "OSFamily": "priority",
+          "container-image": "priority"
+        }
+      }
+    }
+  },
+  "servers": [{
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50051",
+      }
+    },
+    "services": {
+      "cas": { "main": { "cas_store": "CAS_MAIN_STORE" } },
+      "ac": { "main": { "ac_store": "AC_MAIN_STORE" } },
+      "bytestream": {
+        "cas_stores": {
+          "main": "CAS_MAIN_STORE"
+        }
+      },
+      "execution": {
+        "main": {
+          "cas_store": "CAS_MAIN_STORE",
+          "scheduler": "MAIN_SCHEDULER",
+        }
+      },
+      "capabilities": {
+        "main": {
+          "remote_execution": {
+            "scheduler": "MAIN_SCHEDULER",
+          }
+        }
+      }
+    }
+  }, {
+    "listener": {
+      "http": {
+        "socket_address": "${SCHEDULER_FRONTEND_ENDPOINT}",
+      }
+    },
+    "services": {
+      // Note: This should be served on a different port, because it has
+      // a different permission set than the other services.
+      // In other words, this service is a backend api. The ones above
+      // are a frontend api.
+      "worker_api": {
+        "scheduler": "MAIN_SCHEDULER",
+      },
+      "health": {},
+    }
+  }]
+}

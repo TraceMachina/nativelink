@@ -1,0 +1,128 @@
+{
+  "stores": {
+    "GRPC_LOCAL_STORE": {
+      // Note: This file is used to test GRPC store.
+      "grpc": {
+        "instance_name": "main",
+        "endpoints": [
+          {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
+        ],
+        "store_type": "cas"
+      }
+    },
+    "GRPC_LOCAL_AC_STORE": {
+      // Note: This file is used to test GRPC store.
+      "grpc": {
+        "instance_name": "main",
+        "endpoints": [
+          {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
+        ],
+        "store_type": "ac"
+      }
+    },
+    "WORKER_FAST_SLOW_STORE": {
+      "fast_slow": {
+        "fast": {
+          "filesystem": {
+            "content_path": "${WORKER_2_FAST_CAS}/content_path-cas",
+            "temp_path": "${WORKER_2_FAST_CAS}/tmp_path-cas",
+            "eviction_policy": {
+              "max_bytes": 10000000000,
+            }
+          }
+        },
+        "slow": {
+          "ref_store": {
+            "name": "GRPC_LOCAL_STORE"
+          }
+        }
+      }
+    }
+  },
+  "schedulers": {
+    "MAIN_SCHEDULER": {
+      "simple": {
+        "supported_platform_properties": {
+          "cpu_count": "minimum",
+          "OSFamily": "priority",
+          "container-image": "priority"
+        },
+        "db_backend": {
+          "redis": {
+            "addresses": "redis://${REDIS_HOST:-127.0.0.1}:6379",
+            "mode": "standard"
+          }
+        }
+      }
+    }
+  },
+  "workers": [{
+    "local": {
+      "worker_api_endpoint": {
+        "uri": "grpc://${SCHEDULER_BACKEND_2_ENDPOINT}",
+      },
+      "cas_fast_slow_store": "WORKER_FAST_SLOW_STORE",
+      "upload_action_result": {
+        "ac_store": "GRPC_LOCAL_AC_STORE",
+      },
+      "work_directory": "${WORKER_2_WORK_DIR}",
+      "platform_properties": {
+        "cpu_count": {
+          "values": ["2"]
+        },
+        "OSFamily": {
+          "values": [""]
+        },
+        "container-image": {
+          "values": [""]
+        }
+      }
+    }
+  }],
+  "servers": [
+    {
+      "listener": {
+        "http": {
+          "socket_address": "0.0.0.0:51053",
+        }
+      },
+      "services": {
+        "ac": {
+          "main": {
+            "ac_store": "GRPC_LOCAL_AC_STORE"
+          }
+        },
+        "execution": {
+          "main": {
+            "cas_store": "GRPC_LOCAL_STORE",
+            "scheduler": "MAIN_SCHEDULER",
+          }
+        },
+        "capabilities": {
+          "main": {
+            "remote_execution": {
+              "scheduler": "MAIN_SCHEDULER",
+            }
+          }
+        }
+      }
+    },
+    {
+      "listener": {
+        "http": {
+          "socket_address": "${SCHEDULER_BACKEND_2_ENDPOINT}",
+        }
+      },
+      "services": {
+        // Note: This should be served on a different port, because it has
+        // a different permission set than the other services.
+        // In other words, this service is a backend api. The ones above
+        // are a frontend api.
+        "worker_api": {
+          "scheduler": "MAIN_SCHEDULER",
+        },
+        "health": {},
+      }
+    }
+  ]
+}

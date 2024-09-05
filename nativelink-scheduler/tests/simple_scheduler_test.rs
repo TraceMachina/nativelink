@@ -152,7 +152,8 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
@@ -204,7 +205,8 @@ async fn find_executing_action() -> Result<(), Error> {
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
@@ -277,7 +279,8 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         },
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest1 = DigestInfo::new([99u8; 32], 512);
     let action_digest2 = DigestInfo::new([88u8; 32], 512);
 
@@ -445,7 +448,8 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
@@ -524,7 +528,8 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         },
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
     let mut platform_properties = HashMap::new();
     platform_properties.insert("prop".to_string(), "1".to_string());
@@ -608,7 +613,8 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let operation_id = OperationId::default();
@@ -700,7 +706,8 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let rx_from_worker =
@@ -738,7 +745,8 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         },
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     // Note: This needs to stay in scope or a disconnect will trigger.
@@ -853,7 +861,8 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
@@ -945,7 +954,8 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
@@ -1054,7 +1064,8 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
@@ -1143,7 +1154,8 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let operation_id = OperationId::default();
@@ -1277,7 +1289,8 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         },
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
 
@@ -1428,7 +1441,8 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
         },
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
 
@@ -1488,7 +1502,8 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         },
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
@@ -1630,7 +1645,8 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
             async move {}
         },
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     assert_eq!(dropped.load(Ordering::Relaxed), false);
 
     drop(scheduler);
@@ -1652,7 +1668,8 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker1 =
@@ -1717,7 +1734,8 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
         MockInstantWrapped::default,
-    );
+    )
+    .err_tip(|| "Failed to initialize SimpleScheduler")?;
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let insert_timestamp = make_system_time(1);

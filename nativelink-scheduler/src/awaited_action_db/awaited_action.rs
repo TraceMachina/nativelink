@@ -150,13 +150,29 @@ impl AwaitedAction {
     }
 }
 
-impl TryInto<bytes::Bytes> for AwaitedAction {
+impl TryInto<Bytes> for AwaitedAction {
     type Error = Error;
     fn try_into(self) -> Result<Bytes, Self::Error> {
         serde_json::to_string(&self)
             .map(Bytes::from)
             .map_err(|e| make_input_err!("{}", e.to_string()))
             .err_tip(|| "In AwaitedAction::TryInto::Bytes")
+    }
+}
+
+impl TryFrom<&Bytes> for AwaitedAction {
+    type Error = Error;
+    fn try_from(value: &Bytes) -> Result<Self, Self::Error> {
+        serde_json::from_slice(value).map_err(|err| {
+            make_input_err!("In AwaitedAction::TryFrom<&Bytes> - {}", err.to_string())
+        })
+    }
+}
+
+impl TryFrom<Bytes> for AwaitedAction {
+    type Error = Error;
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        Self::try_from(&value).err_tip(|| "In AwaitedAction::TryFrom<Bytes>")
     }
 }
 
@@ -177,7 +193,7 @@ impl TryFrom<&[u8]> for AwaitedAction {
 /// 3. (mostly random hash based on the action info)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(transparent)]
-pub struct AwaitedActionSortKey(u64);
+pub struct AwaitedActionSortKey(pub u64);
 
 impl MetricsComponent for AwaitedActionSortKey {
     fn publish(
@@ -218,6 +234,23 @@ impl AwaitedActionSortKey {
 
     pub fn as_u64(&self) -> u64 {
         self.0
+    }
+}
+
+impl From<u64> for AwaitedActionSortKey {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl TryFrom<&str> for AwaitedActionSortKey {
+    type Error = Error;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value
+            .parse::<u64>()
+            .map_err(|e| make_input_err!("{}", e.to_string()))
+            .err_tip(|| "In AwaitedActionSortKey::TryFrom<&str>")
+            .map(Self::from)
     }
 }
 
