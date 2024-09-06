@@ -240,10 +240,7 @@ async fn errors_with_invalid_inputs() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn get_part_is_zero_digest() -> Result<(), Error> {
-    let digest = DigestInfo {
-        packed_hash: Sha256::new().finalize().into(),
-        size_bytes: 0,
-    };
+    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
 
     let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store_clone = store.clone();
@@ -269,10 +266,7 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn has_with_results_on_zero_digests() -> Result<(), Error> {
-    let digest = DigestInfo {
-        packed_hash: Sha256::new().finalize().into(),
-        size_bytes: 0,
-    };
+    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
     let keys = vec![digest.into()];
     let mut results = vec![None];
 

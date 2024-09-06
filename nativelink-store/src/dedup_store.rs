@@ -128,9 +128,7 @@ impl DedupStore {
         let digests: Vec<_> = index_entries
             .entries
             .into_iter()
-            .map(|index_entry| {
-                DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes).into()
-            })
+            .map(StoreKey::Digest)
             .collect();
         let mut sum = 0;
         for size in self.content_store.has_many(&digests).await? {
@@ -181,7 +179,7 @@ impl StoreDriver for DedupStore {
             .map(|r| r.err_tip(|| "Failed to decode frame from fast_cdc"))
             .map_ok(|frame| async move {
                 let hash = blake3::hash(&frame[..]).into();
-                let index_entry = DigestInfo::new(hash, frame.len() as i64);
+                let index_entry = DigestInfo::new(hash, frame.len() as u64);
                 if self
                     .content_store
                     .has(index_entry)
@@ -266,7 +264,7 @@ impl StoreDriver for DedupStore {
                 let mut entries = Vec::with_capacity(index_entries.entries.len());
                 for entry in index_entries.entries {
                     let first_byte = current_entries_sum;
-                    let entry_size = usize::try_from(entry.size_bytes)
+                    let entry_size = usize::try_from(entry.size_bytes())
                         .err_tip(|| "Failed to convert to usize in DedupStore")?;
                     current_entries_sum += entry_size;
                     // Filter any items who's end byte is before the first requested byte.

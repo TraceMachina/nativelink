@@ -93,30 +93,30 @@ impl ShardStore {
                 //     array length. They optimize especially well when the optimizer can easily determine
                 //     the slice length, e.g. <[u8; 4]>::try_from(&slice[4..8]).unwrap(). Array implements
                 //     TryFrom returning.
-                let size_bytes = digest.size_bytes.to_le_bytes();
+                let size_bytes = digest.size_bytes().to_le_bytes();
                 0.bitxor(u32::from_le_bytes(
-                    digest.packed_hash[0..4].try_into().unwrap(),
+                    digest.packed_hash()[0..4].try_into().unwrap(),
                 ))
                 .bitxor(u32::from_le_bytes(
-                    digest.packed_hash[4..8].try_into().unwrap(),
+                    digest.packed_hash()[4..8].try_into().unwrap(),
                 ))
                 .bitxor(u32::from_le_bytes(
-                    digest.packed_hash[8..12].try_into().unwrap(),
+                    digest.packed_hash()[8..12].try_into().unwrap(),
                 ))
                 .bitxor(u32::from_le_bytes(
-                    digest.packed_hash[12..16].try_into().unwrap(),
+                    digest.packed_hash()[12..16].try_into().unwrap(),
                 ))
                 .bitxor(u32::from_le_bytes(
-                    digest.packed_hash[16..20].try_into().unwrap(),
+                    digest.packed_hash()[16..20].try_into().unwrap(),
                 ))
                 .bitxor(u32::from_le_bytes(
-                    digest.packed_hash[20..24].try_into().unwrap(),
+                    digest.packed_hash()[20..24].try_into().unwrap(),
                 ))
                 .bitxor(u32::from_le_bytes(
-                    digest.packed_hash[24..28].try_into().unwrap(),
+                    digest.packed_hash()[24..28].try_into().unwrap(),
                 ))
                 .bitxor(u32::from_le_bytes(
-                    digest.packed_hash[28..32].try_into().unwrap(),
+                    digest.packed_hash()[28..32].try_into().unwrap(),
                 ))
                 .bitxor(u32::from_le_bytes(size_bytes[0..4].try_into().unwrap()))
                 .bitxor(u32::from_le_bytes(size_bytes[4..8].try_into().unwrap()))

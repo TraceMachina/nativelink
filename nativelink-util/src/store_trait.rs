@@ -245,7 +245,7 @@ impl<'a> StoreKey<'a> {
         match self {
             StoreKey::Str(Cow::Owned(s)) => Cow::Borrowed(s),
             StoreKey::Str(Cow::Borrowed(s)) => Cow::Borrowed(s),
-            StoreKey::Digest(d) => Cow::Owned(format!("{}-{}", d.hash_str(), d.size_bytes)),
+            StoreKey::Digest(d) => Cow::Owned(format!("{d}")),
         }
     }
 }

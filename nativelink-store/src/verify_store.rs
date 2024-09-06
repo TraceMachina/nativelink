@@ -61,7 +61,7 @@ impl VerifyStore {
         mut tx: DropCloserWriteHalf,
         mut rx: DropCloserReadHalf,
         maybe_expected_digest_size: Option<u64>,
-        original_hash: [u8; 32],
+        original_hash: &[u8; 32],
         mut maybe_hasher: Option<&mut D>,
     ) -> Result<(), Error> {
         let mut sum_size: u64 = 0;
@@ -114,7 +114,8 @@ impl VerifyStore {
                     }
                 }
                 if let Some(hasher) = maybe_hasher.as_mut() {
-                    let hash_result: [u8; 32] = hasher.finalize_digest().packed_hash;
+                    let digest = hasher.finalize_digest();
+                    let hash_result = digest.packed_hash();
                     if original_hash != hash_result {
                         self.hash_verification_failures.inc();
                         return Err(make_input_err!(
@@ -167,15 +168,14 @@ impl StoreDriver for VerifyStore {
                 ));
             }
         };
-        let digest_size = u64::try_from(digest.size_bytes)
-            .err_tip(|| "Digest size_bytes was not convertible to usize")?;
+        let digest_size = digest.size_bytes();
         if let UploadSizeInfo::ExactSize(expected_size) = size_info {
             if self.verify_size && expected_size as u64 != digest_size {
                 self.size_verification_failures.inc();
                 return Err(make_input_err!(
                     "Expected size to match. Got {} but digest says {} on update",
                     expected_size,
-                    digest.size_bytes
+                    digest_size
                 ));
             }
         }
@@ -203,7 +203,7 @@ impl StoreDriver for VerifyStore {
             tx,
             reader,
             maybe_digest_size,
-            digest.packed_hash,
+            digest.packed_hash(),
             hasher.as_mut(),
         );
 

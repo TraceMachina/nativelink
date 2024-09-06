@@ -26,7 +26,7 @@ use tokio::join;
 #[derive(MetricsComponent)]
 pub struct SizePartitioningStore {
     #[metric(help = "Size to partition our data")]
-    partition_size: i64,
+    partition_size: u64,
     #[metric(group = "lower_store")]
     lower_store: Store,
     #[metric(group = "upper_store")]
@@ -40,7 +40,7 @@ impl SizePartitioningStore {
         upper_store: Store,
     ) -> Arc<Self> {
         Arc::new(SizePartitioningStore {
-            partition_size: config.size as i64,
+            partition_size: config.size,
             lower_store,
             upper_store,
         })
@@ -61,7 +61,7 @@ impl StoreDriver for SizePartitioningStore {
                     non_digest_sample = Some(k.borrow().into_owned());
                     return false;
                 };
-                digest.size_bytes < self.partition_size
+                digest.size_bytes() < self.partition_size
             });
         if let Some(non_digest) = non_digest_sample {
             return Err(make_input_err!(
@@ -110,7 +110,7 @@ impl StoreDriver for SizePartitioningStore {
                 ))
             }
         };
-        if digest.size_bytes < self.partition_size {
+        if digest.size_bytes() < self.partition_size {
             return self.lower_store.update(digest, reader, size_info).await;
         }
         self.upper_store.update(digest, reader, size_info).await
@@ -131,7 +131,7 @@ impl StoreDriver for SizePartitioningStore {
                 ))
             }
         };
-        if digest.size_bytes < self.partition_size {
+        if digest.size_bytes() < self.partition_size {
             return self
                 .lower_store
                 .get_part(digest, writer, offset, length)
@@ -150,7 +150,7 @@ impl StoreDriver for SizePartitioningStore {
             StoreKey::Digest(digest) => digest,
             _ => return self,
         };
-        if digest.size_bytes < self.partition_size {
+        if digest.size_bytes() < self.partition_size {
             return self.lower_store.inner_store(Some(digest));
         }
         self.upper_store.inner_store(Some(digest))

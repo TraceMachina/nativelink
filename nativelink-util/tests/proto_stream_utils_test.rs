@@ -35,12 +35,12 @@ async fn ensure_no_errors_if_only_first_message_has_resource_name_set() -> Resul
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<WriteRequest, Error>>();
 
     const RAW_DATA: &str = "thisdatafoo";
-    const DIGEST: DigestInfo = DigestInfo::new([0u8; 32], RAW_DATA.len() as i64);
+    const DIGEST: DigestInfo = DigestInfo::new([0u8; 32], RAW_DATA.len() as u64);
     let message1 = WriteRequest {
         resource_name: format!(
             "{INSTANCE_NAME}/uploads/some-uuid/blobs/{}/{}",
             DIGEST.hash_str(),
-            DIGEST.size_bytes
+            DIGEST.size_bytes()
         ),
         write_offset: 0,
         finish_write: false,
