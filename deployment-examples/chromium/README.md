@@ -4,6 +4,7 @@ This deployment sets up a 4-container deployment with separate CAS, scheduler
 and worker. Don't use this example deployment in production. It's insecure.
 
 > [!WARNING]
+>
 > - The client build request is best done from a Ubuntu image, `./03_build_chrome_tests.sh`. It will check if the image is Ubuntu and
 > fail otherwise.
 > - This tutorial has been tested in a Nix environment of version `2.
@@ -75,6 +76,7 @@ in [linux/build_instructions.md](https://chromium.googlesource.com/chromium/src/
 
 > [!TIP]
 > You can monitor the logs of container groups with `kubectl logs`:
+>
 > ```bash
 > kubectl logs -f -l app=nativelink-cas
 > kubectl logs -f -l app=nativelink-scheduler
@@ -87,5 +89,7 @@ When you're done testing, delete the cluster:
 ```bash
 kind delete cluster
 ```
+
 ## NativeLink Community
+
 If you have any questions, please reach out to the [NativeLink Community](https://join.slack.com/t/nativelink/shared_invite/zt-2i2mipfr5-lZAEeWYEy4Eru94b3IOcdg).
