@@ -387,11 +387,7 @@ async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn std::e
         .get_tree(Request::new(GetTreeRequest {
             instance_name: INSTANCE_NAME.to_string(),
             page_size: 0,
-            page_token: format!(
-                "{}-{}",
-                root_directory_digest_info.hash_str(),
-                root_directory_digest_info.size_bytes
-            ),
+            page_token: format!("{}", root_directory_digest_info),
             root_digest: Some(root_directory_digest_info.into()),
             digest_function: digest_function::Value::Sha256.into(),
         }))
@@ -442,11 +438,7 @@ async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::erro
         .get_tree(Request::new(GetTreeRequest {
             instance_name: INSTANCE_NAME.to_string(),
             page_size: 2,
-            page_token: format!(
-                "{}-{}",
-                root_directory_digest_info.hash_str(),
-                root_directory_digest_info.size_bytes
-            ),
+            page_token: format!("{}", root_directory_digest_info),
             root_digest: Some(root_directory_digest_info.into()),
             digest_function: digest_function::Value::Sha256.into(),
         }))
@@ -461,22 +453,14 @@ async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::erro
             .await,
         vec![GetTreeResponse {
             directories: vec![root_directory.clone(), sub_directories[0].clone()],
-            next_page_token: format!(
-                "{}-{}",
-                sub_directory_digest_infos[1].hash_str(),
-                sub_directory_digest_infos[1].size_bytes
-            ),
+            next_page_token: format!("{}", sub_directory_digest_infos[1]),
         }]
     );
     let raw_response = cas_server
         .get_tree(Request::new(GetTreeRequest {
             instance_name: INSTANCE_NAME.to_string(),
             page_size: 2,
-            page_token: format!(
-                "{}-{}",
-                sub_directory_digest_infos[1].hash_str(),
-                sub_directory_digest_infos[1].size_bytes
-            ),
+            page_token: format!("{}", sub_directory_digest_infos[1]),
             root_digest: Some(root_directory_digest_info.into()),
             digest_function: digest_function::Value::Sha256.into(),
         }))
@@ -491,22 +475,14 @@ async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::erro
             .await,
         vec![GetTreeResponse {
             directories: vec![sub_directories[1].clone(), sub_directories[2].clone()],
-            next_page_token: format!(
-                "{}-{}",
-                sub_directory_digest_infos[3].hash_str(),
-                sub_directory_digest_infos[3].size_bytes
-            ),
+            next_page_token: format!("{}", sub_directory_digest_infos[3]),
         }]
     );
     let raw_response = cas_server
         .get_tree(Request::new(GetTreeRequest {
             instance_name: INSTANCE_NAME.to_string(),
             page_size: 2,
-            page_token: format!(
-                "{}-{}",
-                sub_directory_digest_infos[3].hash_str(),
-                sub_directory_digest_infos[3].size_bytes
-            ),
+            page_token: format!("{}", sub_directory_digest_infos[3]),
             root_digest: Some(root_directory_digest_info.into()),
             digest_function: digest_function::Value::Sha256.into(),
         }))

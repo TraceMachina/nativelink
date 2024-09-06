@@ -126,7 +126,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
 
     // Construct a digest for our data and create a key based on that digest.
     let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
-    let packed_hash_hex = format!("{}-{}", digest.hash_str(), digest.size_bytes);
+    let packed_hash_hex = format!("{digest}");
 
     // Construct our Redis store with a mocked out backend.
     let temp_key = RedisValue::Bytes(make_temp_key(&packed_hash_hex).into());
@@ -211,7 +211,7 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
     let prefix = "TEST_PREFIX-";
 
     let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
-    let packed_hash_hex = format!("{prefix}{}-{}", digest.hash_str(), digest.size_bytes);
+    let packed_hash_hex = format!("{prefix}{digest}");
 
     let temp_key = RedisValue::Bytes(make_temp_key(&packed_hash_hex).into());
     let real_key = RedisValue::Bytes(packed_hash_hex.into());
@@ -337,7 +337,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
     let data = Bytes::from(vec![0u8; READ_CHUNK_SIZE + 128]);
 
     let digest = DigestInfo::try_new(VALID_HASH1, 1)?;
-    let packed_hash_hex = format!("{}-{}", digest.hash_str(), digest.size_bytes);
+    let packed_hash_hex = format!("{digest}");
 
     let temp_key = RedisValue::Bytes(make_temp_key(&packed_hash_hex).into());
     let real_key = RedisValue::Bytes(packed_hash_hex.into());
@@ -435,7 +435,7 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
     let data_p2 = Bytes::from(vec![0u8; 4 * 1024]);
 
     let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
-    let packed_hash_hex = format!("{}-{}", digest.hash_str(), digest.size_bytes);
+    let packed_hash_hex = format!("{digest}");
 
     let temp_key = RedisValue::Bytes(make_temp_key(&packed_hash_hex).into());
     let real_key = RedisValue::Bytes(packed_hash_hex.into());
@@ -525,7 +525,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
     let mocks = Arc::new(MockRedisBackend::new());
 
     let digest = DigestInfo::try_new(VALID_HASH1, 0)?;
-    let packed_hash_hex = format!("{}-{}", digest.hash_str(), digest.size_bytes);
+    let packed_hash_hex = format!("{digest}");
     let real_key = RedisValue::Bytes(packed_hash_hex.into());
 
     mocks

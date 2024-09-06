@@ -132,7 +132,7 @@ impl Drop for EncodedFilePath {
 
 #[inline]
 fn to_full_path_from_digest(folder: &str, digest: &DigestInfo) -> OsString {
-    format!("{}/{}-{}", folder, digest.hash_str(), digest.size_bytes).into()
+    format!("{folder}/{digest}").into()
 }
 
 pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
@@ -301,11 +301,13 @@ impl Debug for FileEntryImpl {
 
 fn make_temp_digest(digest: &mut DigestInfo) {
     static DELETE_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
-    digest.packed_hash[24..].clone_from_slice(
+    let mut hash = *digest.packed_hash();
+    hash[24..].clone_from_slice(
         &DELETE_FILE_COUNTER
             .fetch_add(1, Ordering::Relaxed)
             .to_le_bytes(),
     );
+    digest.set_packed_hash(hash);
 }
 
 impl LenEntry for FileEntryImpl {

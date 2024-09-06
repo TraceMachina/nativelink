@@ -215,11 +215,10 @@ impl std::fmt::Display for ActionUniqueQualifier {
         f.write_fmt(format_args!(
             // Note: We use underscores because it makes escaping easier
             // for redis.
-            "{}/{}/{}-{}/{}",
+            "{}/{}/{}/{}",
             unique_key.instance_name,
             unique_key.digest_function,
-            unique_key.digest.hash_str(),
-            unique_key.digest.size_bytes,
+            unique_key.digest,
             if cachable { 'c' } else { 'u' },
         ))
     }
@@ -243,11 +242,8 @@ pub struct ActionUniqueKey {
 impl std::fmt::Display for ActionUniqueKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
-            "{}/{}/{}-{}",
-            self.instance_name,
-            self.digest_function,
-            self.digest.hash_str(),
-            self.digest.size_bytes
+            "{}/{}/{}",
+            self.instance_name, self.digest_function, self.digest,
         ))
     }
 }

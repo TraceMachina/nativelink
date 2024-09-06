@@ -253,7 +253,7 @@ impl ByteStreamServer {
                     digest,
                     rx,
                     UploadSizeInfo::ExactSize(
-                        usize::try_from(digest.size_bytes).err_tip(|| "Invalid digest size")?,
+                        usize::try_from(digest.size_bytes()).err_tip(|| "Invalid digest size")?,
                     ),
                 )
                 .await

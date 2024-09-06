@@ -287,7 +287,7 @@ async fn upload_file(
         .update_with_whole_file(
             digest.into(),
             resumeable_file,
-            UploadSizeInfo::ExactSize(digest.size_bytes as usize),
+            UploadSizeInfo::ExactSize(digest.size_bytes() as usize),
         )
         .await
         .err_tip(|| format!("for {full_path:?}"))?;
@@ -1473,10 +1473,13 @@ impl UploadActionResults {
             hasher.proto_digest_func().as_str_name().to_lowercase(),
         );
         template_str.replace("action_digest_hash", action_digest_info.hash_str());
-        template_str.replace("action_digest_size", action_digest_info.size_bytes);
+        template_str.replace("action_digest_size", action_digest_info.size_bytes());
         if let Some(historical_digest_info) = maybe_historical_digest_info {
             template_str.replace("historical_results_hash", historical_digest_info.hash_str());
-            template_str.replace("historical_results_size", historical_digest_info.size_bytes);
+            template_str.replace(
+                "historical_results_size",
+                historical_digest_info.size_bytes(),
+            );
         } else {
             template_str.replace("historical_results_hash", "");
             template_str.replace("historical_results_size", "");
