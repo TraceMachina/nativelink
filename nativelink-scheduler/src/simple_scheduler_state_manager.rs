@@ -511,7 +511,9 @@ where
                             },
                             error: Some(err.clone().merge(make_err!(
                                 Code::Internal,
-                                "Job cancelled because it attempted to execute too many times and failed {}",
+                                "Job cancelled because it attempted to execute too many times {} > {} times {}",
+                                awaited_action.attempts,
+                                self.max_job_retries,
                                 format!("for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"),
                             ))),
                             ..ActionResult::default()

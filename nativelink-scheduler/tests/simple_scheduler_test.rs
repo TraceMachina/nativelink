@@ -2008,8 +2008,8 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         if let ActionStage::Completed(stage) = &mut received_state.stage {
             if let Some(real_err) = &mut stage.error {
                 assert!(
-                    real_err.to_string().contains("Job cancelled because it attempted to execute too many times and failed"),
-                    "{real_err} did not contain 'Job cancelled because it attempted to execute too many times and failed'",
+                    real_err.to_string().contains("Job cancelled because it attempted to execute too many times"),
+                    "{real_err} did not contain 'Job cancelled because it attempted to execute too many times'",
                 );
                 *real_err = err;
             }
