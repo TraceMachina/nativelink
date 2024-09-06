@@ -58,6 +58,22 @@ jobs:
             bun setup && bun docs && bun run build
           "
 
+      - name: Delete all Xcode installations to free up disk space
+        if: matrix.os == 'macos-14'
+        run: |
+          echo "Available Xcode installations:"
+          xcodes installed
+          selected_path="$(xcode-select -p)"; selected_path="${selected_path%/Contents/Developer}"
+          find /Applications \
+            -depth 1 \
+            -name "Xcode*.app" \
+            -not -path "${selected_path}" \
+            -exec rm -rf {} +
+          echo "Deleting all iOS simulators"
+          xcrun simctl delete all
+          echo "Deleting iOS Simulator caches"
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/*
+
       - name: Test Build on macOS
         if: matrix.os == 'macos-14' && github.event_name == 'pull_request'
         working-directory: docs

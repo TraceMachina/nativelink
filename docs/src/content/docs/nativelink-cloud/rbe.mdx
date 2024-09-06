@@ -13,7 +13,7 @@ This guide shows how to configure remote build execution (RBE) for your
 [NativeLink Cloud](https://app.nativelink.com). Before using this guide
 make sure you have followed our [Bazel Quickstart](/nativelink-cloud/bazel).
 
-### Basic Configuration
+## Basic Configuration
 To enable RBE all you need to do is add the below flag to your Bazel builds:
 ```bash
 --remote_executor=grpcs://scheduler-YOUR_ACCOUNT_HERE.build-faster.nativelink.net:443
@@ -24,7 +24,7 @@ For most users we don't expect this to work out of the box as your project most
 likely depends on installations like GCC/Java/etc. To remedy that, continue with the
 instructions below to pass in your own images.
 
-### Custom Images
+## Custom Images
 To support most RBE builds you will most likely need to pass in your own image with the
 correct toolchains installed to support your build. To use your own image you can pass
 it using this configuration:
@@ -35,7 +35,7 @@ it using this configuration:
 The above uses a public image
 :::
 
-#### Private Images
+### Private Images
 If your images are in your own private repository, you can pass your repository
 credentials to allow us to pull your RBE images.
 
@@ -45,25 +45,55 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
   <TabItem label="AWS">
     ```bash
     --remote_default_exec_properties="container-image=docker://123456789100.dkr.ecr.us-east-2.amazonaws.com/rbe-images:tag"
-    --remote_exec_header=x-nativelink-registry-server=123456789100.dkr.ecr.us-east-2.amazonaws.com
-    --remote_exec_header=x-nativelink-registry-username=AWS
-    --remote_exec_header=x-nativelink-registry-password="$(aws ecr get-login-password --region YOUR_REGION)"
+    --remote_exec_header=x-nativelink-rbe-registry-server=123456789100.dkr.ecr.us-east-2.amazonaws.com
+    --remote_exec_header=x-nativelink-rbe-registry-username=AWS
+    --remote_exec_header=x-nativelink-rbe-registry-password="$(aws ecr get-login-password --region YOUR_REGION)"
     ```
   </TabItem>
   <TabItem label="Google Cloud">
     ```bash
     --remote_default_exec_properties="container-image=docker://gcr.io/rbe-images/image"
-    --remote_exec_header=x-nativelink-registry-server=gcr.io
-    --remote_exec_header=x-nativelink-registry-username=_dcgcloud_token
-    --remote_exec_header=x-nativelink-registry-password="$(gcloud auth print-access-token)"
+    --remote_exec_header=x-nativelink-rbe-registry-server=gcr.io
+    --remote_exec_header=x-nativelink-rbe-registry-username=_dcgcloud_token
+    --remote_exec_header=x-nativelink-rbe-registry-password="$(gcloud auth print-access-token)"
     ```
   </TabItem>
 </Tabs>
 
-### Hermetic Bazel Builds
+## Hermetic Bazel Builds
 An alternative option to passing in your own custom image is using a fully hermetic
 Bazel build. This will allow you to use our default Ubuntu 22.04 image and your Bazel
 commands will install all needed dependencies.
 
 You can see a sample of that in the WORKSPACE file of our **Hermetic CC** example
 repository [here](https://github.com/TraceMachina/hermetic_cc_toolchain_rbe_example/blob/main/WORKSPACE).
+
+## Advanced Configuration
+Bazel has many flags you can pass to it to modify RBE. We recommend three main flags to start.
+
+### `--jobs`
+This is the number of concurrent jobs to run. We recommend starting with `50` but
+you can readily scale up to `200`. Past this we recommend reaching out to us with help
+understanding your build and what optimal settings may be.
+```bash
+--jobs=200
+```
+
+### `--remote_download_minimal`
+This flag enables "Build Without Bytes" which means Bazel will skip downloading
+intermediate artifacts that aren't necessary for your builds to complete. This
+can greatly increase the speed of your builds.
+```bash
+--remote_download_minimal
+```
+
+### `--remote_timeout`
+This is how long a job will run before timing out. The default is `60` seconds but we
+recommend setting `600`.
+```bash
+--remote_timeout=600
+```
+
+### Further configurations
+You can see the rest of the Bazel command line arguments [here](https://bazel.build/reference/command-line-reference),
+and don't hesitate to reach out to us with any questions!
