@@ -123,7 +123,7 @@ impl CasServer {
                     .err_tip(|| "Digest not found in request")?;
                 let request_data = request.data;
                 let digest_info = DigestInfo::try_from(digest.clone())?;
-                let size_bytes = usize::try_from(digest_info.size_bytes)
+                let size_bytes = usize::try_from(digest_info.size_bytes())
                     .err_tip(|| "Digest size_bytes was not convertible to usize")?;
                 error_if!(
                     size_bytes != request_data.len(),
@@ -280,7 +280,7 @@ impl CasServer {
         // `next_page_token` will return the `{hash_str}:{size_bytes}` of the next request's first directory digest.
         // It will be an empty string when it reached the end of the directory tree.
         let next_page_token: String = if let Some(value) = deque.front() {
-            format!("{}-{}", value.hash_str(), value.size_bytes)
+            format!("{value}")
         } else {
             String::new()
         };

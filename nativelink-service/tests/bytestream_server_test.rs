@@ -842,11 +842,11 @@ pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
 
         let result = result_fut.await.err_tip(|| "Expected result to be ready")?;
         let expected_err_str = concat!(
-                "status: NotFound, message: \"Key Digest(DigestInfo { size_bytes: 55, hash: \\\"0123456789abcdef000000000000000000000000000000000123456789abcdef\\\" }) not found\", details: [], metadata: MetadataMap { headers: {} }",
+                "status: NotFound, message: \"Key Digest(DigestInfo(\\\"0123456789abcdef000000000000000000000000000000000123456789abcdef-55\\\")) not found\", details: [], metadata: MetadataMap { headers: {} }",
             );
         assert_eq!(
             Error::from(result.unwrap_err()),
-            make_err!(Code::NotFound, "{}", expected_err_str),
+            make_err!(Code::NotFound, "{expected_err_str}"),
             "Expected error data to match"
         );
     }

@@ -209,7 +209,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             .get_part(digest, writer, offset, length)
             .await;
         if result.is_ok() {
-            let size = usize::try_from(digest.size_bytes)
+            let size = usize::try_from(digest.size_bytes())
                 .err_tip(|| "Could not convert size_bytes in ExistenceCacheStore::get_part")?;
             let _ = self
                 .existence_cache

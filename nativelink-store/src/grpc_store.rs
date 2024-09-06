@@ -565,7 +565,7 @@ impl StoreDriver for GrpcStore {
         {
             match missing_digests.binary_search(&digest) {
                 Ok(_) => *result = None,
-                Err(_) => *result = Some(usize::try_from(digest.size_bytes)?),
+                Err(_) => *result = Some(usize::try_from(digest.size_bytes())?),
             }
         }
 
@@ -589,7 +589,7 @@ impl StoreDriver for GrpcStore {
             &self.instance_name,
             Uuid::new_v4().hyphenated().encode_lower(&mut buf),
             digest.hash_str(),
-            digest.size_bytes,
+            digest.size_bytes(),
         );
 
         struct LocalState {
@@ -666,7 +666,7 @@ impl StoreDriver for GrpcStore {
         }
 
         // Shortcut for empty blobs.
-        if digest.size_bytes == 0 {
+        if digest.size_bytes() == 0 {
             return writer.send_eof();
         }
 
@@ -674,7 +674,7 @@ impl StoreDriver for GrpcStore {
             "{}/blobs/{}/{}",
             &self.instance_name,
             digest.hash_str(),
-            digest.size_bytes,
+            digest.size_bytes(),
         );
 
         struct LocalState<'a> {

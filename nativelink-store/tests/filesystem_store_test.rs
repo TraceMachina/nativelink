@@ -328,12 +328,7 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
 
     store.update_oneshot(digest1, VALUE1.into()).await?;
 
-    let expected_file_name = OsString::from(format!(
-        "{}/{}-{}",
-        content_path,
-        digest1.hash_str(),
-        digest1.size_bytes
-    ));
+    let expected_file_name = OsString::from(format!("{content_path}/{digest1}"));
     {
         // Check to ensure our file exists where it should and content matches.
         let data = read_file_contents(&expected_file_name).await?;
@@ -669,18 +664,8 @@ async fn oldest_entry_evicted_with_access_times_loaded_from_disk() -> Result<(),
     fs::create_dir_all(&content_path).await?;
 
     // Make the two files on disk before loading the store.
-    let file1 = OsString::from(format!(
-        "{}/{}-{}",
-        content_path,
-        digest1.hash_str(),
-        digest1.size_bytes
-    ));
-    let file2 = OsString::from(format!(
-        "{}/{}-{}",
-        content_path,
-        digest2.hash_str(),
-        digest2.size_bytes
-    ));
+    let file1 = OsString::from(format!("{content_path}/{digest1}"));
+    let file2 = OsString::from(format!("{content_path}/{digest2}"));
     write_file(&file1, VALUE1.as_bytes()).await?;
     write_file(&file2, VALUE2.as_bytes()).await?;
     set_file_atime(&file1, FileTime::from_unix_time(0, 0))?;
@@ -1060,10 +1045,7 @@ async fn get_part_timeout_test() -> Result<(), Error> {
 #[serial]
 #[nativelink_test]
 async fn get_part_is_zero_digest() -> Result<(), Error> {
-    let digest = DigestInfo {
-        packed_hash: Sha256::new().finalize().into(),
-        size_bytes: 0,
-    };
+    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
 
@@ -1105,10 +1087,7 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
 #[serial]
 #[nativelink_test]
 async fn has_with_results_on_zero_digests() -> Result<(), Error> {
-    let digest = DigestInfo {
-        packed_hash: Sha256::new().finalize().into(),
-        size_bytes: 0,
-    };
+    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
 
@@ -1145,12 +1124,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
         loop {
             yield_fn().await?;
 
-            let empty_digest_file_name = OsString::from(format!(
-                "{}/{}-{}",
-                content_path,
-                digest.hash_str(),
-                digest.size_bytes
-            ));
+            let empty_digest_file_name = OsString::from(format!("{content_path}/{digest}"));
 
             let file_metadata = fs::metadata(empty_digest_file_name)
                 .await
@@ -1253,12 +1227,7 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
         .get_file_path_locked(move |file_path| async move {
             assert_eq!(
                 file_path,
-                OsString::from(format!(
-                    "{}/{}-{}",
-                    content_path,
-                    digest.hash_str(),
-                    digest.size_bytes
-                ))
+                OsString::from(format!("{content_path}/{digest}"))
             );
             Ok(())
         })
@@ -1290,12 +1259,7 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
 
     store.update_oneshot(digest, VALUE1.into()).await?;
 
-    let stored_file_path = OsString::from(format!(
-        "{}/{}-{}",
-        content_path,
-        digest.hash_str(),
-        digest.size_bytes
-    ));
+    let stored_file_path = OsString::from(format!("{content_path}/{digest}"));
     std::fs::remove_file(stored_file_path)?;
 
     let digest_result = store
@@ -1491,8 +1455,7 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         .await?,
     );
 
-    let mut file =
-        fs::create_file(OsString::from(format!("{}/{}", temp_path, "dummy_file"))).await?;
+    let mut file = fs::create_file(OsString::from(format!("{temp_path}/dummy_file"))).await?;
     let original_inode = file
         .as_reader()
         .await?
@@ -1510,12 +1473,7 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         "Expected filesystem store to consume the file"
     );
 
-    let expected_file_name = OsString::from(format!(
-        "{}/{}-{}",
-        content_path,
-        digest.hash_str(),
-        digest.size_bytes
-    ));
+    let expected_file_name = OsString::from(format!("{content_path}/{digest}"));
     let new_inode = fs::create_file(expected_file_name)
         .await?
         .as_reader()

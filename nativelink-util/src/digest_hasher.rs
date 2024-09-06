@@ -221,7 +221,7 @@ pub enum DigestHasherFuncImpl {
 
 /// The individual implementation of the hash function.
 pub struct DigestHasherImpl {
-    hashed_size: i64,
+    hashed_size: u64,
     hash_func_impl: DigestHasherFuncImpl,
 }
 
@@ -243,7 +243,7 @@ impl DigestHasherImpl {
 impl DigestHasher for DigestHasherImpl {
     #[inline]
     fn update(&mut self, input: &[u8]) {
-        self.hashed_size += input.len() as i64;
+        self.hashed_size += input.len() as u64;
         match &mut self.hash_func_impl {
             DigestHasherFuncImpl::Sha256(h) => sha2::digest::Update::update(h, input),
             DigestHasherFuncImpl::Blake3(h) => {
@@ -288,7 +288,7 @@ impl DigestHasher for DigestHasherImpl {
                         make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}")
                     })?;
                     Result::<_, Error>::Ok((
-                        DigestInfo::new(hasher.finalize().into(), hasher.count() as i64),
+                        DigestInfo::new(hasher.finalize().into(), hasher.count()),
                         file,
                     ))
                 })

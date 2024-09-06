@@ -603,10 +603,7 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn get_part_is_zero_digest() -> Result<(), Error> {
-    let digest = DigestInfo {
-        packed_hash: Sha256::new().finalize().into(),
-        size_bytes: 0,
-    };
+    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
 
     let mock_client = StaticReplayClient::new(vec![]);
     let test_config = Builder::new()
@@ -646,10 +643,7 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn has_with_results_on_zero_digests() -> Result<(), Error> {
-    let digest = DigestInfo {
-        packed_hash: Sha256::new().finalize().into(),
-        size_bytes: 0,
-    };
+    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
     let keys = vec![digest.into()];
     let mut results = vec![None];
 

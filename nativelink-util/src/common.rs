@@ -15,10 +15,10 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
+use std::fmt::Display;
 use std::hash::Hash;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use hex::FromHex;
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
@@ -26,6 +26,7 @@ use nativelink_metric::{
 use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use prost::Message;
 use serde::{Deserialize, Serialize};
+use tracing::{event, Level};
 
 pub use crate::fs;
 
@@ -33,10 +34,10 @@ pub use crate::fs;
 #[repr(C)]
 pub struct DigestInfo {
     /// Raw hash in packed form.
-    pub packed_hash: [u8; 32],
+    packed_hash: PackedHash,
 
     /// Possibly the size of the digest in bytes.
-    pub size_bytes: i64,
+    size_bytes: u64,
 }
 
 impl MetricsComponent for DigestInfo {
@@ -45,28 +46,27 @@ impl MetricsComponent for DigestInfo {
         _kind: MetricKind,
         field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
-        format!("{}-{}", self.hash_str(), self.size_bytes)
-            .publish(MetricKind::String, field_metadata)
+        format!("{self}").publish(MetricKind::String, field_metadata)
     }
 }
 
 impl DigestInfo {
-    pub const fn new(packed_hash: [u8; 32], size_bytes: i64) -> Self {
+    pub const fn new(packed_hash: [u8; 32], size_bytes: u64) -> Self {
         DigestInfo {
             size_bytes,
-            packed_hash,
+            packed_hash: PackedHash(packed_hash),
         }
     }
 
     pub fn try_new<T>(hash: &str, size_bytes: T) -> Result<Self, Error>
     where
-        T: TryInto<i64> + std::fmt::Display + Copy,
+        T: TryInto<u64> + std::fmt::Display + Copy,
     {
         let packed_hash =
-            <[u8; 32]>::from_hex(hash).err_tip(|| format!("Invalid sha256 hash: {hash}"))?;
+            PackedHash::from_hex(hash).err_tip(|| format!("Invalid sha256 hash: {hash}"))?;
         let size_bytes = size_bytes
             .try_into()
-            .map_err(|_| make_input_err!("Could not convert {} into i64", size_bytes))?;
+            .map_err(|_| make_input_err!("Could not convert {} into u64", size_bytes))?;
         Ok(DigestInfo {
             size_bytes,
             packed_hash,
@@ -74,23 +74,39 @@ impl DigestInfo {
     }
 
     pub fn hash_str(&self) -> String {
-        hex::encode(self.packed_hash)
+        format!("{}", self.packed_hash)
     }
 
     pub const fn zero_digest() -> DigestInfo {
         DigestInfo {
             size_bytes: 0,
-            // Magic hash of a sha256 of empty string.
-            packed_hash: [0u8; 32],
+            packed_hash: PackedHash::new(),
         }
+    }
+
+    pub const fn packed_hash(&self) -> &[u8; 32] {
+        &self.packed_hash.0
+    }
+
+    pub fn set_packed_hash(&mut self, packed_hash: [u8; 32]) {
+        self.packed_hash = PackedHash(packed_hash);
+    }
+
+    pub const fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+}
+
+impl Display for DigestInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}-{}", self.packed_hash, self.size_bytes)
     }
 }
 
 impl fmt::Debug for DigestInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DigestInfo")
-            .field("size_bytes", &self.size_bytes)
-            .field("hash", &self.hash_str())
+        f.debug_tuple("DigestInfo")
+            .field(&format!("{}-{}", self.packed_hash, self.size_bytes))
             .finish()
     }
 }
@@ -113,10 +129,14 @@ impl TryFrom<Digest> for DigestInfo {
     type Error = Error;
 
     fn try_from(digest: Digest) -> Result<Self, Self::Error> {
-        let packed_hash = <[u8; 32]>::from_hex(&digest.hash)
+        let packed_hash = PackedHash::from_hex(&digest.hash)
             .err_tip(|| format!("Invalid sha256 hash: {}", digest.hash))?;
+        let size_bytes = digest
+            .size_bytes
+            .try_into()
+            .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
         Ok(DigestInfo {
-            size_bytes: digest.size_bytes,
+            size_bytes,
             packed_hash,
         })
     }
@@ -126,10 +146,14 @@ impl TryFrom<&Digest> for DigestInfo {
     type Error = Error;
 
     fn try_from(digest: &Digest) -> Result<Self, Self::Error> {
-        let packed_hash = <[u8; 32]>::from_hex(&digest.hash)
+        let packed_hash = PackedHash::from_hex(&digest.hash)
             .err_tip(|| format!("Invalid sha256 hash: {}", digest.hash))?;
+        let size_bytes = digest
+            .size_bytes
+            .try_into()
+            .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
         Ok(DigestInfo {
-            size_bytes: digest.size_bytes,
+            size_bytes,
             packed_hash,
         })
     }
@@ -139,7 +163,16 @@ impl From<DigestInfo> for Digest {
     fn from(val: DigestInfo) -> Self {
         Digest {
             hash: val.hash_str(),
-            size_bytes: val.size_bytes,
+            size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
+                event!(
+                    Level::ERROR,
+                    "Could not convert {} into u64 - {e:?}",
+                    val.size_bytes
+                );
+                // This is a placeholder value that can help a user identify
+                // that the conversion failed.
+                -255
+            }),
         }
     }
 }
@@ -148,8 +181,53 @@ impl From<&DigestInfo> for Digest {
     fn from(val: &DigestInfo) -> Self {
         Digest {
             hash: val.hash_str(),
-            size_bytes: val.size_bytes,
+            size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
+                event!(
+                    Level::ERROR,
+                    "Could not convert {} into u64 - {e:?}",
+                    val.size_bytes
+                );
+                // This is a placeholder value that can help a user identify
+                // that the conversion failed.
+                -255
+            }),
         }
+    }
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
+struct PackedHash([u8; 32]);
+
+impl PackedHash {
+    pub const fn new() -> Self {
+        PackedHash([0; 32])
+    }
+
+    fn from_hex(hash: &str) -> Result<Self, Error> {
+        let mut packed_hash = [0u8; 32];
+        hex::decode_to_slice(hash, &mut packed_hash)
+            .map_err(|e| make_input_err!("Invalid sha256 hash: {hash} - {e:?}"))?;
+        Ok(PackedHash(packed_hash))
+    }
+}
+
+impl fmt::Display for PackedHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Remember: 32 bytes * 2 hex characters per byte when
+        // going to hex.
+        let mut hash = [0u8; std::mem::size_of::<Self>() * 2];
+        hex::encode_to_slice(self.0, &mut hash).map_err(|_| fmt::Error)?;
+        match std::str::from_utf8(&hash) {
+            Ok(hash) => f.write_str(hash)?,
+            Err(_) => f.write_str(&format!("Could not convert hash to utf8 {:?}", self.0))?,
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for PackedHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!("{self}"))
     }
 }
 
