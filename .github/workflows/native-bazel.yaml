@@ -35,6 +35,16 @@ jobs:
         with:
           bazelisk-cache: true
 
+      - name: Delete Applications and Simulators to free up disk space
+        if: contains(matrix.os, 'macos')
+        run: |
+          echo "Deleting Applications"
+          sudo rm -rf ~/Applications/*
+          echo "Deleting all iOS simulators"
+          xcrun simctl delete all
+          echo "Deleting iOS Simulator caches"
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/*
+
       - name: Determine Bazel cache mountpoint
         id: bazel-cache
         run: |
