@@ -20,15 +20,14 @@ jobs:
     runs-on: ubuntu-22.04
     environment: production
     name: NativeLink.com Cloud / RBE on Main (Legacy Dockerfile Test)
-    if: false
-    # github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'
     steps:
     - name: Checkout
       uses: >- # v4.1.1
         actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
 
     - name: Set up AWS CLI
-      uses: aws-actions/configure-aws-credentials@v1
+      uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
       with:
         aws-access-key-id: ${{ secrets.RBE_ECR_AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.RBE_ECR_AWS_SECRET_ACCESS_KEY }}
@@ -51,8 +50,9 @@ jobs:
 
     - name: Run Bazel tests
       shell: bash
+      # remove digest_function when #1325 is resolved
       run: |
-        bazel test \
+        bazel --digest_function=sha256 test \
           --remote_cache=grpcs://cas-tracemachina-shared.build-faster.nativelink.net \
           --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
           --remote_instance_name=main \
