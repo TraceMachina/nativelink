@@ -30,6 +30,6 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --no-instal
     && rm -rf /var/lib/apt/lists/*
 
 # Get Rust
-RUN curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain=1.79.0
+RUN curl --proto "=https" --tlsv1.2 -sSf https://raw.githubusercontent.com/rust-lang/rustup/54dd3d00fd20e64dc522517a0d7be4285570a2f1/rustup-init.sh | sh -s -- -y --default-toolchain=1.79.0
 
 RUN echo "source \"$HOME/.cargo/env\"" >> "$HOME/.bashrc"
