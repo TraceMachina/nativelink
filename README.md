@@ -100,7 +100,7 @@ it via the [next-gen nix installer](https://github.com/NixOS/experimental-nix-in
 
 **Linux, MacOS, WSL2**
 
-```
+```bash
 curl -O \
     https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json
 
