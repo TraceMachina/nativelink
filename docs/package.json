@@ -21,7 +21,10 @@
     "deploy": "deployctl deploy --include=./dist --entrypoint=./dist/server/entry.mjs --save-config",
     "staging": "bun setup && bun docs && bun run build && bun run deploy",
     "prod": "bun setup && bun docs && bun run build && bun run deploy --prod",
-    "setup": "bun install && bun run deno install -Arf jsr:@deno/deployctl@1.12.0"
+    "setup": "bun install && bun run deno install -Arf jsr:@deno/deployctl@1.12.0",
+    "expose.dev": "concurrently --kill-others --names \"server,tunnel\" \"bun dev\" \"wait-on http://localhost:4321 && bunx lt -p 4321\"",
+    "expose.preview": "concurrently --kill-others --names \"server,tunnel\" \"bun preview\" \"wait-on http://localhost:8881 && bunx lt -p 8881\"",
+    "public.ip": "curl ifconfig.me"
   },
   "dependencies": {
     "@astrojs/check": "0.9.3",
@@ -43,9 +46,11 @@
     "@biomejs/biome": "^1.8.1",
     "@lorenzo_lewis/starlight-utils": "^0.1.1",
     "@types/bun": "latest",
+    "concurrently": "^8.2.2",
     "rehype-autolink-headings": "^7.1.0",
     "remark": "^15.0.1",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "wait-on": "^8.0.0"
   },
   "trustedDependencies": ["@biomejs/biome", "esbuild", "sharp"]
 }

@@ -465,6 +465,7 @@
               pkgs.nodejs_22 # For pagefind search
               pkgs.playwright-driver
               pkgs.playwright-test
+              pkgs.nodePackages_latest.localtunnel
 
               # Additional tools from within our development environment.
               local-image-test
