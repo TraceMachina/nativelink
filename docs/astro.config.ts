@@ -4,14 +4,14 @@ import mdx from "@astrojs/mdx";
 import sitemap from "@astrojs/sitemap";
 import starlight from "@astrojs/starlight";
 import deno from "@deno/astro-adapter";
+import tailwindcss from "@tailwindcss/vite";
 // import partytown from "@astrojs/partytown";
 
 import { rehypeHeadingIds } from "@astrojs/markdown-remark";
 import { rehypeMermaid } from "@beoe/rehype-mermaid"; // "rehype-mermaid";
-import tailwindcss from "@tailwindcss/vite";
 import rehypeAutolinkHeadings from "rehype-autolink-headings";
-import { starlightConfig } from "./starlight.conf.ts";
-// import { default as playformCompress } from "@playform/compress";
+
+import { starlightConfig } from "./starlight.conf";
 
 // https://astro.build/config
 export default defineConfig({

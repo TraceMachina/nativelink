@@ -14,8 +14,11 @@
     "rules": {
       "all": true,
       "style": {
-        "useNamingConvention": "off",
-        "noDefaultExport": "off"
+        "useBlockStatements": "error",
+        "useShorthandArrayType": "error",
+        "noShoutyConstants": "warn",
+        "noDefaultExport": "off",
+        "useNamingConvention": "off"
       }
     }
   },
