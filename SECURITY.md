@@ -36,11 +36,13 @@ corresponds to the `main` branch. Images are signed by the GitHub action that
 produced the image. Note that the [OCI workflow](https://github.com/TraceMachina/nativelink/actions/workflows/image.yaml) might take a few minutes to publish the latest image.
 
 ### Get the tag for the latest commit
+
 ```sh
 export LATEST=$(nix eval github:TraceMachina/nativelink#image.imageTag --raw)
 ```
 
 ### Verify the signature
+
 ```sh
 cosign verify ghcr.io/tracemachina/nativelink:${LATEST} \
     --certificate-identity=https://github.com/TraceMachina/nativelink/.github/workflows/image.yaml@refs/heads/main \
@@ -48,6 +50,7 @@ cosign verify ghcr.io/tracemachina/nativelink:${LATEST} \
 ```
 
 ### Get the Tag for a Specific Commit
+
 For use in production pin the image to a specific revision:
 
 ```sh

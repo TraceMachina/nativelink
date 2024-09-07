@@ -70,6 +70,7 @@ bazel build \
 > You can add these flags to a to a `user.bazelrc` file in the workspace root.
 > Note that you'll need to pass in explicit IP addresses as this file can't
 > resolve environment variables:
+>
 > ```bash
 > # user.bazelrc
 > build --config=lre
@@ -115,14 +116,17 @@ git log
 git checkout commitHash
 nix eval .#image.imageTag --raw
 ```
+
 The `--raw` removes the surrounding quotes from the output string.
 
 > [!WARNING]
 > We don't recommend using this command to
 > retrieve an image:
+>
 > ```sh
 > nix eval github:TraceMachina/nativelink#image.imageTag --raw
 > ```
+>
 > Using this command prevents anyone from
 > identifying the specific version of the
 > NativeLink container in use because
@@ -136,6 +140,7 @@ The `--raw` removes the surrounding quotes from the output string.
 ## Build and copy an OCI image
 
 You can build and copy the image to a container registry with the `copyTo` attribute. Below are examples within the NativeLink repository for building and copying an image:
+
 - [Example 1](https://github.com/TraceMachina/nativelink/blob/09b32c94d3cc7780816585e9b87f69c56cf931ae/deployment-examples/kubernetes/01_operations.sh#L12-L16) highlights:
 
 ```sh
