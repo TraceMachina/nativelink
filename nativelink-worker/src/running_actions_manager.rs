@@ -1472,10 +1472,16 @@ impl UploadActionResults {
             "digest_function",
             hasher.proto_digest_func().as_str_name().to_lowercase(),
         );
-        template_str.replace("action_digest_hash", action_digest_info.hash_str());
+        template_str.replace(
+            "action_digest_hash",
+            action_digest_info.packed_hash().to_string(),
+        );
         template_str.replace("action_digest_size", action_digest_info.size_bytes());
         if let Some(historical_digest_info) = maybe_historical_digest_info {
-            template_str.replace("historical_results_hash", historical_digest_info.hash_str());
+            template_str.replace(
+                "historical_results_hash",
+                format!("{}", historical_digest_info.packed_hash()),
+            );
             template_str.replace(
                 "historical_results_size",
                 historical_digest_info.size_bytes(),

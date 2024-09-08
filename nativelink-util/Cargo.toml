@@ -23,7 +23,7 @@ pin-project = "1.1.5"
 #                    Release PR: https://github.com/tokio-rs/console/pull/576
 console-subscriber = { git = "https://github.com/tokio-rs/console", rev = "5f6faa2" , default-features = false }
 futures = { version = "0.3.30", default-features = false }
-hex = { version = "0.4.3", default-features = false }
+hex = { version = "0.4.3", default-features = false, features = ["std"] }
 hyper = "1.4.1"
 hyper-util = "0.1.6"
 lru = { version = "0.12.3", default-features = false }
@@ -49,3 +49,4 @@ nativelink-macro = { path = "../nativelink-macro" }
 http-body-util = "0.1.2"
 pretty_assertions = { version = "1.4.0", features = ["std"] }
 rand = { version = "0.8.5", default-features = false }
+serde_json = { version = "1.0.128", default-features = false }

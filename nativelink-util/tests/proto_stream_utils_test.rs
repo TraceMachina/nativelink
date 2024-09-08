@@ -39,7 +39,7 @@ async fn ensure_no_errors_if_only_first_message_has_resource_name_set() -> Resul
     let message1 = WriteRequest {
         resource_name: format!(
             "{INSTANCE_NAME}/uploads/some-uuid/blobs/{}/{}",
-            DIGEST.hash_str(),
+            DIGEST.packed_hash(),
             DIGEST.size_bytes()
         ),
         write_offset: 0,
