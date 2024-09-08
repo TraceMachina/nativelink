@@ -383,6 +383,38 @@ async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn std::e
 
     // Must work when paging is disabled ( `page_size` is 0 ).
     // It reads all directories at once.
+    // First verify that using an empty page token is treated as if the client had sent the root
+    // digest.
+    let raw_response = cas_server
+        .get_tree(Request::new(GetTreeRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            page_size: 0,
+            page_token: String::new(),
+            root_digest: Some(root_directory_digest_info.into()),
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+    assert!(raw_response.is_ok());
+    assert_eq!(
+        raw_response
+            .unwrap()
+            .into_inner()
+            .filter_map(|x| async move { Some(x.unwrap()) })
+            .collect::<Vec<_>>()
+            .await,
+        vec![GetTreeResponse {
+            directories: vec![
+                root_directory.clone(),
+                sub_directories[0].clone(),
+                sub_directories[1].clone(),
+                sub_directories[2].clone(),
+                sub_directories[3].clone(),
+                sub_directories[4].clone()
+            ],
+            next_page_token: String::new()
+        }]
+    );
+    // Also verify that sending the root digest returns the entire tree as well.
     let raw_response = cas_server
         .get_tree(Request::new(GetTreeRequest {
             instance_name: INSTANCE_NAME.to_string(),
@@ -434,6 +466,32 @@ async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::erro
     // First, it reads `root_directory` and `sub_directory[0]`.
     // Then, it reads `sub_directory[1]` and `sub_directory[2]`.
     // Finally, it reads `sub_directory[3]` and `sub_directory[4]`.
+    // First, verify that an empty initial page token is treated as if the client had sent the
+    // root digest and respects the page size.
+    let raw_response = cas_server
+        .get_tree(Request::new(GetTreeRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            page_size: 2,
+            page_token: String::new(),
+            root_digest: Some(root_directory_digest_info.into()),
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+    assert!(raw_response.is_ok());
+    assert_eq!(
+        raw_response
+            .unwrap()
+            .into_inner()
+            .filter_map(|x| async move { Some(x.unwrap()) })
+            .collect::<Vec<_>>()
+            .await,
+        vec![GetTreeResponse {
+            directories: vec![root_directory.clone(), sub_directories[0].clone()],
+            next_page_token: format!("{}", sub_directory_digest_infos[1]),
+        }]
+    );
+    // Also verify that sending the root digest as the page token is treated as paging from the
+    // beginning and respects page size.
     let raw_response = cas_server
         .get_tree(Request::new(GetTreeRequest {
             instance_name: INSTANCE_NAME.to_string(),
