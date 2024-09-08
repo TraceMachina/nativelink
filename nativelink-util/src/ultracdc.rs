@@ -4,7 +4,7 @@
 // This implementation is heavily based on:
 // https://github.com/PlakarLabs/go-cdc-chunkers/blob/main/chunkers/ultracdc/ultracdc.go
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 use tokio_util::codec::Decoder;
 
 struct State {
@@ -106,10 +106,10 @@ impl Decoder for UltraCDC {
 
         // Note: We use this kind of loop because it improved performance of this loop by 20%.
         let mut i = 0;
-        let mut chunk = BytesMut::new();
 
         while i < buf.len() {
-            chunk.put_u8(buf[i]);
+            // Create a dynamic slice from buf
+            let chunk = &buf[..=i];
 
             // Determine the appropriate mask based on the current index.
             let mask = if i < self.norm_size {
