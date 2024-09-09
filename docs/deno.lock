@@ -58,25 +58,25 @@
   "workspace": {
     "packageJson": {
       "dependencies": [
-        "npm:@astrojs/check@^0.7.0",
+        "npm:@astrojs/check@0.9.3",
         "npm:@astrojs/deno@5.0.1",
-        "npm:@astrojs/markdown-remark@^5.1.0",
-        "npm:@astrojs/partytown@^2.1.1",
+        "npm:@astrojs/markdown-remark@5.2.0",
+        "npm:@astrojs/partytown@2.1.2",
         "npm:@astrojs/sitemap@^3.1.6",
-        "npm:@astrojs/starlight@^0.25.5",
+        "npm:@astrojs/starlight@0.27.0",
         "npm:@bazel/bazelisk@^1.19.0",
         "npm:@beoe/pan-zoom@^0.0.3",
         "npm:@beoe/rehype-mermaid@^0.0.1",
         "npm:@biomejs/biome@^1.8.1",
         "npm:@deno/astro-adapter@^0.1.3",
         "npm:@lorenzo_lewis/starlight-utils@^0.1.1",
-        "npm:@tailwindcss/vite@^4.0.0-alpha.19",
+        "npm:@tailwindcss/vite@^4.0.0-alpha.23",
         "npm:@types/bun@latest",
-        "npm:astro@^4.5.12",
+        "npm:astro@4.15.4",
         "npm:rehype-autolink-headings@^7.1.0",
         "npm:rehype-mermaid@^2.1.0",
         "npm:remark@^15.0.1",
-        "npm:tailwindcss@^4.0.0-alpha.19",
+        "npm:tailwindcss@^4.0.0-alpha.23",
         "npm:typescript@^5.4.5"
       ]
     }

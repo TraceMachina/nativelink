@@ -22,65 +22,103 @@ async function writeMdxFile(
   }
 }
 
-async function convertMarkdownToMdx(
-  filePath: string,
-  outputFilePath: string,
-  description: string,
-  pagefind = true,
-): Promise<void> {
+async function convertMarkdownToMdx(file: ConvertFileType): Promise<void> {
   try {
-    const markdown = await readMarkdownFile(filePath);
-    const mdxContent = await transformMarkdownToMdx(
-      markdown,
-      description,
-      pagefind,
-    );
-    await writeMdxFile(outputFilePath, mdxContent);
+    const markdown = await readMarkdownFile(file.input);
+    const mdxContent = await transformMarkdownToMdx(markdown, file.docs);
+    await writeMdxFile(file.output, mdxContent);
   } catch (err) {
     console.error(`Error during conversion: ${err}`);
     throw err;
   }
 }
 
-// Convert the actual files.
-convertMarkdownToMdx(
-  "../local-remote-execution/README.md",
-  "src/content/docs/explanations/lre.mdx",
-  "Local Remote Execution architecture",
-);
-convertMarkdownToMdx(
-  "../CONTRIBUTING.md",
-  "src/content/docs/contribute/guidelines.mdx",
-  "NativeLink contribution guidelines",
-);
-convertMarkdownToMdx(
-  "README.md",
-  "src/content/docs/contribute/docs.mdx",
-  "Working on documentation",
-);
-convertMarkdownToMdx(
-  "../nativelink-config/README.md",
-  "src/content/docs/config/configuration-intro.mdx",
-  "NativeLink configuration guide",
-);
-convertMarkdownToMdx(
-  "../deployment-examples/chromium/README.md",
-  "src/content/docs/deployment-examples/chromium.mdx",
-  "NativeLink deployment example for Chromium",
-);
-convertMarkdownToMdx(
-  "../deployment-examples/kubernetes/README.md",
-  "src/content/docs/deployment-examples/kubernetes.mdx",
-  "NativeLink deployment example for Kubernetes",
-);
-convertMarkdownToMdx(
-  "../CHANGELOG.md",
-  "src/content/docs/reference/changelog.mdx",
-  "NativeLink's Changelog",
-  false, // Set pagefind to false for changelog
-);
-convertMarkdownToMdx(
-  "../README.md",
-  "src/content/docs/introduction/setup.mdx",
-  "Get started with NativeLink",
-);
+export type ConvertFileType = {
+  input: string;
+  output: string;
+  docs: {
+    title: string;
+    description: string;
+    pagefind?: boolean;
+    assets?: string[];
+  };
+};
+
+// Directories
+const rootDir = "../";
+const docsDir = "src/content/docs";
+const assetsDir = "@assets";
+
+const filesToConvert: ConvertFileType[] = [
+  {
+    input: `${rootDir}/local-remote-execution/README.md`,
+    output: `${docsDir}/explanations/lre.mdx`,
+    docs: {
+      title: "Local Remote Execution",
+      description: "Local Remote Execution architecture",
+    },
+  },
+  {
+    input: `${rootDir}/CONTRIBUTING.md`,
+    output: `${docsDir}/contribute/guidelines.mdx`,
+    docs: {
+      title: "NativeLink contribution guidelines",
+      description: "Contribution Guidelines",
+    },
+  },
+  {
+    input: "README.md",
+    output: `${docsDir}/contribute/docs.mdx`,
+    docs: {
+      title: "The NativeLink documentation",
+      description: "Working on documentation",
+    },
+  },
+  {
+    input: `${rootDir}/nativelink-config/README.md`,
+    output: `${docsDir}/config/configuration-intro.mdx`,
+    docs: {
+      title: "NativeLink configuration guide",
+      description: "NativeLink configuration guide",
+    },
+  },
+  {
+    input: `${rootDir}/deployment-examples/chromium/README.md`,
+    output: `${docsDir}/deployment-examples/chromium.mdx`,
+    docs: {
+      title: "NativeLink deployment example for Chromium",
+      description: "NativeLink deployment example for Chromium",
+    },
+  },
+  {
+    input: `${rootDir}/deployment-examples/kubernetes/README.md`,
+    output: `${docsDir}/deployment-examples/kubernetes.mdx`,
+    docs: {
+      title: "Local Remote Execution architecture",
+      description: "Local Remote Execution architecture",
+    },
+  },
+  {
+    input: `${rootDir}/CHANGELOG.md`,
+    output: `${docsDir}/reference/changelog.mdx`,
+    docs: {
+      title: "Changelog",
+      description: "NativeLink's Changelog",
+      pagefind: false, // Set pagefind to false for changelog
+    },
+  },
+  {
+    input: `${rootDir}/README.md`,
+    output: `${docsDir}/introduction/setup.mdx`,
+    docs: {
+      title: "Introduction",
+      description: "Get started with NativeLink",
+      pagefind: true,
+      assets: [`${assetsDir}/logo-dark.svg`, `${assetsDir}/logo-light.svg`],
+    },
+  },
+];
+
+filesToConvert.map((file) => {
+  convertMarkdownToMdx(file);
+});

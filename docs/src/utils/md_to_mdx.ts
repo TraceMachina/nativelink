@@ -2,19 +2,28 @@ import type {
   Blockquote,
   Code,
   Heading,
+  Image,
   InlineCode,
   Paragraph,
+  PhrasingContent,
   Root,
   RootContent,
   Text,
 } from "mdast";
+
 import { remark } from "remark";
 import remarkMdx from "remark-mdx";
 import remarkParse from "remark-parse";
 import remarkStringify from "remark-stringify";
 import { visit } from "unist-util-visit";
 
-const DEFAULT_TITLE = "Default Title";
+export type MarkdownProps = {
+  title: string;
+  description: string;
+  pagefind?: boolean;
+  assets?: string[];
+};
+
 const BLOCK_TYPES = ["caution", "note", "tip"];
 
 export function parseMarkdown(markdown: string): Root {
@@ -34,7 +43,7 @@ function extractTitleFromTree(tree: Root): {
   title: string;
   index: number;
 } {
-  let title = DEFAULT_TITLE;
+  let title = "Default Title";
   let titleIndex = -1;
 
   for (let i = 0; i < tree.children.length; i++) {
@@ -66,12 +75,12 @@ function extractTextFromNode(node: Heading | Paragraph): string {
 export function generateFrontMatter(
   title: string,
   description: string,
-  pagefind: boolean,
+  pagefind = true,
 ): string {
   return `---
 title: "${title}"
 description: "${description}"
-pagefind: ${pagefind}
+pagefind: ${pagefind ? "true" : "false"}
 ---
 `;
 }
@@ -183,55 +192,109 @@ function removeValeAndGitCliffComments(markdown: string): string {
 
 function processLines(lines: string[]): string[] {
   const processedLines = [];
-  let inMermaidBlock = false;
-  let inCodeBlock = false;
+  const block = {
+    code: false,
+    list: false,
+  };
 
   for (const line of lines) {
-    if (isMermaidBlockStart(line)) {
-      inMermaidBlock = true;
-      processedLines.push(line);
-      continue;
-    }
-    if (isBlockEnd(line, inMermaidBlock)) {
-      inMermaidBlock = false;
-      processedLines.push(line);
+    if (processCodeBlock(line, block.code, processedLines)) {
+      block.code = !block.code;
       continue;
     }
 
-    if (isCodeBlock(line, inMermaidBlock)) {
-      inCodeBlock = !inCodeBlock;
-      processedLines.push(line);
+    block.list = processListBlock(line, block.list, processedLines);
+    if (block.list) {
       continue;
     }
 
-    if (inMermaidBlock || inCodeBlock || isSpecialLine(line)) {
-      processedLines.push(line);
+    if (processSpecialLine(line, processedLines)) {
       continue;
     }
 
     processedLines.push(escapeHtml(line));
   }
 
+  // Ensure any unclosed list is closed
+  closeList(block.list, processedLines);
+
   return processedLines;
 }
 
-function isMermaidBlockStart(line: string): boolean {
-  return line.trim().startsWith("```mermaid");
+// Utility to escape HTML entities
+function replaceHtml(unsafe: string): string {
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
-function isBlockEnd(line: string, inMermaidBlock: boolean): boolean {
-  return inMermaidBlock && line.trim() === "```";
+function processCodeBlock(
+  line: string,
+  codeBlock: boolean,
+  processedLines: string[],
+  // languages: string[],
+): boolean {
+  if (isCodeBlock(line)) {
+    processedLines.push(line);
+    return true;
+  }
+
+  if (codeBlock) {
+    processedLines.push(line);
+    return true;
+  }
+
+  return false;
 }
 
-function isCodeBlock(line: string, inMermaidBlock: boolean): boolean {
-  return line.trim().startsWith("```") && !inMermaidBlock;
+function isCodeBlock(line: string): boolean {
+  const trimmedLine = line.trim();
+  return trimmedLine.startsWith("```");
 }
 
-function isSpecialLine(line: string): boolean {
-  return (
+function processListBlock(
+  line: string,
+  listBlock: boolean,
+  processedLines: string[],
+): boolean {
+  let isListBlock = listBlock;
+
+  if (/^\d+\.\s+\*\*(.+)\*\*:/.test(line)) {
+    isListBlock = closeList(isListBlock, processedLines);
+    processedLines.push(line);
+    processedLines.push('<ul className="list-disc list-inside pl-4">');
+    return true;
+  }
+
+  if (isListBlock && /^\s*-\s+(.+)/.test(line)) {
+    processedLines.push(line.replace(/^\s*-\s+(.+)/, "<li>$1</li>"));
+    return true;
+  }
+
+  return closeList(isListBlock, processedLines);
+}
+
+function processSpecialLine(line: string, processedLines: string[]): boolean {
+  if (
     line.trim().startsWith(">") ||
     /^\[!(TIP|NOTE|WARNING|IMPORTANT|CAUTION)\]/.test(line)
-  );
+  ) {
+    processedLines.push(line);
+    return true;
+  }
+
+  return false;
+}
+
+function closeList(inList: boolean, processedLines: string[]): boolean {
+  if (inList) {
+    processedLines.push("</ul>");
+    return false;
+  }
+  return inList;
 }
 
 function escapeHtml(line: string): string {
@@ -242,27 +305,246 @@ function escapeHtml(line: string): string {
 }
 
 export async function transformMarkdownToMdx(
-  markdown: string,
-  description: string,
-  pagefind = true,
+  input: string,
+  docs: MarkdownProps,
+  // languages: string[],
 ): Promise<string> {
-  const preprocessedMarkdown = preProcessMarkdown(markdown);
+  const preprocessedMarkdown = preProcessMarkdown(input);
   const tree = parseMarkdown(preprocessedMarkdown);
-  const { title, content } = extractTitle(tree);
 
-  let transformedContent = transformGitHubMarkdown(content);
+  // Extract title and content
+  const { content } = extractTitle(tree);
+
+  // Apply transformations in sequence
+  // Prepend the import statements to the content
+  let transformedContent = docs.assets
+    ? [...generateAssetImports(docs.assets), ...content]
+    : [...content];
+
+  // Apply transformations for target IDs
+  const targetIds = ["logo", "description", "badges"];
+  for (const targetId of targetIds) {
+    transformedContent = processTarget(transformedContent, targetId);
+  }
+
+  // GitHub Markdown specific transformations
+  transformedContent = transformGitHubMarkdown(transformedContent);
+
+  // Preserve inline code
   transformedContent = preserveInlineCode(transformedContent);
 
-  const modifiedMarkdown = remark()
-    .use(remarkStringify)
-    .stringify({ type: "root", children: transformedContent });
+  // Reassemble the tree with the transformed content
+  tree.children = transformedContent;
 
+  // Convert the transformed tree back to Markdown
+  const modifiedMarkdown = remark().use(remarkStringify).stringify(tree);
+
+  // Convert Markdown to MDX
   const processedMdx = await remark()
     .use(remarkParse)
     .use(remarkMdx)
     .use(remarkStringify)
     .process(modifiedMarkdown);
 
-  const frontMatter = generateFrontMatter(title, description, pagefind);
+  // Generate front matter
+  const frontMatter = generateFrontMatter(
+    docs.title,
+    docs.description,
+    docs.pagefind,
+  );
+
+  // Return the final MDX content
   return frontMatter + String(processedMdx);
 }
+
+// Function to generate asset import statements
+export function generateAssetImports(assets: string[]): RootContent[] {
+  return assets.map((asset) => {
+    const assetName = transformToPascalCase(asset);
+    return {
+      type: "html",
+      value: `import ${assetName} from '${asset}';\n`,
+    };
+  });
+}
+
+// Helper function to convert file paths to PascalCase
+function transformToPascalCase(filePath: string): string {
+  const fileName = filePath.split("/").pop()?.split(".")[0];
+  if (!fileName) {
+    throw new Error("Invalid file path");
+  }
+
+  return fileName
+    .split(/[^a-zA-Z0-9]/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join("");
+}
+
+export function processTarget(
+  tree: RootContent[],
+  targetId: string,
+): RootContent[] {
+  const alignRegex = /align=["'](center|left|right)["']/i;
+
+  const content = tree.map((node, index, children) => {
+    if (isMatchingTargetNode(node, targetId)) {
+      replaceAlignAttributeInNode(node, alignRegex);
+      if (targetId === "logo") {
+        transformImgSrc(node);
+      }
+      if (targetId === "badges") {
+        ensureBadgeClasses(node);
+        processAndWrapNextBlock(children, index);
+      }
+    }
+    return node;
+  });
+
+  return content;
+}
+
+function ensureBadgeClasses(node: RootContent): void {
+  if (isHtmlNode(node)) {
+    // Replace the class="" attribute directly in node.value
+    node.value = node.value.replace(/class="([^"]*)"/g, (_, classes) => {
+      // Ensure the required classes are present
+      const requiredClasses = [
+        "flex",
+        "justify-center",
+        "items-center",
+        "flex-wrap",
+        "gap-0.5",
+      ];
+
+      // Split the existing classes into an array
+      const existingClasses = classes.trim().split(/\s+/);
+
+      // Add any missing required classes
+      for (const requiredClass of requiredClasses) {
+        if (!existingClasses.includes(requiredClass)) {
+          existingClasses.push(requiredClass);
+        }
+      }
+
+      // Return the updated class attribute
+      return `class="${existingClasses.join(" ")}"`;
+    });
+  }
+}
+
+// Helper function to check if a node matches the target ID
+function isMatchingTargetNode(node: RootContent, targetId: string): boolean {
+  if (node.type === "html" && typeof node.value === "string") {
+    const idRegex = new RegExp(`id=["']${targetId}["']`, "i");
+    return idRegex.test(node.value);
+  }
+  return false;
+}
+
+// Function to replace the align attribute with a CSS class
+function replaceAlignAttributeInNode(
+  node: RootContent,
+  alignRegex: RegExp,
+): void {
+  if (node.type === "html" && typeof node.value === "string") {
+    const newValue = node.value.replace(alignRegex, (_, p1) => {
+      const alignment = p1.toLowerCase() as keyof typeof alignToClassMap;
+      return `class="${alignToClassMap[alignment]}"`;
+    });
+    node.value = newValue;
+  }
+}
+
+function transformImgSrc(node: RootContent): void {
+  if (isHtmlNode(node)) {
+    node.value = node.value
+      // Remove the entire <picture> tag and replace it with the two <img> tags
+      .replace(
+        /<picture>[\s\S]*?<source\s+media="[^"]*dark[^"]*"\s+srcset="[^"]*"[^>]*>\s*<source\s+media="[^"]*light[^"]*"\s+srcset="[^"]*"[^>]*>\s*<img\s+[^>]*src="[^"]*"[^>]*>\s*<\/picture>/g,
+        `
+        <img alt="NativeLink Logo" class="light:sl-hidden" src={LogoDark.src} width="376" height="100" />
+        <img alt="NativeLink Logo" class="dark:sl-hidden !mt-0" src={LogoLight.src} width="376" height="100" />
+        `,
+      );
+  }
+}
+
+// Type guard to check if a node is an HTML node with a value property
+function isHtmlNode(
+  node: RootContent,
+): node is RootContent & { value: string } {
+  return node.type === "html" && typeof node.value === "string";
+}
+
+function wrapLinksInBlocks(blockNode: RootContent): RootContent[] {
+  if (blockNode.type !== "paragraph") {
+    return [blockNode];
+  }
+
+  const block = blockNode as Paragraph;
+  let modified = false;
+
+  const newChildren = block.children.map((child) => {
+    if (
+      child.type === "link" &&
+      child.children.some((c) => c.type === "image")
+    ) {
+      const image = child.children.find((c) => c.type === "image") as Image;
+      if (image) {
+        modified = true;
+        const altText = replaceHtml(image.alt || "");
+        const imageUrl = replaceHtml(image.url || "");
+        const linkUrl = replaceHtml(child.url || "");
+
+        return {
+          type: "html",
+          value: `<p>\n[![${altText}](${imageUrl})](${linkUrl})\n</p>`,
+        } as RootContent;
+      }
+    }
+    return child;
+  });
+
+  if (modified) {
+    return [
+      {
+        type: "paragraph",
+        children: newChildren.filter((node): node is PhrasingContent => !!node),
+      },
+    ];
+  }
+  return [blockNode];
+}
+
+// Function to process and wrap the next block in the children array
+function processAndWrapNextBlock(
+  children: RootContent[],
+  index: number,
+): Paragraph | null {
+  const nextNode = children[index + 1];
+
+  // Ensure the next node exists and is a paragraph
+  if (nextNode && nextNode.type === "paragraph") {
+    // console.log(nextNode)
+    // Wrap links in blocks if applicable
+    const wrappedParagraphs = wrapLinksInBlocks(nextNode);
+
+    // If the paragraph has been modified, replace it in the children array
+    if (wrappedParagraphs.length > 0) {
+      children.splice(index + 1, 1, ...wrappedParagraphs);
+      return wrappedParagraphs[0] as Paragraph;
+    }
+  }
+
+  // If no wrapping was done, return null to signal no changes
+  return null;
+}
+
+// Alignments to CSS class mapping
+type Alignments = "center" | "left" | "right";
+const alignToClassMap: Record<Alignments, string> = {
+  center: "flex justify-center items-center",
+  left: "flex justify-start items-center",
+  right: "flex justify-end items-center",
+};
