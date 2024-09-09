@@ -588,7 +588,7 @@ impl StoreDriver for GrpcStore {
             "{}/uploads/{}/blobs/{}/{}",
             &self.instance_name,
             Uuid::new_v4().hyphenated().encode_lower(&mut buf),
-            digest.hash_str(),
+            digest.packed_hash(),
             digest.size_bytes(),
         );
 
@@ -673,7 +673,7 @@ impl StoreDriver for GrpcStore {
         let resource_name = format!(
             "{}/blobs/{}/{}",
             &self.instance_name,
-            digest.hash_str(),
+            digest.packed_hash(),
             digest.size_bytes(),
         );
 
