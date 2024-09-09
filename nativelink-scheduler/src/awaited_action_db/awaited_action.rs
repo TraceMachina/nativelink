@@ -112,6 +112,10 @@ impl AwaitedAction {
         self.version.0
     }
 
+    pub(crate) fn set_version(&mut self, version: u64) {
+        self.version = AwaitedActionVersion(version);
+    }
+
     pub(crate) fn increment_version(&mut self) {
         self.version = AwaitedActionVersion(self.version.0 + 1);
     }

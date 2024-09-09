@@ -23,7 +23,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::future::{select, Either};
-use futures::{join, try_join, Future, FutureExt};
+use futures::{join, try_join, Future, FutureExt, Stream};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use rand::rngs::StdRng;
@@ -834,3 +834,142 @@ pub trait StoreDriver:
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
 }
+
+/// The instructions on how to decode a value from a Bytes & version into
+/// the underlying type.
+pub trait SchedulerStoreDecodeTo {
+    type DecodeOutput;
+    fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error>;
+}
+
+pub trait SchedulerSubscription: Send + Sync {
+    fn changed(&mut self) -> impl Future<Output = Result<(), Error>> + Send;
+}
+
+pub trait SchedulerSubscriptionManager: Send + Sync {
+    type Subscription: SchedulerSubscription;
+
+    fn subscribe<K>(&self, key: K) -> Result<Self::Subscription, Error>
+    where
+        K: SchedulerStoreKeyProvider;
+}
+
+/// The API surface for a scheduler store.
+pub trait SchedulerStore: Send + Sync + 'static {
+    type SubscriptionManager: SchedulerSubscriptionManager;
+
+    /// Returns the subscription manager for the scheduler store.
+    fn subscription_manager(&self) -> Result<Arc<Self::SubscriptionManager>, Error>;
+
+    /// Updates or inserts an entry into the underlying store.
+    /// Metadata about the key is attached to the compile-time type.
+    /// If StoreKeyProvider::Versioned is TrueValue, the data will not
+    /// be updated if the current version in the database does not match
+    /// the version in the passed in data.
+    /// No guarantees are made about when Version is FalseValue.
+    /// Indexes are guaranteed to be updated atomically with the data.
+    fn update_data<T>(&self, data: T) -> impl Future<Output = Result<Option<u64>, Error>> + Send
+    where
+        T: SchedulerStoreDataProvider
+            + SchedulerStoreKeyProvider
+            + SchedulerCurrentVersionProvider
+            + Send;
+
+    /// Searches for all keys in the store that match the given index prefix.
+    fn search_by_index_prefix<K>(
+        &self,
+        index: K,
+    ) -> impl Future<
+        Output = Result<
+            impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
+            Error,
+        >,
+    > + Send
+    where
+        K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send;
+
+    /// Returns data for the provided key with the given version if
+    /// StoreKeyProvider::Versioned is TrueValue.
+    fn get_and_decode<K>(
+        &self,
+        key: K,
+    ) -> impl Future<Output = Result<Option<<K as SchedulerStoreDecodeTo>::DecodeOutput>, Error>> + Send
+    where
+        K: SchedulerStoreKeyProvider + SchedulerStoreDecodeTo + Send;
+}
+
+/// A type that is used to let the scheduler store know what
+/// index is beign requested.
+pub trait SchedulerIndexProvider {
+    /// Only keys inserted with this prefix will be indexed.
+    const KEY_PREFIX: &'static str;
+
+    /// The name of the index.
+    const INDEX_NAME: &'static str;
+
+    /// If the data is versioned.
+    type Versioned: BoolValue;
+
+    /// The value of the index.
+    fn index_value_prefix(&self) -> Cow<'_, str>;
+}
+
+/// Provides a key to lookup data in the store.
+pub trait SchedulerStoreKeyProvider {
+    /// If the data is versioned.
+    type Versioned: BoolValue;
+
+    /// Returns the key for the data.
+    fn get_key(&self) -> StoreKey<'static>;
+}
+
+/// Provides data to be stored in the scheduler store.
+pub trait SchedulerStoreDataProvider {
+    /// Converts the data into bytes to be stored in the store.
+    fn try_into_bytes(self) -> Result<Bytes, Error>;
+
+    /// Returns the indexes for the data if any.
+    fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
+        Ok(Vec::new())
+    }
+}
+
+/// Provides the current version of the data in the store.
+pub trait SchedulerCurrentVersionProvider {
+    /// Returns the current version of the data in the store.
+    fn current_version(&self) -> u64;
+}
+
+/// Default implementation for when we are not providing a version
+/// for the data.
+impl<T> SchedulerCurrentVersionProvider for T
+where
+    T: SchedulerStoreKeyProvider<Versioned = FalseValue>,
+{
+    fn current_version(&self) -> u64 {
+        0
+    }
+}
+
+/// Compile time types for booleans.
+pub trait BoolValue {
+    const VALUE: bool;
+}
+/// Compile time check if something is false.
+pub trait IsFalse {}
+/// Compile time check if something is true.
+pub trait IsTrue {}
+
+/// Compile time true value.
+pub struct TrueValue;
+impl BoolValue for TrueValue {
+    const VALUE: bool = true;
+}
+impl IsTrue for TrueValue {}
+
+/// Compile time false value.
+pub struct FalseValue;
+impl BoolValue for FalseValue {
+    const VALUE: bool = false;
+}
+impl IsFalse for FalseValue {}
