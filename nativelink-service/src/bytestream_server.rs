@@ -556,7 +556,14 @@ impl ByteStreamServer {
 
         let has_fut = store_clone.has(digest);
         let Some(item_size) = has_fut.await.err_tip(|| "Failed to call .has() on store")? else {
-            return Err(make_err!(Code::NotFound, "{}", "not found"));
+            // We lie here and say that the stream needs to start over, even though
+            // it was never started. This can happen when the client disconnects
+            // before sending the first payload, but the client thinks it did send
+            // the payload.
+            return Ok(Response::new(QueryWriteStatusResponse {
+                committed_size: 0,
+                complete: false,
+            }));
         };
         Ok(Response::new(QueryWriteStatusResponse {
             committed_size: item_size as i64,

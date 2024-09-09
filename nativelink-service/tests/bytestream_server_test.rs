@@ -866,19 +866,21 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
     let resource_name = make_resource_name(raw_data.len());
 
     {
+        // If the write does not exist it should respond with a 0 size.
+        // This is because the client may have tried to write, but the
+        // connection closed before the payload had been received.
         let response = bs_server
             .query_write_status(Request::new(QueryWriteStatusRequest {
                 resource_name: resource_name.clone(),
             }))
             .await;
-        assert_eq!(response.is_err(), true);
-        let expected_err = make_err!(
-            Code::NotFound,
-            "{}{}",
-            "status: NotFound, message: \"not found : Failed on query_write_status() ",
-            "command\", details: [], metadata: MetadataMap { headers: {} }"
+        assert_eq!(
+            response.unwrap().into_inner(),
+            QueryWriteStatusResponse {
+                committed_size: 0,
+                complete: false,
+            }
         );
-        assert_eq!(Into::<Error>::into(response.unwrap_err()), expected_err);
     }
 
     // Setup stream.
