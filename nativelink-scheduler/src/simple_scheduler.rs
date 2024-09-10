@@ -332,7 +332,6 @@ impl SimpleScheduler {
         let worker_change_notify = Arc::new(Notify::new());
         let state_manager = SimpleSchedulerStateManager::new(
             max_job_retries,
-            // TODO(allada) This should probably have its own config.
             Duration::from_secs(worker_timeout_s),
             awaited_action_db,
             now_fn,

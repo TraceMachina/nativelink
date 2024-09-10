@@ -35,3 +35,6 @@ static_assertions = "1.1.0"
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 pretty_assertions = { version = "1.4.0", features = ["std"] }
+fred = { version = "9.1.2", default-features = false, features = [
+  "mocks",
+] }

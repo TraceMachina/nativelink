@@ -15,23 +15,41 @@
 use std::borrow::Cow;
 use std::cmp;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use const_format::formatcp;
 use fred::clients::{RedisClient, RedisPool, SubscriberClient};
 use fred::interfaces::{ClientLike, KeysInterface, PubsubInterface};
-use fred::types::{Builder, ConnectionConfig, PerformanceConfig, ReconnectPolicy, RedisConfig};
+use fred::prelude::{EventInterface, HashesInterface, RediSearchInterface};
+use fred::types::{
+    Builder, ConnectionConfig, FtCreateOptions, PerformanceConfig, ReconnectPolicy, RedisConfig,
+    RedisKey, RedisMap, RedisValue, Script, SearchSchema, SearchSchemaKind,
+};
+use futures::{FutureExt, Stream, StreamExt};
 use nativelink_config::stores::RedisMode;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::spawn;
+use nativelink_util::store_trait::{
+    BoolValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
+    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
+    SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
+};
+use nativelink_util::task::JoinHandleDropGuard;
+use parking_lot::{Mutex, RwLock};
+use patricia_tree::StringPatriciaMap;
+use tokio::select;
+use tokio::time::sleep;
+use tracing::{event, Level};
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
+use crate::redis_utils::ft_aggregate;
 
 // TODO(caass): These (and other settings) should be made configurable via nativelink-config.
 pub const READ_CHUNK_SIZE: usize = 64 * 1024;
@@ -58,6 +76,14 @@ pub struct RedisStore {
     /// See [`RedisStore::key_prefix`](`nativelink_config::stores::RedisStore::key_prefix`).
     #[metric(help = "Prefix to append to all keys before sending to Redis")]
     key_prefix: String,
+
+    /// Redis script used to update a value in redis if the version matches.
+    /// This is done by incrementing the version number and then setting the new data
+    /// only if the version number matches the existing version number.
+    update_if_version_matches_script: Script,
+
+    /// A manager for subscriptions to keys in Redis.
+    subscription_manager: Mutex<Option<Arc<RedisSubscriptionManager>>>,
 }
 
 impl RedisStore {
@@ -135,6 +161,8 @@ impl RedisStore {
             subscriber_client,
             temp_name_generator_fn,
             key_prefix,
+            update_if_version_matches_script: Script::from_lua(LUA_VERSION_SET_SCRIPT),
+            subscription_manager: Mutex::new(None),
         })
     }
 
@@ -159,13 +187,6 @@ impl RedisStore {
                 }
             }
         }
-    }
-
-    // TODO: These helpers eventually should not be necessary, as they are only used for functionality
-    // that could hypothetically be moved behind this API with some non-trivial logic adjustments
-    // and the addition of one or two new endpoints.
-    pub fn get_subscriber_client(&self) -> SubscriberClient {
-        self.subscriber_client.clone()
     }
 
     pub fn get_client(&self) -> RedisClient {
@@ -440,5 +461,593 @@ impl HealthStatusIndicator for RedisStore {
 
     async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
         StoreDriver::check_health(Pin::new(self), namespace).await
+    }
+}
+
+/// -------------------------------------------------------------------
+/// Below this line are specific to the redis scheduler implementation.
+/// -------------------------------------------------------------------
+
+/// The maximum number of results to return per cursor.
+const MAX_COUNT_PER_CURSOR: u64 = 256;
+/// The time in milliseconds that a redis cursor can be idle before it is closed.
+const CURSOR_IDLE_MS: u64 = 2_000;
+/// The name of the field in the Redis hash that stores the data.
+const DATA_FIELD_NAME: &str = "data";
+/// The name of the field in the Redis hash that stores the version.
+const VERSION_FIELD_NAME: &str = "version";
+/// The time to live of indexes in seconds. After this time redis may delete the index.
+const INDEX_TTL_S: u64 = 60 * 60 * 24; // 24 hours.
+
+/// String of the `FT.CREATE` command used to create the index template. It is done this
+/// way so we can use it in both const (compile time) functions and runtime functions.
+/// This is a macro because we need to use it in multiple places that sometimes require the
+/// data as different data types (specifically for rust's format_args! macro).
+macro_rules! get_create_index_template {
+    () => {
+        "FT.CREATE {} ON HASH PREFIX 1 {} NOOFFSETS NOHL NOFIELDS NOFREQS SCHEMA {} TAG CASESENSITIVE SORTABLE"
+    }
+}
+
+/// Lua script to set a key if the version matches.
+/// Args:
+///   KEYS[1]: The key where the version is stored.
+///   ARGV[1]: The expected version.
+///   ARGV[2]: The new data.
+///   ARGV[3*]: Key-value pairs of additional data to include.
+/// Returns:
+///   The new version if the version matches. nil is returned if the
+///   value was not set.
+const LUA_VERSION_SET_SCRIPT: &str = formatcp!(
+    r#"
+local key = KEYS[1]
+local expected_version = tonumber(ARGV[1])
+local new_data = ARGV[2]
+local new_version = redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', 1)
+local i
+local indexes = {{}}
+
+if new_version-1 ~= expected_version then
+    redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', -1)
+    return 0
+end
+-- Skip first 2 argvs, as they are known inputs.
+-- Remember: Lua is 1-indexed.
+for i=3, #ARGV do
+    indexes[i-2] = ARGV[i]
+end
+
+-- In testing we witnessed redis sometimes not update our FT indexes
+-- resulting in stale data. It appears if we delete our keys then insert
+-- them again it works and reduces risk significantly.
+redis.call('DEL', key)
+redis.call('HSET', key, '{DATA_FIELD_NAME}', new_data, '{VERSION_FIELD_NAME}', new_version, unpack(indexes))
+
+return new_version
+"#
+);
+
+/// Compile-time fingerprint of the `FT.CREATE` command used to create the index template.
+/// This is a simple CRC32 checksum of the command string. We don't care about it actually
+/// being a valid CRC32 checksum, just that it's a unique identifier with a low chance of
+/// collision.
+const fn fingerprint_create_index_template() -> u32 {
+    const POLY: u32 = 0xEDB88320;
+    const DATA: &[u8] = get_create_index_template!().as_bytes();
+    let mut crc = 0xFFFFFFFF;
+    let mut i = 0;
+    while i < DATA.len() {
+        let byte = DATA[i];
+        crc ^= byte as u32;
+
+        let mut j = 0;
+        while j < 8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ POLY
+            } else {
+                crc >> 1
+            };
+            j += 1;
+        }
+        i += 1;
+    }
+    crc
+}
+
+/// Get the name of the index to create for the given field.
+/// This will add some prefix data to the name to try and ensure
+/// if the index definition changes, the name will get a new name.
+macro_rules! get_index_name {
+    ($prefix:expr, $field:expr) => {
+        format_args!(
+            "{}_{}_{:08x}",
+            $prefix,
+            $field,
+            fingerprint_create_index_template(),
+        )
+    };
+}
+
+/// Try to sanitize a string to be used as a Redis key.
+/// We don't actually modify the string, just check if it's valid.
+const fn try_sanitize(s: &str) -> Option<&str> {
+    // Note: We cannot use for loops or iterators here because they are not const.
+    // Allowing us to use a const function here gives the compiler the ability to
+    // optimize this function away entirely in the case where the input is constant.
+    let chars = s.as_bytes();
+    let mut i: usize = 0;
+    let len = s.len();
+    loop {
+        if i >= len {
+            break;
+        }
+        let c = chars[i];
+        if !c.is_ascii_alphanumeric() && c != b'_' {
+            return None;
+        }
+        i += 1;
+    }
+    Some(s)
+}
+
+/// An individual subscription to a key in Redis.
+pub struct RedisSubscription {
+    receiver: Option<tokio::sync::watch::Receiver<String>>,
+    weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
+}
+
+impl SchedulerSubscription for RedisSubscription {
+    /// Wait for the subscription key to change.
+    async fn changed(&mut self) -> Result<(), Error> {
+        let receiver = self
+            .receiver
+            .as_mut()
+            .ok_or_else(|| make_err!(Code::Internal, "In RedisSubscription::changed::as_mut"))?;
+        receiver
+            .changed()
+            .await
+            .map_err(|_| make_err!(Code::Internal, "In RedisSubscription::changed::changed"))
+    }
+}
+
+// If the subscription is dropped, we need to possibly remove the key from the
+// subscribed keys map.
+impl Drop for RedisSubscription {
+    fn drop(&mut self) {
+        let Some(receiver) = self.receiver.take() else {
+            event!(
+                Level::WARN,
+                "RedisSubscription has already been dropped, nothing to do."
+            );
+            return; // Already dropped, nothing to do.
+        };
+        let key = receiver.borrow().clone();
+        // IMPORTANT: This must be dropped before receiver_count() is called.
+        drop(receiver);
+        let Some(subscribed_keys) = self.weak_subscribed_keys.upgrade() else {
+            return; // Already dropped, nothing to do.
+        };
+        let mut subscribed_keys = subscribed_keys.write();
+        let Some(value) = subscribed_keys.get(&key) else {
+            event!(
+                Level::ERROR,
+                "Key {key} was not found in subscribed keys when checking if it should be removed."
+            );
+            return;
+        };
+        // If we have no receivers, cleanup the entry from our map.
+        if value.receiver_count() == 0 {
+            subscribed_keys.remove(key);
+        }
+    }
+}
+
+/// A publisher for a key in Redis.
+struct RedisSubscriptionPublisher {
+    sender: Mutex<tokio::sync::watch::Sender<String>>,
+}
+
+impl RedisSubscriptionPublisher {
+    fn new(
+        key: String,
+        weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
+    ) -> (Self, RedisSubscription) {
+        let (sender, receiver) = tokio::sync::watch::channel(key);
+        let publisher = Self {
+            sender: Mutex::new(sender),
+        };
+        let subscription = RedisSubscription {
+            receiver: Some(receiver),
+            weak_subscribed_keys,
+        };
+        (publisher, subscription)
+    }
+
+    fn subscribe(
+        &self,
+        weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
+    ) -> RedisSubscription {
+        let receiver = self.sender.lock().subscribe();
+        RedisSubscription {
+            receiver: Some(receiver),
+            weak_subscribed_keys,
+        }
+    }
+
+    fn receiver_count(&self) -> usize {
+        self.sender.lock().receiver_count()
+    }
+
+    fn notify(&self) {
+        // TODO(https://github.com/sile/patricia_tree/issues/40) When this is addressed
+        // we can remove the `Mutex` and use the mutable iterator directly.
+        self.sender.lock().send_modify(|_| {});
+    }
+}
+
+pub struct RedisSubscriptionManager {
+    subscribed_keys: Arc<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
+    tx_for_test: tokio::sync::mpsc::UnboundedSender<String>,
+    _subscription_spawn: JoinHandleDropGuard<()>,
+}
+
+impl RedisSubscriptionManager {
+    pub fn new(subscribe_client: SubscriberClient, pub_sub_channel: String) -> Self {
+        let subscribed_keys = Arc::new(RwLock::new(StringPatriciaMap::new()));
+        let subscribed_keys_weak = Arc::downgrade(&subscribed_keys);
+        let (tx_for_test, mut rx_for_test) = tokio::sync::mpsc::unbounded_channel();
+        Self {
+            subscribed_keys,
+            tx_for_test,
+            _subscription_spawn: spawn!("redis_subscribe_spawn", async move {
+                let mut rx = subscribe_client.message_rx();
+                loop {
+                    if let Err(e) = subscribe_client.subscribe(&pub_sub_channel).await {
+                        event!(Level::ERROR, "Error subscribing to pattern - {e}");
+                        return;
+                    }
+                    let mut reconnect_rx = subscribe_client.reconnect_rx();
+                    let reconnect_fut = reconnect_rx.recv().fuse();
+                    tokio::pin!(reconnect_fut);
+                    loop {
+                        let key = select! {
+                            value = rx_for_test.recv() => {
+                                let Some(value) = value else {
+                                    unreachable!("Channel should never close");
+                                };
+                                value.into()
+                            },
+                            msg = rx.recv() => {
+                                match msg {
+                                    Ok(msg) => {
+                                        match msg.value {
+                                            RedisValue::String(s) => s,
+                                            _ => {
+                                                event!(Level::ERROR, "Received non-string message in RedisSubscriptionManager");
+                                                continue;
+                                            }
+                                        }
+                                    },
+                                    Err(e) => {
+                                        // Check to see if our parent has been dropped and if so kill spawn.
+                                        if subscribed_keys_weak.upgrade().is_none() {
+                                            event!(Level::WARN, "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
+                                            return;
+                                        };
+                                        event!(Level::ERROR, "Error receiving message in RedisSubscriptionManager reconnecting and flagging everything changed - {e}");
+                                        break;
+                                    }
+                                }
+                            },
+                            _ = &mut reconnect_fut => {
+                                event!(Level::WARN, "Redis reconnected flagging all subscriptions as changed and resuming");
+                                break;
+                            }
+                        };
+                        let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
+                            event!(Level::WARN, "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
+                            return;
+                        };
+                        let subscribed_keys_mux = subscribed_keys.read();
+                        subscribed_keys_mux
+                            .common_prefix_values(&*key)
+                            .for_each(|publisher| publisher.notify());
+                    }
+                    // Sleep for a small amount of time to ensure we don't reconnect too quickly.
+                    sleep(Duration::from_secs(1)).await;
+                    // If we reconnect or lag behind we might have had dirty keys, so we need to
+                    // flag all of them as changed.
+                    let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
+                        event!(Level::WARN, "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
+                        return;
+                    };
+                    let subscribed_keys_mux = subscribed_keys.read();
+                    // Just in case also get a new receiver.
+                    rx = subscribe_client.message_rx();
+                    // Drop all buffered messages, then flag everything as changed.
+                    rx.resubscribe();
+                    for publisher in subscribed_keys_mux.values() {
+                        publisher.notify();
+                    }
+                }
+            }),
+        }
+    }
+}
+
+impl SchedulerSubscriptionManager for RedisSubscriptionManager {
+    type Subscription = RedisSubscription;
+
+    fn notify_for_test(&self, value: String) {
+        self.tx_for_test.send(value).unwrap();
+    }
+
+    fn subscribe<K>(&self, key: K) -> Result<Self::Subscription, Error>
+    where
+        K: SchedulerStoreKeyProvider,
+    {
+        let weak_subscribed_keys = Arc::downgrade(&self.subscribed_keys);
+        let mut subscribed_keys = self.subscribed_keys.write();
+        let key = key.get_key();
+        let key_str = key.as_str();
+        let mut subscription = if let Some(publisher) = subscribed_keys.get(&key_str) {
+            publisher.subscribe(weak_subscribed_keys)
+        } else {
+            let (publisher, subscription) =
+                RedisSubscriptionPublisher::new(key_str.to_string(), weak_subscribed_keys);
+            subscribed_keys.insert(key_str, publisher);
+            subscription
+        };
+        subscription
+            .receiver
+            .as_mut()
+            .ok_or_else(|| {
+                make_err!(
+                    Code::Internal,
+                    "Receiver should be set in RedisSubscriptionManager::subscribe"
+                )
+            })?
+            .mark_changed();
+
+        Ok(subscription)
+    }
+}
+
+impl SchedulerStore for RedisStore {
+    type SubscriptionManager = RedisSubscriptionManager;
+
+    fn subscription_manager(&self) -> Result<Arc<RedisSubscriptionManager>, Error> {
+        let mut subscription_manager = self.subscription_manager.lock();
+        match &*subscription_manager {
+            Some(subscription_manager) => Ok(subscription_manager.clone()),
+            None => {
+                let Some(pub_sub_channel) = &self.pub_sub_channel else {
+                    return Err(make_input_err!("RedisStore must have a pubsub channel for a Redis Scheduler if using subscriptions"));
+                };
+                let sub = Arc::new(RedisSubscriptionManager::new(
+                    self.subscriber_client.clone(),
+                    pub_sub_channel.clone(),
+                ));
+                *subscription_manager = Some(sub.clone());
+                Ok(sub)
+            }
+        }
+    }
+
+    async fn update_data<T>(&self, data: T) -> Result<Option<u64>, Error>
+    where
+        T: SchedulerStoreDataProvider
+            + SchedulerStoreKeyProvider
+            + SchedulerCurrentVersionProvider
+            + Send,
+    {
+        let key = data.get_key();
+        let key = self.encode_key(&key);
+        let client = self.client_pool.next();
+        let maybe_index = data.get_indexes().err_tip(|| {
+            format!("Err getting index in RedisStore::update_data::versioned for {key:?}")
+        })?;
+        if <T as SchedulerStoreKeyProvider>::Versioned::VALUE {
+            let current_version = data.current_version();
+            let data = data.try_into_bytes().err_tip(|| {
+                format!("Could not convert value to bytes in RedisStore::update_data::versioned for {key:?}")
+            })?;
+            let mut argv = Vec::with_capacity(3 + maybe_index.len() * 2);
+            argv.push(Bytes::from(format!("{current_version}")));
+            argv.push(data);
+            for (name, value) in maybe_index {
+                argv.push(Bytes::from_static(name.as_bytes()));
+                argv.push(value);
+            }
+            let new_version = self
+                .update_if_version_matches_script
+                .evalsha_with_reload::<u64, _, Vec<Bytes>>(client, vec![key.as_ref()], argv)
+                .await
+                .err_tip(|| format!("In RedisStore::update_data::versioned for {key:?}"))?;
+            if new_version == 0 {
+                return Ok(None);
+            }
+            // If we have a publish channel configured, send a notice that the key has been set.
+            if let Some(pub_sub_channel) = &self.pub_sub_channel {
+                return Ok(client.publish(pub_sub_channel, key.as_ref()).await?);
+            };
+            Ok(Some(new_version))
+        } else {
+            let data = data.try_into_bytes().err_tip(|| {
+                format!("Could not convert value to bytes in RedisStore::update_data::noversion for {key:?}")
+            })?;
+            let mut fields = RedisMap::new();
+            fields.reserve(1 + maybe_index.len());
+            fields.insert(DATA_FIELD_NAME.into(), data.into());
+            for (name, value) in maybe_index {
+                fields.insert(name.into(), value.into());
+            }
+            client
+                .hset::<(), _, _>(key.as_ref(), fields)
+                .await
+                .err_tip(|| format!("In RedisStore::update_data::noversion for {key:?}"))?;
+            // If we have a publish channel configured, send a notice that the key has been set.
+            if let Some(pub_sub_channel) = &self.pub_sub_channel {
+                return Ok(client.publish(pub_sub_channel, key.as_ref()).await?);
+            };
+            Ok(Some(0)) // Always use "0" version since this is not a versioned request.
+        }
+    }
+
+    async fn search_by_index_prefix<K>(
+        &self,
+        index: K,
+    ) -> Result<
+        impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
+        Error,
+    >
+    where
+        K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
+    {
+        let index_value_prefix = index.index_value_prefix();
+        let run_ft_aggregate = || {
+            let client = self.client_pool.next().clone();
+            let sanitized_field = try_sanitize(index_value_prefix.as_ref()).err_tip(|| {
+                format!(
+                    "In RedisStore::search_by_index_prefix::try_sanitize - {index_value_prefix:?}"
+                )
+            })?;
+            Ok::<_, Error>(async move {
+                ft_aggregate(
+                    client,
+                    format!("{}", get_index_name!(K::KEY_PREFIX, K::INDEX_NAME)),
+                    format!("@{}:{{ {}* }}", K::INDEX_NAME, sanitized_field),
+                    fred::types::FtAggregateOptions {
+                        load: Some(fred::types::Load::Some(vec![
+                            fred::types::SearchField {
+                                identifier: DATA_FIELD_NAME.into(),
+                                property: None,
+                            },
+                            fred::types::SearchField {
+                                identifier: VERSION_FIELD_NAME.into(),
+                                property: None,
+                            },
+                        ])),
+                        cursor: Some(fred::types::WithCursor {
+                            count: Some(MAX_COUNT_PER_CURSOR),
+                            max_idle: Some(CURSOR_IDLE_MS),
+                        }),
+                        pipeline: vec![fred::types::AggregateOperation::SortBy {
+                            properties: vec![(
+                                format!("@{}", K::INDEX_NAME).into(),
+                                fred::types::SortOrder::Asc,
+                            )],
+                            max: None,
+                        }],
+                        ..Default::default()
+                    },
+                )
+                .await
+            })
+        };
+        let stream = match run_ft_aggregate()?.await {
+            Ok(stream) => stream,
+            Err(_) => {
+                let create_result = self
+                    .client_pool
+                    .next()
+                    .ft_create::<(), _>(
+                        format!("{}", get_index_name!(K::KEY_PREFIX, K::INDEX_NAME)),
+                        FtCreateOptions {
+                            on: Some(fred::types::IndexKind::Hash),
+                            prefixes: vec![K::KEY_PREFIX.into()],
+                            nohl: true,
+                            nofields: true,
+                            nofreqs: true,
+                            nooffsets: true,
+                            temporary: Some(INDEX_TTL_S),
+                            ..Default::default()
+                        },
+                        vec![SearchSchema {
+                            field_name: K::INDEX_NAME.into(),
+                            alias: None,
+                            kind: SearchSchemaKind::Tag {
+                                sortable: true,
+                                unf: false,
+                                separator: None,
+                                casesensitive: false,
+                                withsuffixtrie: false,
+                                noindex: false,
+                            },
+                        }],
+                    )
+                    .await
+                    .err_tip(|| {
+                        format!(
+                            "Error with ft_create in RedisStore::search_by_index_prefix({})",
+                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME),
+                        )
+                    });
+                let run_result = run_ft_aggregate()?.await.err_tip(|| {
+                    format!(
+                        "Error with second ft_aggregate in RedisStore::search_by_index_prefix({})",
+                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME),
+                    )
+                });
+                // Creating the index will race which is ok. If it fails to create, we only
+                // error if the second ft_aggregate call fails and fails to create.
+                match run_result {
+                    Ok(stream) => stream,
+                    Err(e) => return create_result.merge(Err(e)),
+                }
+            }
+        };
+        Ok(stream.map(|result| {
+            let mut redis_map =
+                result.err_tip(|| "Error in stream of in RedisStore::search_by_index_prefix")?;
+            let bytes_data = redis_map
+                .remove(&RedisKey::from_static_str(DATA_FIELD_NAME))
+                .err_tip(|| "Missing data field in RedisStore::search_by_index_prefix")?
+                .into_bytes()
+                .err_tip(|| {
+                    formatcp!("'{DATA_FIELD_NAME}' is not Bytes in RedisStore::search_by_index_prefix::into_bytes")
+                })?;
+            let version = if <K as SchedulerIndexProvider>::Versioned::VALUE {
+                redis_map
+                    .remove(&RedisKey::from_static_str(VERSION_FIELD_NAME))
+                    .err_tip(|| "Missing version field in RedisStore::search_by_index_prefix")?
+                    .as_u64()
+                    .err_tip(|| {
+                        formatcp!("'{VERSION_FIELD_NAME}' is not u64 in RedisStore::search_by_index_prefix::as_u64")
+                    })?
+            } else {
+                0
+            };
+            K::decode(version, bytes_data)
+                .err_tip(|| "In RedisStore::search_by_index_prefix::decode")
+        }))
+    }
+
+    async fn get_and_decode<K>(
+        &self,
+        key: K,
+    ) -> Result<Option<<K as SchedulerStoreDecodeTo>::DecodeOutput>, Error>
+    where
+        K: SchedulerStoreKeyProvider + SchedulerStoreDecodeTo + Send,
+    {
+        let key = key.get_key();
+        let key = self.encode_key(&key);
+        let client = self.client_pool.next();
+        let (maybe_version, maybe_data) = client
+            .hmget::<(Option<u64>, Option<Bytes>), _, _>(
+                key.as_ref(),
+                vec![
+                    RedisKey::from(VERSION_FIELD_NAME),
+                    RedisKey::from(DATA_FIELD_NAME),
+                ],
+            )
+            .await
+            .err_tip(|| format!("In RedisStore::get_without_version::notversioned {key}"))?;
+        let Some(data) = maybe_data else {
+            return Ok(None);
+        };
+        Ok(Some(K::decode(maybe_version.unwrap_or(0), data).err_tip(
+            || format!("In RedisStore::get_with_version::notversioned::decode {key}"),
+        )?))
     }
 }

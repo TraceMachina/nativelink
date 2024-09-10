@@ -17,7 +17,8 @@ use std::time::SystemTime;
 
 use nativelink_config::schedulers::{ExperimentalSimpleSchedulerBackend, SchedulerConfig};
 use nativelink_config::stores::EvictionPolicy;
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_store::redis_store::RedisStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::operation_state_manager::ClientStateManager;
@@ -28,6 +29,7 @@ use crate::grpc_scheduler::GrpcScheduler;
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
 use crate::simple_scheduler::SimpleScheduler;
+use crate::store_awaited_action_db::StoreAwaitedActionDb;
 use crate::worker_scheduler::WorkerScheduler;
 
 /// Default timeout for recently completed actions in seconds.
@@ -51,7 +53,9 @@ fn inner_scheduler_factory(
     store_manager: &StoreManager,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
-        SchedulerConfig::simple(config) => simple_scheduler_factory(config)?,
+        SchedulerConfig::simple(config) => {
+            simple_scheduler_factory(config, store_manager, SystemTime::now)?
+        }
         SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
         SchedulerConfig::cache_lookup(config) => {
             let ac_store = store_manager
@@ -83,6 +87,8 @@ fn inner_scheduler_factory(
 
 fn simple_scheduler_factory(
     config: &nativelink_config::schedulers::SimpleScheduler,
+    store_manager: &StoreManager,
+    now_fn: fn() -> SystemTime,
 ) -> Result<SchedulerFactoryResults, Error> {
     match config
         .experimental_backend
@@ -96,6 +102,36 @@ fn simple_scheduler_factory(
                 task_change_notify.clone(),
                 SystemTime::now,
             );
+            let (action_scheduler, worker_scheduler) =
+                SimpleScheduler::new(config, awaited_action_db, task_change_notify);
+            Ok((Some(action_scheduler), Some(worker_scheduler)))
+        }
+        ExperimentalSimpleSchedulerBackend::redis(redis_config) => {
+            let store = store_manager
+                .get_store(redis_config.redis_store.as_ref())
+                .err_tip(|| {
+                    format!(
+                        "'redis_store': '{}' does not exist",
+                        redis_config.redis_store
+                    )
+                })?;
+            let task_change_notify = Arc::new(Notify::new());
+            let store = store
+                .into_inner()
+                .as_any_arc()
+                .downcast::<RedisStore>()
+                .map_err(|_| {
+                    make_input_err!(
+                        "Could not downcast to redis store in RedisAwaitedActionDb::new"
+                    )
+                })?;
+            let awaited_action_db = StoreAwaitedActionDb::new(
+                store,
+                task_change_notify.clone(),
+                now_fn,
+                Default::default,
+            )
+            .err_tip(|| "In state_manager_factory::redis_state_manager")?;
             let (action_scheduler, worker_scheduler) =
                 SimpleScheduler::new(config, awaited_action_db, task_change_notify);
             Ok((Some(action_scheduler), Some(worker_scheduler)))
