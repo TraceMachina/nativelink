@@ -21,6 +21,7 @@ rust_library(
         "src/property_modifier_scheduler.rs",
         "src/simple_scheduler.rs",
         "src/simple_scheduler_state_manager.rs",
+        "src/store_awaited_action_db.rs",
         "src/worker.rs",
         "src/worker_scheduler.rs",
     ],
