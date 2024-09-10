@@ -84,7 +84,7 @@ async fn has_test() -> Result<(), Error> {
             .await;
         assert_eq!(
             small_has_result,
-            Ok(Some(SMALL_VALUE.len())),
+            Ok(Some(SMALL_VALUE.len() as u64)),
             "Expected size part store to have data in ref store : {}",
             SMALL_HASH
         );
@@ -96,7 +96,7 @@ async fn has_test() -> Result<(), Error> {
             .await;
         assert_eq!(
             small_has_result,
-            Ok(Some(BIG_VALUE.len())),
+            Ok(Some(BIG_VALUE.len() as u64)),
             "Expected size part store to have data in ref store : {}",
             BIG_HASH
         );

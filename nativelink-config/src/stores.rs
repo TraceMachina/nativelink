@@ -763,12 +763,12 @@ pub struct S3Store {
     /// upload will be aborted and the client will likely receive an error.
     ///
     /// Default: 5MB.
-    pub max_retry_buffer_per_request: Option<usize>,
+    pub max_retry_buffer_per_request: Option<u64>,
 
     /// Maximum number of concurrent UploadPart requests per MultipartUpload.
     ///
     /// Default: 10.
-    pub multipart_max_concurrent_uploads: Option<usize>,
+    pub multipart_max_concurrent_uploads: Option<u64>,
 
     /// Allow unencrypted HTTP connections. Only use this for local testing.
     ///

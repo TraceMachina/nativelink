@@ -132,14 +132,14 @@ impl CompletenessCheckingStore {
     async fn inner_has_with_results(
         &self,
         action_result_digests: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // Holds shared state between the different futures.
         // This is how get around lifetime issues.
         struct State<'a> {
-            results: &'a mut [Option<usize>],
+            results: &'a mut [Option<u64>],
             digests_to_check: Vec<StoreKey<'a>>,
-            digests_to_check_idxs: Vec<usize>,
+            digests_to_check_idxs: Vec<u64>,
             notify: Arc<Notify>,
             done: bool,
         }
@@ -190,7 +190,7 @@ impl CompletenessCheckingStore {
                         }
                         state
                             .digests_to_check_idxs
-                            .extend(iter::repeat(i).take(rep_len));
+                            .extend(iter::repeat(i as u64).take(rep_len));
                         state.notify.notify_one();
                     }
 
@@ -209,7 +209,7 @@ impl CompletenessCheckingStore {
                             state.digests_to_check.extend(digest_infos);
                             state
                                 .digests_to_check_idxs
-                                .extend(iter::repeat(i).take(rep_len));
+                                .extend(iter::repeat(i as u64).take(rep_len));
                             state.notify.notify_one();
                         },
                     )
@@ -282,7 +282,7 @@ impl CompletenessCheckingStore {
                 {
                     let mut state = state_mux.lock();
                     for index in missed_indexes {
-                        state.results[index] = None;
+                        state.results[index as usize] = None;
                     }
                 }
             }
@@ -342,7 +342,7 @@ impl StoreDriver for CompletenessCheckingStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.inner_has_with_results(keys, results).await
     }
@@ -360,8 +360,8 @@ impl StoreDriver for CompletenessCheckingStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let results = &mut [None];
         self.inner_has_with_results(&[key.borrow()], results)

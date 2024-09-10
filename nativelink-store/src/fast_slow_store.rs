@@ -131,7 +131,7 @@ impl StoreDriver for FastSlowStore {
     async fn has_with_results(
         self: Pin<&Self>,
         key: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // If our slow store is a noop store, it'll always return a 404,
         // so only check the fast store in such case.
@@ -282,8 +282,8 @@ impl StoreDriver for FastSlowStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         // TODO(blaise.bruer) Investigate if we should maybe ignore errors here instead of
         // forwarding the up.
@@ -316,8 +316,9 @@ impl StoreDriver for FastSlowStore {
             .slow_store_hit_count
             .fetch_add(1, Ordering::Acquire);
 
-        let send_range = offset..length.map_or(usize::MAX, |length| length + offset);
-        let mut bytes_received: usize = 0;
+        let send_range =
+            offset as usize..length.map_or(usize::MAX, |length| (length + offset) as usize);
+        let mut bytes_received: u64 = 0;
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (slow_tx, mut slow_rx) = make_buf_channel_pair();
@@ -340,14 +341,14 @@ impl StoreDriver for FastSlowStore {
                     .fetch_add(output_buf.len() as u64, Ordering::Acquire);
 
                 let writer_fut = if let Some(range) = Self::calculate_range(
-                    &(bytes_received..bytes_received + output_buf.len()),
+                    &(bytes_received as usize..bytes_received as usize + output_buf.len()),
                     &send_range,
                 ) {
                     writer_pin.send(output_buf.slice(range)).right_future()
                 } else {
                     futures::future::ready(Ok(())).left_future()
                 };
-                bytes_received += output_buf.len();
+                bytes_received += output_buf.len() as u64;
 
                 let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf), writer_fut);
                 fast_tx_res.err_tip(|| "Failed to write to fast store in fast_slow store")?;

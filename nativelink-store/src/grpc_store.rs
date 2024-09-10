@@ -449,8 +449,8 @@ impl GrpcStore {
         &self,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let action_result = self
             .get_action_result_from_digest(digest)
@@ -465,11 +465,15 @@ impl GrpcStore {
             .encode(&mut value)
             .err_tip(|| "Could not encode upstream action result")?;
 
-        let default_len = value.len() - offset;
+        let default_len = value.len() as u64 - offset;
         let length = length.unwrap_or(default_len).min(default_len);
         if length > 0 {
             writer
-                .send(value.freeze().slice(offset..(offset + length)))
+                .send(
+                    value
+                        .freeze()
+                        .slice(offset as usize..(offset + length) as usize),
+                )
                 .await
                 .err_tip(|| "Failed to write data in grpc store")?;
         }
@@ -510,7 +514,7 @@ impl StoreDriver for GrpcStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
             keys.iter()
@@ -521,7 +525,7 @@ impl StoreDriver for GrpcStore {
                     // hope that we detect incorrect usage.
                     self.get_action_result_from_digest(key.borrow().into_digest())
                         .await?;
-                    *result = Some(usize::MAX);
+                    *result = Some(u64::MAX);
                     Ok::<_, Error>(())
                 })
                 .collect::<FuturesUnordered<_>>()
@@ -565,7 +569,7 @@ impl StoreDriver for GrpcStore {
         {
             match missing_digests.binary_search(&digest) {
                 Ok(_) => *result = None,
-                Err(_) => *result = Some(usize::try_from(digest.size_bytes())?),
+                Err(_) => *result = Some(digest.size_bytes()),
             }
         }
 
@@ -655,8 +659,8 @@ impl StoreDriver for GrpcStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {

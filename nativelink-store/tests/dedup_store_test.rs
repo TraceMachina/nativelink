@@ -37,8 +37,8 @@ fn make_default_config() -> nativelink_config::stores::DedupStore {
     }
 }
 
-fn make_random_data(sz: usize) -> Vec<u8> {
-    let mut value = vec![0u8; sz];
+fn make_random_data(sz: u64) -> Vec<u8> {
+    let mut value = vec![0u8; sz as usize];
     let mut rng = SmallRng::seed_from_u64(1);
     rng.fill(&mut value[..]);
     value
@@ -46,7 +46,7 @@ fn make_random_data(sz: usize) -> Vec<u8> {
 
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 const VALID_HASH2: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
-const MEGABYTE_SZ: usize = 1024 * 1024;
+const MEGABYTE_SZ: u64 = 1024 * 1024;
 
 #[nativelink_test]
 async fn simple_round_trip_test() -> Result<(), Error> {
@@ -136,7 +136,7 @@ async fn fetch_part_test() -> Result<(), Error> {
         )), // Content store.
     );
 
-    const DATA_SIZE: usize = MEGABYTE_SZ / 4;
+    const DATA_SIZE: u64 = MEGABYTE_SZ / 4;
     let original_data = make_random_data(DATA_SIZE);
     let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
@@ -145,20 +145,20 @@ async fn fetch_part_test() -> Result<(), Error> {
         .await
         .err_tip(|| "Failed to write data to dedup store")?;
 
-    const ONE_THIRD_SZ: usize = DATA_SIZE / 3;
+    const ONE_THIRD_SZ: u64 = DATA_SIZE / 3;
     let rt_data = store
         .get_part_unchunked(digest, ONE_THIRD_SZ, Some(ONE_THIRD_SZ))
         .await
         .err_tip(|| "Failed to get_part from dedup store")?;
 
     assert_eq!(
-        rt_data.len(),
+        rt_data.len() as u64,
         ONE_THIRD_SZ,
         "Expected round trip sizes to match"
     );
     assert_eq!(
         rt_data,
-        original_data[ONE_THIRD_SZ..(ONE_THIRD_SZ * 2)],
+        original_data[ONE_THIRD_SZ as usize..(ONE_THIRD_SZ * 2) as usize],
         "Expected round trip data to match"
     );
     Ok(())
@@ -188,7 +188,7 @@ async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test
         )), // Content store.
     );
 
-    const DATA_SIZE: usize = 30;
+    const DATA_SIZE: u64 = 30;
     let original_data = make_random_data(DATA_SIZE);
     let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
@@ -198,20 +198,20 @@ async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test
         .err_tip(|| "Failed to write data to dedup store")?;
 
     // This value must be larger than `max_size` in the config above.
-    const START_READ_BYTE: usize = 7;
+    const START_READ_BYTE: u64 = 7;
     let rt_data = store
         .get_part_unchunked(digest, START_READ_BYTE, None)
         .await
         .err_tip(|| "Failed to get_part from dedup store")?;
 
     assert_eq!(
-        rt_data.len(),
+        rt_data.len() as u64,
         DATA_SIZE - START_READ_BYTE,
         "Expected round trip sizes to match"
     );
     assert_eq!(
         rt_data,
-        original_data[START_READ_BYTE..],
+        original_data[START_READ_BYTE as usize..],
         "Expected round trip data to match"
     );
     Ok(())
@@ -240,7 +240,7 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
         )), // Content store.
     );
 
-    const DATA_SIZE: usize = 30;
+    const DATA_SIZE: u64 = 30;
     let original_data = make_random_data(DATA_SIZE);
     let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
     store
@@ -259,35 +259,35 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
                 .await
                 .err_tip(|| "Failed to get_part from dedup store")?;
 
-            let len_fenced = std::cmp::min(len, rt_data.len());
+            let len_fenced = std::cmp::min(len, rt_data.len() as u64);
             assert_eq!(
-                rt_data.len(),
+                rt_data.len() as u64,
                 len_fenced,
                 "Expected round trip sizes to match"
             );
             assert_eq!(
                 rt_data,
-                original_data[offset..(offset + len_fenced)],
+                original_data[offset as usize..(offset + len_fenced) as usize],
                 "Expected round trip data to match"
             );
         }
     }
 
     // This value must be larger than `max_size` in the config above.
-    const START_READ_BYTE: usize = 10;
+    const START_READ_BYTE: u64 = 10;
     let rt_data = store
         .get_part_unchunked(digest, START_READ_BYTE, None)
         .await
         .err_tip(|| "Failed to get_part from dedup store")?;
 
     assert_eq!(
-        rt_data.len(),
+        rt_data.len() as u64,
         DATA_SIZE - START_READ_BYTE,
         "Expected round trip sizes to match"
     );
     assert_eq!(
         rt_data,
-        original_data[START_READ_BYTE..],
+        original_data[START_READ_BYTE as usize..],
         "Expected round trip data to match"
     );
     Ok(())
@@ -311,7 +311,7 @@ async fn has_checks_content_store() -> Result<(), Error> {
         Store::new(content_store.clone()),
     );
 
-    const DATA_SIZE: usize = MEGABYTE_SZ / 4;
+    const DATA_SIZE: u64 = MEGABYTE_SZ / 4;
     let original_data = make_random_data(DATA_SIZE);
     let digest1 = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
@@ -339,7 +339,11 @@ async fn has_checks_content_store() -> Result<(), Error> {
         {
             // Check our recently added entry is still valid.
             let size_info = store.has(digest2).await.err_tip(|| "Failed to run .has")?;
-            assert_eq!(size_info, Some(DATA2.len()), "Expected sizes to match");
+            assert_eq!(
+                size_info,
+                Some(DATA2.len() as u64),
+                "Expected sizes to match"
+            );
         }
         {
             // Check our first added entry is now invalid (because part of it was evicted).

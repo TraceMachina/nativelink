@@ -195,7 +195,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
     );
 
     let result = store
-        .get_part_unchunked(digest, 0, Some(data.len()))
+        .get_part_unchunked(digest, 0, Some(data.len() as u64))
         .await?;
 
     assert_eq!(result, data, "Expected redis store to have updated value",);
@@ -275,7 +275,7 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
     );
 
     let result = store
-        .get_part_unchunked(digest, 0, Some(data.len()))
+        .get_part_unchunked(digest, 0, Some(data.len() as u64))
         .await?;
 
     assert_eq!(result, data, "Expected redis store to have updated value",);
@@ -334,7 +334,7 @@ async fn upload_empty_data_with_prefix() -> Result<(), Error> {
 #[nativelink_test]
 async fn test_large_downloads_are_chunked() -> Result<(), Error> {
     // Requires multiple chunks as data is larger than 64K.
-    let data = Bytes::from(vec![0u8; READ_CHUNK_SIZE + 128]);
+    let data = Bytes::from(vec![0u8; READ_CHUNK_SIZE as usize + 128]);
 
     let digest = DigestInfo::try_new(VALID_HASH1, 1)?;
     let packed_hash_hex = format!("{digest}");
@@ -381,7 +381,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
                     RedisValue::Integer(READ_CHUNK_SIZE as i64 - 1),
                 ],
             },
-            Ok(RedisValue::Bytes(data.slice(..READ_CHUNK_SIZE))),
+            Ok(RedisValue::Bytes(data.slice(..READ_CHUNK_SIZE as usize))),
         )
         .expect(
             MockCommand {
@@ -394,7 +394,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
                     RedisValue::Integer(data.len() as i64 - 1),
                 ],
             },
-            Ok(RedisValue::Bytes(data.slice(READ_CHUNK_SIZE..))),
+            Ok(RedisValue::Bytes(data.slice(READ_CHUNK_SIZE as usize..))),
         );
 
     let store = {
@@ -416,7 +416,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
     );
 
     let get_result: Bytes = store
-        .get_part_unchunked(digest, 0, Some(data.clone().len()))
+        .get_part_unchunked(digest, 0, Some(data.clone().len() as u64))
         .await?;
 
     assert_eq!(
@@ -501,7 +501,7 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
     tx.send(data_p2).await?;
     tx.send_eof()?;
     store
-        .update(digest, rx, UploadSizeInfo::ExactSize(data.len()))
+        .update(digest, rx, UploadSizeInfo::ExactSize(data.len() as u64))
         .await?;
 
     let result = store.has(digest).await?;
@@ -511,7 +511,7 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
     );
 
     let result = store
-        .get_part_unchunked(digest, 0, Some(data.clone().len()))
+        .get_part_unchunked(digest, 0, Some(data.clone().len() as u64))
         .await?;
 
     assert_eq!(result, data, "Expected redis store to have updated value",);

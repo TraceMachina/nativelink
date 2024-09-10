@@ -64,8 +64,8 @@ impl<S: StoreDriver + ?Sized> StoreSubscriptionItem for DefaultStoreSubscription
     async fn get_part(
         &self,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         Pin::new(self.store.as_ref())
             .get_part(self.key.borrow(), writer, offset, length)

@@ -105,7 +105,7 @@ impl StoreDriver for RefStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.get_store()?.has_with_results(keys, results).await
     }
@@ -123,8 +123,8 @@ impl StoreDriver for RefStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         self.get_store()?
             .get_part(key, writer, offset, length)

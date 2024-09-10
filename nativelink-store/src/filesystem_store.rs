@@ -44,7 +44,7 @@ use tracing::{event, Level};
 use crate::cas_utils::is_zero_digest;
 
 // Default size to allocate memory of the buffer when reading files.
-const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
+const DEFAULT_BUFF_SIZE: u64 = 32 * 1024;
 // Default block size of all major filesystems is 4KB
 const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024;
 
@@ -312,8 +312,8 @@ fn make_temp_digest(digest: &mut DigestInfo) {
 
 impl LenEntry for FileEntryImpl {
     #[inline]
-    fn len(&self) -> usize {
-        self.size_on_disk() as usize
+    fn len(&self) -> u64 {
+        self.size_on_disk()
     }
 
     fn is_empty(&self) -> bool {
@@ -400,7 +400,7 @@ pub fn digest_from_filename(file_name: &str) -> Result<DigestInfo, Error> {
 
 /// The number of files to read the metadata for at the same time when running
 /// add_files_to_cache.
-const SIMULTANEOUS_METADATA_READS: usize = 200;
+const SIMULTANEOUS_METADATA_READS: u64 = 200;
 
 async fn add_files_to_cache<Fe: FileEntry>(
     evicting_map: &EvictingMap<DigestInfo, Arc<Fe>, SystemTime>,
@@ -471,7 +471,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 };
                 Result::<(String, SystemTime, u64), Error>::Ok((file_name, atime, metadata.len()))
             })
-            .buffer_unordered(SIMULTANEOUS_METADATA_READS)
+            .buffer_unordered(SIMULTANEOUS_METADATA_READS as usize)
             .try_collect()
             .await?
     };
@@ -528,7 +528,7 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric(help = "Block size of the configured filesystem")]
     block_size: u64,
     #[metric(help = "Size of the configured read buffer size")]
-    read_buffer_size: usize,
+    read_buffer_size: u64,
     weak_self: Weak<Self>,
     sleep_fn: fn(Duration) -> Sleep,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
@@ -577,7 +577,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         let read_buffer_size = if config.read_buffer_size == 0 {
             DEFAULT_BUFF_SIZE
         } else {
-            config.read_buffer_size as usize
+            config.read_buffer_size as u64
         };
         Ok(Arc::new_cyclic(|weak_self| Self {
             shared_context,
@@ -729,7 +729,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
         // existence_cache. We need to convert the digests to owned values to be able to
@@ -799,7 +799,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         let digest = key.into_digest();
         let path = file.get_path().as_os_str().to_os_string();
         let file_size = match upload_size {
-            UploadSizeInfo::ExactSize(size) => size as u64,
+            UploadSizeInfo::ExactSize(size) => size,
             UploadSizeInfo::MaxSize(_) => file
                 .as_reader()
                 .await
@@ -835,8 +835,8 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
         if is_zero_digest(digest) {
@@ -853,11 +853,11 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             self.evicting_map.get(&digest).await.ok_or_else(|| {
                 make_err!(Code::NotFound, "{digest} not found in filesystem store")
             })?;
-        let read_limit = length.unwrap_or(usize::MAX) as u64;
-        let mut resumeable_temp_file = entry.read_file_part(offset as u64, read_limit).await?;
+        let read_limit = length.unwrap_or(u64::MAX);
+        let mut resumeable_temp_file = entry.read_file_part(offset, read_limit).await?;
 
         loop {
-            let mut buf = BytesMut::with_capacity(self.read_buffer_size);
+            let mut buf = BytesMut::with_capacity(self.read_buffer_size as usize);
             resumeable_temp_file
                 .as_reader()
                 .await

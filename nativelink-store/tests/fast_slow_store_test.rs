@@ -32,7 +32,7 @@ use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-const MEGABYTE_SZ: usize = 1024 * 1024;
+const MEGABYTE_SZ: u64 = 1024 * 1024;
 
 fn make_stores() -> (Store, Store, Store) {
     let fast_store = Store::new(MemoryStore::new(
@@ -56,8 +56,8 @@ fn make_stores() -> (Store, Store, Store) {
     (fast_slow_store, fast_store, slow_store)
 }
 
-fn make_random_data(sz: usize) -> Vec<u8> {
-    let mut value = vec![0u8; sz];
+fn make_random_data(sz: u64) -> Vec<u8> {
+    let mut value = vec![0u8; sz as usize];
     let mut rng = SmallRng::seed_from_u64(1);
     rng.fill(&mut value[..]);
     value
@@ -113,10 +113,13 @@ async fn fetch_slow_store_puts_in_fast_store_test() -> Result<(), Error> {
 
     assert_eq!(
         fast_slow_store.has(digest).await,
-        Ok(Some(original_data.len()))
+        Ok(Some(original_data.len() as u64))
     );
     assert_eq!(fast_store.has(digest).await, Ok(None));
-    assert_eq!(slow_store.has(digest).await, Ok(Some(original_data.len())));
+    assert_eq!(
+        slow_store.has(digest).await,
+        Ok(Some(original_data.len() as u64))
+    );
 
     // This get() request should place the data in fast_store too.
     fast_slow_store.get_part_unchunked(digest, 0, None).await?;
@@ -244,12 +247,12 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
         async fn has_with_results(
             self: Pin<&Self>,
             digests: &[StoreKey<'_>],
-            results: &mut [Option<usize>],
+            results: &mut [Option<u64>],
         ) -> Result<(), Error> {
             if let Some(has_digest) = self.digest {
                 for (digest, result) in digests.iter().zip(results.iter_mut()) {
                     if *digest == has_digest.into() {
-                        *result = Some(has_digest.size_bytes() as usize);
+                        *result = Some(has_digest.size_bytes());
                     }
                 }
             }
@@ -281,13 +284,13 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             self: Pin<&Self>,
             key: StoreKey<'_>,
             writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
-            offset: usize,
-            length: Option<usize>,
+            offset: u64,
+            length: Option<u64>,
         ) -> Result<(), Error> {
             // Gets called in the slow store and we provide the data that's
             // sent to the upstream and the fast store.
-            let bytes = length.unwrap_or(key.into_digest().size_bytes() as usize) - offset;
-            let data = vec![0_u8; bytes];
+            let bytes = length.unwrap_or(key.into_digest().size_bytes()) - offset;
+            let data = vec![0_u8; bytes as usize];
             writer.send(Bytes::copy_from_slice(&data)).await?;
             writer.send_eof()
         }
@@ -350,7 +353,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             // Drop get_part as soon as rx.drain() completes
             tokio::select!(
                 res = rx.drain() => res,
-                res = fast_slow_store.get_part(digest, tx, 0, Some(digest.size_bytes() as usize)) => res,
+                res = fast_slow_store.get_part(digest, tx, 0, Some(digest.size_bytes())) => res,
             )
         },
         async move {
@@ -438,7 +441,7 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
 
     assert_eq!(
         fast_slow_store.has(digest).await,
-        Ok(Some(data.len())),
+        Ok(Some(data.len() as u64)),
         "Expected data to exist in store"
     );
 

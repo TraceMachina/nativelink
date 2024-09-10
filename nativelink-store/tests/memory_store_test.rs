@@ -45,15 +45,15 @@ async fn insert_one_item_then_update() -> Result<(), Error> {
     // Insert dummy value into store.
     store
         .update_oneshot(
-            DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
+            DigestInfo::try_new(VALID_HASH1, VALUE1.len() as u64)?,
             VALUE1.into(),
         )
         .await?;
     assert_eq!(
         store
-            .has(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?)
+            .has(DigestInfo::try_new(VALID_HASH1, VALUE1.len() as u64)?)
             .await,
-        Ok(Some(VALUE1.len())),
+        Ok(Some(VALUE1.len() as u64)),
         "Expected memory store to have hash: {}",
         VALID_HASH1
     );

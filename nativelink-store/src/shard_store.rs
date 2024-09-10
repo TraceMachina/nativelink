@@ -84,7 +84,7 @@ impl ShardStore {
         }))
     }
 
-    fn get_store_index(&self, store_key: &StoreKey) -> usize {
+    fn get_store_index(&self, store_key: &StoreKey) -> u64 {
         let key = match store_key {
             StoreKey::Digest(digest) => {
                 // Quote from std primitive array documentation:
@@ -130,12 +130,12 @@ impl ShardStore {
         };
         self.weights_and_stores
             .binary_search_by_key(&key, |item| item.weight)
-            .unwrap_or_else(|index| index)
+            .unwrap_or_else(|index| index) as u64
     }
 
     fn get_store(&self, key: &StoreKey) -> &Store {
         let index = self.get_store_index(key);
-        &self.weights_and_stores[index].store
+        &self.weights_and_stores[index as usize].store
     }
 }
 
@@ -144,18 +144,18 @@ impl StoreDriver for ShardStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         if keys.len() == 1 {
             // Hot path: It is very common to lookup only one key.
-            let store_idx = self.get_store_index(&keys[0]);
+            let store_idx = self.get_store_index(&keys[0]) as usize;
             let store = &self.weights_and_stores[store_idx].store;
             return store
                 .has_with_results(keys, results)
                 .await
                 .err_tip(|| "In ShardStore::has_with_results() for store {store_idx}}");
         }
-        type KeyIdxVec = Vec<usize>;
+        type KeyIdxVec = Vec<u64>;
         type KeyVec<'a> = Vec<StoreKey<'a>>;
         let mut keys_for_store: Vec<(KeyIdxVec, KeyVec)> = self
             .weights_and_stores
@@ -167,8 +167,8 @@ impl StoreDriver for ShardStore {
             .enumerate()
             .map(|(key_idx, key)| (key, key_idx, self.get_store_index(key)))
             .for_each(|(key, key_idx, store_idx)| {
-                keys_for_store[store_idx].0.push(key_idx);
-                keys_for_store[store_idx].1.push(key.borrow());
+                keys_for_store[store_idx as usize].0.push(key_idx as u64);
+                keys_for_store[store_idx as usize].1.push(key.borrow());
             });
 
         // Build all our futures for each store.
@@ -189,7 +189,7 @@ impl StoreDriver for ShardStore {
         // Wait for all the stores to finish and populate our output results.
         while let Some((key_idxs, inner_results)) = future_stream.try_next().await? {
             for (key_idx, inner_result) in key_idxs.into_iter().zip(inner_results) {
-                results[key_idx] = inner_result;
+                results[key_idx as usize] = inner_result;
             }
         }
         Ok(())
@@ -212,8 +212,8 @@ impl StoreDriver for ShardStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let store = self.get_store(&key);
         store
@@ -226,7 +226,7 @@ impl StoreDriver for ShardStore {
         let Some(key) = key else {
             return self;
         };
-        let index = self.get_store_index(&key);
+        let index = self.get_store_index(&key) as usize;
         self.weights_and_stores[index].store.inner_store(Some(key))
     }
 

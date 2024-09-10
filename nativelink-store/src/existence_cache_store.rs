@@ -29,11 +29,11 @@ use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
 #[derive(Clone, Debug)]
-struct ExistanceItem(usize);
+struct ExistanceItem(u64);
 
 impl LenEntry for ExistanceItem {
     #[inline]
-    fn len(&self) -> usize {
+    fn len(&self) -> u64 {
         self.0
     }
 
@@ -85,7 +85,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
     async fn inner_has_with_results(
         self: Pin<&Self>,
         keys: &[DigestInfo],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.existence_cache
             .sizes_for_keys(keys, results, true /* peek */)
@@ -151,7 +151,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
         // existence_cache. We need to convert the digests to owned values to be able to
@@ -200,8 +200,8 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
         let result = self
@@ -209,8 +209,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             .get_part(digest, writer, offset, length)
             .await;
         if result.is_ok() {
-            let size = usize::try_from(digest.size_bytes())
-                .err_tip(|| "Could not convert size_bytes in ExistenceCacheStore::get_part")?;
+            let size = digest.size_bytes();
             let _ = self
                 .existence_cache
                 .insert(digest, ExistanceItem(size))
