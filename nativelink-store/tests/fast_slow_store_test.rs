@@ -113,10 +113,17 @@ async fn fetch_slow_store_puts_in_fast_store_test() -> Result<(), Error> {
 
     assert_eq!(
         fast_slow_store.has(digest).await,
-        Ok(Some(original_data.len()))
+        Ok(Some(
+            u64::try_from(original_data.len()).expect("Cast failed")
+        ))
     );
     assert_eq!(fast_store.has(digest).await, Ok(None));
-    assert_eq!(slow_store.has(digest).await, Ok(Some(original_data.len())));
+    assert_eq!(
+        slow_store.has(digest).await,
+        Ok(Some(
+            u64::try_from(original_data.len()).expect("Cast failed")
+        ))
+    );
 
     // This get() request should place the data in fast_store too.
     fast_slow_store.get_part_unchunked(digest, 0, None).await?;
@@ -155,78 +162,79 @@ async fn partial_reads_copy_full_to_fast_store_test() -> Result<(), Error> {
 }
 
 #[test]
-fn calculate_range_test() {
+fn calculate_range_test() -> Result<(), Error> {
     let test = |start_range, end_range| FastSlowStore::calculate_range(&start_range, &end_range);
     {
         // Exact match.
         let received_range = 0..1;
         let send_range = 0..1;
         let expected_results = Some(0..1);
-        assert_eq!(test(received_range, send_range), expected_results);
+        assert_eq!(test(received_range, send_range)?, expected_results);
     }
     {
         // Minus one on received_range.
         let received_range = 1..4;
         let send_range = 1..5;
         let expected_results = Some(0..3);
-        assert_eq!(test(received_range, send_range), expected_results);
+        assert_eq!(test(received_range, send_range)?, expected_results);
     }
     {
         // Minus one on send_range.
         let received_range = 1..5;
         let send_range = 1..4;
         let expected_results = Some(0..3);
-        assert_eq!(test(received_range, send_range), expected_results);
+        assert_eq!(test(received_range, send_range)?, expected_results);
     }
     {
         // Should have already sent all data (start fence post).
         let received_range = 1..2;
         let send_range = 0..1;
         let expected_results = None;
-        assert_eq!(test(received_range, send_range), expected_results);
+        assert_eq!(test(received_range, send_range)?, expected_results);
     }
     {
         // Definiltly already sent data.
         let received_range = 2..3;
         let send_range = 0..1;
         let expected_results = None;
-        assert_eq!(test(received_range, send_range), expected_results);
+        assert_eq!(test(received_range, send_range)?, expected_results);
     }
     {
         // All data should be sent (inside range).
         let received_range = 3..4;
         let send_range = 0..100;
         let expected_results = Some(0..1); // Note: This is relative received_range.start.
-        assert_eq!(test(received_range, send_range), expected_results);
+        assert_eq!(test(received_range, send_range)?, expected_results);
     }
     {
         // Subset of received data should be sent.
         let received_range = 1..100;
         let send_range = 3..4;
         let expected_results = Some(2..3); // Note: This is relative received_range.start.
-        assert_eq!(test(received_range, send_range), expected_results);
+        assert_eq!(test(received_range, send_range)?, expected_results);
     }
     {
         // We are clearly not at the offset yet.
         let received_range = 0..1;
         let send_range = 3..4;
         let expected_results = None;
-        assert_eq!(test(received_range, send_range), expected_results);
+        assert_eq!(test(received_range, send_range)?, expected_results);
     }
     {
         // Not at offset yet (fence post).
         let received_range = 0..1;
         let send_range = 1..2;
         let expected_results = None;
-        assert_eq!(test(received_range, send_range), expected_results);
+        assert_eq!(test(received_range, send_range)?, expected_results);
     }
     {
         // Head part of the received data should be sent.
         let received_range = 1..3;
         let send_range = 2..5;
         let expected_results = Some(1..2);
-        assert_eq!(test(received_range, send_range), expected_results);
+        assert_eq!(test(received_range, send_range)?, expected_results);
     }
+    Ok(())
 }
 
 #[nativelink_test]
@@ -244,12 +252,12 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
         async fn has_with_results(
             self: Pin<&Self>,
             digests: &[StoreKey<'_>],
-            results: &mut [Option<usize>],
+            results: &mut [Option<u64>],
         ) -> Result<(), Error> {
             if let Some(has_digest) = self.digest {
                 for (digest, result) in digests.iter().zip(results.iter_mut()) {
                     if *digest == has_digest.into() {
-                        *result = Some(has_digest.size_bytes() as usize);
+                        *result = Some(has_digest.size_bytes());
                     }
                 }
             }
@@ -281,13 +289,13 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             self: Pin<&Self>,
             key: StoreKey<'_>,
             writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
-            offset: usize,
-            length: Option<usize>,
+            offset: u64,
+            length: Option<u64>,
         ) -> Result<(), Error> {
             // Gets called in the slow store and we provide the data that's
             // sent to the upstream and the fast store.
-            let bytes = length.unwrap_or(key.into_digest().size_bytes() as usize) - offset;
-            let data = vec![0_u8; bytes];
+            let bytes = length.unwrap_or(key.into_digest().size_bytes()) - offset;
+            let data = vec![0_u8; usize::try_from(bytes).expect("Cast failed")];
             writer.send(Bytes::copy_from_slice(&data)).await?;
             writer.send_eof()
         }
@@ -350,7 +358,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             // Drop get_part as soon as rx.drain() completes
             tokio::select!(
                 res = rx.drain() => res,
-                res = fast_slow_store.get_part(digest, tx, 0, Some(digest.size_bytes() as usize)) => res,
+                res = fast_slow_store.get_part(digest, tx, 0, Some(digest.size_bytes())) => res,
             )
         },
         async move {
@@ -438,7 +446,7 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
 
     assert_eq!(
         fast_slow_store.has(digest).await,
-        Ok(Some(data.len())),
+        Ok(Some(u64::try_from(data.len()).expect("Cast failed"))),
         "Expected data to exist in store"
     );
 

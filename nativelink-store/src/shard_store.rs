@@ -144,7 +144,7 @@ impl StoreDriver for ShardStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         if keys.len() == 1 {
             // Hot path: It is very common to lookup only one key.
@@ -212,8 +212,8 @@ impl StoreDriver for ShardStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let store = self.get_store(&key);
         store

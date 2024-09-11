@@ -178,7 +178,7 @@ impl StoreDriver for RedisStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // TODO(caass): Optimize for the case where `keys.len() == 1`
         let pipeline = self.client_pool.next().pipeline();
@@ -334,8 +334,8 @@ impl StoreDriver for RedisStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         // To follow RBE spec we need to consider any digest's with
         // zero size to be existing.
@@ -355,16 +355,25 @@ impl StoreDriver for RedisStore {
         // We want to read the data at the key from `offset` to `offset + length`.
         let data_start = offset;
         let data_end = data_start
-            .saturating_add(length.unwrap_or(isize::MAX as usize))
+            .saturating_add(length.unwrap_or(isize::MAX as u64))
             .saturating_sub(1);
 
         // And we don't ever want to read more than `READ_CHUNK_SIZE` bytes at a time, so we'll need to iterate.
         let mut chunk_start = data_start;
-        let mut chunk_end = cmp::min(data_start.saturating_add(READ_CHUNK_SIZE) - 1, data_end);
+        let mut chunk_end = cmp::min(
+            data_start.saturating_add(READ_CHUNK_SIZE as u64) - 1,
+            data_end,
+        );
 
         loop {
             let chunk: Bytes = client
-                .getrange(encoded_key, chunk_start, chunk_end)
+                .getrange(
+                    encoded_key,
+                    usize::try_from(chunk_start)
+                        .err_tip(|| "Could not convert chunk_start to usize")?,
+                    usize::try_from(chunk_end)
+                        .err_tip(|| "Could not convert chunk_end to usize")?,
+                )
                 .await
                 .err_tip(|| "In RedisStore::get_part::getrange")?;
 
@@ -390,7 +399,10 @@ impl StoreDriver for RedisStore {
 
             // ...and go grab the next chunk.
             chunk_start = chunk_end + 1;
-            chunk_end = cmp::min(chunk_start.saturating_add(READ_CHUNK_SIZE) - 1, data_end);
+            chunk_end = cmp::min(
+                chunk_start.saturating_add(READ_CHUNK_SIZE as u64) - 1,
+                data_end,
+            );
         }
 
         // If we didn't write any data, check if the key exists, if not return a NotFound error.

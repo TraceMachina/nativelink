@@ -210,7 +210,7 @@ where
     /// and return the number of items that were processed.
     /// The `handler` function should return `true` to continue processing the next item
     /// or `false` to stop processing.
-    pub async fn range<F, Q>(&self, prefix_range: impl RangeBounds<Q>, mut handler: F) -> usize
+    pub async fn range<F, Q>(&self, prefix_range: impl RangeBounds<Q>, mut handler: F) -> u64
     where
         F: FnMut(&K, &T) -> bool,
         K: Borrow<Q> + Ord,
@@ -300,7 +300,7 @@ where
     }
 
     /// Return the size of a `key`, if not found `None` is returned.
-    pub async fn size_for_key<Q>(&self, key: &Q) -> Option<usize>
+    pub async fn size_for_key<Q>(&self, key: &Q) -> Option<u64>
     where
         K: Borrow<Q>,
         Q: Ord + Hash + Eq + Debug,
@@ -316,12 +316,8 @@ where
     /// If no key is found in the internal map, `None` is filled in its place.
     /// If `peek` is set to `true`, the items are not promoted to the front of the
     /// LRU cache. Note: peek may still evict, but won't promote.
-    pub async fn sizes_for_keys<It, Q, R>(
-        &self,
-        keys: It,
-        results: &mut [Option<usize>],
-        peek: bool,
-    ) where
+    pub async fn sizes_for_keys<It, Q, R>(&self, keys: It, results: &mut [Option<u64>], peek: bool)
+    where
         It: IntoIterator<Item = R>,
         // This may look strange, but what we are doing is saying:
         // * `K` must be able to borrow `Q`
@@ -350,10 +346,10 @@ where
                     // we are here.
                     let should_evict = self.should_evict(lru_len, entry, 0, u64::MAX);
                     if !should_evict && peek {
-                        *result = Some(entry.data.len());
+                        *result = Some(entry.data.len() as u64);
                     } else if !should_evict && entry.data.touch().await {
                         entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
-                        *result = Some(entry.data.len());
+                        *result = Some(entry.data.len() as u64);
                     } else {
                         *result = None;
                         if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {

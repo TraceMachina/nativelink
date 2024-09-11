@@ -113,8 +113,8 @@ impl StoreSubscriptionItem for MemoryStoreSubscriptionItem {
     async fn get_part(
         &self,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let store = self
             .store
@@ -177,7 +177,7 @@ impl StoreDriver for MemoryStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // TODO(allada): This is a dirty hack to get around the lifetime issues with the
         // evicting map.
@@ -200,7 +200,7 @@ impl StoreDriver for MemoryStore {
         self: Pin<&Self>,
         range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
         handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
-    ) -> Result<usize, Error> {
+    ) -> Result<u64, Error> {
         let range = (
             range.0.map(|v| v.into_owned()),
             range.1.map(|v| v.into_owned()),
@@ -247,8 +247,8 @@ impl StoreDriver for MemoryStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         if is_zero_digest(key.borrow()) {
             writer
@@ -262,11 +262,18 @@ impl StoreDriver for MemoryStore {
             .get(&key.borrow().into_owned())
             .await
             .err_tip_with_code(|_| (Code::NotFound, format!("Key {key:?} not found")))?;
-        let default_len = value.len() - offset;
+        let default_len =
+            u64::try_from(value.len()).err_tip(|| "Could not convert value.len() to u64")? - offset;
         let length = length.unwrap_or(default_len).min(default_len);
         if length > 0 {
             writer
-                .send(value.0.slice(offset..(offset + length)))
+                .send(
+                    value.0.slice(
+                        usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?
+                            ..usize::try_from(offset + length)
+                                .err_tip(|| "Could not convert (offset + length) to usize")?,
+                    ),
+                )
                 .await
                 .err_tip(|| "Failed to write data in memory store")?;
         }
