@@ -28,7 +28,7 @@ use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 /// The version of the awaited action.
 /// This number will always increment by one each time
 /// the action is updated.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 struct AwaitedActionVersion(u64);
 
 impl MetricsComponent for AwaitedActionVersion {
@@ -80,7 +80,7 @@ pub struct AwaitedAction {
 }
 
 impl AwaitedAction {
-    pub fn new(operation_id: OperationId, action_info: Arc<ActionInfo>) -> Self {
+    pub fn new(operation_id: OperationId, action_info: Arc<ActionInfo>, now: SystemTime) -> Self {
         let stage = ActionStage::Queued;
         let sort_key = AwaitedActionSortKey::new_with_unique_key(
             action_info.priority,
@@ -102,7 +102,7 @@ impl AwaitedAction {
             operation_id,
             sort_key,
             attempts: 0,
-            last_worker_updated_timestamp: SystemTime::now(),
+            last_worker_updated_timestamp: now,
             worker_id: None,
             state,
         }
@@ -120,11 +120,11 @@ impl AwaitedAction {
         self.version = AwaitedActionVersion(self.version.0 + 1);
     }
 
-    pub(crate) fn action_info(&self) -> &Arc<ActionInfo> {
+    pub fn action_info(&self) -> &Arc<ActionInfo> {
         &self.action_info
     }
 
-    pub(crate) fn operation_id(&self) -> &OperationId {
+    pub fn operation_id(&self) -> &OperationId {
         &self.operation_id
     }
 
@@ -132,7 +132,7 @@ impl AwaitedAction {
         self.sort_key
     }
 
-    pub(crate) fn state(&self) -> &Arc<ActionState> {
+    pub fn state(&self) -> &Arc<ActionState> {
         &self.state
     }
 
@@ -158,7 +158,7 @@ impl AwaitedAction {
 
     /// Sets the current state of the action and notifies subscribers.
     /// Returns true if the state was set, false if there are no subscribers.
-    pub(crate) fn set_state(&mut self, mut state: Arc<ActionState>, now: Option<SystemTime>) {
+    pub fn set_state(&mut self, mut state: Arc<ActionState>, now: Option<SystemTime>) {
         std::mem::swap(&mut self.state, &mut state);
         if let Some(now) = now {
             self.keep_alive(now);

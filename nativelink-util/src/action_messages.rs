@@ -245,10 +245,11 @@ impl std::fmt::Display for ActionUniqueQualifier {
         f.write_fmt(format_args!(
             // Note: We use underscores because it makes escaping easier
             // for redis.
-            "{}/{}/{}/{}",
+            "{}_{}_{}_{}_{}",
             unique_key.instance_name,
             unique_key.digest_function,
-            unique_key.digest,
+            unique_key.digest.packed_hash(),
+            unique_key.digest.size_bytes(),
             if cachable { 'c' } else { 'u' },
         ))
     }
@@ -283,7 +284,7 @@ impl std::fmt::Display for ActionUniqueKey {
 /// to ensure we never match against another `ActionInfo` (when a task should never be cached).
 /// This struct must be 100% compatible with `ExecuteRequest` struct in `remote_execution.proto`
 /// except for the salt field.
-#[derive(Clone, Debug, Serialize, Deserialize, MetricsComponent)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, MetricsComponent)]
 pub struct ActionInfo {
     /// Digest of the underlying `Command`.
     #[metric(help = "Digest of the underlying Command.")]

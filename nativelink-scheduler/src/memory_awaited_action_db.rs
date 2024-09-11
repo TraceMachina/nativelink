@@ -697,7 +697,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             ActionUniqueQualifier::Uncachable(_unique_key) => None,
         };
         let operation_id = OperationId::default();
-        let awaited_action = AwaitedAction::new(operation_id.clone(), action_info);
+        let awaited_action =
+            AwaitedAction::new(operation_id.clone(), action_info, (self.now_fn)().now());
         debug_assert!(
             ActionStage::Queued == awaited_action.state().stage,
             "Expected action to be queued"

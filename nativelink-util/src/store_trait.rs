@@ -849,6 +849,8 @@ pub trait SchedulerSubscription: Send + Sync {
 pub trait SchedulerSubscriptionManager: Send + Sync {
     type Subscription: SchedulerSubscription;
 
+    fn notify_for_test(&self, value: String);
+
     fn subscribe<K>(&self, key: K) -> Result<Self::Subscription, Error>
     where
         K: SchedulerStoreKeyProvider;

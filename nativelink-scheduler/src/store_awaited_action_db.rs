@@ -296,17 +296,19 @@ impl SchedulerStoreDataProvider for UpdateClientIdToOperationId {
 }
 
 #[derive(MetricsComponent)]
-pub struct StoreAwaitedActionDb<S: SchedulerStore> {
+pub struct StoreAwaitedActionDb<S: SchedulerStore, F: Fn() -> OperationId> {
     store: Arc<S>,
     now_fn: fn() -> SystemTime,
+    operation_id_creator: F,
     _pull_task_change_subscriber_spawn: JoinHandleDropGuard<()>,
 }
 
-impl<S: SchedulerStore> StoreAwaitedActionDb<S> {
+impl<S: SchedulerStore, F: Fn() -> OperationId> StoreAwaitedActionDb<S, F> {
     pub fn new(
         store: Arc<S>,
         task_change_publisher: Arc<Notify>,
         now_fn: fn() -> SystemTime,
+        operation_id_creator: F,
     ) -> Result<Self, Error> {
         let mut subscription = store
             .subscription_manager()
@@ -340,6 +342,7 @@ impl<S: SchedulerStore> StoreAwaitedActionDb<S> {
         Ok(Self {
             store,
             now_fn,
+            operation_id_creator,
             _pull_task_change_subscriber_spawn: pull_task_change_subscriber,
         })
     }
@@ -409,7 +412,9 @@ impl<S: SchedulerStore> StoreAwaitedActionDb<S> {
     }
 }
 
-impl<S: SchedulerStore> AwaitedActionDb for StoreAwaitedActionDb<S> {
+impl<S: SchedulerStore, F: Fn() -> OperationId + Send + Sync + Unpin + 'static> AwaitedActionDb
+    for StoreAwaitedActionDb<S, F>
+{
     type Subscriber = OperationSubscriber<S>;
 
     async fn get_awaited_action_by_id(
@@ -466,8 +471,9 @@ impl<S: SchedulerStore> AwaitedActionDb for StoreAwaitedActionDb<S> {
             return Ok(sub);
         }
 
-        let new_operation_id = OperationId::default();
-        let awaited_action = AwaitedAction::new(new_operation_id.clone(), action_info);
+        let new_operation_id = (self.operation_id_creator)();
+        let awaited_action =
+            AwaitedAction::new(new_operation_id.clone(), action_info, (self.now_fn)());
         debug_assert!(
             ActionStage::Queued == awaited_action.state().stage,
             "Expected action to be queued"
