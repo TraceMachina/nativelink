@@ -75,7 +75,7 @@ impl BepServer {
         self.store
             .update_oneshot(
                 StoreKey::Str(Cow::Owned(format!(
-                    "LifecycleEvent-{}-{}-{}",
+                    "LifecycleEvent:{}:{}:{}",
                     &stream_id.build_id, &stream_id.invocation_id, sequence_number,
                 ))),
                 buf.freeze(),
@@ -114,7 +114,7 @@ impl BepServer {
             store
                 .update_oneshot(
                     StoreKey::Str(Cow::Owned(format!(
-                        "BuildToolEventStream-{}-{}-{}",
+                        "BuildToolEventStream:{}:{}:{}",
                         &stream_id.build_id, &stream_id.invocation_id, sequence_number,
                     ))),
                     buf.freeze(),
