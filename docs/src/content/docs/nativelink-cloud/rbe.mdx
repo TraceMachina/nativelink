@@ -26,14 +26,15 @@ instructions below to pass in your own images.
 
 ## Custom Images
 To support most RBE builds you will most likely need to pass in your own image with the
-correct toolchains installed to support your build. To use your own image you can pass
+correct toolchains installed to support your build. To use your own __*public*__ image you can pass
 it using this configuration:
 ```bash
 --remote_default_exec_properties="container-image=docker://public.ecr.aws/ubuntu/ubuntu:22.04_stable"
 ```
-:::note
-The above uses a public image
-:::
+Or a public image on Docker Hub is accessible via:
+```bash
+--remote_default_exec_properties="container-image=docker://ubuntu:latest"
+```
 
 ### Private Images
 If your images are in your own private repository, you can pass your repository
@@ -58,6 +59,14 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
     --remote_exec_header=x-nativelink-rbe-registry-password="$(gcloud auth print-access-token)"
     ```
   </TabItem>
+  <TabItem label="Docker.io">
+    ```bash
+    --remote_default_exec_properties="container-image=docker://docker.io/rbe-images/image"
+    --remote_exec_header=x-nativelink-rbe-registry-server=docker.io
+    --remote_exec_header=x-nativelink-rbe-registry-username=YOUR_USERNAME
+    --remote_exec_header=x-nativelink-rbe-registry-password=YOUR_PERSONAL_ACCESS_TOKEN
+    ```
+  </TabItem>
 </Tabs>
 
 ## Hermetic Bazel Builds
@@ -68,7 +77,7 @@ commands will install all needed dependencies.
 You can see a sample of that in the WORKSPACE file of our **Hermetic CC** example
 repository [here](https://github.com/TraceMachina/hermetic_cc_toolchain_rbe_example/blob/main/WORKSPACE).
 
-## Advanced Configuration
+## Recommended Flags
 Bazel has many flags you can pass to it to modify RBE. We recommend three main flags to start.
 
 ### `--jobs`
@@ -97,3 +106,19 @@ recommend setting `600`.
 ### Further configurations
 You can see the rest of the Bazel command line arguments [here](https://bazel.build/reference/command-line-reference),
 and don't hesitate to reach out to us with any questions!
+
+## Execution Properties
+You may have jobs that you need to configure to run on specific hardware, whether that's `GPUs` or `High Memory`. In
+order to enable this, we utilize Bazel's `exec_properties`. Inside a specific rule you can pass a `node` value
+that will map those tasks to the type of worker node you want to run your task on.
+
+```bash
+my_rule(
+    name = 'my_target',
+    exec_properties = {
+        'Pool': 'gpu-cuda'
+    }
+    …
+)
+```
+To configure accepted values of `Pool` for your builds please reach out to us to get setup.
