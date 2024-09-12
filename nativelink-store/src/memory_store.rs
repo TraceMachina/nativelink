@@ -12,27 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::Bound;
 use std::pin::Pin;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{
-    StoreDriver, StoreKey, StoreOptimizations, StoreSubscription, StoreSubscriptionItem,
-    UploadSizeInfo,
-};
-use parking_lot::{RwLock, RwLockUpgradableReadGuard};
-use tokio::sync::watch;
-use tracing::{event, Level};
+use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -57,92 +50,18 @@ impl LenEntry for BytesWrapper {
     }
 }
 
-/// A subscription to a key in the MemoryStore.
-struct MemoryStoreSubscription {
-    store: Weak<MemoryStore>,
-    key: StoreKey<'static>,
-    receiver: Option<watch::Receiver<Result<Arc<dyn StoreSubscriptionItem>, Error>>>,
-}
-
-#[async_trait]
-impl StoreSubscription for MemoryStoreSubscription {
-    fn peek(&self) -> Result<Arc<dyn StoreSubscriptionItem>, Error> {
-        self.receiver.as_ref().unwrap().borrow().clone()
-    }
-
-    async fn changed(&mut self) -> Result<Arc<dyn StoreSubscriptionItem>, Error> {
-        self.receiver
-            .as_mut()
-            .unwrap()
-            .changed()
-            .await
-            .map_err(|e| {
-                make_err!(
-                    Code::Internal,
-                    "Sender dropped in DefaultStoreSubscription::changed - {e:?}"
-                )
-            })?;
-        self.receiver.as_ref().unwrap().borrow().clone()
-    }
-}
-
-/// When the subscription is dropped, we need to remove the subscription from the store
-/// to prevent memory leaks.
-impl Drop for MemoryStoreSubscription {
-    fn drop(&mut self) {
-        // Make sure we manually drop receiver first.
-        self.receiver = None;
-        let Some(store) = self.store.upgrade() else {
-            return;
-        };
-        store.remove_dropped_subscription(self.key.borrow().into_owned());
-    }
-}
-
-struct MemoryStoreSubscriptionItem {
-    store: Weak<MemoryStore>,
-    key: StoreKey<'static>,
-}
-
-#[async_trait]
-impl StoreSubscriptionItem for MemoryStoreSubscriptionItem {
-    async fn get_key<'a>(&'a self) -> Result<StoreKey<'a>, Error> {
-        Ok(self.key.borrow())
-    }
-
-    async fn get_part(
-        &self,
-        writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
-    ) -> Result<(), Error> {
-        let store = self
-            .store
-            .upgrade()
-            .err_tip(|| "Store dropped in MemoryStoreSubscriptionItem::get_part")?;
-        Pin::new(store.as_ref())
-            .get_part(self.key.borrow(), writer, offset, length)
-            .await
-    }
-}
-
-type SubscriptionSender = watch::Sender<Result<Arc<dyn StoreSubscriptionItem>, Error>>;
 #[derive(MetricsComponent)]
 pub struct MemoryStore {
-    weak_self: Weak<Self>,
     #[metric(group = "evicting_map")]
     evicting_map: EvictingMap<StoreKey<'static>, BytesWrapper, SystemTime>,
-    subscriptions: RwLock<HashMap<StoreKey<'static>, SubscriptionSender>>,
 }
 
 impl MemoryStore {
     pub fn new(config: &nativelink_config::stores::MemoryStore) -> Arc<Self> {
         let empty_policy = nativelink_config::stores::EvictionPolicy::default();
         let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
-        Arc::new_cyclic(|weak_self| MemoryStore {
-            weak_self: weak_self.clone(),
+        Arc::new(Self {
             evicting_map: EvictingMap::new(eviction_policy, SystemTime::now()),
-            subscriptions: RwLock::new(HashMap::new()),
         })
     }
 
@@ -154,21 +73,6 @@ impl MemoryStore {
 
     pub async fn remove_entry(&self, key: StoreKey<'_>) -> bool {
         self.evicting_map.remove(&key.into_owned()).await
-    }
-
-    /// Tells the store that a subscription has been dropped and gives an opportunity to clean up.
-    fn remove_dropped_subscription(&self, key: StoreKey<'static>) {
-        let mut subscriptions = self.subscriptions.write();
-        let Some(sender) = subscriptions.get(&key) else {
-            event!(
-                Level::ERROR,
-                "Subscription dropped for key '{key:?}' but not found in subscriptions"
-            );
-            return;
-        };
-        if sender.receiver_count() == 0 {
-            subscriptions.remove(&key);
-        }
     }
 }
 
@@ -233,13 +137,6 @@ impl StoreDriver for MemoryStore {
         self.evicting_map
             .insert(key.borrow().into_owned(), BytesWrapper(final_buffer))
             .await;
-        {
-            // Notify all subscribers that the key has been modified.
-            let subscription_lock = self.subscriptions.read();
-            if let Some(sender) = subscription_lock.get(&key.into_owned()) {
-                sender.send_modify(|_| { /* We just need to flag it modified. */ });
-            }
-        }
         Ok(())
     }
 
@@ -274,40 +171,6 @@ impl StoreDriver for MemoryStore {
             .send_eof()
             .err_tip(|| "Failed to write EOF in memory store get_part")?;
         Ok(())
-    }
-
-    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
-        optimization == StoreOptimizations::SubscribeChanges
-    }
-
-    async fn subscribe(self: Arc<Self>, key: StoreKey<'_>) -> Box<dyn StoreSubscription> {
-        let key = key.into_owned();
-        let subscription_lock = self.subscriptions.upgradable_read();
-        if let Some(watch_sender) = subscription_lock.get(&key) {
-            let mut rx = watch_sender.subscribe();
-            rx.mark_changed();
-            return Box::new(MemoryStoreSubscription {
-                store: self.weak_self.clone(),
-                key: key.borrow().into_owned(),
-                receiver: Some(rx),
-            });
-        }
-        {
-            let mut subscription_lock = RwLockUpgradableReadGuard::upgrade(subscription_lock);
-            let subscription_item: Arc<dyn StoreSubscriptionItem> =
-                Arc::new(MemoryStoreSubscriptionItem {
-                    store: self.weak_self.clone(),
-                    key: key.borrow().into_owned(),
-                });
-            let (tx, mut rx) = watch::channel(Ok(subscription_item));
-            subscription_lock.insert(key.borrow().into_owned(), tx.clone());
-            rx.mark_changed();
-            Box::new(MemoryStoreSubscription {
-                store: self.weak_self.clone(),
-                key,
-                receiver: Some(rx),
-            })
-        }
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {

@@ -18,7 +18,6 @@ pub mod channel_body_for_tests;
 pub mod chunked_stream;
 pub mod common;
 pub mod connection_manager;
-pub mod default_store_key_subscribe;
 pub mod digest_hasher;
 pub mod evicting_map;
 pub mod fastcdc;

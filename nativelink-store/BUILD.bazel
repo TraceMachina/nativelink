@@ -82,7 +82,6 @@ rust_test_suite(
         "tests/completeness_checking_store_test.rs",
         "tests/compression_store_test.rs",
         "tests/dedup_store_test.rs",
-        "tests/default_store_key_subscribe_test.rs",
         "tests/existence_store_test.rs",
         "tests/fast_slow_store_test.rs",
         "tests/filesystem_store_test.rs",
