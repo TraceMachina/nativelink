@@ -52,7 +52,7 @@ impl StoreDriver for SizePartitioningStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         let mut non_digest_sample = None;
         let (lower_digests, upper_digests): (Vec<_>, Vec<_>) =
@@ -120,8 +120,8 @@ impl StoreDriver for SizePartitioningStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let digest = match key {
             StoreKey::Digest(digest) => digest,

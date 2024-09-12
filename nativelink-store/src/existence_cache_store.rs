@@ -85,7 +85,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
     async fn inner_has_with_results(
         self: Pin<&Self>,
         keys: &[DigestInfo],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.existence_cache
             .sizes_for_keys(keys, results, true /* peek */)
@@ -117,7 +117,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
                 .iter()
                 .zip(inner_results.iter())
                 .filter_map(|(key, result)| {
-                    result.map(|size| (key.borrow().into_digest(), ExistanceItem(size)))
+                    result.map(|size| (key.borrow().into_digest(), ExistanceItem(size as usize)))
                 })
                 .collect::<Vec<_>>();
             let _ = self.existence_cache.insert_many(inserts).await;
@@ -151,7 +151,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
         // existence_cache. We need to convert the digests to owned values to be able to
@@ -187,6 +187,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         let result = self.inner_store.update(digest, reader, size_info).await;
         if result.is_ok() {
             if let UploadSizeInfo::ExactSize(size) = size_info {
+                let size = usize::try_from(size).err_tip(|| "Could not convert size to usize")?;
                 let _ = self
                     .existence_cache
                     .insert(digest, ExistanceItem(size))
@@ -200,8 +201,8 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
         let result = self
@@ -210,7 +211,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             .await;
         if result.is_ok() {
             let size = usize::try_from(digest.size_bytes())
-                .err_tip(|| "Could not convert size_bytes in ExistenceCacheStore::get_part")?;
+                .err_tip(|| "Could not convert digest.size_bytes() to usize")?;
             let _ = self
                 .existence_cache
                 .insert(digest, ExistanceItem(size))

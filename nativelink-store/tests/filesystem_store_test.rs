@@ -272,7 +272,7 @@ async fn valid_results_after_shutdown_test() -> Result<(), Error> {
 
         assert_eq!(
             store.has(digest).await,
-            Ok(Some(VALUE1.len())),
+            Ok(Some(VALUE1.len() as u64)),
             "Expected filesystem store to have hash: {}",
             HASH1
         );
@@ -1355,7 +1355,7 @@ async fn update_with_whole_file_closes_file() -> Result<(), Error> {
     }
 
     store
-        .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len()))
+        .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len() as u64))
         .await?;
     Ok(())
 }
@@ -1423,7 +1423,7 @@ async fn update_with_whole_file_slow_path_when_low_file_descriptors() -> Result<
     }
 
     store
-        .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len()))
+        .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len() as u64))
         .await?;
     Ok(())
 }
@@ -1466,7 +1466,7 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         .ino();
 
     let result = store
-        .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len()))
+        .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len() as u64))
         .await?;
     assert!(
         result.is_none(),

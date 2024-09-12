@@ -64,13 +64,13 @@ pub fn set_default_digest_size_health_check(size: usize) -> Result<(), Error> {
 pub enum UploadSizeInfo {
     /// When the data transfer amount is known to be exact size, this enum should be used.
     /// The receiver store can use this to better optimize the way the data is sent or stored.
-    ExactSize(usize),
+    ExactSize(u64),
 
     /// When the data transfer amount is not known to be exact, the caller should use this enum
     /// to provide the maximum size that could possibly be sent. This will bypass the exact size
     /// checks, but still provide useful information to the underlying store about the data being
     /// sent that it can then use to optimize the upload process.
-    MaxSize(usize),
+    MaxSize(u64),
 }
 
 /// Utility to send all the data to the store from a file.
@@ -173,8 +173,8 @@ pub trait StoreSubscriptionItem: Send + Sync + Unpin {
     async fn get_part(
         &self,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error>;
 
     /// Same as `Store::get`, but without the key.
@@ -436,7 +436,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     fn has<'a>(
         &'a self,
         digest: impl Into<StoreKey<'a>>,
-    ) -> impl Future<Output = Result<Option<usize>, Error>> + 'a {
+    ) -> impl Future<Output = Result<Option<u64>, Error>> + 'a {
         self.as_store_driver_pin().has(digest.into())
     }
 
@@ -448,7 +448,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     fn has_many<'a>(
         &'a self,
         digests: &'a [StoreKey<'a>],
-    ) -> impl Future<Output = Result<Vec<Option<usize>>, Error>> + Send + 'a {
+    ) -> impl Future<Output = Result<Vec<Option<u64>>, Error>> + Send + 'a {
         self.as_store_driver_pin().has_many(digests)
     }
 
@@ -458,7 +458,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     fn has_with_results<'a>(
         &'a self,
         digests: &'a [StoreKey<'a>],
-        results: &'a mut [Option<usize>],
+        results: &'a mut [Option<u64>],
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
         self.as_store_driver_pin()
             .has_with_results(digests, results)
@@ -474,7 +474,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
         &'a self,
         range: impl RangeBounds<StoreKey<'b>> + Send + 'b,
         mut handler: impl for<'c> FnMut(&'c StoreKey) -> bool + Send + Sync + 'a,
-    ) -> impl Future<Output = Result<usize, Error>> + Send + 'a
+    ) -> impl Future<Output = Result<u64, Error>> + Send + 'a
     where
         'b: 'a,
     {
@@ -544,8 +544,8 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
         &'a self,
         digest: impl Into<StoreKey<'a>>,
         mut writer: impl BorrowMut<DropCloserWriteHalf> + Send + 'a,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
         let key = digest.into();
         // Note: We need to capture `writer` just in case the caller
@@ -574,8 +574,8 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     fn get_part_unchunked<'a>(
         &'a self,
         key: impl Into<StoreKey<'a>>,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> impl Future<Output = Result<Bytes, Error>> + Send + 'a {
         self.as_store_driver_pin()
             .get_part_unchunked(key.into(), offset, length)
@@ -598,7 +598,7 @@ pub trait StoreDriver:
 {
     /// See: [`StoreLike::has`] for details.
     #[inline]
-    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {
         let mut result = [None];
         self.has_with_results(&[key], &mut result).await?;
         Ok(result[0])
@@ -609,7 +609,7 @@ pub trait StoreDriver:
     async fn has_many(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
-    ) -> Result<Vec<Option<usize>>, Error> {
+    ) -> Result<Vec<Option<u64>>, Error> {
         let mut results = vec![None; digests.len()];
         self.has_with_results(digests, &mut results).await?;
         Ok(results)
@@ -619,7 +619,7 @@ pub trait StoreDriver:
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error>;
 
     /// See: [`StoreLike::list`] for details.
@@ -627,7 +627,7 @@ pub trait StoreDriver:
         self: Pin<&Self>,
         _range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
         _handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
-    ) -> Result<usize, Error> {
+    ) -> Result<u64, Error> {
         // TODO(allada) We should force all stores to implement this function instead of
         // providing a default implementation.
         Err(make_err!(
@@ -677,7 +677,8 @@ pub trait StoreDriver:
         // that can take objects already fully in memory instead?
         let (mut tx, rx) = make_buf_channel_pair();
 
-        let data_len = data.len();
+        let data_len =
+            u64::try_from(data.len()).err_tip(|| "Could not convert data.len() to u64")?;
         let send_fut = async move {
             // Only send if we are not EOF.
             if !data.is_empty() {
@@ -701,8 +702,8 @@ pub trait StoreDriver:
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error>;
 
     /// See: [`StoreLike::get`] for details.
@@ -719,16 +720,23 @@ pub trait StoreDriver:
     async fn get_part_unchunked(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<Bytes, Error> {
+        let length_usize: Option<usize> = match length {
+            Some(length) => {
+                Some(usize::try_from(length).err_tip(|| "Could not convert length to usize")?)
+            }
+            None => None,
+        };
+
         // TODO(blaise.bruer) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
         let (mut tx, mut rx) = make_buf_channel_pair();
 
         let (data_res, get_part_res) = join!(
-            rx.consume(length),
+            rx.consume(length_usize),
             // We use a closure here to ensure that the `tx` is dropped when the
             // future is done.
             async move { self.get_part(key, &mut tx, offset, length).await },
@@ -763,7 +771,7 @@ pub trait StoreDriver:
 
         let mut digest_hasher = default_digest_hasher_func().hasher();
         digest_hasher.update(&digest_data);
-        let digest_data_len = digest_data.len();
+        let digest_data_len = digest_data.len() as u64;
         let digest_info = StoreKey::from(digest_hasher.finalize_digest());
 
         let digest_bytes = bytes::Bytes::copy_from_slice(&digest_data);

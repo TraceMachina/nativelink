@@ -58,7 +58,7 @@ async fn simple_exist_cache_test() -> Result<(), Error> {
             .has(digest)
             .await
             .err_tip(|| "Failed to check store")?,
-        Some(VALUE.len()),
+        Some(VALUE.len() as u64),
         "Expected digest to exist in store"
     );
 
@@ -145,20 +145,20 @@ async fn ensure_has_requests_eventually_do_let_evictions_happen() -> Result<(), 
         MockInstantWrapped::default(),
     );
 
-    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len())));
+    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len() as u64)));
     MockClock::advance(Duration::from_secs(3));
 
     // Now that our existence cache has been populated, remove
     // it from the inner store.
     inner_store.remove_entry(digest.into()).await;
 
-    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len())));
+    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len() as u64)));
     MockClock::advance(Duration::from_secs(3));
 
-    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len())));
+    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len() as u64)));
     MockClock::advance(Duration::from_secs(3));
 
-    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len())));
+    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len() as u64)));
     MockClock::advance(Duration::from_secs(3));
 
     // It should have been evicted from the existence cache by now.

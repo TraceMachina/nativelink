@@ -152,14 +152,14 @@ async fn insert_purges_at_max_bytes() -> Result<(), Error> {
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 3"
     );
     assert_eq!(
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 4"
     );
 
@@ -216,7 +216,7 @@ async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 4"
     );
 
@@ -263,21 +263,21 @@ async fn insert_purges_at_max_seconds() -> Result<(), Error> {
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 2"
     );
     assert_eq!(
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 3"
     );
     assert_eq!(
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 4"
     );
 
@@ -329,7 +329,7 @@ async fn get_refreshes_time() -> Result<(), Error> {
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 3"
     );
 
@@ -486,14 +486,14 @@ async fn hashes_equal_sizes_different_doesnt_override() -> Result<(), Error> {
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
             .await,
-        Some(value1.len()),
+        Some(value1.len() as u64),
         "HASH1/0 should exist"
     );
     assert_eq!(
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH1, 1)?)
             .await,
-        Some(value2.len()),
+        Some(value2.len() as u64),
         "HASH1/1 should exist"
     );
 

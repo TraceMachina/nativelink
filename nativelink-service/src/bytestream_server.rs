@@ -249,13 +249,7 @@ impl ByteStreamServer {
             // `store` to ensure its lifetime follows the future and not the caller.
             store
                 // Bytestream always uses digest size as the actual byte size.
-                .update(
-                    digest,
-                    rx,
-                    UploadSizeInfo::ExactSize(
-                        usize::try_from(digest.size_bytes()).err_tip(|| "Invalid digest size")?,
-                    ),
-                )
+                .update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes()))
                 .await
         });
         Ok(ActiveStreamGuard {
@@ -275,8 +269,8 @@ impl ByteStreamServer {
         digest: DigestInfo,
         read_request: ReadRequest,
     ) -> Result<Response<ReadStream>, Error> {
-        let read_limit = usize::try_from(read_request.read_limit)
-            .err_tip(|| "read_limit has is not convertible to usize")?;
+        let read_limit = u64::try_from(read_request.read_limit)
+            .err_tip(|| "Could not convert read_limit to u64")?;
 
         let (tx, rx) = make_buf_channel_pair();
 
@@ -300,7 +294,13 @@ impl ByteStreamServer {
             maybe_get_part_result: None,
             get_part_fut: Box::pin(async move {
                 store
-                    .get_part(digest, tx, read_request.read_offset as usize, read_limit)
+                    .get_part(
+                        digest,
+                        tx,
+                        u64::try_from(read_request.read_offset)
+                            .err_tip(|| "Could not convert read_offset to u64")?,
+                        read_limit,
+                    )
                     .await
             }),
         });

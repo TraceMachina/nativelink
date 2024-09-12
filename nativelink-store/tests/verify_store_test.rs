@@ -55,7 +55,7 @@ async fn verify_size_false_passes_on_update() -> Result<(), Error> {
     );
     assert_eq!(
         inner_store.has(digest).await,
-        Ok(Some(VALUE1.len())),
+        Ok(Some(VALUE1.len() as u64)),
         "Expected data to exist in store after update"
     );
     Ok(())
@@ -121,7 +121,7 @@ async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,
-        Ok(Some(VALUE1.len())),
+        Ok(Some(VALUE1.len() as u64)),
         "Expected data to exist in store after update"
     );
     Ok(())
@@ -187,7 +187,7 @@ async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,
-        Ok(Some(VALUE.len())),
+        Ok(Some(VALUE.len() as u64)),
         "Expected data to exist in store after update"
     );
     Ok(())
@@ -256,7 +256,7 @@ async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,
-        Ok(Some(VALUE.len())),
+        Ok(Some(VALUE.len() as u64)),
         "Expected data to exist in store after update"
     );
     Ok(())
@@ -374,7 +374,7 @@ async fn verify_size_and_hash_suceeds_on_small_data() -> Result<(), Error> {
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,
-        Ok(Some(VALUE.len())),
+        Ok(Some(VALUE.len() as u64)),
         "Expected data to exist in store after update"
     );
     Ok(())

@@ -729,7 +729,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
         // existence_cache. We need to convert the digests to owned values to be able to
@@ -799,7 +799,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         let digest = key.into_digest();
         let path = file.get_path().as_os_str().to_os_string();
         let file_size = match upload_size {
-            UploadSizeInfo::ExactSize(size) => size as u64,
+            UploadSizeInfo::ExactSize(size) => size,
             UploadSizeInfo::MaxSize(_) => file
                 .as_reader()
                 .await
@@ -835,8 +835,8 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
         if is_zero_digest(digest) {
@@ -853,8 +853,8 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             self.evicting_map.get(&digest).await.ok_or_else(|| {
                 make_err!(Code::NotFound, "{digest} not found in filesystem store")
             })?;
-        let read_limit = length.unwrap_or(usize::MAX) as u64;
-        let mut resumeable_temp_file = entry.read_file_part(offset as u64, read_limit).await?;
+        let read_limit = length.unwrap_or(u64::MAX);
+        let mut resumeable_temp_file = entry.read_file_part(offset, read_limit).await?;
 
         loop {
             let mut buf = BytesMut::with_capacity(self.read_buffer_size);

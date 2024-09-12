@@ -148,7 +148,7 @@ impl StoreDriver for VerifyStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.inner_store.has_with_results(digests, results).await
     }
@@ -169,7 +169,7 @@ impl StoreDriver for VerifyStore {
         };
         let digest_size = digest.size_bytes();
         if let UploadSizeInfo::ExactSize(expected_size) = size_info {
-            if self.verify_size && expected_size as u64 != digest_size {
+            if self.verify_size && expected_size != digest_size {
                 self.size_verification_failures.inc();
                 return Err(make_input_err!(
                     "Expected size to match. Got {} but digest says {} on update",
@@ -215,8 +215,8 @@ impl StoreDriver for VerifyStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         self.inner_store.get_part(key, writer, offset, length).await
     }
