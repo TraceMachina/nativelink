@@ -55,6 +55,10 @@ use crate::redis_utils::ft_aggregate;
 pub const READ_CHUNK_SIZE: usize = 64 * 1024;
 const CONNECTION_POOL_SIZE: usize = 3;
 
+fn to_hex(value: &u32) -> String {
+    format!("{value:08x}")
+}
+
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 #[derive(MetricsComponent)]
 pub struct RedisStore {
@@ -62,11 +66,21 @@ pub struct RedisStore {
     client_pool: RedisPool,
 
     /// A channel to publish updates to when a key is added, removed, or modified.
+    #[metric(
+        help = "The pubsub channel to publish updates to when a key is added, removed, or modified"
+    )]
     pub_sub_channel: Option<String>,
 
     /// A redis client for managing subscriptions.
     /// TODO: This should be moved into the store in followups once a standard use pattern has been determined.
     subscriber_client: SubscriberClient,
+
+    /// For metrics only.
+    #[metric(
+        help = "A unique identifier for the FT.CREATE command used to create the index template",
+        handler = to_hex
+    )]
+    fingerprint_create_index: u32,
 
     /// A function used to generate names for temporary keys.
     temp_name_generator_fn: fn() -> String,
@@ -159,6 +173,7 @@ impl RedisStore {
             client_pool,
             pub_sub_channel,
             subscriber_client,
+            fingerprint_create_index: fingerprint_create_index_template(),
             temp_name_generator_fn,
             key_prefix,
             update_if_version_matches_script: Script::from_lua(LUA_VERSION_SET_SCRIPT),
