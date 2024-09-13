@@ -64,7 +64,7 @@ async fn has_test() -> Result<(), Error> {
             .await;
         assert_eq!(
             has_result,
-            Ok(Some(VALUE1.len())),
+            Ok(Some(VALUE1.len() as u64)),
             "Expected ref store to have data in ref store : {}",
             VALID_HASH1
         );

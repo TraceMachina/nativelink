@@ -83,7 +83,7 @@ impl Drop for ClientAwaitedAction {
 /// why the implementation has fixed default values in it.
 impl LenEntry for ClientAwaitedAction {
     #[inline]
-    fn len(&self) -> usize {
+    fn len(&self) -> u64 {
         0
     }
 

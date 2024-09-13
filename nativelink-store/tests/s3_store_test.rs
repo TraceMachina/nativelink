@@ -221,7 +221,7 @@ async fn simple_update_ac() -> Result<(), Error> {
             .update(
                 DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
                 rx,
-                UploadSizeInfo::ExactSize(CONTENT_LENGTH),
+                UploadSizeInfo::ExactSize(CONTENT_LENGTH as u64),
             )
             .await
     });
@@ -350,8 +350,8 @@ async fn smoke_test_get_part() -> Result<(), Error> {
     store
         .get_part_unchunked(
             DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
-            OFFSET,
-            Some(LENGTH),
+            OFFSET as u64,
+            Some(LENGTH as u64),
         )
         .await?;
 
@@ -589,7 +589,7 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
         store.get_part_unchunked(
             DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE)?,
             0,
-            Some(CAS_ENTRY_SIZE),
+            Some(CAS_ENTRY_SIZE as u64),
         )
     );
     assert_eq!(

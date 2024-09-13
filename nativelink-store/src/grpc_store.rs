@@ -469,7 +469,7 @@ impl GrpcStore {
         let length = length.unwrap_or(default_len).min(default_len);
         if length > 0 {
             writer
-                .send(value.freeze().slice(offset..(offset + length)))
+                .send(value.freeze().slice(offset..offset + length))
                 .await
                 .err_tip(|| "Failed to write data in grpc store")?;
         }
@@ -510,7 +510,7 @@ impl StoreDriver for GrpcStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
             keys.iter()
@@ -521,7 +521,7 @@ impl StoreDriver for GrpcStore {
                     // hope that we detect incorrect usage.
                     self.get_action_result_from_digest(key.borrow().into_digest())
                         .await?;
-                    *result = Some(usize::MAX);
+                    *result = Some(u64::MAX);
                     Ok::<_, Error>(())
                 })
                 .collect::<FuturesUnordered<_>>()
@@ -565,7 +565,7 @@ impl StoreDriver for GrpcStore {
         {
             match missing_digests.binary_search(&digest) {
                 Ok(_) => *result = None,
-                Err(_) => *result = Some(usize::try_from(digest.size_bytes())?),
+                Err(_) => *result = Some(digest.size_bytes()),
             }
         }
 
@@ -655,11 +655,16 @@ impl StoreDriver for GrpcStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+            let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
+            let length = length
+                .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
+                .transpose()?;
+
             return self
                 .get_action_result_as_part(digest, writer, offset, length)
                 .await;
@@ -687,8 +692,9 @@ impl StoreDriver for GrpcStore {
         let local_state = LocalState {
             resource_name,
             writer,
-            read_offset: offset as i64,
-            read_limit: length.unwrap_or(0) as i64,
+            read_offset: i64::try_from(offset).err_tip(|| "Could not convert offset to i64")?,
+            read_limit: i64::try_from(length.unwrap_or(0))
+                .err_tip(|| "Could not convert length to i64")?,
         };
 
         self.retrier

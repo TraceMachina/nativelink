@@ -40,8 +40,8 @@ impl Debug for BytesWrapper {
 
 impl LenEntry for BytesWrapper {
     #[inline]
-    fn len(&self) -> usize {
-        Bytes::len(&self.0)
+    fn len(&self) -> u64 {
+        Bytes::len(&self.0) as u64
     }
 
     #[inline]
@@ -81,7 +81,7 @@ impl StoreDriver for MemoryStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // TODO(allada): This is a dirty hack to get around the lifetime issues with the
         // evicting map.
@@ -104,7 +104,7 @@ impl StoreDriver for MemoryStore {
         self: Pin<&Self>,
         range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
         handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
-    ) -> Result<usize, Error> {
+    ) -> Result<u64, Error> {
         let range = (
             range.0.map(|v| v.into_owned()),
             range.1.map(|v| v.into_owned()),
@@ -144,9 +144,14 @@ impl StoreDriver for MemoryStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
+        let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
+        let length = length
+            .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
+            .transpose()?;
+
         if is_zero_digest(key.borrow()) {
             writer
                 .send_eof()
@@ -159,7 +164,9 @@ impl StoreDriver for MemoryStore {
             .get(&key.borrow().into_owned())
             .await
             .err_tip_with_code(|_| (Code::NotFound, format!("Key {key:?} not found")))?;
-        let default_len = value.len() - offset;
+        let default_len = usize::try_from(value.len())
+            .err_tip(|| "Could not convert value.len() to usize")?
+            .saturating_sub(offset);
         let length = length.unwrap_or(default_len).min(default_len);
         if length > 0 {
             writer
