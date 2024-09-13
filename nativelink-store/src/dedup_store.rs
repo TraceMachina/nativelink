@@ -34,9 +34,9 @@ use tracing::{event, Level};
 
 // NOTE: If these change update the comments in `stores.rs` to reflect
 // the new defaults.
-const DEFAULT_MIN_SIZE: usize = 64 * 1024;
-const DEFAULT_NORM_SIZE: usize = 256 * 1024;
-const DEFAULT_MAX_SIZE: usize = 512 * 1024;
+const DEFAULT_MIN_SIZE: u64 = 64 * 1024;
+const DEFAULT_NORM_SIZE: u64 = 256 * 1024;
+const DEFAULT_MAX_SIZE: u64 = 512 * 1024;
 const DEFAULT_MAX_CONCURRENT_FETCH_PER_GET: usize = 10;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
@@ -61,37 +61,42 @@ impl DedupStore {
         config: &nativelink_config::stores::DedupStore,
         index_store: Store,
         content_store: Store,
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>, Error> {
         let min_size = if config.min_size == 0 {
             DEFAULT_MIN_SIZE
         } else {
-            config.min_size as usize
+            config.min_size as u64
         };
         let normal_size = if config.normal_size == 0 {
             DEFAULT_NORM_SIZE
         } else {
-            config.normal_size as usize
+            config.normal_size as u64
         };
         let max_size = if config.max_size == 0 {
             DEFAULT_MAX_SIZE
         } else {
-            config.max_size as usize
+            config.max_size as u64
         };
         let max_concurrent_fetch_per_get = if config.max_concurrent_fetch_per_get == 0 {
             DEFAULT_MAX_CONCURRENT_FETCH_PER_GET
         } else {
             config.max_concurrent_fetch_per_get as usize
         };
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             index_store,
             content_store,
-            fast_cdc_decoder: FastCDC::new(min_size, normal_size, max_size),
+            fast_cdc_decoder: FastCDC::new(
+                usize::try_from(min_size).err_tip(|| "Could not convert min_size to usize")?,
+                usize::try_from(normal_size)
+                    .err_tip(|| "Could not convert normal_size to usize")?,
+                usize::try_from(max_size).err_tip(|| "Could not convert max_size to usize")?,
+            ),
             max_concurrent_fetch_per_get,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
-        })
+        }))
     }
 
-    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {
         // First we need to load the index that contains where the individual parts actually
         // can be fetched from.
         let index_entries = {
@@ -148,7 +153,7 @@ impl StoreDriver for DedupStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         digests
             .iter()
@@ -225,8 +230,8 @@ impl StoreDriver for DedupStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         // Special case for if a client tries to read zero bytes.
         if length == Some(0) {
@@ -255,7 +260,7 @@ impl StoreDriver for DedupStore {
                 })?
         };
 
-        let mut start_byte_in_stream: usize = 0;
+        let mut start_byte_in_stream: u64 = 0;
         let entries = {
             if offset == 0 && length.is_none() {
                 index_entries.entries
@@ -264,8 +269,7 @@ impl StoreDriver for DedupStore {
                 let mut entries = Vec::with_capacity(index_entries.entries.len());
                 for entry in index_entries.entries {
                     let first_byte = current_entries_sum;
-                    let entry_size = usize::try_from(entry.size_bytes())
-                        .err_tip(|| "Failed to convert to usize in DedupStore")?;
+                    let entry_size = entry.size_bytes();
                     current_entries_sum += entry_size;
                     // Filter any items who's end byte is before the first requested byte.
                     if current_entries_sum <= offset {
@@ -308,8 +312,10 @@ impl StoreDriver for DedupStore {
         // In the event any of these error, we will abort early and abandon all the rest of the
         // streamed data.
         // Note: Need to take special care to ensure we send the proper slice of data requested.
-        let mut bytes_to_skip = offset - start_byte_in_stream;
-        let mut bytes_to_send = length.unwrap_or(usize::MAX - offset);
+        let mut bytes_to_skip = usize::try_from(offset - start_byte_in_stream)
+            .err_tip(|| "Could not convert (offset - start_byte_in_stream) to usize")?;
+        let mut bytes_to_send = usize::try_from(length.unwrap_or(u64::MAX - offset))
+            .err_tip(|| "Could not convert length to usize")?;
         while let Some(result) = entries_stream.next().await {
             let mut data = result.err_tip(|| "Inner store iterator closed early in DedupStore")?;
             assert!(

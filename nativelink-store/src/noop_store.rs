@@ -48,7 +48,7 @@ impl StoreDriver for NoopStore {
     async fn has_with_results(
         self: Pin<&Self>,
         _keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         results.iter_mut().for_each(|r| *r = None);
         Ok(())
@@ -75,8 +75,8 @@ impl StoreDriver for NoopStore {
         self: Pin<&Self>,
         _key: StoreKey<'_>,
         _writer: &mut DropCloserWriteHalf,
-        _offset: usize,
-        _length: Option<usize>,
+        _offset: u64,
+        _length: Option<u64>,
     ) -> Result<(), Error> {
         Err(make_err!(Code::NotFound, "Not found in noop store"))
     }

@@ -42,7 +42,7 @@ pub const CURRENT_STREAM_FORMAT_VERSION: u8 = 1;
 // Default block size that will be used to slice stream into.
 pub const DEFAULT_BLOCK_SIZE: u32 = 64 * 1024;
 
-const U32_SZ: usize = std::mem::size_of::<u8>();
+const U32_SZ: u64 = std::mem::size_of::<u8>() as u64;
 
 type BincodeOptions = WithOtherIntEncoding<DefaultOptions, FixintEncoding>;
 
@@ -145,25 +145,25 @@ pub struct Footer {
 /// lz4_flex::block::get_maximum_output_size() way over estimates, so we use the
 /// one provided here: https://github.com/torvalds/linux/blob/master/include/linux/lz4.h#L61
 /// Local testing shows this gives quite accurate worst case given random input.
-fn lz4_compress_bound(input_size: usize) -> usize {
+fn lz4_compress_bound(input_size: u64) -> u64 {
     input_size + (input_size / 255) + 16
 }
 
 struct UploadState {
     header: Header,
     footer: Footer,
-    max_output_size: usize,
-    input_max_size: usize,
+    max_output_size: u64,
+    input_max_size: u64,
 }
 
 impl UploadState {
-    pub fn new(store: &CompressionStore, upload_size: UploadSizeInfo) -> Self {
+    pub fn new(store: &CompressionStore, upload_size: UploadSizeInfo) -> Result<Self, Error> {
         let input_max_size = match upload_size {
             UploadSizeInfo::ExactSize(sz) => sz,
             UploadSizeInfo::MaxSize(sz) => sz,
         };
 
-        let max_index_count = (input_max_size / store.config.block_size as usize) + 1;
+        let max_index_count = (input_max_size / store.config.block_size as u64) + 1;
 
         let header = Header {
             version: CURRENT_STREAM_FORMAT_VERSION,
@@ -177,7 +177,8 @@ impl UploadState {
                 SliceIndex {
                     ..Default::default()
                 };
-                max_index_count
+                usize::try_from(max_index_count)
+                    .err_tip(|| "Could not convert max_index_count to usize")?
             ],
             index_count: max_index_count as u32,
             uncompressed_data_size: 0, // Updated later.
@@ -186,22 +187,22 @@ impl UploadState {
         };
 
         // This is more accurate of an estimate than what get_maximum_output_size calculates.
-        let max_block_size = lz4_compress_bound(store.config.block_size as usize) + U32_SZ + 1;
+        let max_block_size = lz4_compress_bound(store.config.block_size as u64) + U32_SZ + 1;
 
         let max_output_size = {
-            let header_size = store.bincode_options.serialized_size(&header).unwrap() as usize;
+            let header_size = store.bincode_options.serialized_size(&header).unwrap();
             let max_content_size = max_block_size * max_index_count;
             let max_footer_size =
-                U32_SZ + 1 + store.bincode_options.serialized_size(&footer).unwrap() as usize;
+                U32_SZ + 1 + store.bincode_options.serialized_size(&footer).unwrap();
             header_size + max_content_size + max_footer_size
         };
 
-        Self {
+        Ok(Self {
             header,
             footer,
             max_output_size,
             input_max_size,
-        }
+        })
     }
 }
 
@@ -246,7 +247,7 @@ impl StoreDriver for CompressionStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.inner_store.has_with_results(digests, results).await
     }
@@ -257,7 +258,7 @@ impl StoreDriver for CompressionStore {
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let mut output_state = UploadState::new(&self, upload_size);
+        let mut output_state = UploadState::new(&self, upload_size)?;
 
         let (mut tx, rx) = make_buf_channel_pair();
 
@@ -307,7 +308,8 @@ impl StoreDriver for CompressionStore {
                     break; // EOF.
                 }
 
-                received_amt += chunk.len();
+                received_amt += u64::try_from(chunk.len())
+                    .err_tip(|| "Could not convert chunk.len() to u64")?;
                 error_if!(
                     received_amt > output_state.input_max_size,
                     "Got more data than stated in compression store upload request"
@@ -360,7 +362,7 @@ impl StoreDriver for CompressionStore {
                 },
             );
             output_state.footer.index_count = output_state.footer.indexes.len() as u32;
-            output_state.footer.uncompressed_data_size = received_amt as u64;
+            output_state.footer.uncompressed_data_size = received_amt;
             {
                 // Write Footer.
                 let serialized_footer = self
@@ -392,8 +394,8 @@ impl StoreDriver for CompressionStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         if is_zero_digest(key.borrow()) {
             writer
@@ -402,7 +404,6 @@ impl StoreDriver for CompressionStore {
             return Ok(());
         }
 
-        let offset = offset as u64;
         let (tx, mut rx) = make_buf_channel_pair();
 
         let inner_store = self.inner_store.clone();
@@ -474,7 +475,7 @@ impl StoreDriver for CompressionStore {
             let mut frame_sz = chunk.get_u32_le();
 
             let mut uncompressed_data_sz: u64 = 0;
-            let mut remaining_bytes_to_send: u64 = length.unwrap_or(usize::MAX) as u64;
+            let mut remaining_bytes_to_send: u64 = length.unwrap_or(u64::MAX);
             let mut chunks_count: u32 = 0;
             while frame_type != FOOTER_FRAME_TYPE {
                 error_if!(
