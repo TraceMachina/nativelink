@@ -60,6 +60,7 @@ uuid = { version = "1.8.0", default-features = false, features = ["v4", "serde"]
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
+nativelink-metric-collector = { path = "../nativelink-metric-collector" }
 pretty_assertions = { version = "1.4.0", features = ["std"] }
 memory-stats = "1.2.0"
 mock_instant = "0.3.2"
@@ -77,4 +78,6 @@ aws-smithy-runtime-api = "=1.7.1"
 serial_test = { version = "3.1.1", features = [
   "async",
 ], default-features = false }
+serde_json5 = "0.1.0"
 fred = { version = "9.1.2", default-features = false, features = ["mocks"] }
+tracing-subscriber = { version = "0.3.18", default-features = false }

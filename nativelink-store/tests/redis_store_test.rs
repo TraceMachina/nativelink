@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::panicking;
@@ -25,13 +25,20 @@ use fred::prelude::Builder;
 use fred::types::{RedisConfig, RedisValue};
 use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::{MetricFieldData, MetricKind, MetricsComponent, RootMetricsComponent};
+use nativelink_metric_collector::MetricsCollectorLayer;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{RedisStore, READ_CHUNK_SIZE};
+use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::operation_state_manager::ClientStateManager;
+use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use parking_lot::RwLock;
 use pretty_assertions::assert_eq;
+use serde_json::{from_str, to_string, Value};
 use tokio::sync::watch;
+use tracing_subscriber::layer::SubscriberExt;
 
 const VALID_HASH1: &str = "3031323334353637383961626364656630303030303030303030303030303030";
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -664,3 +671,81 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn test_redis_fingerprint_metric() -> Result<(), Error> {
+    const EXPECTED_FINGERPRINT_VALUE: i64 = 1047931925;
+
+    let server_metrics: HashMap<String, Arc<dyn RootMetricsComponent>> = HashMap::new();
+
+    let store_manager = Arc::new(StoreManager::new());
+
+    let action_schedulers = HashMap::new();
+
+    {
+        let store = {
+            let mut builder = Builder::default_centralized();
+            builder.set_config(RedisConfig {
+                mocks: Some(Arc::new(MockRedisBackend::new()) as Arc<dyn Mocks>),
+                ..Default::default()
+            });
+
+            Store::new(Arc::new(RedisStore::new_from_builder_and_parts(
+                builder,
+                None,
+                mock_uuid_generator,
+                String::new(),
+            )?))
+        };
+
+        store_manager.add_store("redis_store", store);
+    };
+
+    let root_metrics = Arc::new(RwLock::new(RootMetricsTest {
+        stores: store_manager.clone(),
+        servers: server_metrics,
+        workers: HashMap::new(),
+        schedulers: action_schedulers.clone(),
+    }));
+
+    let root_metrics_clone = root_metrics.clone();
+
+    let (layer, output_metrics) = MetricsCollectorLayer::new();
+
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
+        let metrics_component = root_metrics_clone.read();
+        MetricsComponent::publish(
+            &*metrics_component,
+            MetricKind::Component,
+            MetricFieldData::default(),
+        )
+    })
+    .unwrap();
+
+    let output_json_data = to_string(&*output_metrics.lock()).unwrap();
+
+    let parsed_output: Value = from_str(&output_json_data).unwrap();
+
+    let fingerprint_create_index = parsed_output["stores"]["redis_store"]
+        ["fingerprint_create_index"]
+        .as_i64()
+        .expect("fingerprint_create_index should be an integer");
+
+    assert_eq!(fingerprint_create_index, EXPECTED_FINGERPRINT_VALUE);
+
+    Ok(())
+}
+
+#[derive(MetricsComponent)]
+struct RootMetricsTest {
+    #[metric(group = "stores")]
+    stores: Arc<dyn RootMetricsComponent>,
+    #[metric(group = "servers")]
+    servers: HashMap<String, Arc<dyn RootMetricsComponent>>,
+    #[metric(group = "workers")]
+    workers: HashMap<String, Arc<dyn RootMetricsComponent>>,
+    #[metric(group = "action_schedulers")]
+    schedulers: HashMap<String, Arc<dyn ClientStateManager>>,
+}
+
+impl RootMetricsComponent for RootMetricsTest {}
