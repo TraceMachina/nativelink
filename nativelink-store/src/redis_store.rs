@@ -62,11 +62,20 @@ pub struct RedisStore {
     client_pool: RedisPool,
 
     /// A channel to publish updates to when a key is added, removed, or modified.
+    #[metric(
+        help = "The pubsub channel to publish updates to when a key is added, removed, or modified"
+    )]
     pub_sub_channel: Option<String>,
 
     /// A redis client for managing subscriptions.
     /// TODO: This should be moved into the store in followups once a standard use pattern has been determined.
     subscriber_client: SubscriberClient,
+
+    /// For metrics only.
+    #[metric(
+        help = "A unique identifier for the FT.CREATE command used to create the index template"
+    )]
+    fingerprint_create_index: u32,
 
     /// A function used to generate names for temporary keys.
     temp_name_generator_fn: fn() -> String,
@@ -159,6 +168,7 @@ impl RedisStore {
             client_pool,
             pub_sub_channel,
             subscriber_client,
+            fingerprint_create_index: fingerprint_create_index_template(),
             temp_name_generator_fn,
             key_prefix,
             update_if_version_matches_script: Script::from_lua(LUA_VERSION_SET_SCRIPT),
@@ -191,6 +201,10 @@ impl RedisStore {
 
     pub fn get_client(&self) -> RedisClient {
         self.client_pool.next().clone()
+    }
+
+    pub fn get_fingerprint_create_index(&self) -> u32 {
+        self.fingerprint_create_index
     }
 }
 

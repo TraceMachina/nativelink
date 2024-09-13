@@ -664,3 +664,46 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
 
     Ok(())
 }
+
+#[nativelink_test]
+fn test_fingerprint_create_index() -> Result<(), Error> {
+    let store = {
+        let mut builder = Builder::default_centralized();
+        builder.set_config(RedisConfig {
+            ..Default::default()
+        });
+
+        RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())?
+    };
+
+    let expected_fingerprint_create_index =
+        calculate_expected_fingerprint_create_index_hardcoded_test();
+
+    let fingerprint = store.get_fingerprint_create_index();
+    assert_eq!(expected_fingerprint_create_index, fingerprint);
+
+    Ok(())
+}
+
+fn calculate_expected_fingerprint_create_index_hardcoded_test() -> u32 {
+    const POLY: u32 = 0xEDB88320;
+    const DATA: &[u8] = b"FT.CREATE {} ON HASH PREFIX 1 {} NOOFFSETS NOHL NOFIELDS NOFREQS SCHEMA {} TAG CASESENSITIVE SORTABLE";
+    let mut crc = 0xFFFFFFFF;
+    let mut i = 0;
+    while i < DATA.len() {
+        let byte = DATA[i];
+        crc ^= byte as u32;
+
+        let mut j = 0;
+        while j < 8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ POLY
+            } else {
+                crc >> 1
+            };
+            j += 1;
+        }
+        i += 1;
+    }
+    crc
+}
