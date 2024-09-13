@@ -287,7 +287,7 @@ async fn upload_file(
         .update_with_whole_file(
             digest.into(),
             resumeable_file,
-            UploadSizeInfo::ExactSize(digest.size_bytes() as usize),
+            UploadSizeInfo::ExactSize(digest.size_bytes()),
         )
         .await
         .err_tip(|| format!("for {full_path:?}"))?;

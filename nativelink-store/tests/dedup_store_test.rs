@@ -58,7 +58,7 @@ async fn simple_round_trip_test() -> Result<(), Error> {
         Store::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         )), // Content store.
-    );
+    )?;
 
     let original_data = make_random_data(MEGABYTE_SZ);
     let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ).unwrap();
@@ -86,7 +86,7 @@ async fn check_missing_last_chunk_test() -> Result<(), Error> {
             &nativelink_config::stores::MemoryStore::default(),
         )), // Index store.
         Store::new(content_store.clone()),
-    );
+    )?;
 
     let original_data = make_random_data(MEGABYTE_SZ);
     let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ).unwrap();
@@ -134,7 +134,7 @@ async fn fetch_part_test() -> Result<(), Error> {
         Store::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         )), // Content store.
-    );
+    )?;
 
     const DATA_SIZE: usize = MEGABYTE_SZ / 4;
     let original_data = make_random_data(DATA_SIZE);
@@ -147,7 +147,7 @@ async fn fetch_part_test() -> Result<(), Error> {
 
     const ONE_THIRD_SZ: usize = DATA_SIZE / 3;
     let rt_data = store
-        .get_part_unchunked(digest, ONE_THIRD_SZ, Some(ONE_THIRD_SZ))
+        .get_part_unchunked(digest, ONE_THIRD_SZ as u64, Some(ONE_THIRD_SZ as u64))
         .await
         .err_tip(|| "Failed to get_part from dedup store")?;
 
@@ -186,7 +186,7 @@ async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test
         Store::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         )), // Content store.
-    );
+    )?;
 
     const DATA_SIZE: usize = 30;
     let original_data = make_random_data(DATA_SIZE);
@@ -200,7 +200,7 @@ async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test
     // This value must be larger than `max_size` in the config above.
     const START_READ_BYTE: usize = 7;
     let rt_data = store
-        .get_part_unchunked(digest, START_READ_BYTE, None)
+        .get_part_unchunked(digest, START_READ_BYTE as u64, None)
         .await
         .err_tip(|| "Failed to get_part from dedup store")?;
 
@@ -238,7 +238,7 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
         Store::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         )), // Content store.
-    );
+    )?;
 
     const DATA_SIZE: usize = 30;
     let original_data = make_random_data(DATA_SIZE);
@@ -251,11 +251,15 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
     for offset in 0..=DATA_SIZE {
         for len in 0..DATA_SIZE {
             // If reading at DATA_SIZE, we will set len to None to check that edge case.
-            let maybe_len = if offset == DATA_SIZE { None } else { Some(len) };
+            let maybe_len = if offset == DATA_SIZE {
+                None
+            } else {
+                Some(len as u64)
+            };
             let len = if maybe_len.is_none() { DATA_SIZE } else { len };
 
             let rt_data = store
-                .get_part_unchunked(digest, offset, maybe_len)
+                .get_part_unchunked(digest, offset as u64, maybe_len)
                 .await
                 .err_tip(|| "Failed to get_part from dedup store")?;
 
@@ -276,7 +280,7 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
     // This value must be larger than `max_size` in the config above.
     const START_READ_BYTE: usize = 10;
     let rt_data = store
-        .get_part_unchunked(digest, START_READ_BYTE, None)
+        .get_part_unchunked(digest, START_READ_BYTE as u64, None)
         .await
         .err_tip(|| "Failed to get_part from dedup store")?;
 
@@ -309,7 +313,7 @@ async fn has_checks_content_store() -> Result<(), Error> {
         &make_default_config(),
         Store::new(index_store.clone()),
         Store::new(content_store.clone()),
-    );
+    )?;
 
     const DATA_SIZE: usize = MEGABYTE_SZ / 4;
     let original_data = make_random_data(DATA_SIZE);
@@ -323,7 +327,7 @@ async fn has_checks_content_store() -> Result<(), Error> {
     {
         // Check to ensure we our baseline `.has()` succeeds.
         let size_info = store.has(digest1).await.err_tip(|| "Failed to run .has")?;
-        assert_eq!(size_info, Some(DATA_SIZE), "Expected sizes to match");
+        assert_eq!(size_info, Some(DATA_SIZE as u64), "Expected sizes to match");
     }
     {
         // There will be exactly 10 entries in our content_store based on our random seed data.
@@ -339,7 +343,11 @@ async fn has_checks_content_store() -> Result<(), Error> {
         {
             // Check our recently added entry is still valid.
             let size_info = store.has(digest2).await.err_tip(|| "Failed to run .has")?;
-            assert_eq!(size_info, Some(DATA2.len()), "Expected sizes to match");
+            assert_eq!(
+                size_info,
+                Some(DATA2.len() as u64),
+                "Expected sizes to match"
+            );
         }
         {
             // Check our first added entry is now invalid (because part of it was evicted).
@@ -370,7 +378,7 @@ async fn has_with_no_existing_index_returns_none_test() -> Result<(), Error> {
         &make_default_config(),
         Store::new(index_store.clone()),
         Store::new(content_store.clone()),
-    );
+    )?;
 
     const DATA_SIZE: usize = 10;
     let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();

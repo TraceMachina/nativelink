@@ -199,7 +199,7 @@ impl StoreDriver for RedisStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // TODO(caass): Optimize for the case where `keys.len() == 1`
         let pipeline = self.client_pool.next().pipeline();
@@ -355,9 +355,14 @@ impl StoreDriver for RedisStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
+        let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
+        let length = length
+            .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
+            .transpose()?;
+
         // To follow RBE spec we need to consider any digest's with
         // zero size to be existing.
         if is_zero_digest(key.borrow()) {

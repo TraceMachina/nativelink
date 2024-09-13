@@ -31,8 +31,8 @@ pub struct BytesWrapper(Bytes);
 
 impl LenEntry for BytesWrapper {
     #[inline]
-    fn len(&self) -> usize {
-        Bytes::len(&self.0)
+    fn len(&self) -> u64 {
+        Bytes::len(&self.0) as u64
     }
 
     #[inline]
@@ -152,14 +152,14 @@ async fn insert_purges_at_max_bytes() -> Result<(), Error> {
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 3"
     );
     assert_eq!(
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 4"
     );
 
@@ -216,7 +216,7 @@ async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 4"
     );
 
@@ -263,21 +263,21 @@ async fn insert_purges_at_max_seconds() -> Result<(), Error> {
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 2"
     );
     assert_eq!(
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 3"
     );
     assert_eq!(
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 4"
     );
 
@@ -329,7 +329,7 @@ async fn get_refreshes_time() -> Result<(), Error> {
         evicting_map
             .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
             .await,
-        Some(DATA.len()),
+        Some(DATA.len() as u64),
         "Expected map to have item 3"
     );
 
@@ -345,7 +345,7 @@ async fn unref_called_on_replace() -> Result<(), Error> {
     }
 
     impl LenEntry for MockEntry {
-        fn len(&self) -> usize {
+        fn len(&self) -> u64 {
             // Note: We are not testing this functionality.
             0
         }
