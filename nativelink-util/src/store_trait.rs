@@ -34,7 +34,6 @@ use tokio::time::timeout;
 
 use crate::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use crate::common::DigestInfo;
-use crate::default_store_key_subscribe::default_store_key_subscribe;
 use crate::digest_hasher::{default_digest_hasher_func, DigestHasher, DigestHasherFunc};
 use crate::fs::{self, idle_file_descriptor_timeout};
 use crate::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
@@ -143,44 +142,6 @@ pub enum StoreOptimizations {
 
     /// If the store will never serve downloads.
     NoopDownloads,
-
-    /// If the store is optimized for serving subscriptions to keys.
-    SubscribeChanges,
-}
-
-/// A key that has been subscribed to in the store. This can be used
-/// to wait for changes to the data for the key.
-#[async_trait]
-pub trait StoreSubscription: Send + Sync + Unpin {
-    /// Get the current store subscription item.
-    fn peek(&self) -> Result<Arc<dyn StoreSubscriptionItem>, Error>;
-
-    /// Wait for the data to change and return the new store subscription item.
-    /// Note: This will always have a value ready when struct is first created.
-    async fn changed(&mut self) -> Result<Arc<dyn StoreSubscriptionItem>, Error>;
-}
-
-/// An item that has been subscribed to in the store. Some stores may have
-/// the data already available when the data changes. This allows the store
-/// to store a reference to the data and return it when requested, otherwise
-/// the store can lazily retrieve the data when requested.
-#[async_trait]
-pub trait StoreSubscriptionItem: Send + Sync + Unpin {
-    /// Returns the key of the item being represented.
-    async fn get_key(&self) -> Result<StoreKey, Error>;
-
-    /// Same as `StoreLike::get_part`, but without the key.
-    async fn get_part(
-        &self,
-        writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
-    ) -> Result<(), Error>;
-
-    /// Same as `Store::get`, but without the key.
-    async fn get(&self, writer: &mut DropCloserWriteHalf) -> Result<(), Error> {
-        self.get_part(writer, 0, None).await
-    }
 }
 
 /// Holds something that can be converted into a key the
@@ -367,21 +328,6 @@ impl Store {
     #[inline]
     pub fn downcast_ref<U: StoreDriver>(&self, maybe_digest: Option<StoreKey<'_>>) -> Option<&U> {
         self.inner.inner_store(maybe_digest).as_any().downcast_ref()
-    }
-
-    /// Subscribe to a key in the store. The store will notify the subscriber
-    /// when the data for the key changes.
-    /// There is no guarantee that the store will notify the subscriber of all changes,
-    /// and there is no guarantee that the store will notify the subscriber of changes
-    /// in a timely manner.
-    /// Note: It can be quite expensive to subscribe to a key in stores that do not
-    /// have the optimization for this. One may check if a store has the optimization
-    /// by calling `optimized_for(StoreOptimizations::SubscribeChanges)`.
-    pub fn subscribe<'a>(
-        &self,
-        key: impl Into<StoreKey<'a>>,
-    ) -> impl Future<Output = Box<dyn StoreSubscription>> + 'a {
-        self.inner.clone().subscribe(key.into())
     }
 
     /// Register health checks used to monitor the store.
@@ -736,11 +682,6 @@ pub trait StoreDriver:
         get_part_res
             .err_tip(|| "Failed to get_part in get_part_unchunked")
             .merge(data_res.err_tip(|| "Failed to read stream to completion in get_part_unchunked"))
-    }
-
-    /// See: [`Store::subscribe`] for details.
-    async fn subscribe(self: Arc<Self>, key: StoreKey<'_>) -> Box<dyn StoreSubscription> {
-        default_store_key_subscribe(self, key).await
     }
 
     /// See: [`StoreLike::check_health`] for details.
