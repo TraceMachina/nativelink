@@ -284,6 +284,7 @@ impl Drop for ContextDropGuard {
 
 pin_project! {
     #[must_use = "futures do nothing unless you `.await` or poll them"]
+    #[derive(Clone)]
     pub struct ContextAwareFuture<F> {
         // `ManuallyDrop` is used so we can call `self.span.enter()` in the `drop()`
         // of our inner future, then drop the span.

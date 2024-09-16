@@ -26,10 +26,12 @@ use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_metric::MetricsComponent;
 use serde::{Deserialize, Serialize};
-use tracing::{event, Level};
+use tracing::{event, info_span, Level};
 
+use crate::drop_protected_future::DropProtectedFuture;
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics_utils::{Counter, CounterWithTime};
+use crate::origin_context::ActiveOriginContext;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct SerializedLRU<K> {
@@ -98,7 +100,7 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
 }
 
 #[derive(MetricsComponent)]
-struct State<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug> {
+struct State<K: Ord + Hash + Eq + Clone + Debug + Send, T: LenEntry + Debug> {
     lru: LruCache<K, EvictionItem<T>>,
     btree: Option<BTreeSet<K>>,
     #[metric(help = "Total size of all items in the store")]
@@ -116,7 +118,7 @@ struct State<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug> {
     lifetime_inserted_bytes: Counter,
 }
 
-impl<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug + Sync> State<K, T> {
+impl<K: Ord + Hash + Eq + Clone + Debug + Send, T: LenEntry + Debug + Sync> State<K, T> {
     /// Removes an item from the cache.
     async fn remove<Q>(&mut self, key: &Q, eviction_item: &EvictionItem<T>, replaced: bool)
     where
@@ -153,7 +155,11 @@ impl<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug + Sync> State<K, T>
 }
 
 #[derive(MetricsComponent)]
-pub struct EvictingMap<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug, I: InstantWrapper> {
+pub struct EvictingMap<
+    K: Ord + Hash + Eq + Clone + Debug + Send,
+    T: LenEntry + Debug,
+    I: InstantWrapper,
+> {
     #[metric]
     state: Mutex<State<K, T>>,
     anchor_time: I,
@@ -169,7 +175,7 @@ pub struct EvictingMap<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug, 
 
 impl<K, T, I> EvictingMap<K, T, I>
 where
-    K: Ord + Hash + Eq + Clone + Debug,
+    K: Ord + Hash + Eq + Clone + Debug + Send + Sync,
     T: LenEntry + Debug + Clone + Send + Sync,
     I: InstantWrapper,
 {
@@ -403,6 +409,7 @@ where
         let mut state = self.state.lock().await;
         let results = self
             .inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
+            .await
             .await;
         results.into_iter().next()
     }
@@ -418,6 +425,7 @@ where
         let state = &mut self.state.lock().await;
         self.inner_insert_many(state, inserts, self.anchor_time.elapsed().as_secs() as i32)
             .await
+            .await
     }
 
     async fn inner_insert_many(
@@ -425,23 +433,29 @@ where
         mut state: &mut State<K, T>,
         inserts: impl IntoIterator<Item = (K, T)>,
         seconds_since_anchor: i32,
-    ) -> Vec<T> {
-        let mut replaced_items = Vec::new();
-        for (key, data) in inserts.into_iter() {
-            let new_item_size = data.len() as u64;
-            let eviction_item = EvictionItem {
-                seconds_since_anchor,
-                data,
-            };
+    ) -> impl Future<Output = Vec<T>> + Send {
+        DropProtectedFuture::new(
+            async move {
+                let mut replaced_items = Vec::new();
+                for (key, data) in inserts.into_iter() {
+                    let new_item_size = data.len() as u64;
+                    let eviction_item = EvictionItem {
+                        seconds_since_anchor,
+                        data,
+                    };
 
-            if let Some(old_item) = state.put(key, eviction_item).await {
-                replaced_items.push(old_item);
-            }
-            state.sum_store_size += new_item_size;
-            state.lifetime_inserted_bytes.add(new_item_size);
-            self.evict_items(state.deref_mut()).await;
-        }
-        replaced_items
+                    if let Some(old_item) = state.put(key, eviction_item).await {
+                        replaced_items.push(old_item);
+                    }
+                    state.sum_store_size += new_item_size;
+                    state.lifetime_inserted_bytes.add(new_item_size);
+                    self.evict_items(state.deref_mut()).await;
+                }
+                replaced_items
+            },
+            info_span!("EvictingMap::inner_insert_many"),
+            ActiveOriginContext::get(),
+        )
     }
 
     pub async fn remove<Q>(&self, key: &Q) -> bool
