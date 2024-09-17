@@ -46,6 +46,7 @@ fn make_random_data(sz: usize) -> Vec<u8> {
 
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 const VALID_HASH2: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
+const VALID_HASH3: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
 const MEGABYTE_SZ: usize = 1024 * 1024;
 
 #[nativelink_test]
@@ -98,8 +99,8 @@ async fn check_missing_last_chunk_test() -> Result<(), Error> {
 
     // This is the hash & size of the last chunk item in the content_store.
     const LAST_CHUNK_HASH: &str =
-        "7c8608f5b079bef66c45bd67f7d8ede15d2e1830ea38fd8ad4c6de08b6f21a0c";
-    const LAST_CHUNK_SIZE: usize = 25779;
+        "2f516381c7a21fbbea7e75b57973a87fd718e663c82959cb94a29a3472e6031a";
+    const LAST_CHUNK_SIZE: usize = 21609;
 
     let did_delete = content_store
         .remove_entry(
@@ -341,6 +342,20 @@ async fn has_checks_content_store() -> Result<(), Error> {
             let size_info = store.has(digest2).await.err_tip(|| "Failed to run .has")?;
             assert_eq!(size_info, Some(DATA2.len()), "Expected sizes to match");
         }
+        const DATA3: &str = "abcdefg";
+        let digest3 = DigestInfo::try_new(VALID_HASH3, DATA3.len()).unwrap();
+        store
+            .update_oneshot(digest3, DATA3.into())
+            .await
+            .err_tip(|| "Failed to write data to dedup store")?;
+
+        // Check the number of entries in the content store
+        let initial_count = content_store.len_for_test().await;
+        assert_eq!(
+            initial_count, 10,
+            "Expected 10 entries in the content store"
+        );
+
         {
             // Check our first added entry is now invalid (because part of it was evicted).
             let size_info = store.has(digest1).await.err_tip(|| "Failed to run .has")?;

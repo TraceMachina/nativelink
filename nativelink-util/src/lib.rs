@@ -20,7 +20,6 @@ pub mod common;
 pub mod connection_manager;
 pub mod digest_hasher;
 pub mod evicting_map;
-pub mod fastcdc;
 pub mod fs;
 pub mod health_utils;
 pub mod instant_wrapper;
@@ -35,6 +34,7 @@ pub mod retry;
 pub mod store_trait;
 pub mod task;
 pub mod tls_utils;
+pub mod ultracdc;
 pub mod write_counter;
 
 // Re-export tracing mostly for use in macros.
