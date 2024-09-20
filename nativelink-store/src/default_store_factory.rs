@@ -66,7 +66,7 @@ pub fn store_factory<'a>(
                 config,
                 store_factory(&config.index_store, store_manager, None).await?,
                 store_factory(&config.content_store, store_manager, None).await?,
-            ),
+            )?,
             StoreConfig::existence_cache(config) => ExistenceCacheStore::new(
                 config,
                 store_factory(&config.backend, store_manager, None).await?,

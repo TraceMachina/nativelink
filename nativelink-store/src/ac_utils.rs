@@ -50,7 +50,7 @@ pub async fn get_and_decode_digest<T: Message + Default + 'static>(
 pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
     store: &impl StoreLike,
     key: impl Into<StoreKey<'_>>,
-) -> Result<(T, usize), Error> {
+) -> Result<(T, u64), Error> {
     let key = key.into();
     // Note: For unknown reasons we appear to be hitting:
     // https://github.com/rust-lang/rust/issues/92096
@@ -58,7 +58,7 @@ pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
     // are using the store driver function here.
     let mut store_data_resp = store
         .as_store_driver_pin()
-        .get_part_unchunked(key.borrow(), 0, Some(MAX_ACTION_MSG_SIZE))
+        .get_part_unchunked(key.borrow(), 0, Some(MAX_ACTION_MSG_SIZE as u64))
         .await;
     if let Err(err) = &mut store_data_resp {
         if err.code == Code::NotFound {
@@ -69,7 +69,8 @@ pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
         }
     }
     let store_data = store_data_resp?;
-    let store_data_len = store_data.len();
+    let store_data_len =
+        u64::try_from(store_data.len()).err_tip(|| "Could not convert store_data.len() to u64")?;
 
     T::decode(store_data)
         .err_tip_with_code(|e| {

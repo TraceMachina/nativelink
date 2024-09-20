@@ -66,11 +66,11 @@ use crate::cas_utils::is_zero_digest;
 
 // S3 parts cannot be smaller than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
-const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5MB.
+const MIN_MULTIPART_SIZE: u64 = 5 * 1024 * 1024; // 5MB.
 
 // S3 parts cannot be larger than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
-const MAX_MULTIPART_SIZE: usize = 5 * 1024 * 1024 * 1024; // 5GB.
+const MAX_MULTIPART_SIZE: u64 = 5 * 1024 * 1024 * 1024; // 5GB.
 
 // S3 parts cannot be more than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
@@ -328,7 +328,7 @@ where
         format!("{}{}", self.key_prefix, key.as_str(),)
     }
 
-    async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<u64>, Error> {
         self.retrier
             .retry(unfold((), move |state| async move {
                 let result = self
@@ -353,7 +353,7 @@ where
                             return Some((RetryResult::Ok(None), state));
                         };
                         if length >= 0 {
-                            return Some((RetryResult::Ok(Some(length as usize)), state));
+                            return Some((RetryResult::Ok(Some(length as u64)), state));
                         }
                         Some((
                             RetryResult::Err(make_err!(
@@ -388,7 +388,7 @@ where
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         keys.iter()
             .zip(results.iter_mut())
@@ -427,7 +427,10 @@ where
         // Note(allada) If the upload size is not known, we go down the multipart upload path.
         // This is not very efficient, but it greatly reduces the complexity of the code.
         if max_size < MIN_MULTIPART_SIZE && matches!(upload_size, UploadSizeInfo::ExactSize(_)) {
-            reader.set_max_recent_data_size(self.max_retry_buffer_per_request);
+            reader.set_max_recent_data_size(
+                u64::try_from(self.max_retry_buffer_per_request)
+                    .err_tip(|| "Could not convert max_retry_buffer_per_request to u64")?,
+            );
             return self
                 .retrier
                 .retry(unfold(reader, move |mut reader| async move {
@@ -449,7 +452,7 @@ where
                                 .content_length(sz as i64)
                                 .body(ByteStream::from_body_1_x(BodyWrapper {
                                     reader: rx,
-                                    size: sz as u64,
+                                    size: sz,
                                 }))
                                 .send()
                                 .map_ok_or_else(|e| Err(make_err!(Code::Aborted, "{e:?}")), |_| Ok(())),
@@ -539,7 +542,7 @@ where
                 // Note: Our break condition is when we reach EOF.
                 for part_number in 1..i32::MAX {
                     let write_buf = reader
-                        .consume(Some(bytes_per_upload_part))
+                        .consume(Some(usize::try_from(bytes_per_upload_part).err_tip(|| "Could not convert bytes_per_upload_part to usize")?))
                         .await
                         .err_tip(|| "Failed to read chunk in s3_store")?;
                     if write_buf.is_empty() {
@@ -589,10 +592,13 @@ where
 
             let mut upload_futures = FuturesUnordered::new();
 
-            let mut completed_parts = Vec::with_capacity(cmp::min(
-                MAX_UPLOAD_PARTS,
-                (max_size / bytes_per_upload_part) + 1,
-            ));
+            let mut completed_parts = Vec::with_capacity(
+                usize::try_from(cmp::min(
+                    MAX_UPLOAD_PARTS as u64,
+                    (max_size / bytes_per_upload_part) + 1,
+                ))
+                .err_tip(|| "Could not convert u64 to usize")?,
+            );
             tokio::pin!(read_stream_fut);
             loop {
                 if read_stream_fut.is_terminated() && rx.is_empty() && upload_futures.is_empty() {
@@ -671,8 +677,8 @@ where
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         if is_zero_digest(key.borrow()) {
             writer
@@ -695,7 +701,7 @@ where
                     .key(s3_path)
                     .range(format!(
                         "bytes={}-{}",
-                        offset + writer.get_bytes_written() as usize,
+                        offset + writer.get_bytes_written(),
                         end_read_byte.map_or_else(String::new, |v| v.to_string())
                     ))
                     .send()
