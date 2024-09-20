@@ -78,7 +78,7 @@ curl -O \
 docker run \
     -v $(pwd)/basic_cas.json:/config \
     -p 50051:50051 \
-    ghcr.io/tracemachina/nativelink:v0.5.1 \
+    ghcr.io/tracemachina/nativelink:v0.5.3 \
     config
 ```
 
@@ -95,7 +95,7 @@ Invoke-WebRequest `
 docker run `
     -v ${PWD}/basic_cas.json:/config `
     -p 50051:50051 `
-    ghcr.io/tracemachina/nativelink:v0.5.1 `
+    ghcr.io/tracemachina/nativelink:v0.5.3 `
     config
 ```
 
