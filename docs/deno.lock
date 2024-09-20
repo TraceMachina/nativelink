@@ -73,11 +73,13 @@
         "npm:@tailwindcss/vite@^4.0.0-alpha.23",
         "npm:@types/bun@latest",
         "npm:astro@4.15.4",
+        "npm:concurrently@^8.2.2",
         "npm:rehype-autolink-headings@^7.1.0",
         "npm:rehype-mermaid@^2.1.0",
         "npm:remark@^15.0.1",
         "npm:tailwindcss@^4.0.0-alpha.23",
-        "npm:typescript@^5.4.5"
+        "npm:typescript@^5.4.5",
+        "npm:wait-on@^8.0.0"
       ]
     }
   }
