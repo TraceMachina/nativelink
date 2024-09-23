@@ -1,0 +1,251 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+import { termsOfUse } from "../content/data/terms_of_use.ts";
+
+import { LinearGradient } from "@qwik/components/text";
+---
+
+<Layout title="NativeLink Terms of Use">
+    <div class="bg-black px-8 py-24 md:pt-40 w-screen md:px-[25vw] text-white flex flex-col justify-center items-center gap-8">
+        <div class="flex flex-col gap-5">
+             <LinearGradient text="Terms and Privacy" class="text-3xl md:text-5xl mb-0 md:mb-4" />
+             <div class="flex flex-col gap-2 justify-center items-center">
+                 <p class="text-sm text-primary font-thin"> NativeLink Terms of Use</p>
+                 <p class="text-sm text-primary font-thin">Last Updated July 12, 2024</p>
+                </div>
+        </div>
+
+        <!-- Terms of Use  -->
+        <section class="flex flex-col gap-8">
+            {termsOfUse.map((term, index) => (
+              <div class="flex flex-col gap-4">
+                {index === 0 ? (
+                  <h2 class="text-2xl font-thin">{term.section}</h2>
+                ) : (
+                  <h3 class="text-xl font-semibold">{term.section}</h3>
+                )}
+                <p>{term.content}</p>
+              </div>
+            ))}
+        </section>
+
+        <!-- Privacy Policy Section -->
+        <section class="flex flex-col gap-8 mt-12">
+            <h2 class="text-2xl font-semibold">Privacy Policy</h2>
+            <p class="text-sm text-primary">Updated July 12, 2024</p>
+
+            <p>Your trust is important to us, and we want to ensure that your personal information is protected. This Privacy Policy explains how we collect and use your personal information in relation to NativeLink products, services, events, and websites or applications that link to this Policy (together, the “NativeLink Products”). It also describes how you can control or exercise your rights related to your personal information.</p>
+
+            <h3 class="text-xl font-semibold">Personal Information We Collect</h3>
+            <p>We process information about you while providing the NativeLink Products. Below, we outline the kinds of information we collect.</p>
+
+            <strong>Information You Give to Us:</strong> We collect information about you when you provide it to us directly.</li>
+            <ul class="flex flex-col list-disc pl-8 gap-4">
+                <li><strong>Your NativeLink account:</strong> We collect information about you when you submit it through the NativeLink Products, including when you create an account with us. This may include your name, email address, profile picture, company name, postal address, and phone number. This may also include your payment information when you purchase any of the NativeLink Products.</li>
+                <li><strong>Support:</strong> We collect information you provide to us when you open a support request or otherwise communicate with us (such as through third-party social-media sites). This may include your name, email address, title, company, and any other information you provide in your request.</li>
+                <li><strong>Other information submitted by you:</strong> We collect information about you that you submit to us through the NativeLink Products, such as when you participate in any interactive features of the NativeLink Products or fill out a form on one of our websites. This information may include your name, email address, and mailing address.</li>
+            </ul>
+
+            <strong>Information We Collect Automatically:</strong> We automatically collect information about you when you access or use the NativeLink Products.
+            <ul class="flex flex-col list-disc pl-8 gap-4">
+                <li><strong>Your use of the NativeLink Products:</strong> We collect information about how you use the NativeLink Products, such as your session date, time, and duration; the pages you viewed; and the page you visited before navigating to the products or websites.</li>
+                <li><strong>Device information:</strong> We collect information about your computer or device when you access any of the NativeLink Products, such as the type of browser you use, your IP address, and the location of your device.</li>
+                <li><strong>Cookies and similar technologies:</strong> We use cookies and similar technologies (like web beacons and pixels) to collect information about your interactions with the NativeLink Products, including identifiers, usage data, session information, links clicked, pages visited, and mouse movements. For more information about how we use cookies and similar technologies, please see our Cookie Policy.</li>
+            </ul>
+
+            <strong>Information We Collect from Other Sources:</strong> We may also obtain information about you from other sources.
+            <ul class="flex flex-col list-disc pl-8 gap-4">
+                <li><strong>Other services linked to your account:</strong> We may collect information about you when you link your NativeLink account with other services. For example, if you create or log into your NativeLink account using your Google Apps credentials via single sign-on, we will have access to certain information such as your name and email address, as authorized in your Google Apps profile settings.</li>
+                <li><strong>Our affiliates:</strong> We may receive information about you from one of our affiliates if you interact with them directly, for example through a support request. This may include your name, email address, and information about your request.</li>
+                <li><strong>Third parties:</strong> We may receive information about you from third parties that provide business information to us or from public sources. This information may include things like your name, title, email address, phone number, and social-media profile. We may combine this information with information we collect through other means described above.</li>
+            </ul>
+
+            <strong>How We Use Personal Information:</strong> We use information about you for the following purposes.
+            <ul class="flex flex-col list-disc pl-8 gap-4">
+                <li><strong>To provide and support your use of the NativeLink Products:</strong> We use information about you to provide you with access to the NativeLink Products, including to create and manage your NativeLink accounts, process transactions with you, and send you invoices, as well as to provide you with customer support.</li>
+                <li><strong>For research and to improve the NativeLink Products:</strong> We use information about you, including information about your use of NativeLink Products, to improve the NativeLink Products, including to monitor and analyze trends, usage, and other activities in connection with the NativeLink Products so that we can continually improve them. We may also link or combine information about you with information we get from others to help understand your needs and provide you with better service.</li>
+                <li><strong>To communicate with you:</strong> We use information about you to communicate with you, including to send you technical notices, product updates, security alerts, support communications, and administrative messages about the NativeLink Products (including important changes to the NativeLink Products). This also includes sending you information about your account and data, such as when we update our terms or when we materially change how we use your data.</li>
+                <li><strong>For security:</strong> We use information about you to maintain and increase the security of the NativeLink Products, including to detect, investigate, and prevent fraud and other illegal activities from occurring, as well as to protect the rights and property of NativeLink, our customers, and third parties.</li>
+                <li><strong>To market and promote the NativeLink Products:</strong> We use information about you to send you promotional messages and to show you advertisements. This may also include using information about you to create more personalized advertising and suggest NativeLink Products that may be of interest to you. We may also use information about you to facilitate contests, sweepstakes, and promotions, and to process and deliver your entries and rewards.</li>
+                <li><strong>To comply with legal obligations:</strong> We may use information about you to comply with our legal requirements. For example, we may process and retain information about your payments to us for tax and accounting purposes.</li>
+                <li><strong>With your consent:</strong> Finally, we use information about you for any other purposes that you have consented to. For example, if you agree to be named as a Featured Customer, we might post information about you on one of our public websites.</li>
+            </ul>
+
+
+            <strong>How We Share Personal Information:</strong> We may share your personal information as follows.
+            <ul class="flex flex-col list-disc pl-8 gap-4">
+                <li><strong>Service providers:</strong> We use third-party service providers who work on our behalf, including to provide hosting services, authentication services, cybersecurity and anti-fraud services, and advertising, which may require us to share your personal information.</li>
+                <li><strong>For legal reasons:</strong> In rare cases, we may share information about you in response to a request for information if we believe disclosure is permitted or required by an applicable law, regulation, or legal process, including to comply with a subpoena or applicable court order. Further, we may share your personal information with any person to whom disclosure is necessary to enable us to enforce our rights under this Privacy Policy or under any agreement we enter with you or to protect the rights, property, or safety of NativeLink or third parties.</li>
+                <li><strong>Business transfers:</strong> We may share your information in connection with, or during negotiations of, any merger, sale of NativeLink assets, financing, or acquisition of all or a portion of our business by another company.</li>
+                <li><strong>Affiliates:</strong> We may share your personal information with our affiliate companies who may act for us for any of the purposes set out in this Privacy Policy, including our current and future parents, affiliates, subsidiaries, and other companies under common control and ownership.</li>
+                <li><strong>Marketing and analytics:</strong> We may share your personal information with analytics and search-engine providers that assist us in the improvement and optimization of our websites.</li>
+                <li><strong>Social Media:</strong> Some of our websites may contain social-sharing widgets or features that let you share information you find on our websites on third-party sites, including, for example, Twitter, LinkedIn, and YouTube. By doing so, you authorize us to facilitate this sharing of information, and you understand that the use of shared information will be governed by the social media provider’s privacy notice.</li>
+                <li><strong>Consent:</strong> We may share your personal information with your consent or at your direction.</li>
+            </ul>
+
+
+            <div class="flex flex-col gap-4">
+                <h3 class="text-xl font-semibold">Security</h3>
+                <p>The security of your personal information is incredibly important to us. We have implemented and we continually maintain a variety of technical and organizational measures to protect your personal information from unauthorized access and against unlawful processing, accidental loss, destruction, and damage. View our Security page to learn more about the specific security controls we have put in place to safeguard your information.
+                </p>
+            </div>
+
+            <div class="flex flex-col gap-4">
+                <h3 class="text-xl font-semibold">Retention</h3>
+                <p>We only keep your personal information for as long as necessary to fulfill the purposes we collected it for, after which it will be deleted or archived unless we are required to keep it to comply with our legal obligations or for another legitimate and lawful purpose. To determine the appropriate retention period for personal information, we consider several factors, including:
+
+                </p>
+                <ul class="flex flex-col gap-4 list-disc pl-8">
+                    <li><strong>The terms</strong> of our agreements with you;</li>
+                    <li><strong>Our legitimate interests</strong> (as outlined in this Privacy Policy);</li>
+                    <li><strong>Our legal obligations;</strong></li>
+                    <li><strong>The nature</strong> of your personal information.</li>
+                </ul>
+                <p>In some cases, we may anonymize your personal information so that you are no longer identifiable, in which case we may use the resulting information without further notice to you.</p>
+            </div>
+
+            <div class="flex flex-col gap-4">
+                <h3 class="text-xl font-semibold">Children</h3>
+                <p>The NativeLink Products are not directed to individuals under the age of 16, and we do not knowingly collect or sell the personal information of children under 16.</p>
+            </div>
+
+            <div class="flex flex-col gap-4">
+                <h3 class="text-xl font-semibold">Your Choices</h3>
+                <p>You have choices about how NativeLink collects and uses your personal information.</p>
+                <ul class="flex flex-col list-disc pl-8 gap-4">
+                    <li><strong>Account information:</strong> Our customers may access, update, or change personal information they have provided to us by logging into the relevant NativeLink application or emailing us at help@nativelink.com. Subject to the terms of their agreements with us, customers may deactivate their accounts by emailing us at help@nativelink.com, but we may retain certain personal information as necessary to comply with our legal obligations or for legitimate business purposes, such as to resolve disputes or enforce our agreements. We may also retain cached or archived copies of personal information for a certain period.</li>
+                    <li><strong>Advertising:</strong> You may opt out of receiving promotional emails from NativeLink by following the instructions in those emails or by emailing help@nativelink.com. If you opt out of receiving promotional communications, we may still send you non-promotional emails, such as those about your account or our ongoing business relationship. If you would like to opt out of receiving promotional phone calls, please contact us as outlined in the “Contact Us” section below.</li>
+                </ul>
+
+            </div>
+
+            <div class="flex flex-col gap-4">
+                <h3 class="text-xl font-semibold">Supplemental Notice for the EEA, UK, and Switzerland</h3>
+                <p>
+                This section provides additional details about the personal information we process subject to the General Data Protection Regulation (GDPR) and UK GDPR.
+                </p>
+                <p>
+                Controller of Your Information
+                Unless otherwise stated in a supplemental notice, Trace Machina, Inc. is the data controller of your personal information.
+                </p>
+                <p>
+                Your Rights Subject to applicable law, you have the following rights with respect to your personal information.
+                </p>
+
+                <ul class="flex flex-col list-disc pl-8 gap-4">
+                    <li>
+                        <strong>Right to access:</strong> You have the right to access your personal information that we hold, and receive it in a portable way.
+                    </li>
+                    <li><strong>Right to update:</strong> You have the right to request that we update your personal information.</li>
+                    <li><strong>Right to delete:</strong> You have the right to have your personal information deleted.</li>
+                    <li><strong>Right to restrict processing:</strong> You have the right to request us to restrict or suppress the processing of your personal information where our processing is inappropriate.</li>
+                    <li><strong>Right to object:</strong> You have the right to object to the processing of your personal information.</li>
+                    <li><strong>Right to withdraw consent:</strong> You have the right to withdraw your consent at any time where we are processing your personal information based on your prior consent.</li>
+                </ul>
+                    <p>
+                    To exercise your rights, please complete our [PROVIDE ERIKA WITH OUR CONTACT FORM TO BE LINKED] or contact us as outlined in the “Contact Us” section below. Please note that we may ask you to provide us with additional information to confirm your identity.
+                    </p>
+                    <p>
+                    Legal Bases for Processing Personal Information
+                    We process your personal information on one or more of the following legal bases:</p>
+                    <ul class="flex flex-col list-disc pl-8 gap-4">
+                        <li><strong>Where necessary</strong> to enter into or perform under a contract with you, including to provide the NativeLink Products;</li>
+                        <li><strong>Where necessary</strong> for us to comply with a legal obligation;</li>
+                        <li><strong>For our legitimate interests,</strong> as outlined in this Privacy Policy; or</li>
+                        <li><strong>With your consent.</strong></li>
+                    </ul>
+                        <p>
+                            <strong>International Data Transfers:</strong> Your personal information may be collected in,
+                            transferred to, accessed from, or stored in a country other than the one you are in, including
+                            the United States, which may have data protection rules that are different from those of your country.
+                            Your personal information is only transferred out of your country in accordance with applicable data
+                            protection law, including, for example, to third countries that adequately safeguard personal data,
+                            or under the European Commission-approved Standard Contractual Clauses. Your rights with respect to
+                            your personal information are outlined above in the “Your rights” section above.
+                        </p>
+                        <p>
+                            We comply with the EU-U.S. Data Privacy Framework (EU-U.S. DPF), the UK Extension to the EU-U.S. DPF,
+                            and the Swiss-U.S. Data Privacy Framework (Swiss-U.S. DPF) as set forth by the U.S. Department of Commerce
+                            (together, the “DPF”), and we have certified to the U.S. Department of Commerce that we adhere to the
+                            EU-U.S. Data Privacy Framework Principles with regard to the processing of personal data received from the
+                            European Union in reliance on the EU-U.S. DPF and from the United Kingdom (and Gibraltar) in reliance on the UK
+                            Extension to the EU-U.S. DPF, and the Swiss-U.S. Data Privacy Framework Principles with regard to the processing
+                            of personal data received from Switzerland in reliance on the Swiss-U.S. DPF (together, the “DPF Principles”).
+                            A full list of all participating organizations is available on the U.S. Department of Commerce’s dedicated DPF website.
+                        </p>
+                        <p>
+                            If you have any questions, concerns, or complaints about our compliance with the DPF, we encourage you to
+                            contact us as outlined in the “Contact Us” section below, where you can also find information regarding our
+                            EU representative that can respond to your questions or complaints. If you have an unresolved complaint
+                            regarding our handling of personal data received in reliance on the DPF, you may contact TRUSTe,
+                            our U.S.-based third-party dispute resolution provider, here free of charge. Finally, if you have a
+                            complaint that we have violated the DPF Principles that has not been resolved by other means, you may
+                            have the ability to invoke binding arbitration as outlined more fully on the DPF website. Please note
+                            that we are subject to the investigatory and enforcement powers of the U.S. Federal Trade Commission (FTC).
+                        </p>
+                        <p>
+                            In some cases, we may be required to disclose personal data in response to lawful requests by public
+                            authorities, including to meet national security or law enforcement requirements.
+                        </p>
+                        <p>
+                            If we transfer your personal data onward to a third party, we will continue to remain
+                            liable under the DPF Principles if the information is processed in a manner inconsistent with the DPF Principles.
+                        </p>
+                        <p>
+                            <strong>Complaints:</strong> You may lodge a complaint with a data protection authority for your
+                            country or region where you have your habitual residence, where you work, or where an alleged infringement of
+                            applicable data protection law occurs. A list of EEA data protection authorities is available here,
+                            and the contact details for the UK Information Commissioner’s Office is available here.
+                        </p>
+                </div>
+
+            <div class="flex flex-col gap-4">
+                <h3 class="text-xl font-semibold">Supplemental Notice for the United States</h3>
+                <p>This section provides additional details about the personal information we collect about individuals and the rights afforded to them under various applicable U.S. state data-protection and privacy laws, including the California Consumer Privacy Act, as amended (CCPA), the Colorado Privacy Act (CPA), the Connecticut Data Privacy Act (CTDPA), the Utah Consumer Privacy Act (UCPA), and the Virginia Consumer Data Protection Act (VCDPA).</p>
+                <strong>Your Rights:</strong> Subject to applicable law, you have the following rights with respect to your personal information.
+                <ul class="flex flex-col list-disc pl-8 gap-4">
+                    <li><strong>Right to access:</strong> You have the right to request that we disclose to you in a portable format the personal information we collect, use, disclose, share, and sell about you.</li>
+                    <li><strong>Right to correct:</strong> You have the right to correct errors in your personal information.</li>
+                    <li><strong>Right to delete:</strong> You have the right to request that we delete your personal information that we’ve collected.</li>
+                    <li><strong>Right to update:</strong> You have the right to request that inaccurate personal information we hold about you be corrected.</li>
+                    <li><strong>Right to opt out:</strong> You have the right to opt out of behavioral or targeted advertising, automated profiling, and sales of personal information.</li>
+                    <li><strong>Right to restrict the use and disclosure of your sensitive information:</strong> You have the right to request that we limit our use and disclosure of your sensitive personal information.</li>
+                    <li><strong>Right to nondiscrimination:</strong> You have the right not to receive discriminatory treatment because you’ve exercised any of your rights under the CCPA.</li>
+                </ul>
+                <p>If you or your authorized agent wishes to exercise any of these rights, please complete our [PROVIDE ERIKA WITH OUR CONTACT FORM TO BE LINKED] or contact us as outlined in the “Contact Us” section below. Please note that we may ask you or your agent to provide us with additional information to confirm your identity.</p>
+                <p>If you submit a request to exercise one of the above rights and you disagree with our decision regarding your request, you may have the right to appeal our decision under applicable law. To do so, please reply to our response.</p>
+                <p><strong>Categories of Personal Information Collected:</strong> The personal information that we’ve collected in the past 12 months fall into the following categories specifically established under the CCPA:</p>
+
+                <ul class="flex flex-col list-disc pl-8 gap-4">
+                    <li><strong>Identifiers:</strong> Such as a real name, postal address, unique personal identifier, online identifier, internet protocol address, and email address.</li>
+                    <li><strong>Information under Cal. Civ. Code §1798.80(e):</strong> Such as your name, address, telephone number, or any financial information.</li>
+                    <li><strong>Commercial information:</strong> Such as information related to products or services you’ve purchased.</li>
+                    <li><strong>Internet or other electronic network activity information:</strong> Such as information regarding your interaction with the NativeLink Products.</li>
+                    <li><strong>Geolocation data.</strong></li>
+                    <li><strong>Audio, electronic, visual, or similar information:</strong> Such as audio recordings of calls with you.</li>
+                    <li><strong>Inferences drawn on the information above:</strong> Such as aggregated metrics.</li>
+                    <li><strong>Account log-in or credit card number:</strong> In combination with your credentials allowing access to your account.</li>
+                </ul>
+
+                <p>For more information about the categories of personal information we collect, please see the “Personal Information We Collect” section above.</p>
+
+                <p>No Sale or Sharing of Personal Information
+                We do not sell or share (for the purpose of cross-context behavioral advertising) your personal information, as those terms are defined under the CCPA.</p>
+            </div>
+
+            <div class="flex flex-col gap-4">
+                <h3 class="text-xl font-semibold">Changes to this Privacy Policy</h3>
+                <p>We may occasionally update this Privacy Policy. The date at the top of this Privacy Policy indicates when it was last revised. Any changes will become effective when we post the revised Privacy Policy on this page.</p>
+            </div>
+
+            <div class="flex flex-col gap-4">
+                <h3 class="text-xl font-semibold">Contact Us</h3>
+                <p>If you have questions or concerns about this Privacy Policy, please contact us at: Trace Machina, Inc., 2050 W Augusta Blvd, Chicago, IL 60622; or privacy@nativelinkcom.</p>
+            </div>
+
+
+        </section>
+    </div>
+
+</Layout>

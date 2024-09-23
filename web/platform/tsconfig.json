@@ -1,0 +1,17 @@
+{
+  "extends": "astro/tsconfigs/strictest",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@components/*": ["./src/components/*"],
+      "@qwik/*": ["./src/components/qwik/*"],
+      "@react/*": ["./src/components/react/*"],
+      "@assets/*": ["./src/assets/*"],
+      "@styles/*": ["./styles/*"],
+      "@utils/*": ["./utils/*"]
+    },
+    "types": ["bun"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "@builder.io/qwik"
+  }
+}

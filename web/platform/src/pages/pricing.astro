@@ -1,0 +1,29 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+import { LinearGradient } from "@qwik/components/text";
+import { FeatureTable } from "@qwik/components/table"
+import { PricingCard } from "@qwik/components/cards";
+import { BackgroundVideo } from "@qwik/components/video";
+---
+
+<Layout title="NativeLink Pricing">
+    <div class="py-24 w-screen bg-black text-white flex flex-col justify-center items-center">
+        <div class="w-full pb-16 md:pb-56 flex flex-col justify-start items-center gap-10">
+
+            <BackgroundVideo class="absolute inset-0 w-full h-full object-cover" />
+            <!-- Gradient Overlay from purple to blue -->
+            <div class="absolute inset-0 w-full h-full bg-gradient-to-r from-purple-500 to-blue-500 opacity-50"></div>
+
+            <!-- Smooth gradient to black at the bottom -->
+            <div class="absolute inset-0 w-full h-full bg-gradient-to-b from-transparent via-black/50 to-black"></div>
+
+            <LinearGradient text="Pricing built to scale with your infrastructure" class="z-20 p-4 md:text-5xl text-3xl text-center"/>
+            <PricingCard />
+        </div>
+        <div class="z-20 px-4 h-full w-full md:w-[1000px] gap-10 flex flex-col justify-center items-start">
+            <LinearGradient text="Feature Comparison" class="z-20 px-2 text-3xl"/>
+            <FeatureTable />
+        </div>
+    </div>
+</Layout>
