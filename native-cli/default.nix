@@ -9,7 +9,7 @@ buildGoModule {
   pname = "native-cli";
   version = "0.4.0";
   src = ./.;
-  vendorHash = "sha256-p5lMhIHP0Al/0adP7/8w2P3a73xK1fIj9k5OApM/LjE=";
+  vendorHash = "sha256-ASmQhGHplG4ayeezhhM4R01pZLBLjYcqEuKVVxNADX0=";
   buildInputs = [makeWrapper];
   ldflags = ["-s -w"];
   installPhase = ''
@@ -29,6 +29,6 @@ buildGoModule {
     description = "NativeLink development cluster.";
     homepage = "https://github.com/TraceMachina/nativelink";
     license = licenses.asl20;
-    maintainers = [maintainers.aaronmondal];
+    maintainers = [maintainers.aaronmondal maintainers.SchahinRohani];
   };
 }
