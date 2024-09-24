@@ -5,7 +5,6 @@ import react from "@astrojs/react";
 import sitemap from "@astrojs/sitemap";
 import starlight from "@astrojs/starlight";
 
-import { qwikReact } from "@builder.io/qwik-react/vite";
 import deno from "@deno/astro-adapter";
 import qwik from "@qwikdev/astro";
 import tailwindcss from "@tailwindcss/vite";
@@ -56,6 +55,6 @@ export default defineConfig({
     ],
   },
   vite: {
-    plugins: [qwikReact(), tailwindcss()],
+    plugins: [tailwindcss()],
   },
 });
