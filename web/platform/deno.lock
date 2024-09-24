@@ -2580,9 +2580,6 @@
     "https://deno.land/x/smtp@v0.7.0/smtp.ts": "47c72a99925ad07f3174037f9325dbb8b703dc1177277b9161dc6209c7fa4f90"
   },
   "workspace": {
-    "dependencies": [
-      "jsr:@deno/deployctl@^1.12.0"
-    ],
     "packageJson": {
       "dependencies": [
         "npm:@astrojs/check@^0.9.3",
@@ -2607,7 +2604,7 @@
         "npm:dotenv@^16.4.5",
         "npm:framer-motion@^11.5.4",
         "npm:motion@^10.18.0",
-        "npm:playwright@1.46.0",
+        "npm:playwright@1.47.0",
         "npm:react-dom@^18.3.1",
         "npm:react@^18.3.1",
         "npm:rehype-autolink-headings@^7.1.0",

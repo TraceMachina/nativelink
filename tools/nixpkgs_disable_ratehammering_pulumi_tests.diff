@@ -1,5 +1,5 @@
 diff --git a/pkgs/tools/admin/pulumi/default.nix b/pkgs/tools/admin/pulumi/default.nix
-index d63bef2a0270..512ca00dec18 100644
+index 9d715ea7edf9..be5158690c15 100644
 --- a/pkgs/tools/admin/pulumi/default.nix
 +++ b/pkgs/tools/admin/pulumi/default.nix
 @@ -78,6 +78,7 @@ buildGoModule rec {

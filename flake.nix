@@ -15,7 +15,6 @@
     };
     crane = {
       url = "github:ipetkov/crane";
-      inputs.nixpkgs.follows = "nixpkgs";
     };
     nix2container = {
       url = "github:nlewo/nix2container";
@@ -49,7 +48,7 @@
         system,
         ...
       }: let
-        stable-rust-version = "1.79.0";
+        stable-rust-version = "1.81.0";
         nightly-rust-version = "2024-07-24";
 
         # TODO(aaronmondal): Make musl builds work on Darwin.
@@ -338,11 +337,8 @@
             name = "nixpkgs-patched";
             src = self.inputs.nixpkgs;
             patches = [
-              ./tools/nixpkgs_all-packages.diff
               ./tools/nixpkgs_link_libunwind_and_libcxx.diff
               ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
-              ./tools/nixpkgs_bun.diff
-              ./tools/nixpkgs_playwright_driver.diff
             ];
           };
         in
@@ -460,7 +456,6 @@
 
               ## Web
               pkgs.bun # got patched to the newest version (v.1.1.25)
-              pkgs.deno
               pkgs.lychee
               pkgs.nodejs_22 # For pagefind search
               pkgs.playwright-driver
@@ -473,7 +468,12 @@
               native-cli
               docs
             ]
-            ++ maybeDarwinDeps;
+            ++ maybeDarwinDeps
+            ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [
+              # Old darwin systems are incompatible with deno.
+              pkgs.deno
+            ];
+
           shellHook = ''
             # Generate the .pre-commit-config.yaml symlink when entering the
             # development shell.
