@@ -25,7 +25,7 @@ platform(
         "@bazel_tools//tools/cpp:clang",
     ],
     exec_properties = {
-        "container-image": "docker://lre-java:nzg3qip27c0y61kh644cjjpfg7j8138q",
+        "container-image": "docker://lre-java:m3jm1wns9k9rb3yrhm86prdnv6cgh8x7",
         "OSFamily": "Linux",
     },
     parents = ["@local_config_platform//:host"],

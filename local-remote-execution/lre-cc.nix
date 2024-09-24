@@ -2,7 +2,10 @@
   buildImage,
   customClang,
   stdenv,
-  pkgs,
+  lib,
+  coreutils,
+  findutils,
+  gnutar,
 }: let
   # This environment is shared between toolchain autogen images and the final
   # toolchain image.
@@ -11,13 +14,13 @@
     # paths instead of `/bin` or `/usr/bin`. This way we're guaranteed to use
     # binary identical toolchains during local and remote execution.
     ("PATH="
-      + (pkgs.lib.strings.concatStringsSep ":" [
+      + (lib.strings.concatStringsSep ":" [
         "${stdenv.cc.bintools}/bin"
         "${customClang}/bin"
         "${stdenv}/bin"
-        "${pkgs.coreutils}/bin"
-        "${pkgs.findutils}/bin"
-        "${pkgs.gnutar}/bin"
+        "${coreutils}/bin"
+        "${findutils}/bin"
+        "${gnutar}/bin"
       ]))
 
     "CC=${customClang}/bin/customClang"
