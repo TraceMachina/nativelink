@@ -1,7 +1,12 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary")
 
+# This example matches the config of the lre config
 cc_binary(
     name = "hello_lre",
     srcs = ["hello.cpp"],
     copts = ["--verbose"],
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
 )
