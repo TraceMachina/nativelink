@@ -14,13 +14,12 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZero;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use lru::LruCache;
-use nativelink_error::{Code, Error, ResultExt};
+use nativelink_error::{Code, Error};
 use nativelink_proto::google::longrunning::operation::Result as OperationResult;
 use nativelink_proto::google::longrunning::operations_server::{Operations, OperationsServer};
 use nativelink_proto::google::longrunning::{
@@ -34,7 +33,6 @@ use nativelink_util::operation_state_manager::{
 };
 use prost_types::Any;
 use tokio::sync::Mutex;
-use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
@@ -74,6 +72,7 @@ impl OpsServer {
         OperationsServer::new(self)
     }
 
+    /// List operations matching a given filter.
     async fn list_operations_inner(
         &self,
         scheduler: &Arc<dyn ClientStateManager>,
@@ -118,6 +117,7 @@ impl OpsServer {
         })
     }
 
+    /// Get an operation, if it exists.
     async fn get_operation_inner(
         &self,
         client_operation_id: OperationId,
@@ -145,6 +145,7 @@ impl OpsServer {
         ))
     }
 
+    /// Wait (potentially forever) for an operation to complete.
     async fn wait_operation_inner(&self, operation_id: OperationId) -> Result<Operation, Error> {
         let mut action_state_result_maybe = None;
         for scheduler in self.schedulers.values() {
@@ -172,8 +173,8 @@ impl OpsServer {
             ));
         };
 
+        let mut state = action_state_result.as_state().await?;
         loop {
-            let mut state = action_state_result.as_state().await?;
             match state.stage {
                 ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => {
                     return translate_action_stage_result(action_state_result).await
@@ -188,16 +189,6 @@ impl OpsServer {
 
 #[tonic::async_trait]
 impl Operations for OpsServer {
-    /// Lists operations that match the specified filter in the request. If the
-    /// server doesn't support this method, it returns `UNIMPLEMENTED`.
-    ///
-    /// NOTE: the `name` binding allows API services to override the binding
-    /// to use different resource name schemes, such as `users/*/operations`. To
-    /// override the binding, API services can add a binding such as
-    /// `"/v1/{name=users/*}/operations"` to their service configuration.
-    /// For backwards compatibility, the default name includes the operations
-    /// collection id, however overriding users must ensure the name binding
-    /// is the parent resource, without the operations collection id.
     async fn list_operations(
         &self,
         request: Request<ListOperationsRequest>,
@@ -274,9 +265,6 @@ impl Operations for OpsServer {
         Ok(Response::new(message))
     }
 
-    /// Gets the latest state of a long-running operation.  Clients can use this
-    /// method to poll the operation result at intervals as recommended by the API
-    /// service.
     async fn get_operation(
         &self,
         request: Request<GetOperationRequest>,
@@ -286,41 +274,20 @@ impl Operations for OpsServer {
         Ok(Response::new(message))
     }
 
-    /// Deletes a long-running operation. This method indicates that the client is
-    /// no longer interested in the operation result. It does not cancel the
-    /// operation. If the server doesn't support this method, it returns
-    /// `google.rpc.Code.UNIMPLEMENTED`.
     async fn delete_operation(
         &self,
         _: Request<DeleteOperationRequest>,
     ) -> Result<Response<()>, Status> {
         Err(Status::unimplemented("UNIMPLEMENTED"))
     }
-    /// Starts asynchronous cancellation on a long-running operation.  The server
-    /// makes a best effort to cancel the operation, but success is not
-    /// guaranteed.  If the server doesn't support this method, it returns
-    /// `google.rpc.Code.UNIMPLEMENTED`.  Clients can use
-    /// [Operations.GetOperation][google.longrunning.Operations.GetOperation] or
-    /// other methods to check whether the cancellation succeeded or whether the
-    /// operation completed despite cancellation. On successful cancellation,
-    /// the operation is not deleted; instead, it becomes an operation with
-    /// an [Operation.error][google.longrunning.Operation.error] value with a [google.rpc.Status.code][google.rpc.Status.code] of 1,
-    /// corresponding to `Code.CANCELLED`.
+
     async fn cancel_operation(
         &self,
         _: Request<CancelOperationRequest>,
     ) -> Result<Response<()>, Status> {
         Err(Status::unimplemented("UNIMPLEMENTED"))
     }
-    /// Waits for the specified long-running operation until it is done or reaches
-    /// at most a specified timeout, returning the latest state.  If the operation
-    /// is already done, the latest state is immediately returned.  If the timeout
-    /// specified is greater than the default HTTP/RPC timeout, the HTTP/RPC
-    /// timeout is used.  If the server does not support this method, it returns
-    /// `google.rpc.Code.UNIMPLEMENTED`.
-    /// Note that this method is on a best-effort basis.  It may return the latest
-    /// state before the specified timeout (including immediately), meaning even an
-    /// immediate response is no guarantee that the operation is done.
+
     async fn wait_operation(
         &self,
         request: Request<WaitOperationRequest>,
