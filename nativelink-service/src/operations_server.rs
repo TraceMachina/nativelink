@@ -83,7 +83,7 @@ impl OpsServer {
             self.cache.lock().await.pop(&uuid).ok_or_else(|| {
                 Error::new(
                     Code::NotFound,
-                    format!("Couldn't find page with token {}", uuid),
+                    format!("Couldn't find page with token {uuid}"),
                 )
             })?
         } else {
@@ -209,11 +209,10 @@ impl Operations for OpsServer {
             ..
         } = request.into_inner();
 
-        let normalized_page_size = if page_size < 0 || page_size > LIST_OPERATIONS_MAXIMUM_PAGE_SIZE
+        let normalized_page_size = if !(0..=LIST_OPERATIONS_MAXIMUM_PAGE_SIZE).contains(&page_size)
         {
             return Err(Status::out_of_range(format!(
-                "page size {} out of range 0..=100",
-                page_size
+                "page size {page_size} out of range 0..=100",
             )));
         } else if page_size == 0 {
             LIST_OPERATIONS_DEFAULT_PAGE_SIZE
