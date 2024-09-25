@@ -3,7 +3,7 @@ title: "Case Study: CIQ"
 tags: ["news", "case-studies"]
 image: https://static.wixstatic.com/media/48be99_cdfe3f6e392b419787c1031a1170e62a~mv2.png/v1/fill/w_648,h_394,al_c,q_85,usm_0.66_1.00_0.01,enc_auto/3.png
 slug: case-study-ciq
-pubDate: 2020-01-25
+pubDate: 2024-08-13
 readTime: 30 seconds
 ---
 CIQ is an enterprise company that specializes in Linux distribution,
