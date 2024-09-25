@@ -14,11 +14,13 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZero;
+use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use lru::LruCache;
-use nativelink_error::{Code, Error};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_proto::google::longrunning::operation::Result as OperationResult;
 use nativelink_proto::google::longrunning::operations_server::{Operations, OperationsServer};
 use nativelink_proto::google::longrunning::{
@@ -32,6 +34,7 @@ use nativelink_util::operation_state_manager::{
 };
 use prost_types::Any;
 use tokio::sync::Mutex;
+use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
@@ -39,6 +42,10 @@ const LIST_OPERATIONS_MAXIMUM_PAGE_SIZE: i32 = 100;
 const LIST_OPERATIONS_DEFAULT_PAGE_SIZE: usize = 50;
 const NUM_CACHED_RESPONSES: NonZero<usize> = unsafe { NonZero::new_unchecked(1024) };
 const NO_MORE_PAGES_TOKEN: &str = "NO_MORE_PAGES";
+const WAIT_OPERATION_DEFAULT_TIMEOUT: prost_types::Duration = prost_types::Duration {
+    seconds: 20,
+    nanos: 0,
+};
 
 pub struct OpsServer {
     schedulers: HashMap<String, Arc<dyn ClientStateManager>>,
@@ -136,6 +143,46 @@ impl OpsServer {
                 client_operation_id.into_string()
             ),
         ))
+    }
+
+    async fn wait_operation_inner(&self, operation_id: OperationId) -> Result<Operation, Error> {
+        let mut action_state_result_maybe = None;
+        for scheduler in self.schedulers.values() {
+            if let Some(action_state_result) = scheduler
+                .filter_operations(OperationFilter {
+                    client_operation_id: Some(operation_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .next()
+                .await
+            {
+                action_state_result_maybe = Some(action_state_result);
+                break;
+            }
+        }
+
+        let Some(mut action_state_result) = action_state_result_maybe else {
+            return Err(Error::new(
+                Code::NotFound,
+                format!(
+                    "Couldn't find operation with ID {}",
+                    operation_id.into_string()
+                ),
+            ));
+        };
+
+        loop {
+            let mut state = action_state_result.as_state().await?;
+            match state.stage {
+                ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => {
+                    return translate_action_stage_result(action_state_result).await
+                }
+                _ => {
+                    state = action_state_result.changed().await?;
+                }
+            }
+        }
     }
 }
 
@@ -238,15 +285,16 @@ impl Operations for OpsServer {
         let message = self.get_operation_inner(OperationId::String(name)).await?;
         Ok(Response::new(message))
     }
+
     /// Deletes a long-running operation. This method indicates that the client is
     /// no longer interested in the operation result. It does not cancel the
     /// operation. If the server doesn't support this method, it returns
     /// `google.rpc.Code.UNIMPLEMENTED`.
     async fn delete_operation(
         &self,
-        request: Request<DeleteOperationRequest>,
+        _: Request<DeleteOperationRequest>,
     ) -> Result<Response<()>, Status> {
-        Err(Status::unimplemented("unimplemented"))
+        Err(Status::unimplemented("UNIMPLEMENTED"))
     }
     /// Starts asynchronous cancellation on a long-running operation.  The server
     /// makes a best effort to cancel the operation, but success is not
@@ -260,9 +308,9 @@ impl Operations for OpsServer {
     /// corresponding to `Code.CANCELLED`.
     async fn cancel_operation(
         &self,
-        request: Request<CancelOperationRequest>,
+        _: Request<CancelOperationRequest>,
     ) -> Result<Response<()>, Status> {
-        Err(Status::unimplemented("unimplemented"))
+        Err(Status::unimplemented("UNIMPLEMENTED"))
     }
     /// Waits for the specified long-running operation until it is done or reaches
     /// at most a specified timeout, returning the latest state.  If the operation
@@ -277,7 +325,39 @@ impl Operations for OpsServer {
         &self,
         request: Request<WaitOperationRequest>,
     ) -> Result<Response<Operation>, Status> {
-        Err(Status::unimplemented("todo"))
+        let rpc_timeout: Duration =
+            if let Some(grpc_timeout_header) = request.metadata().get("grpc-timeout") {
+                grpc_timeout_header
+                    .to_str()
+                    .map_err(|e| Status::invalid_argument(format!("invalid grpc-timeout: {e}")))?
+                    .parse::<prost_types::Duration>()
+                    .map_err(|e| Status::invalid_argument(format!("invalid grpc-timeout: {e}")))?
+                    .try_into()
+                    .map_err(|e| Status::invalid_argument(format!("invalid grpc-timeout: {e}")))?
+            } else {
+                WAIT_OPERATION_DEFAULT_TIMEOUT
+                    .try_into()
+                    .expect("a positive timeout to translate")
+            };
+
+        let WaitOperationRequest {
+            name,
+            timeout: message_timeout_maybe,
+        } = request.into_inner();
+
+        let message_timeout: Duration = message_timeout_maybe
+            .unwrap_or(WAIT_OPERATION_DEFAULT_TIMEOUT)
+            .try_into()
+            .map_err(|e| Status::invalid_argument(format!("invalid timeout: {e}")))?;
+
+        let timeout = rpc_timeout.min(message_timeout);
+        let operation_id = OperationId::String(name);
+
+        let message = tokio::time::timeout(timeout, self.wait_operation_inner(operation_id))
+            .await
+            .map_err(|_| Status::deadline_exceeded("timeout elapsed"))??;
+
+        Ok(Response::new(message))
     }
 }
 
