@@ -193,9 +193,8 @@ impl<'a> ToTokens for MetricStruct<'a> {
 #[proc_macro_derive(MetricsComponent, attributes(metric))]
 pub fn metrics_component_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let data = match &input.data {
-        syn::Data::Struct(data) => data,
-        _ => panic!("MetricsComponent can only be derived for structs"),
+    let syn::Data::Struct(data) = &input.data else {
+        panic!("MetricsComponent can only be derived for structs")
     };
 
     let mut metric_fields = vec![];

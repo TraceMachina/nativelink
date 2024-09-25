@@ -342,9 +342,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             .client_operation_to_awaited_action
             .get(client_operation_id)
             .await;
-        let client_awaited_action = match maybe_client_awaited_action {
-            Some(client_awaited_action) => client_awaited_action,
-            None => return Ok(None),
+        let Some(client_awaited_action) = maybe_client_awaited_action else {
+            return Ok(None);
         };
 
         self.operation_id_to_awaited_action
