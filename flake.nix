@@ -41,6 +41,7 @@
       imports = [
         inputs.git-hooks.flakeModule
         ./local-remote-execution/flake-module.nix
+        ./tools/darwin/flake-module.nix
       ];
       perSystem = {
         config,
@@ -71,6 +72,7 @@
         maybeDarwinDeps = pkgs.lib.optionals pkgs.stdenv.isDarwin [
           pkgs.darwin.apple_sdk.frameworks.Security
           pkgs.libiconv
+          pkgs.darwin.apple_sdk.frameworks.CoreFoundation
         ];
 
         llvmPackages = pkgs.llvmPackages_18;
@@ -420,6 +422,7 @@
             else lre-cc.meta.Env;
           prefix = "lre";
         };
+
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = let
             bazel = pkgs.writeShellScriptBin "bazel" ''
@@ -483,6 +486,12 @@
             # in the nix environment.
             ${config.local-remote-execution.installationScript}
 
+            # If on darwin, then generate darwin.bazelrc which configures
+            # darwin libs & frameworks when running in the nix environment.
+            if [[ "$(uname)" == "Darwin" ]]; then
+              ${config.darwin.installationScript}
+            fi
+
             # The Bazel and Cargo builds in nix require a Clang toolchain.
             # TODO(aaronmondal): The Bazel build currently uses the
             #                    irreproducible host C++ toolchain. Provide
@@ -499,6 +508,7 @@
       };
     }
     // {
-      flakeModule = ./local-remote-execution/flake-module.nix;
+      flakeModule.default = ./local-remote-execution/flake-module.nix;
+      flakeModule.darwin = ./tools/darwin/flake-module.nix;
     };
 }
