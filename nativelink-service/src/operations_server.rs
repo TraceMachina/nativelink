@@ -17,7 +17,7 @@ use std::num::NonZero;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::StreamExt;
+use futures::{stream, StreamExt, TryStreamExt};
 use lru::LruCache;
 use nativelink_error::{Code, Error};
 use nativelink_proto::google::longrunning::operation::Result as OperationResult;
@@ -75,21 +75,32 @@ impl OpsServer {
     /// List operations matching a given filter.
     async fn list_operations_inner(
         &self,
-        scheduler: &Arc<dyn ClientStateManager>,
         page_size: usize,
         page_uuid: Option<Uuid>,
         filter: OperationFilter,
     ) -> Result<ListOperationsResponse, Error> {
-        let mut cache = self.cache.lock().await;
         let mut action_state_results = if let Some(uuid) = page_uuid {
-            cache.pop(&uuid).ok_or_else(|| {
+            self.cache.lock().await.pop(&uuid).ok_or_else(|| {
                 Error::new(
                     Code::NotFound,
                     format!("Couldn't find page with token {}", uuid),
                 )
             })?
         } else {
-            scheduler.filter_operations(filter).await?.collect().await
+            let schedulers = self.schedulers.values().cloned();
+            stream::iter(schedulers)
+                .then(|scheduler| {
+                    let filter = filter.clone();
+                    async move {
+                        let operations = scheduler.filter_operations(filter).await?;
+                        Ok(operations.collect::<Vec<_>>().await)
+                    }
+                })
+                .try_fold(VecDeque::new(), |mut queue, mut operations| async move {
+                    queue.extend(operations.drain(..));
+                    Ok::<_, Error>(queue)
+                })
+                .await?
         };
 
         let rest = action_state_results.split_off(page_size.min(action_state_results.len()));
@@ -97,13 +108,11 @@ impl OpsServer {
             let next_page_uuid = Uuid::new_v4();
             let token = next_page_uuid.to_string();
 
-            cache.push(next_page_uuid, rest);
+            self.cache.lock().await.push(next_page_uuid, rest);
             token
         } else {
             NO_MORE_PAGES_TOKEN.to_string()
         };
-
-        drop(cache);
 
         let mut out = Vec::with_capacity(action_state_results.len());
         for action_state_result in action_state_results {
@@ -194,10 +203,10 @@ impl Operations for OpsServer {
         request: Request<ListOperationsRequest>,
     ) -> Result<Response<ListOperationsResponse>, Status> {
         let ListOperationsRequest {
-            name,
             filter: filter_string,
             page_size,
             page_token,
+            ..
         } = request.into_inner();
 
         let normalized_page_size = if page_size < 0 || page_size > LIST_OPERATIONS_MAXIMUM_PAGE_SIZE
@@ -212,26 +221,6 @@ impl Operations for OpsServer {
             page_size
                 .try_into()
                 .expect("a positive number between 0-100 to fit in u32")
-        };
-
-        let Some(scheduler) = self
-            .schedulers
-            .iter()
-            .find_map(|(scheduler_name, scheduler)| {
-                let n = scheduler_name.len();
-                if name.starts_with(scheduler_name.as_str())
-                    && name.as_bytes().get(n).is_some_and(|b| *b == b'/')
-                {
-                    Some(scheduler)
-                } else {
-                    None
-                }
-            })
-        else {
-            return Err(Status::not_found(format!(
-                "couldn't find a scheduler named {}",
-                &name
-            )));
         };
 
         let filter = if filter_string.is_empty() {
@@ -259,7 +248,7 @@ impl Operations for OpsServer {
         };
 
         let message = self
-            .list_operations_inner(scheduler, normalized_page_size, page_uuid, filter)
+            .list_operations_inner(normalized_page_size, page_uuid, filter)
             .await?;
 
         Ok(Response::new(message))
