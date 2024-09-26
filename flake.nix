@@ -42,6 +42,7 @@
         inputs.git-hooks.flakeModule
         ./local-remote-execution/flake-module.nix
         ./tools/darwin/flake-module.nix
+        ./flake-module.nix
       ];
       perSystem = {
         config,
@@ -420,7 +421,7 @@
             if pkgs.stdenv.isDarwin
             then [] # Doesn't support Darwin yet.
             else lre-cc.meta.Env;
-          prefix = "lre";
+          prefix = "linux";
         };
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = let
@@ -482,9 +483,13 @@
               # development shell.
               ${config.pre-commit.installationScript}
 
-              # Generate lre.bazelrc which configures LRE toolchains when running
-              # in the nix environment.
+              # Generate lre.bazelrc which configures LRE toolchains when
+              # running in the nix environment.
               ${config.local-remote-execution.installationScript}
+
+              # Generate nativelink.bazelrc which gives Bazel invocations access
+              # to NativeLink's read-only cache.
+              ${config.nativelink.installationScript}
 
               # The Bazel and Cargo builds in nix require a Clang toolchain.
               # TODO(aaronmondal): The Bazel build currently uses the
@@ -508,8 +513,9 @@
     }
     // {
       flakeModule = {
-        default = ./local-remote-execution/flake-module.nix;
+        default = ./flake-module.nix;
         darwin = ./tools/darwin/flake-module.nix;
+        local-remote-execution = ./local-remote-execution/flake-module.nix;
       };
     };
 }

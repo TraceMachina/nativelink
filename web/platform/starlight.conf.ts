@@ -78,6 +78,10 @@ export const starlightConfig = {
           label: "API Keys in CI",
           link: `${docsRoot}/nativelink-cloud/api-key`,
         },
+        {
+          label: "Nix flake module",
+          link: `${docsRoot}/nativelink-cloud/nix`,
+        },
       ],
     },
     {
