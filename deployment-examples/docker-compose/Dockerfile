@@ -33,7 +33,7 @@ RUN apt-get update \
             gcc=4:11.2.0-1ubuntu1 \
             g++=4:11.2.0-1ubuntu1 \
             python3=3.10.6-1~22.04.1 \
-            ca-certificates=20230311ubuntu0.22.04.1; \
+            ca-certificates=20240203~22.04.1; \
     elif [ "${OS_VERSION}" = "20.04" ]; then \
         DEBIAN_FRONTEND=noninteractive \
         apt-get install --no-install-recommends -y \
@@ -42,7 +42,7 @@ RUN apt-get update \
             gcc=4:9.3.0-1ubuntu2 \
             g++=4:9.3.0-1ubuntu2 \
             python3=3.8.2-0ubuntu2 \
-            ca-certificates=20230311ubuntu0.20.04.1; \
+            ca-certificates=20240203~20.04.1; \
     else \
         echo "Unsupported OS version: ${OS_VERSION}" >&2; \
         exit 1; \
