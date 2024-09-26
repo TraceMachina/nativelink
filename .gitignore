@@ -19,3 +19,4 @@ trivy-results.sarif
 Pulumi.dev.yaml
 lre.bazelrc
 rust-project.json
+nativelink.bazelrc

@@ -41,6 +41,7 @@
       imports = [
         inputs.git-hooks.flakeModule
         ./local-remote-execution/flake-module.nix
+        ./flake-module.nix
       ];
       perSystem = {
         config,
@@ -418,7 +419,7 @@
             if pkgs.stdenv.isDarwin
             then [] # Doesn't support Darwin yet.
             else lre-cc.meta.Env;
-          prefix = "lre";
+          prefix = "linux";
         };
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = let
@@ -479,6 +480,10 @@
             # development shell.
             ${config.pre-commit.installationScript}
 
+            # Generate nativelink.bazelrc which gives Bazel invocations access
+            # to NativeLink's read-only cache.
+            ${config.nativelink.installationScript}
+
             # Generate lre.bazelrc which configures LRE toolchains when running
             # in the nix environment.
             ${config.local-remote-execution.installationScript}
@@ -499,6 +504,9 @@
       };
     }
     // {
-      flakeModule = ./local-remote-execution/flake-module.nix;
+      flakeModule = {
+        default = ./flake-module.nix;
+        local-remote-execution = ./local-remote-execution/flake-module.nix;
+      };
     };
 }
