@@ -20,3 +20,4 @@ Pulumi.dev.yaml
 lre.bazelrc
 rust-project.json
 darwin.bazelrc
+nativelink.bazelrc
