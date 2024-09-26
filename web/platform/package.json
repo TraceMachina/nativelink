@@ -21,8 +21,8 @@
     "lint": "biome check --write --unsafe .",
     "preview": "bun run build && bun serve",
     "setup": "bun install && bun run deno install -Arf jsr:@deno/deployctl@1.12.0",
-    "staging": "bun setup && bun run docs && bun run build && bun run deploy --project=nativelink --org=nativelink",
-    "prod": "bun setup && bun run docs && bun run build && bun run deploy --project=nativelink --org=nativelink --prod",
+    "staging": "bun setup && bun run docs && bun run build && bun run deploy",
+    "prod": "bun setup && bun run docs && bun run build && bun run deploy --prod",
     "serve": "deno run -A --allow-net --allow-read --allow-env ./dist/server/entry.mjs"
   },
   "devDependencies": {
