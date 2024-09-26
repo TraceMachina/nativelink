@@ -58,6 +58,4 @@ bun preview
 
 ## 🐛 Known issues
 
-- `bun run docs.build` doesn't work on MacOS with the nix version of Bazel.
-  As a workaround install Bun and Bazel on your host and build the docs outside the flake.
-- `bun dev` doesn't reload the changes in the starlight.conf.ts
+- `bun dev` doesn't hot reload the changes in the starlight.conf.ts

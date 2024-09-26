@@ -41,6 +41,7 @@
       imports = [
         inputs.git-hooks.flakeModule
         ./local-remote-execution/flake-module.nix
+        ./tools/darwin/flake-module.nix
       ];
       perSystem = {
         config,
@@ -69,6 +70,7 @@
         stable-rust-native = pkgs.rust-bin.stable.${stable-rust-version};
 
         maybeDarwinDeps = pkgs.lib.optionals pkgs.stdenv.isDarwin [
+          pkgs.darwin.apple_sdk.frameworks.CoreFoundation
           pkgs.darwin.apple_sdk.frameworks.Security
           pkgs.libiconv
         ];
@@ -474,31 +476,40 @@
               pkgs.deno
             ];
 
-          shellHook = ''
-            # Generate the .pre-commit-config.yaml symlink when entering the
-            # development shell.
-            ${config.pre-commit.installationScript}
+          shellHook =
+            ''
+              # Generate the .pre-commit-config.yaml symlink when entering the
+              # development shell.
+              ${config.pre-commit.installationScript}
 
-            # Generate lre.bazelrc which configures LRE toolchains when running
-            # in the nix environment.
-            ${config.local-remote-execution.installationScript}
+              # Generate lre.bazelrc which configures LRE toolchains when running
+              # in the nix environment.
+              ${config.local-remote-execution.installationScript}
 
-            # The Bazel and Cargo builds in nix require a Clang toolchain.
-            # TODO(aaronmondal): The Bazel build currently uses the
-            #                    irreproducible host C++ toolchain. Provide
-            #                    this toolchain via nix for bitwise identical
-            #                    binaries across machines.
-            export CC=clang
-            export PULUMI_K8S_AWAIT_ALL=true
-            export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
-            export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
-            export PATH=$HOME/.deno/bin:$PATH
-            deno types > web/platform/utils/deno.d.ts
-          '';
+              # The Bazel and Cargo builds in nix require a Clang toolchain.
+              # TODO(aaronmondal): The Bazel build currently uses the
+              #                    irreproducible host C++ toolchain. Provide
+              #                    this toolchain via nix for bitwise identical
+              #                    binaries across machines.
+              export CC=clang
+              export PULUMI_K8S_AWAIT_ALL=true
+              export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
+              export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
+              export PATH=$HOME/.deno/bin:$PATH
+              deno types > web/platform/utils/deno.d.ts
+            ''
+            + (pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              # On Darwin generate darwin.bazelrc which configures
+              # darwin libs & frameworks when running in the nix environment.
+              ${config.darwin.installationScript}
+            '');
         };
       };
     }
     // {
-      flakeModule = ./local-remote-execution/flake-module.nix;
+      flakeModule = {
+        default = ./local-remote-execution/flake-module.nix;
+        darwin = ./tools/darwin/flake-module.nix;
+      };
     };
 }
