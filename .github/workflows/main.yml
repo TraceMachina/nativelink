@@ -101,7 +101,7 @@ jobs:
             --bes_backend=grpcs://bes-tracemachina-shared.build-faster.nativelink.net \
             --bes_header=x-nativelink-api-key=$NL_COM_API_KEY \
             --bes_results_url=https://app.nativelink.com/a/e3b1e0e0-4b73-45d6-85bc-5cb7b02edea5/build \
-            ${{ github.ref == 'refs/heads/main' && ' ' || '--nogenerate_json_trace_profile --remote_upload_local_results=false' }} \
+            ${{ github.ref == 'refs/heads/main' && '--remote_upload_local_results=true' || '--nogenerate_json_trace_profile --remote_upload_local_results=false' }} \
             //..."
 
   docker-compose-compiles-nativelink:
