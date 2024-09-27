@@ -95,7 +95,6 @@ build --remote_header=x-nativelink-api-key=065f02f53f26a12331d5cfd00a778fb243bfb
 build --remote_instance_name=main
 build --remote_header=x-nativelink-project=nativelink-ci
 build --nogenerate_json_trace_profile
-build --remote_upload_local_results=false
 build --experimental_remote_cache_async
 ```
 
@@ -117,6 +116,5 @@ build:nativelink --remote_cache=grpcs://my-custom-endpoints.com
 build:nativelink --remote_header=x-nativelink-api-key=my-custom-readonly-api-key
 build:nativelink --remote_header=x-nativelink-project=nativelink-ci
 build:nativelink --nogenerate_json_trace_profile
-build:nativelink --remote_upload_local_results=false
 build:nativelink --experimental_remote_cache_async
 ```
