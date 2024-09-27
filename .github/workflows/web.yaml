@@ -69,29 +69,21 @@ jobs:
         uses: >- # v4
           DeterminateSystems/magic-nix-cache-action@fc6aaceb40b9845a02b91e059ec147e78d1b4e41
 
-      - name: Test Build on Ubuntu
-        if: matrix.os == 'ubuntu-24.04' && github.event_name == 'pull_request'
+      - name: Test Build
+        if: github.event_name == 'pull_request'
         working-directory: web/platform
         run: |
           nix develop --impure --command bash -c "
             bun setup && bun docs && bun run build
           "
 
-      - name: Test Build on macOS
-        if: matrix.os == 'macos-14' && github.event_name == 'pull_request'
-        working-directory: web/platform
-        run: |
-          nix develop --impure --command bash -c "bun setup && bun run build"
-
       - name: Production deployment
         if: matrix.os == 'ubuntu-24.04' && github.ref == 'refs/heads/main'
         working-directory: web/platform
         env:
           DENO_DEPLOY_TOKEN: ${{ secrets.DENO_DEPLOY_TOKEN }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
         run: |
           nix develop --impure --command bash -c "
             bun prod --project=nativelink --org=nativelink \
             --token=$DENO_DEPLOY_TOKEN \
-            --env=RESEND_API_KEY=$RESEND_API_KEY
           "
