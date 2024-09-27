@@ -20,6 +20,7 @@
     "--remote_instance_name=main"
     "--remote_header=x-nativelink-project=nativelink-ci"
     "--nogenerate_json_trace_profile"
+    "--remote_upload_local_results=false"
     "--experimental_remote_cache_async"
   ];
 
