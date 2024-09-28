@@ -65,10 +65,14 @@ jobs:
           --jobs=200 \
           //...
 
-  nativelink-dot-com-cloud-cache-legacy-dockerfile-test:
-    runs-on: ubuntu-24.04
+  nativelink-dot-com-cloud-cache-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
     environment: production
-    name: NativeLink.com Cloud / Remote Cache (LRE)
+    name: NativeLink.com Cloud / Remote Cache / ${{ matrix.os }}
     env:
       NL_COM_API_KEY: ${{ secrets.NATIVELINK_COM_API_HEADER || '065f02f53f26a12331d5cfd00a778fb243bfb4e857b8fcd4c99273edfb15deae' }}
     steps:
