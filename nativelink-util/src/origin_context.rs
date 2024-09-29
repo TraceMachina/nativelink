@@ -319,6 +319,12 @@ impl<T> ContextAwareFuture<T> {
     /// active context.
     #[must_use = "futures do nothing unless you `.await` or poll them"]
     #[inline]
+    /// Creates a new `ContextAwareFuture` from the active origin context.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the `ActiveOriginContext` is not set (i.e., it returns `None`).
+    /// The panic occurs with the message `"OriginContext must be set"`.
     pub fn new_from_active(inner: Instrumented<T>) -> ContextAwareFuture<T> {
         match ActiveOriginContext::get() {
             Some(ctx) => ContextAwareFuture::new(Some(ctx), inner),

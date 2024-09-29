@@ -190,6 +190,9 @@ impl<'a> ToTokens for MetricStruct<'a> {
     }
 }
 
+/// # Panics
+///
+/// This function will panic if the `MetricsComponent` macro is applied to anything other than a struct.
 #[proc_macro_derive(MetricsComponent, attributes(metric))]
 pub fn metrics_component_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

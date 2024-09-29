@@ -119,6 +119,13 @@ fn reduce_platform_properties(
 }
 
 impl Worker {
+    /// Creates a new `Worker` with the specified ID, platform properties, sender, and timestamp.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the system time is earlier than the Unix epoch.
+    /// The panic occurs due to the call to `SystemTime::now().duration_since(UNIX_EPOCH).unwrap()`,
+    /// which will fail if the system clock is misconfigured or set to a time before the Unix epoch.
     pub fn new(
         id: WorkerId,
         platform_properties: PlatformProperties,

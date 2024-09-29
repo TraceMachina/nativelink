@@ -51,6 +51,13 @@ pub struct FastCDC {
 }
 
 impl FastCDC {
+    /// Creates a new instance with the specified minimum, average, and maximum sizes.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if:
+    /// - `min_size` is not less than `avg_size`, in which case it panics with the message `"Expected {min_size} < {avg_size}"`.
+    /// - `avg_size` is not less than `max_size`, in which case it panics with the message `"Expected {avg_size} < {max_size}"`.
     pub fn new(min_size: usize, avg_size: usize, max_size: usize) -> Self {
         assert!(min_size < avg_size, "Expected {min_size} < {avg_size}");
         assert!(avg_size < max_size, "Expected {avg_size} < {max_size}");

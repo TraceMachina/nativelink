@@ -275,6 +275,14 @@ impl DropCloserReadHalf {
     ///
     /// On error the state of the stream is undefined and the caller should not
     /// attempt to use the stream again.
+    /// # Panics
+    ///
+    /// This function will panic if the `recent_data` is not empty after draining it.
+    /// Specifically, it panics with the message `"Recent_data should be empty"`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bytes_received` exceeds `max_recent_data_size`.
     pub fn try_reset_stream(&mut self) -> Result<(), Error> {
         if self.bytes_received > self.max_recent_data_size {
             return Err(make_err!(
@@ -313,6 +321,11 @@ impl DropCloserReadHalf {
     }
 
     /// Peek the next set of bytes in the stream without consuming them.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if `queued_data` is empty after attempting to receive data.
+    /// The panic occurs with the message `"Should have data in the queue"`.
     pub async fn peek(&mut self) -> &Result<Bytes, Error> {
         if self.queued_data.is_empty() {
             let chunk = self.recv().await;

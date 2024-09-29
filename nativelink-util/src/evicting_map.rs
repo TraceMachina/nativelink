@@ -210,6 +210,11 @@ where
     /// and return the number of items that were processed.
     /// The `handler` function should return `true` to continue processing the next item
     /// or `false` to stop processing.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the `btree` index is not properly initialized and is `None` after attempting to rebuild it.
+    /// The panic occurs due to calling `unwrap()` on a `None` value.
     pub async fn range<F, Q>(&self, prefix_range: impl RangeBounds<Q>, mut handler: F) -> u64
     where
         F: FnMut(&K, &T) -> bool,

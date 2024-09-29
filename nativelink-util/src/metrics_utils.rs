@@ -324,6 +324,13 @@ pub struct CounterWithTime {
 
 impl CounterWithTime {
     #[inline]
+    /// Increments the counter and updates the last time to the current system time.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the system time is earlier than the Unix epoch.
+    /// This happens because `SystemTime::now().duration_since(UNIX_EPOCH).unwrap()` is called,
+    /// which panics if the system clock is incorrect or misconfigured.
     pub fn inc(&self) {
         if !metrics_enabled() {
             return;

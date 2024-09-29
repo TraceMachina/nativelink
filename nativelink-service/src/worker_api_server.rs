@@ -50,6 +50,18 @@ pub struct WorkerApiServer {
 }
 
 impl WorkerApiServer {
+    /// Creates a new `WorkerApiServer` with the given configuration and schedulers.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the system time is earlier than the Unix epoch.
+    /// The panic occurs in two situations:
+    /// - When retrieving the system time for scheduler timeouts (`SystemTime::now().duration_since(UNIX_EPOCH)`).
+    /// - During server creation, if the system time is invalid, it will trigger an internal error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the server could not be created with the given configuration and schedulers.
     pub fn new(
         config: &WorkerApiConfig,
         schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
