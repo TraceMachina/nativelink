@@ -468,3 +468,13 @@ most automatically generated changelogs provide.
 
 NativeLink Code of Conduct is available in the
 [CODE_OF_CONDUCT](https://github.com/tracemachina/nativelink/tree/main/CODE_OF_CONDUCT.md) file.
+
+## Generating code coverage
+
+You can generate branch-based coverage reports via:
+
+```
+nix run .#nativelinkCoverageForHost
+```
+
+The `result` symlink contains a webpage with the visualized report.

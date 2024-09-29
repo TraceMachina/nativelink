@@ -32,6 +32,9 @@ name = "nativelink"
 enable_tokio_console = [
   "nativelink-util/enable_tokio_console"
 ]
+nix = [
+  "nativelink-worker/nix"
+]
 
 [dependencies]
 nativelink-error = { path = "nativelink-error" }

@@ -1826,7 +1826,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "0.4.0"
+version = "0.5.3"
 dependencies = [
  "proc-macro2",
  "quote",
