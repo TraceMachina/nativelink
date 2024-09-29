@@ -117,12 +117,21 @@
             ];
           };
 
+        nightlyRustFor = p:
+          p.rust-bin.nightly.${nightly-rust-version}.default.override {
+            extensions = ["llvm-tools"];
+            targets = [
+              "${nixSystemToRustTriple p.stdenv.targetPlatform.system}"
+            ];
+          };
+
         craneLibFor = p: (crane.mkLib p).overrideToolchain stableRustFor;
+        nightlyCraneLibFor = p: (crane.mkLib p).overrideToolchain nightlyRustFor;
 
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
           filter = path: type:
-            (builtins.match "^.*(data/SekienSkashita\.jpg|nativelink-config/README\.md)" path != null)
+            (builtins.match "^.*(data/SekienAkashita\.jpg|nativelink-config/README\.md)" path != null)
             || ((craneLibFor pkgs).filterCargoSources path type);
         };
 
@@ -184,6 +193,7 @@
 
         # Additional target for external dependencies to simplify caching.
         cargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
+        nightlyCargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
 
         nativelinkFor = p:
           (craneLibFor p).buildPackage ((commonArgsFor p)
@@ -334,6 +344,34 @@
             os = "linux";
           };
         };
+
+        nativelinkCoverageFor = p: let
+          coverageArgs =
+            (commonArgsFor p)
+            // {
+              # TODO(aaronmondal): For some reason we're triggering an edgecase where
+              #                    mimalloc builds against glibc headers in coverage
+              #                    builds. This leads to nonexistend __memcpy_chk and
+              #                    __memset_chk symbols if fortification is enabled.
+              #                    Our regular builds also have this issue, but we
+              #                    should investigate further.
+              hardeningDisable = ["fortify"];
+            };
+        in
+          (nightlyCraneLibFor p).cargoLlvmCov (coverageArgs
+            // {
+              cargoArtifacts = nightlyCargoArtifactsFor p;
+              cargoExtraArgs = builtins.concatStringsSep " " [
+                "--all"
+                "--locked"
+                "--features nix"
+                "--branch"
+                "--ignore-filename-regex '.*(genproto|vendor-cargo-deps|crates).*'"
+              ];
+              cargoLlvmCovExtraArgs = "--html --output-dir $out";
+            });
+
+        nativelinkCoverageForHost = nativelinkCoverageFor pkgs;
       in rec {
         _module.args.pkgs = let
           nixpkgs-patched = (import self.inputs.nixpkgs {inherit system;}).applyPatches {
@@ -366,6 +404,7 @@
               lre-cc
               native-cli
               nativelink
+              nativelinkCoverageForHost
               nativelink-aarch64-linux
               nativelink-debug
               nativelink-image

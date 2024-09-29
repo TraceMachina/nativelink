@@ -3,6 +3,9 @@ name = "nativelink-worker"
 version = "0.5.3"
 edition = "2021"
 
+[features]
+nix = []
+
 [dependencies]
 nativelink-error = { path = "../nativelink-error" }
 nativelink-proto = { path = "../nativelink-proto" }

@@ -989,6 +989,7 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
 
 // Windows does not support symlinks.
 #[cfg(not(target_family = "windows"))]
+#[cfg_attr(feature = "nix", ignore)]
 #[nativelink_test]
 async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -1321,6 +1322,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+#[cfg_attr(feature = "nix", ignore)]
 #[nativelink_test]
 async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -1429,6 +1431,7 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
 // The wrapper script will print a constant string to stderr, and the test itself will
 // print to stdout. We then check the results of both to make sure the shell script was
 // invoked and the actual command was invoked under the shell script.
+#[cfg_attr(feature = "nix", ignore)]
 #[nativelink_test]
 async fn entrypoint_does_invoke_if_set() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_family = "unix")]
@@ -1572,6 +1575,7 @@ exit 0
     Ok(())
 }
 
+#[cfg_attr(feature = "nix", ignore)]
 #[nativelink_test]
 async fn entrypoint_injects_properties() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_family = "unix")]
@@ -1747,6 +1751,7 @@ exit 0
     Ok(())
 }
 
+#[cfg_attr(feature = "nix", ignore)]
 #[nativelink_test]
 async fn entrypoint_sends_timeout_via_side_channel() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_family = "unix")]
@@ -2268,6 +2273,7 @@ async fn action_result_has_used_in_message() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+#[cfg_attr(feature = "nix", ignore)]
 #[nativelink_test]
 async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -2681,6 +2687,7 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg_attr(feature = "nix", ignore)]
 #[nativelink_test]
 async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -2841,6 +2848,7 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
 
 /// Regression Test for Issue #675
 #[cfg(target_family = "unix")]
+#[cfg_attr(feature = "nix", ignore)]
 #[nativelink_test]
 async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -3219,6 +3227,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg_attr(feature = "nix", ignore)]
 #[nativelink_test]
 async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn std::error::Error>>
 {
