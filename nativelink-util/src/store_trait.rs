@@ -118,14 +118,13 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
             Either::Right((read_result, _)) => read_result,
         }
     };
-    match timeout(idle_file_descriptor_timeout(), &mut update_fut).await {
-        Ok(update_result) => update_result.merge(read_result),
-        Err(_) => {
-            file.close_file()
-                .await
-                .err_tip(|| "Failed to close file in upload_file_to_store")?;
-            update_fut.await.merge(read_result)
-        }
+    if let Ok(update_result) = timeout(idle_file_descriptor_timeout(), &mut update_fut).await {
+        update_result.merge(read_result)
+    } else {
+        file.close_file()
+            .await
+            .err_tip(|| "Failed to close file in upload_file_to_store")?;
+        update_fut.await.merge(read_result)
     }
 }
 

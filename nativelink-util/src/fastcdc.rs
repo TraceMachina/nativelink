@@ -134,17 +134,15 @@ impl Decoder for FastCDC {
     }
 
     fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match self.decode(buf)? {
-            Some(frame) => Ok(Some(frame)),
-            // If we are EOF and have no more bytes in stream return the entire buffer.
-            None => {
-                self.state.reset();
-                if buf.is_empty() {
-                    // If our buffer is empty we don't have any more data.
-                    return Ok(None);
-                }
-                Ok(Some(buf.split().freeze()))
+        if let Some(frame) = self.decode(buf)? {
+            Ok(Some(frame))
+        } else {
+            self.state.reset();
+            if buf.is_empty() {
+                // If our buffer is empty we don't have any more data.
+                return Ok(None);
             }
+            Ok(Some(buf.split().freeze()))
         }
     }
 }

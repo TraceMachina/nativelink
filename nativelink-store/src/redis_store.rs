@@ -767,12 +767,11 @@ impl RedisSubscriptionManager {
                             msg = rx.recv() => {
                                 match msg {
                                     Ok(msg) => {
-                                        match msg.value {
-                                            RedisValue::String(s) => s,
-                                            _ => {
-                                                event!(Level::ERROR, "Received non-string message in RedisSubscriptionManager");
-                                                continue;
-                                            }
+                                        if let RedisValue::String(s) = msg.value {
+                                            s
+                                        } else {
+                                            event!(Level::ERROR, "Received non-string message in RedisSubscriptionManager");
+                                            continue;
                                         }
                                     },
                                     Err(e) => {
@@ -992,56 +991,55 @@ impl SchedulerStore for RedisStore {
                 .await
             })
         };
-        let stream = match run_ft_aggregate()?.await {
-            Ok(stream) => stream,
-            Err(_) => {
-                let create_result = self
-                    .client_pool
-                    .next()
-                    .ft_create::<(), _>(
-                        format!("{}", get_index_name!(K::KEY_PREFIX, K::INDEX_NAME)),
-                        FtCreateOptions {
-                            on: Some(fred::types::IndexKind::Hash),
-                            prefixes: vec![K::KEY_PREFIX.into()],
-                            nohl: true,
-                            nofields: true,
-                            nofreqs: true,
-                            nooffsets: true,
-                            temporary: Some(INDEX_TTL_S),
-                            ..Default::default()
+        let stream = if let Ok(stream) = run_ft_aggregate()?.await {
+            stream
+        } else {
+            let create_result = self
+                .client_pool
+                .next()
+                .ft_create::<(), _>(
+                    format!("{}", get_index_name!(K::KEY_PREFIX, K::INDEX_NAME)),
+                    FtCreateOptions {
+                        on: Some(fred::types::IndexKind::Hash),
+                        prefixes: vec![K::KEY_PREFIX.into()],
+                        nohl: true,
+                        nofields: true,
+                        nofreqs: true,
+                        nooffsets: true,
+                        temporary: Some(INDEX_TTL_S),
+                        ..Default::default()
+                    },
+                    vec![SearchSchema {
+                        field_name: K::INDEX_NAME.into(),
+                        alias: None,
+                        kind: SearchSchemaKind::Tag {
+                            sortable: true,
+                            unf: false,
+                            separator: None,
+                            casesensitive: false,
+                            withsuffixtrie: false,
+                            noindex: false,
                         },
-                        vec![SearchSchema {
-                            field_name: K::INDEX_NAME.into(),
-                            alias: None,
-                            kind: SearchSchemaKind::Tag {
-                                sortable: true,
-                                unf: false,
-                                separator: None,
-                                casesensitive: false,
-                                withsuffixtrie: false,
-                                noindex: false,
-                            },
-                        }],
-                    )
-                    .await
-                    .err_tip(|| {
-                        format!(
-                            "Error with ft_create in RedisStore::search_by_index_prefix({})",
-                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME),
-                        )
-                    });
-                let run_result = run_ft_aggregate()?.await.err_tip(|| {
+                    }],
+                )
+                .await
+                .err_tip(|| {
                     format!(
-                        "Error with second ft_aggregate in RedisStore::search_by_index_prefix({})",
+                        "Error with ft_create in RedisStore::search_by_index_prefix({})",
                         get_index_name!(K::KEY_PREFIX, K::INDEX_NAME),
                     )
                 });
-                // Creating the index will race which is ok. If it fails to create, we only
-                // error if the second ft_aggregate call fails and fails to create.
-                match run_result {
-                    Ok(stream) => stream,
-                    Err(e) => return create_result.merge(Err(e)),
-                }
+            let run_result = run_ft_aggregate()?.await.err_tip(|| {
+                format!(
+                    "Error with second ft_aggregate in RedisStore::search_by_index_prefix({})",
+                    get_index_name!(K::KEY_PREFIX, K::INDEX_NAME),
+                )
+            });
+            // Creating the index will race which is ok. If it fails to create, we only
+            // error if the second ft_aggregate call fails and fails to create.
+            match run_result {
+                Ok(stream) => stream,
+                Err(e) => return create_result.merge(Err(e)),
             }
         };
         Ok(stream.map(|result| {

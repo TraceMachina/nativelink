@@ -217,12 +217,11 @@ where
         Q: Ord + Hash + Eq + Debug,
     {
         let mut state = self.state.lock().await;
-        let btree = match state.btree {
-            Some(ref btree) => btree,
-            None => {
-                Self::rebuild_btree_index(&mut state);
-                state.btree.as_ref().unwrap()
-            }
+        let btree = if let Some(ref btree) = state.btree {
+            btree
+        } else {
+            Self::rebuild_btree_index(&mut state);
+            state.btree.as_ref().unwrap()
         };
         let mut continue_count = 0;
         for key in btree.range(prefix_range) {

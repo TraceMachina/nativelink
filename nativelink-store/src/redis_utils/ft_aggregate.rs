@@ -52,24 +52,21 @@ where
         move |maybe_state| async move {
             let mut state = maybe_state?;
             loop {
-                match state.data.data.pop_front() {
-                    Some(map) => {
-                        return Some((Ok(map), Some(state)));
+                if let Some(map) = state.data.data.pop_front() {
+                    return Some((Ok(map), Some(state)));
+                } else {
+                    if state.data.cursor == 0 {
+                        return None;
                     }
-                    None => {
-                        if state.data.cursor == 0 {
-                            return None;
-                        }
-                        let data_res = state
-                            .client
-                            .ft_cursor_read(state.index.clone(), state.data.cursor, None)
-                            .await;
-                        state.data = match data_res {
-                            Ok(data) => data,
-                            Err(err) => return Some((Err(err), None)),
-                        };
-                        continue;
-                    }
+                    let data_res = state
+                        .client
+                        .ft_cursor_read(state.index.clone(), state.data.cursor, None)
+                        .await;
+                    state.data = match data_res {
+                        Ok(data) => data,
+                        Err(err) => return Some((Err(err), None)),
+                    };
+                    continue;
                 }
             }
         },
