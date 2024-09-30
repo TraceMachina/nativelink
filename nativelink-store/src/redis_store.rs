@@ -167,14 +167,13 @@ impl RedisStore {
     }
 
     /// Encode a [`StoreKey`] so it can be sent to Redis.
-    fn encode_key<'a>(&self, key: &'a StoreKey<'a>) -> Cow<'a, str> {
-        let key_body = key.as_str();
+    fn encode_key<'a>(&self, key: Cow<'a, str>) -> Cow<'a, str> {
         if self.key_prefix.is_empty() {
-            key_body
+            key
         } else {
             // This is in the hot path for all redis operations, so we try to reuse the allocation
             // from `key.as_str()` if possible.
-            match key_body {
+            match key {
                 Cow::Owned(mut encoded_key) => {
                     encoded_key.insert_str(0, &self.key_prefix);
                     Cow::Owned(encoded_key)
@@ -213,7 +212,7 @@ impl StoreDriver for RedisStore {
                 continue;
             }
 
-            let encoded_key = self.encode_key(key);
+            let encoded_key = self.encode_key(key.as_str());
 
             // This command is queued in memory, but not yet sent down the pipeline; the `await` returns instantly.
             pipeline
@@ -262,7 +261,7 @@ impl StoreDriver for RedisStore {
         mut reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let final_key = self.encode_key(&key);
+        let final_key = self.encode_key(key.as_str());
 
         // While the name generation function can be supplied by the user, we need to have the curly
         // braces in place in order to manage redis' hashing behavior and make sure that the temporary
@@ -414,7 +413,7 @@ impl StoreDriver for RedisStore {
         }
 
         let client = self.client_pool.next();
-        let encoded_key = self.encode_key(&key);
+        let encoded_key = self.encode_key(key.as_str());
         let encoded_key = encoded_key.as_ref();
 
         // N.B. the `-1`'s you see here are because redis GETRANGE is inclusive at both the start and end, so when we
@@ -889,7 +888,7 @@ impl SchedulerStore for RedisStore {
             + Send,
     {
         let key = data.get_key();
-        let key = self.encode_key(&key);
+        let key = self.encode_key(key.as_str());
         let client = self.client_pool.next();
         let maybe_index = data.get_indexes().err_tip(|| {
             format!("Err getting index in RedisStore::update_data::versioned for {key:?}")
@@ -962,7 +961,10 @@ impl SchedulerStore for RedisStore {
             Ok::<_, Error>(async move {
                 ft_aggregate(
                     client,
-                    format!("{}", get_index_name!(K::KEY_PREFIX, K::INDEX_NAME)),
+                    self.encode_key(
+                        format!("{}", get_index_name!(K::KEY_PREFIX, K::INDEX_NAME)).into(),
+                    )
+                    .into_owned(),
                     format!("@{}:{{ {}* }}", K::INDEX_NAME, sanitized_field),
                     fred::types::FtAggregateOptions {
                         load: Some(fred::types::Load::Some(vec![
@@ -999,10 +1001,13 @@ impl SchedulerStore for RedisStore {
                     .client_pool
                     .next()
                     .ft_create::<(), _>(
-                        format!("{}", get_index_name!(K::KEY_PREFIX, K::INDEX_NAME)),
+                        self.encode_key(
+                            format!("{}", get_index_name!(K::KEY_PREFIX, K::INDEX_NAME)).into(),
+                        )
+                        .into_owned(),
                         FtCreateOptions {
                             on: Some(fred::types::IndexKind::Hash),
-                            prefixes: vec![K::KEY_PREFIX.into()],
+                            prefixes: vec![self.encode_key(K::KEY_PREFIX.into()).into()],
                             nohl: true,
                             nofields: true,
                             nofreqs: true,
@@ -1027,13 +1032,19 @@ impl SchedulerStore for RedisStore {
                     .err_tip(|| {
                         format!(
                             "Error with ft_create in RedisStore::search_by_index_prefix({})",
-                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME),
+                            self.encode_key(
+                                format!("{}", get_index_name!(K::KEY_PREFIX, K::INDEX_NAME)).into()
+                            )
+                            .into_owned(),
                         )
                     });
                 let run_result = run_ft_aggregate()?.await.err_tip(|| {
                     format!(
                         "Error with second ft_aggregate in RedisStore::search_by_index_prefix({})",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME),
+                        self.encode_key(
+                            format!("{}", get_index_name!(K::KEY_PREFIX, K::INDEX_NAME)).into()
+                        )
+                        .into_owned(),
                     )
                 });
                 // Creating the index will race which is ok. If it fails to create, we only
@@ -1078,7 +1089,7 @@ impl SchedulerStore for RedisStore {
         K: SchedulerStoreKeyProvider + SchedulerStoreDecodeTo + Send,
     {
         let key = key.get_key();
-        let key = self.encode_key(&key);
+        let key = self.encode_key(key.as_str());
         let client = self.client_pool.next();
         let (maybe_version, maybe_data) = client
             .hmget::<(Option<u64>, Option<Bytes>), _, _>(
