@@ -515,9 +515,9 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
             client_given_update,
             UpdateOperationType::UpdateWithActionStage(execute_response.clone().try_into()?)
         );
-        let client_given_state = match client_given_update {
-            UpdateOperationType::UpdateWithActionStage(action_stage) => action_stage,
-            _ => unreachable!(),
+        let UpdateOperationType::UpdateWithActionStage(client_given_state) = client_given_update
+        else {
+            unreachable!()
         };
         assert_eq!(execute_response, client_given_state.into());
     }

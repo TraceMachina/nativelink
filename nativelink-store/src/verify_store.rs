@@ -159,13 +159,10 @@ impl StoreDriver for VerifyStore {
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let digest = match key {
-            StoreKey::Digest(digest) => digest,
-            _ => {
-                return Err(make_input_err!(
-                    "Only digests are supported in VerifyStore. Got {key:?}"
-                ));
-            }
+        let StoreKey::Digest(digest) = key else {
+            return Err(make_input_err!(
+                "Only digests are supported in VerifyStore. Got {key:?}"
+            ));
         };
         let digest_size = digest.size_bytes();
         if let UploadSizeInfo::ExactSize(expected_size) = size_info {
