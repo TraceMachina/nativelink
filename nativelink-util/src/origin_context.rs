@@ -15,6 +15,7 @@
 use core::panic;
 use std::any::Any;
 use std::cell::RefCell;
+use std::clone::Clone;
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::pin::Pin;
@@ -186,7 +187,7 @@ pub struct ActiveOriginContext;
 impl ActiveOriginContext {
     /// Sets the active context for the current thread.
     pub fn get() -> Option<Arc<OriginContext>> {
-        GLOBAL_ORIGIN_CONTEXT.with_borrow(|maybe_ctx| maybe_ctx.clone())
+        GLOBAL_ORIGIN_CONTEXT.with_borrow(Clone::clone)
     }
 
     /// Gets the value current set for a given symbol on the
@@ -299,7 +300,7 @@ pin_project! {
             // Note: If the future panics, the context will not be restored, so
             // this is a best effort to provide access to our global context
             // in the desturctors the event of a panic.
-            let _enter = this.context.take().map(|ctx| ctx.enter());
+            let _enter = this.context.take().map(OriginContext::enter);
             // SAFETY: 1. `Pin::get_unchecked_mut()` is safe, because this isn't
             //             different from wrapping `T` in `Option` and calling
             //             `Pin::set(&mut this.inner, None)`, except avoiding

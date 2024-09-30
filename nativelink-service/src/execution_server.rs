@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::convert::Into;
 use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -343,7 +344,7 @@ impl Execution for ExecutionServer {
             )
             .await
             .err_tip(|| "Failed on execute() command")
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -361,7 +362,7 @@ impl Execution for ExecutionServer {
             .inner_wait_execution(grpc_request)
             .await
             .err_tip(|| "Failed on wait_execution() command")
-            .map_err(|e| e.into());
+            .map_err(Into::into);
 
         if resp.is_ok() {
             event!(Level::DEBUG, return = "Ok(<stream>)");

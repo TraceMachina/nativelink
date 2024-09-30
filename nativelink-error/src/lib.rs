@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::convert::Into;
+
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
@@ -99,7 +101,7 @@ impl Error {
             }
             return Some(this.into());
         }
-        other.map(|v| v.into())
+        other.map(Into::into)
     }
 
     pub fn to_std_err(self) -> std::io::Error {

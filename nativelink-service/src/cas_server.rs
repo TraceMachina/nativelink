@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::{HashMap, VecDeque};
+use std::convert::Into;
 use std::pin::Pin;
 
 use bytes::Bytes;
@@ -137,7 +138,7 @@ impl CasServer {
                     .err_tip(|| "Error writing to store");
                 Ok::<_, Error>(batch_update_blobs_response::Response {
                     digest: Some(digest),
-                    status: Some(result.map_or_else(|e| e.into(), |_| GrpcStatus::default())),
+                    status: Some(result.map_or_else(Into::into, |_| GrpcStatus::default())),
                 })
             })
             .collect();
@@ -323,7 +324,7 @@ impl ContentAddressableStorage for CasServer {
             )
             .await
             .err_tip(|| "Failed on find_missing_blobs() command")
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -347,7 +348,7 @@ impl ContentAddressableStorage for CasServer {
             )
             .await
             .err_tip(|| "Failed on batch_update_blobs() command")
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -371,7 +372,7 @@ impl ContentAddressableStorage for CasServer {
             )
             .await
             .err_tip(|| "Failed on batch_read_blobs() command")
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -394,7 +395,7 @@ impl ContentAddressableStorage for CasServer {
             )
             .await
             .err_tip(|| "Failed on get_tree() command")
-            .map_err(|e| e.into());
+            .map_err(Into::into);
         if resp.is_ok() {
             event!(Level::DEBUG, return = "Ok(<stream>)");
         }

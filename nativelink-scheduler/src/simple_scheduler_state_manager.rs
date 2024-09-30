@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::ops::Bound;
+use std::string::ToString;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
@@ -505,7 +506,7 @@ where
                     if awaited_action.attempts > self.max_job_retries {
                         ActionStage::Completed(ActionResult {
                             execution_metadata: ExecutionMetadata {
-                                worker: maybe_worker_id.map_or_else(String::default, |v| v.to_string()),
+                                worker: maybe_worker_id.map_or_else(String::default, ToString::to_string),
                                 ..ExecutionMetadata::default()
                             },
                             error: Some(err.clone().merge(make_err!(
