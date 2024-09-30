@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::borrow::Cow;
+use std::convert::AsRef;
 
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
 
@@ -175,23 +176,17 @@ impl<'a> ResourceInfo<'a> {
         [
             Some(self.instance_name.as_ref()),
             is_upload.then_some("uploads"),
-            self.uuid.as_ref().map(|uuid| uuid.as_ref()),
+            self.uuid.as_ref().map(AsRef::as_ref),
             Some(
                 self.compressor
                     .as_ref()
                     .map_or("blobs", |_| "compressed-blobs"),
             ),
-            self.compressor
-                .as_ref()
-                .map(|compressor| compressor.as_ref()),
-            self.digest_function
-                .as_ref()
-                .map(|digest_function| digest_function.as_ref()),
+            self.compressor.as_ref().map(AsRef::as_ref),
+            self.digest_function.as_ref().map(AsRef::as_ref),
             Some(self.hash.as_ref()),
             Some(self.size.as_ref()),
-            self.optional_metadata
-                .as_ref()
-                .map(|optional_metadata| optional_metadata.as_ref()),
+            self.optional_metadata.as_ref().map(AsRef::as_ref),
         ]
         .into_iter()
         .flatten()

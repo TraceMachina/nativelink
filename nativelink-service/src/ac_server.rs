@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::convert::Into;
 use std::fmt::Debug;
 
 use bytes::BytesMut;
@@ -182,7 +183,7 @@ impl ActionCache for AcServer {
         if resp.is_err() && resp.as_ref().err().unwrap().code != Code::NotFound {
             event!(Level::ERROR, return = ?resp);
         }
-        return resp.map_err(|e| e.into());
+        return resp.map_err(Into::into);
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -205,6 +206,6 @@ impl ActionCache for AcServer {
                 self.inner_update_action_result(request),
             )
             .await
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 }

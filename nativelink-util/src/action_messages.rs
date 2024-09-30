@@ -14,6 +14,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::convert::Into;
 use std::hash::Hash;
 use std::time::{Duration, SystemTime};
 
@@ -849,7 +850,7 @@ pub fn to_execute_response(action_result: ActionResult) -> ExecuteResponse {
         action_result
             .error
             .clone()
-            .map_or_else(Status::default, |v| v.into()),
+            .map_or_else(Status::default, Into::into),
     );
     let message = action_result.message.clone();
     ExecuteResponse {

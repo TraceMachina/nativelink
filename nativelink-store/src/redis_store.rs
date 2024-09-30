@@ -798,7 +798,7 @@ impl RedisSubscriptionManager {
                         let subscribed_keys_mux = subscribed_keys.read();
                         subscribed_keys_mux
                             .common_prefix_values(&*key)
-                            .for_each(|publisher| publisher.notify());
+                            .for_each(RedisSubscriptionPublisher::notify);
                     }
                     // Sleep for a small amount of time to ensure we don't reconnect too quickly.
                     sleep(Duration::from_secs(1)).await;

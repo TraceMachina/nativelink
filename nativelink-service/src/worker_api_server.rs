@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::convert::Into;
 
 use futures::stream::unfold;
 use futures::Stream;
@@ -252,7 +253,7 @@ impl WorkerApi for WorkerApiServer {
         let resp = self
             .inner_connect_worker(grpc_request.into_inner())
             .await
-            .map_err(|e| e.into());
+            .map_err(Into::into);
         if resp.is_ok() {
             event!(Level::DEBUG, return = "Ok(<stream>)");
         }
@@ -273,7 +274,7 @@ impl WorkerApi for WorkerApiServer {
     ) -> Result<Response<()>, Status> {
         self.inner_keep_alive(grpc_request.into_inner())
             .await
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -290,7 +291,7 @@ impl WorkerApi for WorkerApiServer {
     ) -> Result<Response<()>, Status> {
         self.inner_going_away(grpc_request.into_inner())
             .await
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -307,6 +308,6 @@ impl WorkerApi for WorkerApiServer {
     ) -> Result<Response<()>, Status> {
         self.inner_execution_response(grpc_request.into_inner())
             .await
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 }

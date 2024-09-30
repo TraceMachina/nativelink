@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -122,7 +123,7 @@ pub fn convert_vec_string_with_shellexpand<'de, D: Deserializer<'de>>(
         .map(|s| {
             shellexpand::env(&s)
                 .map_err(de::Error::custom)
-                .map(|expanded| expanded.into_owned())
+                .map(Cow::into_owned)
         })
         .collect()
 }

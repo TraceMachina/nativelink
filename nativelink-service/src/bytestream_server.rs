@@ -14,6 +14,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::convert::Into;
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -618,7 +619,7 @@ impl ByteStream for ByteStreamServer {
             )
             .await
             .err_tip(|| "In ByteStreamServer::read")
-            .map_err(|e| e.into());
+            .map_err(Into::into);
 
         if resp.is_ok() {
             event!(Level::DEBUG, return = "Ok(<stream>)");
@@ -657,7 +658,7 @@ impl ByteStream for ByteStreamServer {
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
         if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
-            return grpc_store.write(stream).await.map_err(|e| e.into());
+            return grpc_store.write(stream).await.map_err(Into::into);
         }
 
         let digest_function = stream
@@ -677,7 +678,7 @@ impl ByteStream for ByteStreamServer {
             )
             .await
             .err_tip(|| "In ByteStreamServer::write")
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -695,6 +696,6 @@ impl ByteStream for ByteStreamServer {
         self.inner_query_write_status(&grpc_request.into_inner())
             .await
             .err_tip(|| "Failed on query_write_status() command")
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 }
