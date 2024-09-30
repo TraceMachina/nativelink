@@ -160,9 +160,10 @@ impl<'a> ToTokens for MetricStruct<'a> {
             let field_name = &field.field_name;
             let group = &field.group;
 
-            let help = match field.help.as_ref() {
-                Some(help) => quote! { #help },
-                None => quote! { "" },
+            let help = if let Some(help) = field.help.as_ref() {
+                quote! { #help }
+            } else {
+                quote! { "" }
             };
             let value = match &field.handler {
                 Some(handler) => quote! { &#handler(&self.#field_name) },

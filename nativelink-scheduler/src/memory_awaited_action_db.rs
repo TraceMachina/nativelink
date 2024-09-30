@@ -382,19 +382,18 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         );
                         continue;
                     };
-                    let connected_clients = match self
+                    let connected_clients = if let Some(connected_clients) = self
                         .connected_clients_for_operation_id
                         .remove(&operation_id)
                     {
-                        Some(connected_clients) => connected_clients - 1,
-                        None => {
-                            event!(
-                                Level::ERROR,
-                                ?operation_id,
-                                "connected_clients_for_operation_id does not have operation_id"
-                            );
-                            0
-                        }
+                        connected_clients - 1
+                    } else {
+                        event!(
+                            Level::ERROR,
+                            ?operation_id,
+                            "connected_clients_for_operation_id does not have operation_id"
+                        );
+                        0
                     };
                     // Note: It is rare to have more than one client listening
                     // to the same action, so we assume that we are the last

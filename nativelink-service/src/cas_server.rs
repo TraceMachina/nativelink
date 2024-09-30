@@ -236,22 +236,21 @@ impl CasServer {
         let mut deque: VecDeque<DigestInfo> = VecDeque::new();
         let mut directories: Vec<Directory> = Vec::new();
         // `page_token` will return the `{hash_str}-{size_bytes}` of the current request's first directory digest.
-        let page_token_digest = match request.page_token.len() {
-            0 => root_digest,
-            _ => {
-                let mut page_token_parts = request.page_token.split('-');
-                DigestInfo::try_new(
-                    page_token_parts
-                        .next()
-                        .err_tip(|| "Failed to parse `hash_str` in `page_token`")?,
-                    page_token_parts
-                        .next()
-                        .err_tip(|| "Failed to parse `size_bytes` in `page_token`")?
-                        .parse::<i64>()
-                        .err_tip(|| "Failed to parse `size_bytes` as i64")?,
-                )
-                .err_tip(|| "Failed to parse `page_token` as `Digest` in `GetTreeRequest`")?
-            }
+        let page_token_digest = if request.page_token.is_empty() {
+            root_digest
+        } else {
+            let mut page_token_parts = request.page_token.split('-');
+            DigestInfo::try_new(
+                page_token_parts
+                    .next()
+                    .err_tip(|| "Failed to parse `hash_str` in `page_token`")?,
+                page_token_parts
+                    .next()
+                    .err_tip(|| "Failed to parse `size_bytes` in `page_token`")?
+                    .parse::<i64>()
+                    .err_tip(|| "Failed to parse `size_bytes` as i64")?,
+            )
+            .err_tip(|| "Failed to parse `page_token` as `Digest` in `GetTreeRequest`")?
         };
         let page_size = request.page_size;
         // If `page_size` is 0, paging is not necessary.
