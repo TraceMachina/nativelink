@@ -260,6 +260,16 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
+    /// Creates a new S3 store with the specified configuration and time function.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the application name provided to the AWS SDK is invalid.
+    /// The panic occurs with the message `"valid app name"` in the call to `AppName::new()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there is an issue with creating the S3 client or other components.
     pub async fn new(
         config: &nativelink_config::stores::S3Store,
         now_fn: NowFn,

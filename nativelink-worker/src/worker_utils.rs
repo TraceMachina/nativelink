@@ -26,6 +26,19 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use tokio::process;
 use tracing::{event, Level};
 
+/// Creates a `SupportedProperties` object based on the provided worker properties.
+///
+/// # Panics
+///
+/// This function will panic if the process fails and the exit status code cannot be retrieved
+/// (i.e., `process_output.status.code().unwrap()` returns `None`). This might happen if the process was terminated by a signal and no exit code was available.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - A worker property query command cannot be parsed.
+/// - A worker property query command fails to execute.
+/// - The process output cannot be converted to UTF-8.
 pub async fn make_supported_properties<S: BuildHasher>(
     worker_properties: &HashMap<String, WorkerProperty, S>,
 ) -> Result<SupportedProperties, Error> {

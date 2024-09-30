@@ -45,6 +45,16 @@ pub struct ShardStore {
 }
 
 impl ShardStore {
+    /// Creates a new `ShardStore` with the given configuration and stores.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the `weights` vector is empty when attempting to modify the last element
+    /// using `unwrap()`. This panic should not occur as long as the `config.stores` is not empty, as validated earlier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the number of `config.stores` does not match the number of `stores`, or if `config.stores` is empty.
     pub fn new(
         config: &nativelink_config::stores::ShardStore,
         stores: Vec<Store>,
