@@ -14,6 +14,7 @@
 
 use std::borrow::{BorrowMut, Cow};
 use std::collections::hash_map::DefaultHasher as StdHasher;
+use std::convert::Into;
 use std::hash::{Hash, Hasher};
 use std::ops::{Bound, Deref, RangeBounds};
 use std::pin::Pin;
@@ -320,7 +321,7 @@ impl Store {
     /// Note: If the store performs complex operations on the data, it should return itself.
     #[inline]
     pub fn inner_store<'a, K: Into<StoreKey<'a>>>(&self, digest: Option<K>) -> &dyn StoreDriver {
-        self.inner.inner_store(digest.map(|v| v.into()))
+        self.inner.inner_store(digest.map(Into::into))
     }
 
     /// Tries to cast the underlying store to the given type.
@@ -430,8 +431,8 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
             self.as_store_driver_pin()
                 .list(
                     (
-                        range.start_bound().map(|v| v.borrow()),
-                        range.end_bound().map(|v| v.borrow()),
+                        range.start_bound().map(StoreKey::borrow),
+                        range.end_bound().map(StoreKey::borrow),
                     ),
                     &mut handler,
                 )

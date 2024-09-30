@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::cmp::min;
 use std::collections::vec_deque::VecDeque;
 use std::collections::HashMap;
+use std::convert::Into;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Debug;
 #[cfg(target_family = "unix")]
@@ -435,7 +436,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                             .await
                             .err_tip(|| format!("Could not open file {full_path:?}"))?;
                         upload_file(cas_store, &full_path, hasher, metadata)
-                            .map_ok(|v| v.into())
+                            .map_ok(Into::into)
                             .await
                     });
                 } else if file_type.is_symlink() {
@@ -1871,7 +1872,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             let running_actions = self.running_actions.lock();
             running_actions
                 .get(operation_id)
-                .and_then(|action| action.upgrade())
+                .and_then(Weak::upgrade)
                 .ok_or_else(|| make_input_err!("Failed to get running action {operation_id}"))?
         };
         Self::kill_operation(running_action).await;

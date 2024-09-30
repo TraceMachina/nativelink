@@ -37,7 +37,7 @@ use nativelink_util::store_trait::Store;
 use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
 use tokio::sync::oneshot;
-use tonic::Request;
+use tonic::{Request, Response};
 use tracing::{event, Level};
 
 /// Actions that are having their cache checked or failed cache lookup and are
@@ -84,7 +84,7 @@ async fn get_action_from_store(
         grpc_store
             .get_action_result(Request::new(action_result_request))
             .await
-            .map(|response| response.into_inner())
+            .map(Response::into_inner)
     } else {
         get_and_decode_digest::<ProtoActionResult>(ac_store, action_digest.into()).await
     }

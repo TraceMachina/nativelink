@@ -56,7 +56,7 @@ impl StoreDriver for SizePartitioningStore {
     ) -> Result<(), Error> {
         let mut non_digest_sample = None;
         let (lower_digests, upper_digests): (Vec<_>, Vec<_>) =
-            keys.iter().map(|v| v.borrow()).partition(|k| {
+            keys.iter().map(StoreKey::borrow).partition(|k| {
                 let StoreKey::Digest(digest) = k else {
                     non_digest_sample = Some(k.borrow().into_owned());
                     return false;

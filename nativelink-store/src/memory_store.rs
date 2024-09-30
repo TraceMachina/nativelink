@@ -106,8 +106,8 @@ impl StoreDriver for MemoryStore {
         handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
     ) -> Result<u64, Error> {
         let range = (
-            range.0.map(|v| v.into_owned()),
-            range.1.map(|v| v.into_owned()),
+            range.0.map(StoreKey::into_owned),
+            range.1.map(StoreKey::into_owned),
         );
         let iterations = self
             .evicting_map
