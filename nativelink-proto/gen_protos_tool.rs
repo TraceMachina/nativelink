@@ -30,6 +30,6 @@ fn main() -> std::io::Result<()> {
     config.bytes(["."]);
     tonic_build::configure()
         .out_dir(output_dir)
-        .compile_with_config(config, &paths, &["nativelink-proto"])?;
+        .compile_protos_with_config(config, &paths, &["nativelink-proto"])?;
     Ok(())
 }
