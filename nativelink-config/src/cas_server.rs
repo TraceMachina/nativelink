@@ -263,6 +263,9 @@ pub struct ServicesConfig {
 
     /// This is the service for health status check.
     pub health: Option<HealthConfig>,
+
+    /// This is the service for the Operations API
+    pub operations: Option<OperationsConfig>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -740,4 +743,10 @@ pub struct CasConfig {
 
     /// Any global configurations that apply to all modules live here.
     pub global: Option<GlobalConfig>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct OperationsConfig {
+    pub enabled: bool,
 }

@@ -1890,6 +1890,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.4.1",
  "hyper-util",
+ "lru",
  "maplit",
  "nativelink-config",
  "nativelink-error",

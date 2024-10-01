@@ -43,6 +43,7 @@ use nativelink_service::capabilities_server::CapabilitiesServer;
 use nativelink_service::cas_server::CasServer;
 use nativelink_service::execution_server::ExecutionServer;
 use nativelink_service::health_server::HealthServer;
+use nativelink_service::operations_server::OpsServer;
 use nativelink_service::worker_api_server::WorkerApiServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
@@ -437,7 +438,11 @@ async fn inner_main(
                         })
                     })
                     .err_tip(|| "Could not create BEP service")?,
-            );
+            )
+            .add_optional_service(services.operations.and_then(|cfg| {
+                cfg.enabled
+                    .then(|| OpsServer::new(action_schedulers.clone()).into_service())
+            }));
 
         let health_registry = health_registry_builder.lock().await.build();
 
