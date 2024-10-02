@@ -427,6 +427,9 @@ where
         // Note(allada) If the upload size is not known, we go down the multipart upload path.
         // This is not very efficient, but it greatly reduces the complexity of the code.
         if max_size < MIN_MULTIPART_SIZE && matches!(upload_size, UploadSizeInfo::ExactSize(_)) {
+            let UploadSizeInfo::ExactSize(sz) = upload_size else {
+                unreachable!("upload_size must be UploadSizeInfo::ExactSize here");
+            };
             reader.set_max_recent_data_size(
                 u64::try_from(self.max_retry_buffer_per_request)
                     .err_tip(|| "Could not convert max_retry_buffer_per_request to u64")?,
@@ -434,9 +437,6 @@ where
             return self
                 .retrier
                 .retry(unfold(reader, move |mut reader| async move {
-                    let UploadSizeInfo::ExactSize(sz) = upload_size else {
-                        unreachable!("upload_size must be UploadSizeInfo::ExactSize here");
-                    };
                     // We need to make a new pair here because the aws sdk does not give us
                     // back the body after we send it in order to retry.
                     let (mut tx, rx) = make_buf_channel_pair();
