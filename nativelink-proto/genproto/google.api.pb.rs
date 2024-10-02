@@ -452,15 +452,15 @@ impl FieldBehavior {
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            FieldBehavior::Unspecified => "FIELD_BEHAVIOR_UNSPECIFIED",
-            FieldBehavior::Optional => "OPTIONAL",
-            FieldBehavior::Required => "REQUIRED",
-            FieldBehavior::OutputOnly => "OUTPUT_ONLY",
-            FieldBehavior::InputOnly => "INPUT_ONLY",
-            FieldBehavior::Immutable => "IMMUTABLE",
-            FieldBehavior::UnorderedList => "UNORDERED_LIST",
-            FieldBehavior::NonEmptyDefault => "NON_EMPTY_DEFAULT",
-            FieldBehavior::Identifier => "IDENTIFIER",
+            Self::Unspecified => "FIELD_BEHAVIOR_UNSPECIFIED",
+            Self::Optional => "OPTIONAL",
+            Self::Required => "REQUIRED",
+            Self::OutputOnly => "OUTPUT_ONLY",
+            Self::InputOnly => "INPUT_ONLY",
+            Self::Immutable => "IMMUTABLE",
+            Self::UnorderedList => "UNORDERED_LIST",
+            Self::NonEmptyDefault => "NON_EMPTY_DEFAULT",
+            Self::Identifier => "IDENTIFIER",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
