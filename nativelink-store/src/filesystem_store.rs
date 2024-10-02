@@ -324,7 +324,7 @@ impl LenEntry for FileEntryImpl {
     async fn touch(&self) -> bool {
         let result = self
             .get_file_path_locked(move |full_content_path| async move {
-                let full_content_path = full_content_path.to_os_string();
+                let full_content_path = full_content_path.clone();
                 spawn_blocking!("filesystem_touch_set_mtime", move || {
                     set_file_atime(&full_content_path, FileTime::now()).err_tip(|| {
                         format!("Failed to touch file in filesystem store {full_content_path:?}")

@@ -164,7 +164,7 @@ impl TlsConnector {
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn,
-                config.retry.to_owned(),
+                config.retry.clone(),
             ),
         }
     }
@@ -312,7 +312,7 @@ where
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn,
-                config.retry.to_owned(),
+                config.retry.clone(),
             ),
             consider_expired_after_s: i64::from(config.consider_expired_after_s),
             max_retry_buffer_per_request: config
