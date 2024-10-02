@@ -66,23 +66,23 @@ use crate::cas_utils::is_zero_digest;
 
 // S3 parts cannot be smaller than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
-const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5MB.
+const MIN_MULTIPART_SIZE: u64 = 5 * 1024 * 1024; // 5MB.
 
 // S3 parts cannot be larger than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
-const MAX_MULTIPART_SIZE: usize = 5 * 1024 * 1024 * 1024; // 5GB.
+const MAX_MULTIPART_SIZE: u64 = 5 * 1024 * 1024 * 1024; // 5GB.
 
 // S3 parts cannot be more than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
-const MAX_UPLOAD_PARTS: usize = 10_000;
+const MAX_UPLOAD_PARTS: u64 = 10_000;
 
 // Default max buffer size for retrying upload requests.
 // Note: If you change this, adjust the docs in the config.
-const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 5 * 1024 * 1024; // 5MB.
+const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: u64 = 5 * 1024 * 1024; // 5MB.
 
 // Default limit for concurrent part uploads per multipart upload.
 // Note: If you change this, adjust the docs in the config.
-const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: usize = 10;
+const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: u64 = 10;
 
 pub struct ConnectionWithPermit<T: Connection + AsyncRead + AsyncWrite + Unpin> {
     connection: T,
@@ -112,7 +112,7 @@ impl<T: Connection + AsyncWrite + AsyncRead + Unpin> AsyncWrite for ConnectionWi
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> Poll<Result<usize, tokio::io::Error>> {
+    ) -> Poll<Result<u64, tokio::io::Error>> {
         Pin::new(&mut Pin::get_mut(self).connection).poll_write(cx, buf)
     }
 
@@ -250,9 +250,9 @@ pub struct S3Store<NowFn> {
     #[metric(help = "The number of seconds to consider an object expired")]
     consider_expired_after_s: i64,
     #[metric(help = "The number of bytes to buffer for retrying requests")]
-    max_retry_buffer_per_request: usize,
+    max_retry_buffer_per_request: u64,
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
-    multipart_max_concurrent_uploads: usize,
+    multipart_max_concurrent_uploads: u64,
 }
 
 impl<I, NowFn> S3Store<NowFn>
@@ -328,7 +328,7 @@ where
         format!("{}{}", self.key_prefix, key.as_str(),)
     }
 
-    async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<u64>, Error> {
         self.retrier
             .retry(unfold((), move |state| async move {
                 let result = self
@@ -353,7 +353,7 @@ where
                             return Some((RetryResult::Ok(None), state));
                         };
                         if length >= 0 {
-                            return Some((RetryResult::Ok(Some(length as usize)), state));
+                            return Some((RetryResult::Ok(Some(length as u64)), state));
                         }
                         Some((
                             RetryResult::Err(make_err!(
@@ -388,7 +388,7 @@ where
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         keys.iter()
             .zip(results.iter_mut())
@@ -671,8 +671,8 @@ where
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         if is_zero_digest(key.borrow()) {
             writer
@@ -695,7 +695,7 @@ where
                     .key(s3_path)
                     .range(format!(
                         "bytes={}-{}",
-                        offset + writer.get_bytes_written() as usize,
+                        offset + writer.get_bytes_written() as u64,
                         end_read_byte.map_or_else(String::new, |v| v.to_string())
                     ))
                     .send()

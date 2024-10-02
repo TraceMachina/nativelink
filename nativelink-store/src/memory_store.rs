@@ -47,7 +47,7 @@ impl Debug for BytesWrapper {
 
 impl LenEntry for BytesWrapper {
     #[inline]
-    fn len(&self) -> usize {
+    fn len(&self) -> u64 {
         Bytes::len(&self.0)
     }
 
@@ -113,8 +113,8 @@ impl StoreSubscriptionItem for MemoryStoreSubscriptionItem {
     async fn get_part(
         &self,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let store = self
             .store
@@ -148,7 +148,7 @@ impl MemoryStore {
 
     /// Returns the number of key-value pairs that are currently in the the cache.
     /// Function is not for production code paths.
-    pub async fn len_for_test(&self) -> usize {
+    pub async fn len_for_test(&self) -> u64 {
         self.evicting_map.len_for_test().await
     }
 
@@ -177,7 +177,7 @@ impl StoreDriver for MemoryStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // TODO(allada): This is a dirty hack to get around the lifetime issues with the
         // evicting map.
@@ -200,7 +200,7 @@ impl StoreDriver for MemoryStore {
         self: Pin<&Self>,
         range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
         handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
-    ) -> Result<usize, Error> {
+    ) -> Result<u64, Error> {
         let range = (
             range.0.map(|v| v.into_owned()),
             range.1.map(|v| v.into_owned()),
@@ -247,8 +247,8 @@ impl StoreDriver for MemoryStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         if is_zero_digest(key.borrow()) {
             writer

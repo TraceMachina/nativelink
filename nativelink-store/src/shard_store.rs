@@ -84,7 +84,7 @@ impl ShardStore {
         }))
     }
 
-    fn get_store_index(&self, store_key: &StoreKey) -> usize {
+    fn get_store_index(&self, store_key: &StoreKey) -> u64 {
         let key = match store_key {
             StoreKey::Digest(digest) => {
                 // Quote from std primitive array documentation:
@@ -144,7 +144,7 @@ impl StoreDriver for ShardStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         if keys.len() == 1 {
             // Hot path: It is very common to lookup only one key.
@@ -155,7 +155,7 @@ impl StoreDriver for ShardStore {
                 .await
                 .err_tip(|| "In ShardStore::has_with_results() for store {store_idx}}");
         }
-        type KeyIdxVec = Vec<usize>;
+        type KeyIdxVec = Vec<u64>;
         type KeyVec<'a> = Vec<StoreKey<'a>>;
         let mut keys_for_store: Vec<(KeyIdxVec, KeyVec)> = self
             .weights_and_stores
@@ -212,8 +212,8 @@ impl StoreDriver for ShardStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let store = self.get_store(&key);
         store
