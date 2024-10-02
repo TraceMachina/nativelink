@@ -236,7 +236,7 @@ impl ConnectionManagerWorker {
             // beginning of the retry period.  Never want to be in a
             // situation where we give up on an Endpoint forever.
             Err((identifier, _)) => {
-                self.connect_endpoint(identifier.endpoint_index, Some(identifier.connection_index))
+                self.connect_endpoint(identifier.endpoint_index, Some(identifier.connection_index));
             }
         }
     }

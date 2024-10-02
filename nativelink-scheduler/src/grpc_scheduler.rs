@@ -203,7 +203,7 @@ impl GrpcScheduler {
                                 },
                             }
                         }
-                    )
+                    );
                 }
             });
 

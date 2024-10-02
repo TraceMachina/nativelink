@@ -259,11 +259,11 @@ impl Hash for StoreKey<'_> {
         match self {
             StoreKey::Str(s) => {
                 (HashId::Str as u8).hash(state);
-                s.hash(state)
+                s.hash(state);
             }
             StoreKey::Digest(d) => {
                 (HashId::Digest as u8).hash(state);
-                d.hash(state)
+                d.hash(state);
             }
         }
     }
@@ -333,7 +333,7 @@ impl Store {
     /// Register health checks used to monitor the store.
     #[inline]
     pub fn register_health(&self, registry: &mut HealthRegistryBuilder) {
-        self.inner.clone().register_health(registry)
+        self.inner.clone().register_health(registry);
     }
 }
 

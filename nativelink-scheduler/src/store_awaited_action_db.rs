@@ -258,7 +258,7 @@ impl SchedulerStoreDataProvider for UpdateOperationIdToAwaitedAction {
             output.push((
                 "unique_qualifier",
                 Bytes::from(unique_qualifier.to_string()),
-            ))
+            ));
         }
         {
             let state = SortedAwaitedActionState::try_from(&self.0.state().stage)
