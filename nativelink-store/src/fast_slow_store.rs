@@ -107,9 +107,9 @@ impl FastSlowStore {
     // TODO(allada) This should be put into utils, as this logic is used
     // elsewhere in the code.
     pub fn calculate_range(
-        received_range: &Range<usize>,
-        send_range: &Range<usize>,
-    ) -> Option<Range<usize>> {
+        received_range: &Range<u64>,
+        send_range: &Range<u64>,
+    ) -> Option<Range<u64>> {
         // Protect against subtraction overflow.
         if received_range.start >= received_range.end {
             return None;
@@ -131,7 +131,7 @@ impl StoreDriver for FastSlowStore {
     async fn has_with_results(
         self: Pin<&Self>,
         key: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // If our slow store is a noop store, it'll always return a 404,
         // so only check the fast store in such case.
@@ -282,8 +282,8 @@ impl StoreDriver for FastSlowStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         // TODO(blaise.bruer) Investigate if we should maybe ignore errors here instead of
         // forwarding the up.
@@ -316,8 +316,8 @@ impl StoreDriver for FastSlowStore {
             .slow_store_hit_count
             .fetch_add(1, Ordering::Acquire);
 
-        let send_range = offset..length.map_or(usize::MAX, |length| length + offset);
-        let mut bytes_received: usize = 0;
+        let send_range = offset..length.map_or(u64::MAX, |length| length + offset);
+        let mut bytes_received: u64 = 0;
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (slow_tx, mut slow_rx) = make_buf_channel_pair();
