@@ -42,7 +42,7 @@ pub const CURRENT_STREAM_FORMAT_VERSION: u8 = 1;
 // Default block size that will be used to slice stream into.
 pub const DEFAULT_BLOCK_SIZE: u32 = 64 * 1024;
 
-const U32_SZ: usize = std::mem::size_of::<u8>();
+const U32_SZ: u64 = std::mem::size_of::<u8>();
 
 type BincodeOptions = WithOtherIntEncoding<DefaultOptions, FixintEncoding>;
 
@@ -145,15 +145,15 @@ pub struct Footer {
 /// lz4_flex::block::get_maximum_output_size() way over estimates, so we use the
 /// one provided here: https://github.com/torvalds/linux/blob/master/include/linux/lz4.h#L61
 /// Local testing shows this gives quite accurate worst case given random input.
-fn lz4_compress_bound(input_size: usize) -> usize {
+fn lz4_compress_bound(input_size: u64) -> u64 {
     input_size + (input_size / 255) + 16
 }
 
 struct UploadState {
     header: Header,
     footer: Footer,
-    max_output_size: usize,
-    input_max_size: usize,
+    max_output_size: u64,
+    input_max_size: u64,
 }
 
 impl UploadState {
@@ -163,7 +163,7 @@ impl UploadState {
             UploadSizeInfo::MaxSize(sz) => sz,
         };
 
-        let max_index_count = (input_max_size / store.config.block_size as usize) + 1;
+        let max_index_count = (input_max_size / store.config.block_size as u64) + 1;
 
         let header = Header {
             version: CURRENT_STREAM_FORMAT_VERSION,
@@ -186,13 +186,13 @@ impl UploadState {
         };
 
         // This is more accurate of an estimate than what get_maximum_output_size calculates.
-        let max_block_size = lz4_compress_bound(store.config.block_size as usize) + U32_SZ + 1;
+        let max_block_size = lz4_compress_bound(store.config.block_size as u64) + U32_SZ + 1;
 
         let max_output_size = {
-            let header_size = store.bincode_options.serialized_size(&header).unwrap() as usize;
+            let header_size = store.bincode_options.serialized_size(&header).unwrap() as u64;
             let max_content_size = max_block_size * max_index_count;
             let max_footer_size =
-                U32_SZ + 1 + store.bincode_options.serialized_size(&footer).unwrap() as usize;
+                U32_SZ + 1 + store.bincode_options.serialized_size(&footer).unwrap() as u64;
             header_size + max_content_size + max_footer_size
         };
 
@@ -246,7 +246,7 @@ impl StoreDriver for CompressionStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.inner_store.has_with_results(digests, results).await
     }
@@ -300,7 +300,7 @@ impl StoreDriver for CompressionStore {
             let mut index_count: u32 = 0;
             for index in &mut output_state.footer.indexes {
                 let chunk = reader
-                    .consume(Some(self.config.block_size as usize))
+                    .consume(Some(self.config.block_size as u64))
                     .await
                     .err_tip(|| "Failed to read take in update in compression store")?;
                 if chunk.is_empty() {
@@ -313,7 +313,7 @@ impl StoreDriver for CompressionStore {
                     "Got more data than stated in compression store upload request"
                 );
 
-                let max_output_size = get_maximum_output_size(self.config.block_size as usize);
+                let max_output_size = get_maximum_output_size(self.config.block_size as u64);
                 let mut compressed_data_buf = BytesMut::with_capacity(max_output_size);
                 compressed_data_buf.put_u8(CHUNK_FRAME_TYPE);
                 compressed_data_buf.put_u32_le(0); // Filled later.
@@ -354,7 +354,7 @@ impl StoreDriver for CompressionStore {
             // doesn't go to -1.
             index_count = index_count.saturating_sub(1);
             output_state.footer.indexes.resize(
-                index_count as usize,
+                index_count as u64,
                 SliceIndex {
                     ..Default::default()
                 },
@@ -392,8 +392,8 @@ impl StoreDriver for CompressionStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         if is_zero_digest(key.borrow()) {
             writer
@@ -431,7 +431,7 @@ impl StoreDriver for CompressionStore {
                 };
                 let header_size = self.bincode_options.serialized_size(&EMPTY_HEADER).unwrap();
                 let chunk = rx
-                    .consume(Some(header_size as usize))
+                    .consume(Some(header_size as u64))
                     .await
                     .err_tip(|| "Failed to read header in get_part compression store")?;
                 error_if!(
@@ -474,7 +474,7 @@ impl StoreDriver for CompressionStore {
             let mut frame_sz = chunk.get_u32_le();
 
             let mut uncompressed_data_sz: u64 = 0;
-            let mut remaining_bytes_to_send: u64 = length.unwrap_or(usize::MAX) as u64;
+            let mut remaining_bytes_to_send: u64 = length.unwrap_or(u64::MAX) as u64;
             let mut chunks_count: u32 = 0;
             while frame_type != FOOTER_FRAME_TYPE {
                 error_if!(
@@ -485,10 +485,10 @@ impl StoreDriver for CompressionStore {
                 );
 
                 let chunk = rx
-                    .consume(Some(frame_sz as usize))
+                    .consume(Some(frame_sz as u64))
                     .await
                     .err_tip(|| "Failed to read chunk in get_part compression store")?;
-                if chunk.len() < frame_sz as usize {
+                if chunk.len() < frame_sz as u64 {
                     return Err(make_err!(
                         Code::Internal,
                         "Got EOF earlier than expected. Maybe the data is not compressed or different format?"
@@ -496,7 +496,7 @@ impl StoreDriver for CompressionStore {
                 }
                 {
                     let max_output_size =
-                        get_maximum_output_size(header.config.block_size as usize);
+                        get_maximum_output_size(header.config.block_size as u64);
                     let mut uncompressed_data = BytesMut::with_capacity(max_output_size);
 
                     // For efficiency reasons we do some raw slice manipulation so we can write directly
@@ -518,9 +518,9 @@ impl StoreDriver for CompressionStore {
                             0
                         } else {
                             offset - uncompressed_data_sz
-                        } as usize;
+                        } as u64;
                         let end_pos = cmp::min(
-                            start_pos + remaining_bytes_to_send as usize,
+                            start_pos + remaining_bytes_to_send as u64,
                             uncompressed_chunk_sz,
                         );
                         if end_pos != start_pos {
@@ -553,11 +553,11 @@ impl StoreDriver for CompressionStore {
             {
                 // Read and validate footer.
                 let chunk = rx
-                    .consume(Some(frame_sz as usize))
+                    .consume(Some(frame_sz as u64))
                     .await
                     .err_tip(|| "Failed to read chunk in get_part compression store")?;
                 error_if!(
-                    chunk.len() < frame_sz as usize,
+                    chunk.len() < frame_sz as u64,
                     "Unexpected EOF when reading footer in compression store get_part"
                 );
 
@@ -575,7 +575,7 @@ impl StoreDriver for CompressionStore {
                     footer.version
                 );
                 error_if!(
-                    footer.indexes.len() != footer.index_count as usize,
+                    footer.indexes.len() != footer.index_count as u64,
                     "Expected index counts to match in compression store footer in get_part, {} != {}",
                     footer.indexes.len(),
                     footer.index_count
