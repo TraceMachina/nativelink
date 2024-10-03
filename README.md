@@ -57,14 +57,14 @@ NativeLink seamlessly integrates with build tools that use the Remote Execution 
 
 To start, you can deploy NativeLink as a Docker image (as shown below) or by using our cloud-hosted solution, [NativeLink Cloud](https://app.nativelink.com). It's **FREE** for individuals, open-source projects, and cloud production environments, with support for unlimited team members.
 
-The setups below are **production-grade** installations. See the [contribution docs](https://docs.nativelink.com/contribute/nix/) for instructions on how to build from source with [Bazel](https://docs.nativelink.com/contribute/bazel/), [Cargo](https://docs.nativelink.com/contribute/cargo/), and [Nix](https://docs.nativelink.com/contribute/nix/).
+The setups below are **production-grade** installations. See the [contribution docs](https://nativelink.com/docs/contribute/nix/) for instructions on how to build from source with [Bazel](https://nativelink.com/docs/contribute/bazel/), [Cargo](https://nativelink.com/docs/contribute/cargo/), and [Nix](https://nativelink.com/docs/contribute/nix/).
 
 
 ### 📦 Prebuilt images
 
 Fast to spin up, but currently limited to `x86_64` systems. See the [container
 registry](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
-for all image tags and the [contribution docs](https://docs.nativelink.com/contribute/nix)
+for all image tags and the [contribution docs](https://nativelink.com/docs/contribute/nix)
 for how to build the images yourself.
 
 **Linux x86_64**
@@ -120,7 +120,7 @@ curl -O \
 nix run github:TraceMachina/nativelink ./basic_cas.json
 ```
 
-See the [contribution docs](https://docs.nativelink.com/contribute/nix) for further information.
+See the [contribution docs](https://nativelink.com/docs/contribute/nix) for further information.
 
 ## ✍️ Contributors
 
