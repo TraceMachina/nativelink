@@ -311,3 +311,32 @@ async fn eof_can_send_twice() -> Result<(), Error> {
     tx.send_eof().unwrap();
     Ok(())
 }
+
+#[nativelink_test]
+async fn set_max_recent_data_size_no_eof_then_retry_test() -> Result<(), Error> {
+    let (mut tx, mut rx) = make_buf_channel_pair();
+    {
+        rx.set_max_recent_data_size(1024);
+        tx.send(DATA1.into()).await.unwrap();
+        drop(tx);
+        assert_eq!(rx.recv().await.unwrap(), Bytes::from(DATA1));
+        assert_eq!(
+            rx.recv().await,
+            Err(make_err!(
+                Code::Internal,
+                "Sender dropped before sending EOF"
+            ))
+        );
+    }
+    {
+        rx.try_reset_stream().unwrap();
+        assert_eq!(
+            rx.recv().await,
+            Err(make_err!(
+                Code::Internal,
+                "Sender dropped before sending EOF"
+            ))
+        );
+    }
+    Ok(())
+}

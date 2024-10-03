@@ -1,0 +1,124 @@
+---
+title: "Remote Build Execution"
+description: "Utilize Bazel's RBE protocol for remote builds in the NativeLink Cloud"
+pagefind: true
+---
+:::note
+NativeLink Cloud RBE is currently in limited release. Please request access from the
+Remote Execution page in the NativeLink Cloud to enable RBE.
+:::
+
+This guide shows how to configure remote build execution (RBE) for your
+[Bazel](https://bazel.build/) projects with the
+[NativeLink Cloud](https://app.nativelink.com). Before using this guide
+make sure you have followed our [Bazel Quickstart](/nativelink-cloud/bazel).
+
+## Basic Configuration
+To enable RBE all you need to do is add the below flag to your Bazel builds:
+```bash
+--remote_executor=grpcs://scheduler-YOUR_ACCOUNT_HERE.build-faster.nativelink.net:443
+```
+
+This will run your builds on a Ubuntu 22.04 image *without any* dependencies installed.
+For most users we don't expect this to work out of the box as your project most
+likely depends on installations like GCC/Java/etc. To remedy that, continue with the
+instructions below to pass in your own images.
+
+## Custom Images
+To support most RBE builds you will most likely need to pass in your own image with the
+correct toolchains installed to support your build. To use your own __*public*__ image you can pass
+it using this configuration:
+```bash
+--remote_default_exec_properties="container-image=docker://public.ecr.aws/ubuntu/ubuntu:22.04_stable"
+```
+Or a public image on Docker Hub is accessible via:
+```bash
+--remote_default_exec_properties="container-image=docker://ubuntu:latest"
+```
+
+### Private Images
+If your images are in your own private repository, you can pass your repository
+credentials to allow us to pull your RBE images.
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+<Tabs syncKey="platfomr">
+  <TabItem label="AWS">
+    ```bash
+    --remote_default_exec_properties="container-image=docker://123456789100.dkr.ecr.us-east-2.amazonaws.com/rbe-images:tag"
+    --remote_exec_header=x-nativelink-rbe-registry-server=123456789100.dkr.ecr.us-east-2.amazonaws.com
+    --remote_exec_header=x-nativelink-rbe-registry-username=AWS
+    --remote_exec_header=x-nativelink-rbe-registry-password="$(aws ecr get-login-password --region YOUR_REGION)"
+    ```
+  </TabItem>
+  <TabItem label="Google Cloud">
+    ```bash
+    --remote_default_exec_properties="container-image=docker://gcr.io/rbe-images/image"
+    --remote_exec_header=x-nativelink-rbe-registry-server=gcr.io
+    --remote_exec_header=x-nativelink-rbe-registry-username=_dcgcloud_token
+    --remote_exec_header=x-nativelink-rbe-registry-password="$(gcloud auth print-access-token)"
+    ```
+  </TabItem>
+  <TabItem label="Docker.io">
+    ```bash
+    --remote_default_exec_properties="container-image=docker://docker.io/rbe-images/image"
+    --remote_exec_header=x-nativelink-rbe-registry-server=docker.io
+    --remote_exec_header=x-nativelink-rbe-registry-username=YOUR_USERNAME
+    --remote_exec_header=x-nativelink-rbe-registry-password=YOUR_PERSONAL_ACCESS_TOKEN
+    ```
+  </TabItem>
+</Tabs>
+
+## Hermetic Bazel Builds
+An alternative option to passing in your own custom image is using a fully hermetic
+Bazel build. This will allow you to use our default Ubuntu 22.04 image and your Bazel
+commands will install all needed dependencies.
+
+You can see a sample of that in the WORKSPACE file of our **Hermetic CC** example
+repository [here](https://github.com/TraceMachina/hermetic_cc_toolchain_rbe_example/blob/main/WORKSPACE).
+
+## Recommended Flags
+Bazel has many flags you can pass to it to modify RBE. We recommend three main flags to start.
+
+### `--jobs`
+This is the number of concurrent jobs to run. We recommend starting with `50` but
+you can readily scale up to `200`. Past this we recommend reaching out to us with help
+understanding your build and what optimal settings may be.
+```bash
+--jobs=200
+```
+
+### `--remote_download_minimal`
+This flag enables "Build Without Bytes" which means Bazel will skip downloading
+intermediate artifacts that aren't necessary for your builds to complete. This
+can greatly increase the speed of your builds.
+```bash
+--remote_download_minimal
+```
+
+### `--remote_timeout`
+This is how long a job will run before timing out. The default is `60` seconds but we
+recommend setting `600`.
+```bash
+--remote_timeout=600
+```
+
+### Further configurations
+You can see the rest of the Bazel command line arguments [here](https://bazel.build/reference/command-line-reference),
+and don't hesitate to reach out to us with any questions!
+
+## Execution Properties
+You may have jobs that you need to configure to run on specific hardware, whether that's `GPUs` or `High Memory`. In
+order to enable this, we utilize Bazel's `exec_properties`. Inside a specific rule you can pass a `node` value
+that will map those tasks to the type of worker node you want to run your task on.
+
+```bash
+my_rule(
+    name = 'my_target',
+    exec_properties = {
+        'Pool': 'gpu-cuda'
+    }
+    …
+)
+```
+To configure accepted values of `Pool` for your builds please reach out to us to get setup.

@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::cmp::min;
 use std::collections::vec_deque::VecDeque;
 use std::collections::HashMap;
+use std::convert::Into;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Debug;
 #[cfg(target_family = "unix")]
@@ -287,7 +288,7 @@ async fn upload_file(
         .update_with_whole_file(
             digest.into(),
             resumeable_file,
-            UploadSizeInfo::ExactSize(digest.size_bytes() as usize),
+            UploadSizeInfo::ExactSize(digest.size_bytes()),
         )
         .await
         .err_tip(|| format!("for {full_path:?}"))?;
@@ -435,7 +436,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                             .await
                             .err_tip(|| format!("Could not open file {full_path:?}"))?;
                         upload_file(cas_store, &full_path, hasher, metadata)
-                            .map_ok(|v| v.into())
+                            .map_ok(Into::into)
                             .await
                     });
                 } else if file_type.is_symlink() {
@@ -1472,10 +1473,16 @@ impl UploadActionResults {
             "digest_function",
             hasher.proto_digest_func().as_str_name().to_lowercase(),
         );
-        template_str.replace("action_digest_hash", action_digest_info.hash_str());
+        template_str.replace(
+            "action_digest_hash",
+            action_digest_info.packed_hash().to_string(),
+        );
         template_str.replace("action_digest_size", action_digest_info.size_bytes());
         if let Some(historical_digest_info) = maybe_historical_digest_info {
-            template_str.replace("historical_results_hash", historical_digest_info.hash_str());
+            template_str.replace(
+                "historical_results_hash",
+                format!("{}", historical_digest_info.packed_hash()),
+            );
             template_str.replace(
                 "historical_results_size",
                 historical_digest_info.size_bytes(),
@@ -1865,7 +1872,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             let running_actions = self.running_actions.lock();
             running_actions
                 .get(operation_id)
-                .and_then(|action| action.upgrade())
+                .and_then(Weak::upgrade)
                 .ok_or_else(|| make_input_err!("Failed to get running action {operation_id}"))?
         };
         Self::kill_operation(running_action).await;

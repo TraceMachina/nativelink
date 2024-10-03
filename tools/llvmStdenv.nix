@@ -4,18 +4,20 @@
   useMoldLinker,
   llvmPackages,
 }: let
-  llvmToolchain =
-    overrideCC (
-      llvmPackages.libcxxStdenv.override {
-        targetPlatform.useLLVM = true;
-      }
-    )
-    llvmPackages.clangUseLLVM;
+  llvmPackagesNoBintools = llvmPackages.override {
+    bootBintools = null;
+    bootBintoolsNoLibc = null;
+  };
+
+  stdenv' =
+    overrideCC
+    llvmPackagesNoBintools.libcxxStdenv
+    llvmPackagesNoBintools.clangUseLLVM;
 
   toolchain =
-    if stdenv.isDarwin
-    then llvmToolchain # Mold doesn't support darwin.
-    else useMoldLinker llvmToolchain;
+    if stdenv.targetPlatform.isDarwin
+    then stdenv' # Mold doesn't support darwin.
+    else useMoldLinker stdenv';
 in
   # This toolchain uses Clang as compiler, Mold as linker, libc++ as C++
   # standard library and compiler-rt as compiler runtime. Resulting rust

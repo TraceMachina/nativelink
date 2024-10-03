@@ -5,6 +5,7 @@ linters:
     # Deprecated.
     - execinquery
     - gomnd
+    - exportloopref
 
     # Allow all packages for now.
     - depguard

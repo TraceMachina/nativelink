@@ -455,7 +455,7 @@ impl GrpcStore {
         let action_result = self
             .get_action_result_from_digest(digest)
             .await
-            .map(|response| response.into_inner())
+            .map(Response::into_inner)
             .err_tip(|| "Action result not found")?;
         // TODO: Would be better to avoid all the encoding and decoding in this
         //       file, however there's no way to currently get raw bytes from a
@@ -469,7 +469,7 @@ impl GrpcStore {
         let length = length.unwrap_or(default_len).min(default_len);
         if length > 0 {
             writer
-                .send(value.freeze().slice(offset..(offset + length)))
+                .send(value.freeze().slice(offset..offset + length))
                 .await
                 .err_tip(|| "Failed to write data in grpc store")?;
         }
@@ -566,6 +566,7 @@ impl StoreDriver for GrpcStore {
             match missing_digests.binary_search(&digest) {
                 Ok(_) => *result = None,
                 Err(_) => *result = Some(u64::try_from(digest.size_bytes())?),
+
             }
         }
 
@@ -588,7 +589,7 @@ impl StoreDriver for GrpcStore {
             "{}/uploads/{}/blobs/{}/{}",
             &self.instance_name,
             Uuid::new_v4().hyphenated().encode_lower(&mut buf),
-            digest.hash_str(),
+            digest.packed_hash(),
             digest.size_bytes(),
         );
 
@@ -660,6 +661,11 @@ impl StoreDriver for GrpcStore {
     ) -> Result<(), Error> {
         let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+            let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
+            let length = length
+                .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
+                .transpose()?;
+
             return self
                 .get_action_result_as_part(digest, writer, offset, length)
                 .await;
@@ -673,7 +679,7 @@ impl StoreDriver for GrpcStore {
         let resource_name = format!(
             "{}/blobs/{}/{}",
             &self.instance_name,
-            digest.hash_str(),
+            digest.packed_hash(),
             digest.size_bytes(),
         );
 
@@ -687,8 +693,9 @@ impl StoreDriver for GrpcStore {
         let local_state = LocalState {
             resource_name,
             writer,
-            read_offset: offset as i64,
-            read_limit: length.unwrap_or(0) as i64,
+            read_offset: i64::try_from(offset).err_tip(|| "Could not convert offset to i64")?,
+            read_limit: i64::try_from(length.unwrap_or(0))
+                .err_tip(|| "Could not convert length to i64")?,
         };
 
         self.retrier

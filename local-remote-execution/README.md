@@ -16,7 +16,7 @@ perfect cache hit rate across different repositories, developers, and CI.
 > [!NOTE]
 > At the moment LRE only works on `x86_64-linux`.
 
-##  Pre-Requisites
+## Pre-Requisites
 
 - Nix 2.19.0 or later
 - A functional local container setup

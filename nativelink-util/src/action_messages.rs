@@ -14,6 +14,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::convert::Into;
 use std::hash::Hash;
 use std::time::{Duration, SystemTime};
 
@@ -104,6 +105,36 @@ impl From<String> for OperationId {
         match Uuid::parse_str(&value) {
             Ok(uuid) => Self::Uuid(uuid),
             Err(_) => Self::String(value),
+        }
+    }
+}
+
+impl TryFrom<Bytes> for OperationId {
+    type Error = Error;
+
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        // This is an optimized path to attempt to do the conversion in-place
+        // to avoid an extra allocation/copy.
+        match value.try_into_mut() {
+            // We are the only reference to the Bytes, so we can convert it into a Vec<u8>
+            // for free then convert the Vec<u8> to a String for free too.
+            Ok(value) => {
+                let value = String::from_utf8(value.into()).map_err(|e| {
+                    make_input_err!(
+                        "Failed to convert bytes to string in try_from<Bytes> for OperationId : {e:?}"
+                    )
+                })?;
+                Ok(Self::from(value))
+            }
+            // We could not take ownership of the Bytes, so we may need to copy our data.
+            Err(value) => {
+                let value = std::str::from_utf8(&value).map_err(|e| {
+                    make_input_err!(
+                        "Failed to convert bytes to string in try_from<Bytes> for OperationId : {e:?}"
+                    )
+                })?;
+                Ok(Self::from(value))
+            }
         }
     }
 }
@@ -215,10 +246,11 @@ impl std::fmt::Display for ActionUniqueQualifier {
         f.write_fmt(format_args!(
             // Note: We use underscores because it makes escaping easier
             // for redis.
-            "{}/{}/{}/{}",
+            "{}_{}_{}_{}_{}",
             unique_key.instance_name,
             unique_key.digest_function,
-            unique_key.digest,
+            unique_key.digest.packed_hash(),
+            unique_key.digest.size_bytes(),
             if cachable { 'c' } else { 'u' },
         ))
     }
@@ -253,7 +285,7 @@ impl std::fmt::Display for ActionUniqueKey {
 /// to ensure we never match against another `ActionInfo` (when a task should never be cached).
 /// This struct must be 100% compatible with `ExecuteRequest` struct in `remote_execution.proto`
 /// except for the salt field.
-#[derive(Clone, Debug, Serialize, Deserialize, MetricsComponent)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, MetricsComponent)]
 pub struct ActionInfo {
     /// Digest of the underlying `Command`.
     #[metric(help = "Digest of the underlying Command.")]
@@ -818,7 +850,7 @@ pub fn to_execute_response(action_result: ActionResult) -> ExecuteResponse {
         action_result
             .error
             .clone()
-            .map_or_else(Status::default, |v| v.into()),
+            .map_or_else(Status::default, Into::into),
     );
     let message = action_result.message.clone();
     ExecuteResponse {

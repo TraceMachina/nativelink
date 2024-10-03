@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04]
+        os: [ubuntu-24.04, macos-13, macos-14]
     name: Bazel Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -95,6 +95,16 @@ jobs:
           remove_haskell: true
           remove_tool_cache: false
 
+      - name: Delete Applications and Simulators to free up disk space
+        if: contains(matrix.os, 'macos')
+        run: |
+          echo "Deleting Applications"
+          sudo rm -rf ~/Applications/*
+          echo "Deleting all iOS simulators"
+          xcrun simctl delete all
+          echo "Deleting iOS Simulator caches"
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/*
+
       - name: Cache Nix derivations
         uses: >- # v4
           DeterminateSystems/magic-nix-cache-action@fc6aaceb40b9845a02b91e059ec147e78d1b4e41
@@ -129,6 +139,16 @@ jobs:
           remove_dotnet: true
           remove_haskell: true
           remove_tool_cache: false
+
+      - name: Delete Applications and Simulators to free up disk space
+        if: contains(matrix.os, 'macos')
+        run: |
+          echo "Deleting Applications"
+          sudo rm -rf ~/Applications/*
+          echo "Deleting all iOS simulators"
+          xcrun simctl delete all
+          echo "Deleting iOS Simulator caches"
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/*
 
       - name: Cache Nix derivations
         uses: >- # v4

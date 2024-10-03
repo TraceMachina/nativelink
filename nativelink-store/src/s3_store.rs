@@ -427,13 +427,16 @@ where
         // Note(allada) If the upload size is not known, we go down the multipart upload path.
         // This is not very efficient, but it greatly reduces the complexity of the code.
         if max_size < MIN_MULTIPART_SIZE && matches!(upload_size, UploadSizeInfo::ExactSize(_)) {
-            reader.set_max_recent_data_size(self.max_retry_buffer_per_request);
+            let UploadSizeInfo::ExactSize(sz) = upload_size else {
+                unreachable!("upload_size must be UploadSizeInfo::ExactSize here");
+            };
+            reader.set_max_recent_data_size(
+                u64::try_from(self.max_retry_buffer_per_request)
+                    .err_tip(|| "Could not convert max_retry_buffer_per_request to u64")?,
+            );
             return self
                 .retrier
                 .retry(unfold(reader, move |mut reader| async move {
-                    let UploadSizeInfo::ExactSize(sz) = upload_size else {
-                        unreachable!("upload_size must be UploadSizeInfo::ExactSize here");
-                    };
                     // We need to make a new pair here because the aws sdk does not give us
                     // back the body after we send it in order to retry.
                     let (mut tx, rx) = make_buf_channel_pair();
@@ -449,7 +452,7 @@ where
                                 .content_length(sz as i64)
                                 .body(ByteStream::from_body_1_x(BodyWrapper {
                                     reader: rx,
-                                    size: sz as u64,
+                                    size: sz,
                                 }))
                                 .send()
                                 .map_ok_or_else(|e| Err(make_err!(Code::Aborted, "{e:?}")), |_| Ok(())),
@@ -539,7 +542,7 @@ where
                 // Note: Our break condition is when we reach EOF.
                 for part_number in 1..i32::MAX {
                     let write_buf = reader
-                        .consume(Some(bytes_per_upload_part))
+                        .consume(Some(usize::try_from(bytes_per_upload_part).err_tip(|| "Could not convert bytes_per_upload_part to usize")?))
                         .await
                         .err_tip(|| "Failed to read chunk in s3_store")?;
                     if write_buf.is_empty() {
@@ -589,10 +592,13 @@ where
 
             let mut upload_futures = FuturesUnordered::new();
 
-            let mut completed_parts = Vec::with_capacity(cmp::min(
-                MAX_UPLOAD_PARTS,
-                (max_size / bytes_per_upload_part) + 1,
-            ));
+            let mut completed_parts = Vec::with_capacity(
+                usize::try_from(cmp::min(
+                    MAX_UPLOAD_PARTS as u64,
+                    (max_size / bytes_per_upload_part) + 1,
+                ))
+                .err_tip(|| "Could not convert u64 to usize")?,
+            );
             tokio::pin!(read_stream_fut);
             loop {
                 if read_stream_fut.is_terminated() && rx.is_empty() && upload_futures.is_empty() {
@@ -695,7 +701,9 @@ where
                     .key(s3_path)
                     .range(format!(
                         "bytes={}-{}",
+
                         offset + writer.get_bytes_written() as u64,
+
                         end_read_byte.map_or_else(String::new, |v| v.to_string())
                     ))
                     .send()

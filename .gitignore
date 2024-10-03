@@ -1,6 +1,7 @@
 bazel-*
 target/
 .vscode/
+.zed
 .cache
 .terraform*
 .config
@@ -18,3 +19,5 @@ trivy-results.sarif
 Pulumi.dev.yaml
 lre.bazelrc
 rust-project.json
+darwin.bazelrc
+nativelink.bazelrc

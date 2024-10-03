@@ -130,6 +130,16 @@ pub struct SimpleScheduler {
 pub enum ExperimentalSimpleSchedulerBackend {
     /// Use an in-memory store for the scheduler.
     memory,
+    /// Use a redis store for the scheduler.
+    redis(ExperimentalRedisSchedulerBackend),
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalRedisSchedulerBackend {
+    /// A reference to the redis store to use for the scheduler.
+    /// Note: This MUST resolve to a RedisStore.
+    pub redis_store: StoreRefName,
 }
 
 /// A scheduler that simply forwards requests to an upstream scheduler.  This

@@ -37,6 +37,7 @@ please raise an issue so that we can clarify this document.
 
 > [!WARNING]
 > Don't use
+>
 > ```bash
 > git clone git@github.com:TraceMachina/nativelink
 > ```
@@ -199,22 +200,21 @@ NativeLink doesn't allow direct commits or human-created side branches in the
    git push --set-upstream origin some-feature
    ```
 
-6. Go to https://github.com/TraceMachina/nativelink/pulls where you should see a
+5. Go to https://github.com/TraceMachina/nativelink/pulls where you should see a
    button that you can click to create to create a new pull request from your
    fork to the main repository.
 
-7. Once you opened the pull request, click on the purple `Reviewable` button in
+6. Once you opened the pull request, click on the purple `Reviewable` button in
    the GitHub page for the pull request to add reviewers with `+@somereviewer`.
 
    The reviewers will take it from there and guide you through any potential
    remaining issues. Feel free to ask for help if you have trouble getting CI
    for your pull request green.
 
-8. If you need to make additional changes, don't use a regular `git commit` on
+7. If you need to make additional changes, don't use a regular `git commit` on
    the pull request branch. Instead use `git commit --amend` and `git push -f`
    to update the commit in-place. The changes between the commit versions will
    remain visible in the Reviewable UI.
-
 
 ### Using `git rebase`
 
@@ -394,7 +394,7 @@ NativeLink implements its documentation style guide via Vale. The pre-commit
 hooks forbid errors but permit warnings and suggestions. To view all of Vale's
 suggestions invoke it directly:
 
-```
+```bash
 vale somefile
 ```
 

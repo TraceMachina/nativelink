@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::ops::Bound;
+use std::string::ToString;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
@@ -436,12 +437,11 @@ where
                 .get_by_operation_id(operation_id)
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::update_operation")?;
-            let awaited_action_subscriber = match maybe_awaited_action_subscriber {
-                Some(sub) => sub,
-                // No action found. It is ok if the action was not found. It probably
-                // means that the action was dropped, but worker was still processing
-                // it.
-                None => return Ok(()),
+            let Some(awaited_action_subscriber) = maybe_awaited_action_subscriber else {
+                // No action found. It is ok if the action was not found. It
+                // probably means that the action was dropped, but worker was
+                // still processing it.
+                return Ok(());
             };
 
             let mut awaited_action = awaited_action_subscriber
@@ -506,7 +506,7 @@ where
                     if awaited_action.attempts > self.max_job_retries {
                         ActionStage::Completed(ActionResult {
                             execution_metadata: ExecutionMetadata {
-                                worker: maybe_worker_id.map_or_else(String::default, |v| v.to_string()),
+                                worker: maybe_worker_id.map_or_else(String::default, ToString::to_string),
                                 ..ExecutionMetadata::default()
                             },
                             error: Some(err.clone().merge(make_err!(

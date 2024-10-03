@@ -13,10 +13,11 @@
 // limitations under the License.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::panicking;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use fred::bytes_utils::string::Str;
 use fred::error::RedisError;
 use fred::mocks::{MockCommand, Mocks};
@@ -24,12 +25,19 @@ use fred::prelude::Builder;
 use fred::types::{RedisConfig, RedisValue};
 use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::{MetricFieldData, MetricKind, MetricsComponent, RootMetricsComponent};
+use nativelink_metric_collector::MetricsCollectorLayer;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{RedisStore, READ_CHUNK_SIZE};
+use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use parking_lot::RwLock;
 use pretty_assertions::assert_eq;
+use serde_json::{from_str, to_string, Value};
+use tokio::sync::watch;
+use tracing_subscriber::layer::SubscriberExt;
 
 const VALID_HASH1: &str = "3031323334353637383961626364656630303030303030303030303030303030";
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -42,32 +50,72 @@ fn make_temp_key(final_name: &str) -> String {
     format!("temp-{TEMP_UUID}-{{{final_name}}}")
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct MockRedisBackend {
     /// Commands we expect to encounter, and results we to return to the client.
     // Commands are pushed from the back and popped from the front.
     expected: Mutex<VecDeque<(MockCommand, Result<RedisValue, RedisError>)>>,
+
+    tx: watch::Sender<MockCommand>,
+    rx: watch::Receiver<MockCommand>,
+
+    failing: AtomicBool,
+}
+
+impl Default for MockRedisBackend {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MockRedisBackend {
     fn new() -> Self {
-        Self::default()
+        let (tx, rx) = watch::channel(MockCommand {
+            cmd: "".into(),
+            subcommand: None,
+            args: vec![],
+        });
+        Self {
+            expected: Mutex::default(),
+            tx,
+            rx,
+            failing: AtomicBool::new(false),
+        }
     }
 
     fn expect(&self, command: MockCommand, result: Result<RedisValue, RedisError>) -> &Self {
         self.expected.lock().unwrap().push_back((command, result));
         self
     }
+
+    async fn wait_for(&self, command: MockCommand) {
+        self.rx
+            .clone()
+            .wait_for(|cmd| *cmd == command)
+            .await
+            .expect("the channel isn't closed while the struct exists");
+    }
 }
 
 impl Mocks for MockRedisBackend {
     fn process_command(&self, actual: MockCommand) -> Result<RedisValue, RedisError> {
+        self.tx
+            .send(actual.clone())
+            .expect("the channel isn't closed while the struct exists");
+
         let Some((expected, result)) = self.expected.lock().unwrap().pop_front() else {
             // panic here -- this isn't a redis error, it's a test failure
+            self.failing.store(true, Ordering::Relaxed);
             panic!("Didn't expect any more commands, but received {actual:?}");
         };
 
-        assert_eq!(actual, expected);
+        if actual != expected {
+            self.failing.store(true, Ordering::Relaxed);
+            assert_eq!(
+                actual, expected,
+                "mismatched command, received (left) but expected (right)"
+            );
+        };
 
         result
     }
@@ -96,8 +144,8 @@ impl Mocks for MockRedisBackend {
 
 impl Drop for MockRedisBackend {
     fn drop(&mut self) {
-        if panicking() {
-            // We're already panicking, let's make debugging easier and let future devs solve problems one at a time.
+        if panicking() || self.failing.load(Ordering::Relaxed) {
+            // We're already failing, let's make debugging easier and let future devs solve problems one at a time.
             return;
         }
 
@@ -110,7 +158,7 @@ impl Drop for MockRedisBackend {
         assert_eq!(
             *expected,
             VecDeque::new(),
-            "Didn't receive all expected commands."
+            "Didn't receive all expected commands, expected (left)"
         );
 
         // Panicking isn't enough inside a tokio task, we need to `exit(1)`
@@ -186,17 +234,18 @@ async fn upload_and_get_data() -> Result<(), Error> {
         RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())?
     };
 
-    store.update_oneshot(digest, data.clone()).await?;
+    store.update_oneshot(digest, data.clone()).await.unwrap();
 
-    let result = store.has(digest).await?;
+    let result = store.has(digest).await.unwrap();
     assert!(
         result.is_some(),
         "Expected redis store to have hash: {VALID_HASH1}",
     );
 
     let result = store
-        .get_part_unchunked(digest, 0, Some(data.len()))
-        .await?;
+        .get_part_unchunked(digest, 0, Some(data.len() as u64))
+        .await
+        .unwrap();
 
     assert_eq!(result, data, "Expected redis store to have updated value",);
 
@@ -266,17 +315,18 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
         )?
     };
 
-    store.update_oneshot(digest, data.clone()).await?;
+    store.update_oneshot(digest, data.clone()).await.unwrap();
 
-    let result = store.has(digest).await?;
+    let result = store.has(digest).await.unwrap();
     assert!(
         result.is_some(),
         "Expected redis store to have hash: {VALID_HASH1}",
     );
 
     let result = store
-        .get_part_unchunked(digest, 0, Some(data.len()))
-        .await?;
+        .get_part_unchunked(digest, 0, Some(data.len() as u64))
+        .await
+        .unwrap();
 
     assert_eq!(result, data, "Expected redis store to have updated value",);
 
@@ -294,11 +344,12 @@ async fn upload_empty_data() -> Result<(), Error> {
         None,
         mock_uuid_generator,
         String::new(),
-    )?;
+    )
+    .unwrap();
 
-    store.update_oneshot(digest, data).await?;
+    store.update_oneshot(digest, data).await.unwrap();
 
-    let result = store.has(digest).await?;
+    let result = store.has(digest).await.unwrap();
     assert!(
         result.is_some(),
         "Expected redis store to have hash: {VALID_HASH1}",
@@ -318,11 +369,12 @@ async fn upload_empty_data_with_prefix() -> Result<(), Error> {
         None,
         mock_uuid_generator,
         prefix.to_string(),
-    )?;
+    )
+    .unwrap();
 
-    store.update_oneshot(digest, data).await?;
+    store.update_oneshot(digest, data).await.unwrap();
 
-    let result = store.has(digest).await?;
+    let result = store.has(digest).await.unwrap();
     assert!(
         result.is_some(),
         "Expected redis store to have hash: {VALID_HASH1}",
@@ -407,17 +459,18 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
         RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())?
     };
 
-    store.update_oneshot(digest, data.clone()).await?;
+    store.update_oneshot(digest, data.clone()).await.unwrap();
 
-    let result = store.has(digest).await?;
+    let result = store.has(digest).await.unwrap();
     assert!(
         result.is_some(),
         "Expected redis store to have hash: {VALID_HASH1}",
     );
 
     let get_result: Bytes = store
-        .get_part_unchunked(digest, 0, Some(data.clone().len()))
-        .await?;
+        .get_part_unchunked(digest, 0, Some(data.clone().len() as u64))
+        .await
+        .unwrap();
 
     assert_eq!(
         get_result,
@@ -430,9 +483,13 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
-    let data = Bytes::from(vec![0u8; 10 * 1024]);
-    let data_p1 = Bytes::from(vec![0u8; 6 * 1024]);
-    let data_p2 = Bytes::from(vec![0u8; 4 * 1024]);
+    let data_p1 = Bytes::from(vec![b'A'; 6 * 1024]);
+    let data_p2 = Bytes::from(vec![b'B'; 4 * 1024]);
+
+    let mut data = BytesMut::new();
+    data.extend_from_slice(&data_p1);
+    data.extend_from_slice(&data_p2);
+    let data = data.freeze();
 
     let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
     let packed_hash_hex = format!("{digest}");
@@ -441,14 +498,16 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
     let real_key = RedisValue::Bytes(packed_hash_hex.into());
 
     let mocks = Arc::new(MockRedisBackend::new());
+    let first_append = MockCommand {
+        cmd: Str::from_static("APPEND"),
+        subcommand: None,
+        args: vec![temp_key.clone(), data_p1.clone().into()],
+    };
+
     mocks
         // We expect multiple `"APPEND"`s as we send data in multiple chunks
         .expect(
-            MockCommand {
-                cmd: Str::from_static("APPEND"),
-                subcommand: None,
-                args: vec![temp_key.clone(), data_p1.clone().into()],
-            },
+            first_append.clone(),
             Ok(RedisValue::Array(vec![RedisValue::Null])),
         )
         .expect(
@@ -496,23 +555,36 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
     };
 
     let (mut tx, rx) = make_buf_channel_pair();
-    tx.send(data_p1).await?;
-    tokio::task::yield_now().await;
-    tx.send(data_p2).await?;
-    tx.send_eof()?;
-    store
-        .update(digest, rx, UploadSizeInfo::ExactSize(data.len()))
-        .await?;
 
-    let result = store.has(digest).await?;
+    tokio::try_join!(
+        async {
+            store
+                .update(digest, rx, UploadSizeInfo::ExactSize(data.len() as u64))
+                .await
+                .unwrap();
+
+            Ok::<_, Error>(())
+        },
+        async {
+            tx.send(data_p1).await.unwrap();
+            mocks.wait_for(first_append).await;
+            tx.send(data_p2).await.unwrap();
+            tx.send_eof().unwrap();
+            Ok::<_, Error>(())
+        },
+    )
+    .unwrap();
+
+    let result = store.has(digest).await.unwrap();
     assert!(
         result.is_some(),
         "Expected redis store to have hash: {VALID_HASH1}",
     );
 
     let result = store
-        .get_part_unchunked(digest, 0, Some(data.clone().len()))
-        .await?;
+        .get_part_unchunked(digest, 0, Some(data.clone().len() as u64))
+        .await
+        .unwrap();
 
     assert_eq!(result, data, "Expected redis store to have updated value",);
 
@@ -567,3 +639,97 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
 
     Ok(())
 }
+
+// Prevent regressions to https://reviewable.io/reviews/TraceMachina/nativelink/1188#-O2pu9LV5ux4ILuT6MND
+#[nativelink_test]
+async fn dont_loop_forever_on_empty() -> Result<(), Error> {
+    let store = {
+        let mut builder = Builder::default_centralized();
+        builder.set_config(RedisConfig {
+            mocks: Some(Arc::new(MockRedisBackend::new()) as Arc<dyn Mocks>),
+            ..Default::default()
+        });
+
+        RedisStore::new_from_builder_and_parts(builder, None, mock_uuid_generator, String::new())?
+    };
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 2).unwrap();
+    let (tx, rx) = make_buf_channel_pair();
+
+    tokio::join!(
+        async {
+            store
+                .update(digest, rx, UploadSizeInfo::MaxSize(0))
+                .await
+                .unwrap_err();
+        },
+        async {
+            drop(tx);
+        },
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_redis_fingerprint_metric() -> Result<(), Error> {
+    let expected_fingerprint_value: String = String::from("3e762c15");
+
+    let store_manager = Arc::new(StoreManager::new());
+
+    {
+        let store = {
+            let mut builder = Builder::default_centralized();
+            builder.set_config(RedisConfig {
+                mocks: Some(Arc::new(MockRedisBackend::new()) as Arc<dyn Mocks>),
+                ..Default::default()
+            });
+
+            Store::new(Arc::new(RedisStore::new_from_builder_and_parts(
+                builder,
+                None,
+                mock_uuid_generator,
+                String::new(),
+            )?))
+        };
+
+        store_manager.add_store("redis_store", store);
+    };
+
+    let root_metrics = Arc::new(RwLock::new(RootMetricsTest {
+        stores: store_manager.clone(),
+    }));
+
+    let (layer, output_metrics) = MetricsCollectorLayer::new();
+
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
+        let metrics_component = root_metrics.read();
+        MetricsComponent::publish(
+            &*metrics_component,
+            MetricKind::Component,
+            MetricFieldData::default(),
+        )
+    })
+    .unwrap();
+
+    let output_json_data = to_string(&*output_metrics.lock()).unwrap();
+
+    let parsed_output: Value = from_str(&output_json_data).unwrap();
+
+    let fingerprint_create_index = parsed_output["stores"]["redis_store"]
+        ["fingerprint_create_index"]
+        .as_str()
+        .expect("fingerprint_create_index should be a hex string");
+
+    assert_eq!(fingerprint_create_index, expected_fingerprint_value);
+
+    Ok(())
+}
+
+#[derive(MetricsComponent)]
+struct RootMetricsTest {
+    #[metric(group = "stores")]
+    stores: Arc<dyn RootMetricsComponent>,
+}
+
+impl RootMetricsComponent for RootMetricsTest {}

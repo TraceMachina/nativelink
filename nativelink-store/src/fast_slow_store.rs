@@ -110,18 +110,23 @@ impl FastSlowStore {
         received_range: &Range<u64>,
         send_range: &Range<u64>,
     ) -> Option<Range<u64>> {
+
         // Protect against subtraction overflow.
         if received_range.start >= received_range.end {
-            return None;
+            return Ok(None);
         }
 
         let start = max(received_range.start, send_range.start);
         let end = min(received_range.end, send_range.end);
         if received_range.contains(&start) && received_range.contains(&(end - 1)) {
             // Offset both to the start of the received_range.
-            Some(start - received_range.start..end - received_range.start)
+            let calculated_range_start = usize::try_from(start - received_range.start)
+                .err_tip(|| "Could not convert (start - received_range.start) to usize")?;
+            let calculated_range_end = usize::try_from(end - received_range.start)
+                .err_tip(|| "Could not convert (end - received_range.start) to usize")?;
+            Ok(Some(calculated_range_start..calculated_range_end))
         } else {
-            None
+            Ok(None)
         }
     }
 }
@@ -335,19 +340,21 @@ impl StoreDriver for FastSlowStore {
                     let fast_res = fast_tx.send_eof();
                     return Ok::<_, Error>((fast_res, writer_pin));
                 }
+                let output_buf_len = u64::try_from(output_buf.len())
+                    .err_tip(|| "Could not output_buf.len() to u64")?;
                 self.metrics
                     .slow_store_downloaded_bytes
-                    .fetch_add(output_buf.len() as u64, Ordering::Acquire);
+                    .fetch_add(output_buf_len, Ordering::Acquire);
 
                 let writer_fut = if let Some(range) = Self::calculate_range(
-                    &(bytes_received..bytes_received + output_buf.len()),
+                    &(bytes_received..bytes_received + output_buf_len),
                     &send_range,
-                ) {
+                )? {
                     writer_pin.send(output_buf.slice(range)).right_future()
                 } else {
                     futures::future::ready(Ok(())).left_future()
                 };
-                bytes_received += output_buf.len();
+                bytes_received += output_buf_len;
 
                 let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf), writer_fut);
                 fast_tx_res.err_tip(|| "Failed to write to fast store in fast_slow store")?;

@@ -21,6 +21,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
+use nativelink_util::common::PackedHash;
 use nativelink_util::digest_hasher::{
     default_digest_hasher_func, DigestHasher, ACTIVE_HASHER_FUNC,
 };
@@ -61,7 +62,7 @@ impl VerifyStore {
         mut tx: DropCloserWriteHalf,
         mut rx: DropCloserReadHalf,
         maybe_expected_digest_size: Option<u64>,
-        original_hash: &[u8; 32],
+        original_hash: &PackedHash,
         mut maybe_hasher: Option<&mut D>,
     ) -> Result<(), Error> {
         let mut sum_size: u64 = 0;
@@ -119,9 +120,7 @@ impl VerifyStore {
                     if original_hash != hash_result {
                         self.hash_verification_failures.inc();
                         return Err(make_input_err!(
-                            "Hashes do not match, got: {} but digest hash was {}",
-                            hex::encode(original_hash),
-                            hex::encode(hash_result),
+                            "Hashes do not match, got: {original_hash} but digest hash was {hash_result}",
                         ));
                     }
                 }
@@ -160,17 +159,14 @@ impl StoreDriver for VerifyStore {
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let digest = match key {
-            StoreKey::Digest(digest) => digest,
-            _ => {
-                return Err(make_input_err!(
-                    "Only digests are supported in VerifyStore. Got {key:?}"
-                ));
-            }
+        let StoreKey::Digest(digest) = key else {
+            return Err(make_input_err!(
+                "Only digests are supported in VerifyStore. Got {key:?}"
+            ));
         };
         let digest_size = digest.size_bytes();
         if let UploadSizeInfo::ExactSize(expected_size) = size_info {
-            if self.verify_size && expected_size as u64 != digest_size {
+            if self.verify_size && expected_size != digest_size {
                 self.size_verification_failures.inc();
                 return Err(make_input_err!(
                     "Expected size to match. Got {} but digest says {} on update",

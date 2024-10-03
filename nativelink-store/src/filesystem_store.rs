@@ -307,7 +307,7 @@ fn make_temp_digest(digest: &mut DigestInfo) {
             .fetch_add(1, Ordering::Relaxed)
             .to_le_bytes(),
     );
-    digest.set_packed_hash(hash);
+    digest.set_packed_hash(*hash);
 }
 
 impl LenEntry for FileEntryImpl {
@@ -595,13 +595,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
-        self.evicting_map.get(digest).await.ok_or_else(|| {
-            make_err!(
-                Code::NotFound,
-                "{} not found in filesystem store",
-                digest.hash_str()
-            )
-        })
+        self.evicting_map
+            .get(digest)
+            .await
+            .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store"))
     }
 
     async fn update_file<'a>(
@@ -802,7 +799,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         let digest = key.into_digest();
         let path = file.get_path().as_os_str().to_os_string();
         let file_size = match upload_size {
-            UploadSizeInfo::ExactSize(size) => size as u64,
+            UploadSizeInfo::ExactSize(size) => size,
             UploadSizeInfo::MaxSize(_) => file
                 .as_reader()
                 .await

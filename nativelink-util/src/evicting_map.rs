@@ -45,7 +45,7 @@ struct EvictionItem<T: LenEntry + Debug> {
 
 pub trait LenEntry: 'static {
     /// Length of referenced data.
-    fn len(&self) -> usize;
+    fn len(&self) -> u64;
 
     /// Returns `true` if `self` has zero length.
     fn is_empty(&self) -> bool;
@@ -77,7 +77,7 @@ pub trait LenEntry: 'static {
 
 impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     #[inline]
-    fn len(&self) -> usize {
+    fn len(&self) -> u64 {
         T::len(self.as_ref())
     }
 
@@ -126,13 +126,13 @@ impl<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug + Sync> State<K, T>
         if let Some(btree) = &mut self.btree {
             btree.remove(key.borrow());
         }
-        self.sum_store_size -= eviction_item.data.len() as u64;
+        self.sum_store_size -= eviction_item.data.len();
         if replaced {
             self.replaced_items.inc();
-            self.replaced_bytes.add(eviction_item.data.len() as u64);
+            self.replaced_bytes.add(eviction_item.data.len());
         } else {
             self.evicted_items.inc();
-            self.evicted_bytes.add(eviction_item.data.len() as u64);
+            self.evicted_bytes.add(eviction_item.data.len());
         }
         // Note: See comment in `unref()` requring global lock of insert/remove.
         eviction_item.data.unref().await;
@@ -210,19 +210,18 @@ where
     /// and return the number of items that were processed.
     /// The `handler` function should return `true` to continue processing the next item
     /// or `false` to stop processing.
-    pub async fn range<F, Q>(&self, prefix_range: impl RangeBounds<Q>, mut handler: F) -> usize
+    pub async fn range<F, Q>(&self, prefix_range: impl RangeBounds<Q>, mut handler: F) -> u64
     where
         F: FnMut(&K, &T) -> bool,
         K: Borrow<Q> + Ord,
         Q: Ord + Hash + Eq + Debug,
     {
         let mut state = self.state.lock().await;
-        let btree = match state.btree {
-            Some(ref btree) => btree,
-            None => {
-                Self::rebuild_btree_index(&mut state);
-                state.btree.as_ref().unwrap()
-            }
+        let btree = if let Some(ref btree) = state.btree {
+            btree
+        } else {
+            Self::rebuild_btree_index(&mut state);
+            state.btree.as_ref().unwrap()
         };
         let mut continue_count = 0;
         for key in btree.range(prefix_range) {
@@ -300,7 +299,7 @@ where
     }
 
     /// Return the size of a `key`, if not found `None` is returned.
-    pub async fn size_for_key<Q>(&self, key: &Q) -> Option<usize>
+    pub async fn size_for_key<Q>(&self, key: &Q) -> Option<u64>
     where
         K: Borrow<Q>,
         Q: Ord + Hash + Eq + Debug,
@@ -316,12 +315,8 @@ where
     /// If no key is found in the internal map, `None` is filled in its place.
     /// If `peek` is set to `true`, the items are not promoted to the front of the
     /// LRU cache. Note: peek may still evict, but won't promote.
-    pub async fn sizes_for_keys<It, Q, R>(
-        &self,
-        keys: It,
-        results: &mut [Option<usize>],
-        peek: bool,
-    ) where
+    pub async fn sizes_for_keys<It, Q, R>(&self, keys: It, results: &mut [Option<u64>], peek: bool)
+    where
         It: IntoIterator<Item = R>,
         // This may look strange, but what we are doing is saying:
         // * `K` must be able to borrow `Q`
@@ -428,7 +423,7 @@ where
     ) -> Vec<T> {
         let mut replaced_items = Vec::new();
         for (key, data) in inserts.into_iter() {
-            let new_item_size = data.len() as u64;
+            let new_item_size = data.len();
             let eviction_item = EvictionItem {
                 seconds_since_anchor,
                 data,

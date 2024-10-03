@@ -14,6 +14,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::convert::Into;
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -249,13 +250,7 @@ impl ByteStreamServer {
             // `store` to ensure its lifetime follows the future and not the caller.
             store
                 // Bytestream always uses digest size as the actual byte size.
-                .update(
-                    digest,
-                    rx,
-                    UploadSizeInfo::ExactSize(
-                        usize::try_from(digest.size_bytes()).err_tip(|| "Invalid digest size")?,
-                    ),
-                )
+                .update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes()))
                 .await
         });
         Ok(ActiveStreamGuard {
@@ -275,8 +270,8 @@ impl ByteStreamServer {
         digest: DigestInfo,
         read_request: ReadRequest,
     ) -> Result<Response<ReadStream>, Error> {
-        let read_limit = usize::try_from(read_request.read_limit)
-            .err_tip(|| "read_limit has is not convertible to usize")?;
+        let read_limit = u64::try_from(read_request.read_limit)
+            .err_tip(|| "Could not convert read_limit to u64")?;
 
         let (tx, rx) = make_buf_channel_pair();
 
@@ -300,7 +295,13 @@ impl ByteStreamServer {
             maybe_get_part_result: None,
             get_part_fut: Box::pin(async move {
                 store
-                    .get_part(digest, tx, read_request.read_offset as usize, read_limit)
+                    .get_part(
+                        digest,
+                        tx,
+                        u64::try_from(read_request.read_offset)
+                            .err_tip(|| "Could not convert read_offset to u64")?,
+                        read_limit,
+                    )
                     .await
             }),
         });
@@ -556,7 +557,14 @@ impl ByteStreamServer {
 
         let has_fut = store_clone.has(digest);
         let Some(item_size) = has_fut.await.err_tip(|| "Failed to call .has() on store")? else {
-            return Err(make_err!(Code::NotFound, "{}", "not found"));
+            // We lie here and say that the stream needs to start over, even though
+            // it was never started. This can happen when the client disconnects
+            // before sending the first payload, but the client thinks it did send
+            // the payload.
+            return Ok(Response::new(QueryWriteStatusResponse {
+                committed_size: 0,
+                complete: false,
+            }));
         };
         Ok(Response::new(QueryWriteStatusResponse {
             committed_size: item_size as i64,
@@ -611,7 +619,7 @@ impl ByteStream for ByteStreamServer {
             )
             .await
             .err_tip(|| "In ByteStreamServer::read")
-            .map_err(|e| e.into());
+            .map_err(Into::into);
 
         if resp.is_ok() {
             event!(Level::DEBUG, return = "Ok(<stream>)");
@@ -650,7 +658,7 @@ impl ByteStream for ByteStreamServer {
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
         if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
-            return grpc_store.write(stream).await.map_err(|e| e.into());
+            return grpc_store.write(stream).await.map_err(Into::into);
         }
 
         let digest_function = stream
@@ -670,7 +678,7 @@ impl ByteStream for ByteStreamServer {
             )
             .await
             .err_tip(|| "In ByteStreamServer::write")
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -688,6 +696,6 @@ impl ByteStream for ByteStreamServer {
         self.inner_query_write_status(&grpc_request.into_inner())
             .await
             .err_tip(|| "Failed on query_write_status() command")
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 }

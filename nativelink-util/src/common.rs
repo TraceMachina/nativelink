@@ -15,22 +15,25 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
-use std::fmt::Display;
 use std::hash::Hash;
+use std::io::{Cursor, Write};
+use std::ops::{Deref, DerefMut};
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use prost::Message;
-use serde::{Deserialize, Serialize};
+use serde::de::Visitor;
+use serde::ser::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tracing::{event, Level};
 
 pub use crate::fs;
 
-#[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Default, Clone, Copy, Eq, PartialEq, Hash)]
 #[repr(C)]
 pub struct DigestInfo {
     /// Raw hash in packed form.
@@ -67,14 +70,19 @@ impl DigestInfo {
         let size_bytes = size_bytes
             .try_into()
             .map_err(|_| make_input_err!("Could not convert {} into u64", size_bytes))?;
+        // The proto `Digest` takes an i64, so to keep compatibility
+        // we only allow sizes that can fit into an i64.
+        if size_bytes > i64::MAX as u64 {
+            return Err(make_input_err!(
+                "Size bytes is too large: {} - max: {}",
+                size_bytes,
+                i64::MAX
+            ));
+        }
         Ok(DigestInfo {
             size_bytes,
             packed_hash,
         })
-    }
-
-    pub fn hash_str(&self) -> String {
-        format!("{}", self.packed_hash)
     }
 
     pub const fn zero_digest() -> DigestInfo {
@@ -84,8 +92,8 @@ impl DigestInfo {
         }
     }
 
-    pub const fn packed_hash(&self) -> &[u8; 32] {
-        &self.packed_hash.0
+    pub const fn packed_hash(&self) -> &PackedHash {
+        &self.packed_hash
     }
 
     pub fn set_packed_hash(&mut self, packed_hash: [u8; 32]) {
@@ -95,19 +103,160 @@ impl DigestInfo {
     pub const fn size_bytes(&self) -> u64 {
         self.size_bytes
     }
+
+    /// Returns a struct that can turn the `DigestInfo` into a string.
+    const fn stringifier(&self) -> DigestStackStringifier<'_> {
+        DigestStackStringifier::new(self)
+    }
 }
 
-impl Display for DigestInfo {
+/// Counts the number of digits a number needs if it were to be
+/// converted to a string.
+const fn count_digits(mut num: u64) -> usize {
+    let mut count = 0;
+    while num != 0 {
+        count += 1;
+        num /= 10;
+    }
+    count
+}
+
+/// An optimized version of a function that can convert a `DigestInfo`
+/// into a str on the stack.
+struct DigestStackStringifier<'a> {
+    digest: &'a DigestInfo,
+    /// Buffer that can hold the string representation of the `DigestInfo`.
+    /// - Hex is '2 * sizeof(PackedHash)'.
+    /// - Digits can be at most `count_digits(u64::MAX)`.
+    /// - We also have a hyphen separator.
+    buf: [u8; std::mem::size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
+}
+
+impl<'a> DigestStackStringifier<'a> {
+    const fn new(digest: &'a DigestInfo) -> Self {
+        DigestStackStringifier {
+            digest,
+            buf: [b'-'; std::mem::size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
+        }
+    }
+
+    fn as_str(&mut self) -> Result<&str, Error> {
+        // Populate the buffer and return the amount of bytes written
+        // to the buffer.
+        let len = {
+            let mut cursor = Cursor::new(&mut self.buf[..]);
+            let hex = self.digest.packed_hash.to_hex().map_err(|e| {
+                make_input_err!(
+                    "Could not convert PackedHash to hex - {e:?} - {:?}",
+                    self.digest
+                )
+            })?;
+            cursor
+                .write_all(&hex)
+                .err_tip(|| format!("Could not write hex to buffer - {hex:?} - {hex:?}",))?;
+            // Note: We already have a hyphen at this point because we
+            // initialized the buffer with hyphens.
+            cursor.advance(1);
+            cursor
+                .write_fmt(format_args!("{}", self.digest.size_bytes()))
+                .err_tip(|| format!("Could not write size_bytes to buffer - {hex:?}",))?;
+            cursor.position() as usize
+        };
+        // Convert the buffer into utf8 string.
+        std::str::from_utf8(&self.buf[..len]).map_err(|e| {
+            make_input_err!(
+                "Could not convert [u8] to string - {} - {:?} - {:?}",
+                self.digest,
+                self.buf,
+                e,
+            )
+        })
+    }
+}
+
+/// Custom serializer for `DigestInfo` because the default Serializer
+/// would try to encode the data as a byte array, but we use {hex}-{size}.
+impl Serialize for DigestInfo {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut stringifier = self.stringifier();
+        serializer.serialize_str(
+            stringifier
+                .as_str()
+                .err_tip(|| "During serialization of DigestInfo")
+                .map_err(S::Error::custom)?,
+        )
+    }
+}
+
+/// Custom deserializer for `DigestInfo` becaues the default Deserializer
+/// would try to decode the data as a byte array, but we use {hex}-{size}.
+impl<'de> Deserialize<'de> for DigestInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct DigestInfoVisitor;
+        impl<'a> Visitor<'a> for DigestInfoVisitor {
+            type Value = DigestInfo;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a string representing a DigestInfo")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let Some((hash, size)) = s.split_once('-') else {
+                    return Err(E::custom(
+                        "Invalid DigestInfo format, expected '-' separator",
+                    ));
+                };
+                let size_bytes = size
+                    .parse::<u64>()
+                    .map_err(|e| E::custom(format!("Could not parse size_bytes: {e:?}")))?;
+                DigestInfo::try_new(hash, size_bytes)
+                    .map_err(|e| E::custom(format!("Could not create DigestInfo: {e:?}")))
+            }
+        }
+        deserializer.deserialize_str(DigestInfoVisitor)
+    }
+}
+
+impl fmt::Display for DigestInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}-{}", self.packed_hash, self.size_bytes)
+        let mut stringifier = self.stringifier();
+        f.write_str(
+            stringifier
+                .as_str()
+                .err_tip(|| "During serialization of DigestInfo")
+                .map_err(|e| {
+                    event!(
+                        Level::ERROR,
+                        "Could not convert DigestInfo to string - {e:?}"
+                    );
+                    fmt::Error
+                })?,
+        )
     }
 }
 
 impl fmt::Debug for DigestInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("DigestInfo")
-            .field(&format!("{}-{}", self.packed_hash, self.size_bytes))
-            .finish()
+        let mut stringifier = self.stringifier();
+        match stringifier.as_str() {
+            Ok(s) => f.debug_tuple("DigestInfo").field(&s).finish(),
+            Err(e) => {
+                event!(
+                    Level::ERROR,
+                    "Could not convert DigestInfo to string - {e:?}"
+                );
+                Err(fmt::Error)
+            }
+        }
     }
 }
 
@@ -162,7 +311,7 @@ impl TryFrom<&Digest> for DigestInfo {
 impl From<DigestInfo> for Digest {
     fn from(val: DigestInfo) -> Self {
         Digest {
-            hash: val.hash_str(),
+            hash: val.packed_hash.to_string(),
             size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
                 event!(
                     Level::ERROR,
@@ -180,7 +329,7 @@ impl From<DigestInfo> for Digest {
 impl From<&DigestInfo> for Digest {
     fn from(val: &DigestInfo) -> Self {
         Digest {
-            hash: val.hash_str(),
+            hash: val.packed_hash.to_string(),
             size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
                 event!(
                     Level::ERROR,
@@ -196,11 +345,12 @@ impl From<&DigestInfo> for Digest {
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
-struct PackedHash([u8; 32]);
+pub struct PackedHash([u8; 32]);
 
+const SIZE_OF_PACKED_HASH: usize = 32;
 impl PackedHash {
-    pub const fn new() -> Self {
-        PackedHash([0; 32])
+    const fn new() -> Self {
+        PackedHash([0; SIZE_OF_PACKED_HASH])
     }
 
     fn from_hex(hash: &str) -> Result<Self, Error> {
@@ -209,14 +359,26 @@ impl PackedHash {
             .map_err(|e| make_input_err!("Invalid sha256 hash: {hash} - {e:?}"))?;
         Ok(PackedHash(packed_hash))
     }
+
+    /// Converts the packed hash into a hex string.
+    #[inline]
+    fn to_hex(self) -> Result<[u8; SIZE_OF_PACKED_HASH * 2], fmt::Error> {
+        let mut hash = [0u8; SIZE_OF_PACKED_HASH * 2];
+        hex::encode_to_slice(self.0, &mut hash).map_err(|e| {
+            event!(
+                Level::ERROR,
+                "Could not convert PackedHash to hex - {e:?} - {:?}",
+                self.0
+            );
+            fmt::Error
+        })?;
+        Ok(hash)
+    }
 }
 
 impl fmt::Display for PackedHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Remember: 32 bytes * 2 hex characters per byte when
-        // going to hex.
-        let mut hash = [0u8; std::mem::size_of::<Self>() * 2];
-        hex::encode_to_slice(self.0, &mut hash).map_err(|_| fmt::Error)?;
+        let hash = self.to_hex()?;
         match std::str::from_utf8(&hash) {
             Ok(hash) => f.write_str(hash)?,
             Err(_) => f.write_str(&format!("Could not convert hash to utf8 {:?}", self.0))?,
@@ -225,9 +387,17 @@ impl fmt::Display for PackedHash {
     }
 }
 
-impl fmt::Debug for PackedHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!("{self}"))
+impl Deref for PackedHash {
+    type Target = [u8; 32];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for PackedHash {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 

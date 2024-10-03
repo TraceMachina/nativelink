@@ -106,7 +106,7 @@ async fn has_with_one_digest() -> Result<(), Error> {
         .update_oneshot(digest1, original_data.clone().into())
         .await?;
 
-    assert_eq!(shard_store.has(digest1).await, Ok(Some(MEGABYTE_SZ)));
+    assert_eq!(shard_store.has(digest1).await, Ok(Some(MEGABYTE_SZ as u64)));
     Ok(())
 }
 
@@ -141,7 +141,7 @@ async fn has_with_many_digests_one_missing() -> Result<(), Error> {
         shard_store
             .has_many(&[digest1.into(), missing_digest.into()])
             .await,
-        Ok(vec![Some(MEGABYTE_SZ), None])
+        Ok(vec![Some(MEGABYTE_SZ as u64), None])
     );
     Ok(())
 }
@@ -165,7 +165,10 @@ async fn has_with_many_digests_both_exist() -> Result<(), Error> {
         shard_store
             .has_many(&[digest1.into(), digest2.into()])
             .await,
-        Ok(vec![Some(original_data1.len()), Some(original_data2.len())])
+        Ok(vec![
+            Some(original_data1.len() as u64),
+            Some(original_data2.len() as u64)
+        ])
     );
     Ok(())
 }
@@ -253,7 +256,7 @@ async fn upload_download_has_check() -> Result<(), Error> {
         shard_store.get_part_unchunked(digest1, 0, None).await,
         Ok(original_data1.into())
     );
-    assert_eq!(shard_store.has(digest1).await, Ok(Some(MEGABYTE_SZ)));
+    assert_eq!(shard_store.has(digest1).await, Ok(Some(MEGABYTE_SZ as u64)));
     Ok(())
 }
 
@@ -268,7 +271,7 @@ async fn weights_send_to_proper_store() -> Result<(), Error> {
         .update_oneshot(digest1, original_data1.clone().into())
         .await?;
 
-    assert_eq!(stores[0].has(digest1).await, Ok(Some(MEGABYTE_SZ)));
+    assert_eq!(stores[0].has(digest1).await, Ok(Some(MEGABYTE_SZ as u64)));
     assert_eq!(stores[1].has(digest1).await, Ok(None));
     Ok(())
 }

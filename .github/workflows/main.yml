@@ -65,37 +65,48 @@ jobs:
           --jobs=200 \
           //...
 
-  nativelink-dot-com-cloud-cache-legacy-dockerfile-test:
-    runs-on: ubuntu-22.04
+  nativelink-dot-com-cloud-cache-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
     environment: production
-    name: NativeLink.com Cloud / Remote Cache (Legacy Dockerfile Test)
+    name: NativeLink.com Cloud / Remote Cache / ${{ matrix.os }}
     env:
       NL_COM_API_KEY: ${{ secrets.NATIVELINK_COM_API_HEADER || '065f02f53f26a12331d5cfd00a778fb243bfb4e857b8fcd4c99273edfb15deae' }}
     steps:
-    - name: Checkout
-      uses: >- # v4.1.1
-        actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - name: Checkout
+        uses: >- # v4.1.1
+          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
 
-    - name: Setup Bazelisk
-      uses: >- # v0.8.1
-        bazel-contrib/setup-bazel@b388b84bb637e50cdae241d0f255670d4bd79f29
-      with:
-        bazelisk-cache: true
+      - name: Free disk space
+        uses: >- # v2.0.0
+          endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: false
 
-    - name: Run Bazel tests
-      shell: bash
-      run: |
-        bazel test \
-          --remote_cache=grpcs://cas-tracemachina-shared.build-faster.nativelink.net \
-          --remote_header=x-nativelink-api-key=$NL_COM_API_KEY \
-          --remote_instance_name=main \
-          --bes_backend=grpcs://bes-tracemachina-shared.build-faster.nativelink.net \
-          --bes_header=x-nativelink-api-key=$NL_COM_API_KEY \
-          --bes_results_url=https://app.nativelink.com/a/e3b1e0e0-4b73-45d6-85bc-5cb7b02edea5/build \
-          --remote_header=x-nativelink-project=nativelink-ci \
-          --jobs=200 \
-          ${{ github.ref == 'refs/heads/main' && ' ' || '--nogenerate_json_trace_profile --remote_upload_local_results=false' }} \
-          //...
+      - name: Install Nix
+        uses: >- # v10
+          DeterminateSystems/nix-installer-action@de22e16c4711fca50c816cc9081563429d1cf563
+
+      - name: Cache Nix derivations
+        uses: >- # v4
+          DeterminateSystems/magic-nix-cache-action@fc6aaceb40b9845a02b91e059ec147e78d1b4e41
+
+      - name: Run Bazel tests
+        run: >
+          nix develop --impure --command
+          bash -c "bazel test \
+            --remote_header=x-nativelink-api-key=$NL_COM_API_KEY \
+            --bes_backend=grpcs://bes-tracemachina-shared.build-faster.nativelink.net \
+            --bes_header=x-nativelink-api-key=$NL_COM_API_KEY \
+            --bes_results_url=https://app.nativelink.com/a/e3b1e0e0-4b73-45d6-85bc-5cb7b02edea5/build \
+            ${{ github.ref == 'refs/heads/main' && '--remote_upload_local_results=true' || '--nogenerate_json_trace_profile --remote_upload_local_results=false' }} \
+            //..."
 
   docker-compose-compiles-nativelink:
     # The type of runner that the job will run on.

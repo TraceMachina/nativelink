@@ -49,6 +49,7 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
         DropCloserReadHalf {
             rx,
             queued_data: VecDeque::new(),
+            last_err: None,
             eof_sent,
             bytes_received: 0,
             recent_data: Vec::new(),
@@ -59,7 +60,7 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
 
 /// Writer half of the pair.
 pub struct DropCloserWriteHalf {
-    tx: Option<mpsc::Sender<Result<Bytes, Error>>>,
+    tx: Option<mpsc::Sender<Bytes>>,
     bytes_written: u64,
     eof_sent: Arc<AtomicBool>,
 }
@@ -93,7 +94,7 @@ impl DropCloserWriteHalf {
                 buf,
             ));
         }
-        if let Err(err) = tx.send(Ok(buf)).await {
+        if let Err(err) = tx.send(buf).await {
             // Close our channel.
             self.tx = None;
             return Err((
@@ -101,8 +102,7 @@ impl DropCloserWriteHalf {
                     Code::Internal,
                     "Failed to write to data, receiver disconnected"
                 ),
-                err.0
-                    .expect("Data should never be Err in send_get_bytes_on_error()"),
+                err.0,
             ));
         }
         self.bytes_written += buf_len;
@@ -141,7 +141,7 @@ impl DropCloserWriteHalf {
             match self.send_get_bytes_on_error(chunk).await {
                 Ok(()) => {}
                 Err(e) => {
-                    reader.queued_data.push_front(Ok(e.1));
+                    reader.queued_data.push_front(e.1);
                     return Err(e.0).err_tip(|| "In DropCloserWriteHalf::bind_buffered::send");
                 }
             }
@@ -185,13 +185,15 @@ impl DropCloserWriteHalf {
 
 /// Reader half of the pair.
 pub struct DropCloserReadHalf {
-    rx: mpsc::Receiver<Result<Bytes, Error>>,
+    rx: mpsc::Receiver<Bytes>,
     /// Number of bytes received over the stream.
     bytes_received: u64,
     eof_sent: Arc<AtomicBool>,
+    /// If there was an error in the stream, this will be set to the last error.
+    last_err: Option<Error>,
     /// If not empty, this is the data that needs to be sent out before
     /// data from the underlying channel can should be sent.
-    queued_data: VecDeque<Result<Bytes, Error>>,
+    queued_data: VecDeque<Bytes>,
     /// As data is being read from the stream, this buffer will be filled
     /// with the most recent data. Once `max_recent_data_size` is reached
     /// this buffer will be cleared and no longer be populated.
@@ -210,45 +212,43 @@ impl DropCloserReadHalf {
         self.rx.is_empty()
     }
 
-    /// Receive a chunk of data.
-    pub async fn recv(&mut self) -> Result<Bytes, Error> {
-        let maybe_chunk = match self.queued_data.pop_front() {
-            // `queued_data` is allowed to have empty bytes that represent EOF (as
-            // returned in the None case below), but `self.rx.recv()` should
-            // never respond with empty bytes as EOF.  If `queued_data` is empty,
-            // then pass None to simulate the stream's version of EOF.
-            Some(Ok(result_bytes)) => (!result_bytes.is_empty()).then(|| Ok(result_bytes)),
-            Some(Err(cached_error)) => Some(Err(cached_error)),
-            None => self.rx.recv().await,
+    fn recv_inner(&mut self, chunk: Bytes) -> Result<Bytes, Error> {
+        // `queued_data` is allowed to have empty bytes that represent EOF
+        if chunk.is_empty() {
+            if !self.eof_sent.load(Ordering::Acquire) {
+                let err = make_err!(Code::Internal, "Sender dropped before sending EOF");
+                self.queued_data.clear();
+                self.recent_data.clear();
+                self.bytes_received = 0;
+                self.last_err = Some(err.clone());
+                return Err(err);
+            };
+
+            self.maybe_populate_recent_data(&ZERO_DATA);
+            return Ok(ZERO_DATA);
         };
-        match maybe_chunk {
-            Some(Ok(chunk)) => {
-                let chunk_len = chunk.len() as u64;
-                error_if!(
-                    chunk_len == 0,
-                    "Chunk should never be EOF, expected None in this case"
-                );
-                self.bytes_received += chunk_len;
-                self.maybe_populate_recent_data(&chunk);
-                Ok(chunk)
-            }
 
-            Some(Err(e)) => Err(make_err!(
-                Code::Internal,
-                "Received erroneous queued_data chunk: {e}"
-            )),
+        self.bytes_received += chunk.len() as u64;
+        self.maybe_populate_recent_data(&chunk);
+        Ok(chunk)
+    }
 
-            // None is a safe EOF received.
-            None => {
-                if !self.eof_sent.load(Ordering::Acquire) {
-                    return Err(make_err!(
-                        Code::Internal,
-                        "Sender dropped before sending EOF"
-                    ));
-                }
-                self.maybe_populate_recent_data(&ZERO_DATA);
-                Ok(ZERO_DATA)
-            }
+    /// Try to receive a chunk of data, returning `None` if none is available.
+    pub fn try_recv(&mut self) -> Option<Result<Bytes, Error>> {
+        if let Some(err) = &self.last_err {
+            return Some(Err(err.clone()));
+        }
+        self.queued_data.pop_front().map(Ok)
+    }
+
+    /// Receive a chunk of data, waiting asynchronously until some is available.
+    pub async fn recv(&mut self) -> Result<Bytes, Error> {
+        if let Some(result) = self.try_recv() {
+            result
+        } else {
+            // `None` here indicates EOF, which we represent as Zero data
+            let data = self.rx.recv().await.unwrap_or(ZERO_DATA);
+            self.recv_inner(data)
         }
     }
 
@@ -268,8 +268,8 @@ impl DropCloserReadHalf {
     /// Sets the maximum size of the recent_data buffer. If the number of bytes
     /// received exceeds this size, the recent_data buffer will be cleared and
     /// no longer populated.
-    pub fn set_max_recent_data_size(&mut self, size: usize) {
-        self.max_recent_data_size = size as u64;
+    pub fn set_max_recent_data_size(&mut self, size: u64) {
+        self.max_recent_data_size = size;
     }
 
     /// Attempts to reset the stream to before any data was received. This will
@@ -287,7 +287,7 @@ impl DropCloserReadHalf {
         let mut data_sum = 0;
         for chunk in self.recent_data.drain(..).rev() {
             data_sum += chunk.len() as u64;
-            self.queued_data.push_front(Ok(chunk));
+            self.queued_data.push_front(chunk);
         }
         assert!(self.recent_data.is_empty(), "Recent_data should be empty");
         // Ensure the sum of the bytes in recent_data is equal to the bytes_received.
@@ -315,14 +315,15 @@ impl DropCloserReadHalf {
     }
 
     /// Peek the next set of bytes in the stream without consuming them.
-    pub async fn peek(&mut self) -> &Result<Bytes, Error> {
+    pub async fn peek(&mut self) -> Result<&Bytes, Error> {
         if self.queued_data.is_empty() {
-            let chunk = self.recv().await;
+            let chunk = self.recv().await.err_tip(|| "In buf_channel::peek")?;
             self.queued_data.push_front(chunk);
         }
-        self.queued_data
+        Ok(self
+            .queued_data
             .front()
-            .expect("Should have data in the queue")
+            .expect("Should have data in the queue"))
     }
 
     /// The number of bytes received over this stream so far.
@@ -347,7 +348,7 @@ impl DropCloserReadHalf {
             }
             if chunk.len() > size {
                 let remaining = chunk.split_off(size);
-                self.queued_data.push_front(Ok(remaining));
+                self.queued_data.push_front(remaining);
                 // No need to read EOF if we are a partial chunk.
                 return Ok(chunk);
             }
@@ -378,7 +379,7 @@ impl DropCloserReadHalf {
             if output.len() + chunk.len() > size {
                 // Slice off the extra data and put it back into the queue. We are done.
                 let remaining = chunk.split_off(size - output.len());
-                self.queued_data.push_front(Ok(remaining));
+                self.queued_data.push_front(remaining);
             }
             output.extend_from_slice(&chunk);
             if output.len() == size {

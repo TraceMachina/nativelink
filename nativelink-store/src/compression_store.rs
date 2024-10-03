@@ -157,7 +157,7 @@ struct UploadState {
 }
 
 impl UploadState {
-    pub fn new(store: &CompressionStore, upload_size: UploadSizeInfo) -> Self {
+    pub fn new(store: &CompressionStore, upload_size: UploadSizeInfo) -> Result<Self, Error> {
         let input_max_size = match upload_size {
             UploadSizeInfo::ExactSize(sz) => sz,
             UploadSizeInfo::MaxSize(sz) => sz,
@@ -177,7 +177,8 @@ impl UploadState {
                 SliceIndex {
                     ..Default::default()
                 };
-                max_index_count
+                usize::try_from(max_index_count)
+                    .err_tip(|| "Could not convert max_index_count to usize")?
             ],
             index_count: max_index_count as u32,
             uncompressed_data_size: 0, // Updated later.
@@ -193,15 +194,16 @@ impl UploadState {
             let max_content_size = max_block_size * max_index_count;
             let max_footer_size =
                 U32_SZ + 1 + store.bincode_options.serialized_size(&footer).unwrap() as u64;
+
             header_size + max_content_size + max_footer_size
         };
 
-        Self {
+        Ok(Self {
             header,
             footer,
             max_output_size,
             input_max_size,
-        }
+        })
     }
 }
 
@@ -257,7 +259,7 @@ impl StoreDriver for CompressionStore {
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let mut output_state = UploadState::new(&self, upload_size);
+        let mut output_state = UploadState::new(&self, upload_size)?;
 
         let (mut tx, rx) = make_buf_channel_pair();
 
@@ -307,7 +309,8 @@ impl StoreDriver for CompressionStore {
                     break; // EOF.
                 }
 
-                received_amt += chunk.len();
+                received_amt += u64::try_from(chunk.len())
+                    .err_tip(|| "Could not convert chunk.len() to u64")?;
                 error_if!(
                     received_amt > output_state.input_max_size,
                     "Got more data than stated in compression store upload request"
@@ -360,7 +363,7 @@ impl StoreDriver for CompressionStore {
                 },
             );
             output_state.footer.index_count = output_state.footer.indexes.len() as u32;
-            output_state.footer.uncompressed_data_size = received_amt as u64;
+            output_state.footer.uncompressed_data_size = received_amt;
             {
                 // Write Footer.
                 let serialized_footer = self
@@ -402,7 +405,6 @@ impl StoreDriver for CompressionStore {
             return Ok(());
         }
 
-        let offset = offset as u64;
         let (tx, mut rx) = make_buf_channel_pair();
 
         let inner_store = self.inner_store.clone();
@@ -475,6 +477,7 @@ impl StoreDriver for CompressionStore {
 
             let mut uncompressed_data_sz: u64 = 0;
             let mut remaining_bytes_to_send: u64 = length.unwrap_or(u64::MAX) as u64;
+
             let mut chunks_count: u32 = 0;
             while frame_type != FOOTER_FRAME_TYPE {
                 error_if!(

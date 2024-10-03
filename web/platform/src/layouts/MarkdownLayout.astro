@@ -1,0 +1,104 @@
+---
+import {LinearGradient} from "@qwik/components/text"
+
+const { frontmatter, prevEntry, nextEntry, slug } = Astro.props;
+const pubDate = new Date(frontmatter.pubDate);
+
+const formattedDate = pubDate.toLocaleDateString('en-US', {
+  day: '2-digit',
+  month: 'long',
+  year: 'numeric'
+});
+---
+<div class="w-screen bg-black transition-all duration-200 md:px-[25vw] mx-auto left-0 right-0 pt-24 px-8 h-auto flex flex-col justify-center items-start text-white gap-5">
+     <!-- Breadcrumbs -->
+    <nav class="text-sm px-0 md:px-[10vw]  md:fixed top-24 left-0">
+        <ul class="flex items-center gap-3 text-gray-300">
+            <li>
+                <a href="/" class="hover:underline hover:text-white">Home</a>
+            </li>
+            <li>/</li>
+            <li>
+                <a href="/resources/blog" class="hover:underline hover:text-white">Blog</a>
+            </li>
+            <li>/</li>
+            <li class="text-gray-400">
+                {slug}
+            </li>
+        </ul>
+    </nav>
+
+    {frontmatter.image && (
+        <img src={frontmatter.image} alt={frontmatter.title || "Image"} class="w-full md:w-[500px] md:self-center rounded-xl border boder-solid border-[#754bfc]">
+    )}
+
+    <LinearGradient text={frontmatter.title} class="text-2xl md:text-xl md:self-center" />
+    <div class="text-sm self-start md:self-center md:text-center">
+
+    Date: {formattedDate}<br /> Est. read time: {frontmatter.readTime}
+</div>
+
+{/* The Markdown goes in here */}
+<slot />
+
+
+<div class="border-b-1 border-[grey] border w-full self-center"></div>
+ <div class="w-full flex justify-end items-center gap-4 py-2">
+  {/* <LinearGradient text="Share to:" class="text-3xl w-full" /> */}
+
+     <div class="w-full flex flex-row justify-center items-center gap-4">
+        <!-- LinkedIn Share Button (TODO: Need to adjust the Page Url for Sharing) -->
+        {/* <a href="https://www.linkedin.com/shareArticle?mini=true&url={YOUR_PAGE_URL}" target="_blank" rel="noopener noreferrer" class="flex items-center justify-center w-12 h-12 bg-[#0077b5] text-white rounded-lg transition-transform transform hover:scale-110">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8" viewBox="0 0 48 48">
+                <path fill="#0288D1" d="M42,37c0,2.762-2.238,5-5,5H11c-2.761,0-5-2.238-5-5V11c0-2.762,2.239-5,5-5h26c2.762,0,5,2.238,5,5V37z"></path>
+                <path fill="#FFF" d="M12 19H17V36H12zM14.485 17h-.028C12.965 17 12 15.888 12 14.499 12 13.08 12.995 12 14.514 12c1.521 0 2.458 1.08 2.486 2.499C17 15.887 16.035 17 14.485 17zM36 36h-5v-9.099c0-2.198-1.225-3.698-3.192-3.698-1.501 0-2.313 1.012-2.707 1.99C24.957 25.543 25 26.511 25 27v9h-5V19h5v2.616C25.721 20.5 26.85 19 29.738 19c3.578 0 6.261 2.25 6.261 7.274L36 36 36 36z"></path>
+            </svg>
+        </a> */}
+
+        <!-- Facebook Share Button (TODO: Need to adjust the Page Url for Sharing) -->
+        {/* <a href="https://www.facebook.com/sharer/sharer.php?u={YOUR_PAGE_URL}" target="_blank" rel="noopener noreferrer" class="flex items-center justify-center w-12 h-12 bg-[#1877f2] text-white rounded-lg transition-transform transform hover:scale-110">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 2.04c-5.5 0-9.96 4.46-9.96 9.96 0 4.99 3.66 9.11 8.45 9.86v-6.98H7.9v-2.88h2.59V9.75c0-2.58 1.51-4.02 3.83-4.02 1.11 0 2.26.2 2.26.2v2.5h-1.27c-1.25 0-1.64.77-1.64 1.56v1.85h2.81l-.45 2.88h-2.36V21.9c4.79-.75 8.45-4.87 8.45-9.86 0-5.5-4.46-9.96-9.96-9.96z"/>
+            </svg>
+        </a> */}
+
+        <!-- Twitter Share Button (TODO: Need to adjust the Page Url for Sharing) -->
+        {/* <a href="https://twitter.com/share?url={YOUR_PAGE_URL}&text={YOUR_PAGE_TITLE}" target="_blank" rel="noopener noreferrer" class="flex items-center justify-center w-12 h-12 bg-[#1DA1F2] text-white rounded-lg transition-transform transform hover:scale-110">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M23.44 4.83c-.81.36-1.68.6-2.6.71a4.52 4.52 0 001.98-2.5 9.03 9.03 0 01-2.87 1.1 4.49 4.49 0 00-7.64 4.1 12.77 12.77 0 01-9.29-4.71 4.49 4.49 0 001.39 5.98 4.45 4.45 0 01-2.04-.56v.06a4.49 4.49 0 003.6 4.4 4.46 4.46 0 01-2.03.08 4.49 4.49 0 004.2 3.12 9 9 0 01-5.57 1.92A9.18 9.18 0 012 18.8a12.75 12.75 0 006.91 2.02c8.3 0 12.85-6.88 12.85-12.85 0-.2 0-.39-.01-.58a9.19 9.19 0 002.26-2.34z"/>
+            </svg>
+        </a> */}
+    </div>
+
+</div>
+
+{/* a divier between the sharing buttons and the blog navigations links */}
+{/* <div class="border-b-1 border-[grey] border w-full self-center"></div> */}
+
+<!-- Navigation Links -->
+<div class="w-full gap-2 h-auto flex justify-between text-black">
+   <div class="w-full pb-24 h-auto flex justify-between text-black gap-2 md:gap-10">
+    {prevEntry ? (
+        <a href={`/resources/blog/${prevEntry.slug}`} class="w-1/3 no-underline! flex bg-white bg-opacity-10 backdrop-blur-md text-sm font-semibold p-2 rounded-lg border border-white border-opacity-20 shadow-lg transition-transform transform hover:scale-105 items-center justify-center text-center">
+            &larr;
+        </a>
+    ) : (
+        <div class="w-1/3"></div> <!-- Placeholder for spacing -->
+    )}
+
+    <a href="/resources/blog" class="w-1/3 no-underline! flex bg-white bg-opacity-10 backdrop-blur-md text-sm font-semibold p-2 rounded-lg border border-white border-opacity-20 shadow-lg transition-transform transform hover:scale-105 items-center justify-center text-center">
+        Back to Blog
+    </a>
+
+    {nextEntry ? (
+        <a href={`/resources/blog/${nextEntry.slug}`} class="w-1/3 no-underline! flex bg-white bg-opacity-10 backdrop-blur-md text-sm font-semibold p-2 rounded-lg border border-white border-opacity-20 shadow-lg transition-transform transform hover:scale-105 items-center justify-center text-center">
+            &rarr;
+        </a>
+    ) : (
+        <div class="w-1/3"></div>
+    )}
+</div>
+
+</div>
+
+</div>

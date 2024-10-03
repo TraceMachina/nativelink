@@ -1,20 +1,31 @@
-#
-<p align="center">
+<div id="logo" align="center">
   <a href="https://www.nativelink.com">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tracemachina/nativelink/main/docs/src/assets/logo-dark.svg"/>
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/tracemachina/nativelink/main/docs/src/assets/logo-light.svg"/>
-      <img alt="NativeLink" src="https://raw.githubusercontent.com/tracemachina/nativelink/main/docs/src/assets/logo-light.svg"/>
+      <source media="(prefers-color-scheme: dark)" srcset="web/platform/src/assets/logo-dark.svg" />
+      <source media="(prefers-color-scheme: light)" srcset="web/platform/src/assets/logo-light.svg" />
+      <img alt="NativeLink" src="web/platform/src/assets/logo-light.svg" width="376" height="100" />
     </picture>
   </a>
-</p>
 
-[![Homepage](https://img.shields.io/badge/Homepage-8A2BE2)](https://nativelink.com)
-[![GitHub stars](https://img.shields.io/github/stars/tracemachina/nativelink?style=social)](https://github.com/TraceMachina/nativelink)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
-[![Slack](https://img.shields.io/badge/slack--channel-blue?logo=slack)](https://nativelink.slack.com/join/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A#/shared-invite/email)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+  <br />
+</div>
+
+<div id="description" align="center">
+  enter the shipstorm
+</div>
+
+<br />
+
+
+<div id="badges" align="center">
+
+  [![Homepage](https://img.shields.io/badge/Homepage-8A2BE2)](https://nativelink.com)
+  [![GitHub stars](https://img.shields.io/github/stars/tracemachina/nativelink?style=social)](https://github.com/TraceMachina/nativelink)
+  [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
+  [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
+  [![Slack](https://img.shields.io/badge/slack--channel-blue?logo=slack)](https://nativelink.slack.com/join/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A#/shared-invite/email)
+  [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+</div>
 
 ## What's NativeLink?
 
@@ -22,9 +33,11 @@ NativeLink is an efficient, high-performance build cache and remote execution sy
 
 NativeLink is trusted in production environments to reduce costs and developer iteration times--handling over **one billion requests** per month for its customers, including large corporations such as **Samsung**.
 
-<a href="https://www.youtube.com/watch?v=WLpqFuyLMUQ">
-    <img src="https://trace-github-resources.s3.us-east-2.amazonaws.com/harper-90-thumbnail.webp" alt="NativeLink Explained in 90 seconds" loading="lazy" width="480" height="360" />
-</a>
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=WLpqFuyLMUQ">
+      <img src="https://trace-github-resources.s3.us-east-2.amazonaws.com/harper-90-thumbnail.webp" alt="NativeLink Explained in 90 seconds" loading="lazy" width="480" />
+  </a>
+</p>
 
 ## 🔑 Key Features
 
@@ -65,7 +78,7 @@ curl -O \
 docker run \
     -v $(pwd)/basic_cas.json:/config \
     -p 50051:50051 \
-    ghcr.io/tracemachina/nativelink:v0.5.1 \
+    ghcr.io/tracemachina/nativelink:v0.5.3 \
     config
 ```
 
@@ -82,7 +95,7 @@ Invoke-WebRequest `
 docker run `
     -v ${PWD}/basic_cas.json:/config `
     -p 50051:50051 `
-    ghcr.io/tracemachina/nativelink:v0.5.1 `
+    ghcr.io/tracemachina/nativelink:v0.5.3 `
     config
 ```
 
@@ -100,7 +113,7 @@ it via the [next-gen nix installer](https://github.com/NixOS/experimental-nix-in
 
 **Linux, MacOS, WSL2**
 
-```
+```bash
 curl -O \
     https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json
 

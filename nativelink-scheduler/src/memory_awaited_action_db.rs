@@ -83,7 +83,7 @@ impl Drop for ClientAwaitedAction {
 /// why the implementation has fixed default values in it.
 impl LenEntry for ClientAwaitedAction {
     #[inline]
-    fn len(&self) -> usize {
+    fn len(&self) -> u64 {
         0
     }
 
@@ -342,9 +342,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             .client_operation_to_awaited_action
             .get(client_operation_id)
             .await;
-        let client_awaited_action = match maybe_client_awaited_action {
-            Some(client_awaited_action) => client_awaited_action,
-            None => return Ok(None),
+        let Some(client_awaited_action) = maybe_client_awaited_action else {
+            return Ok(None);
         };
 
         self.operation_id_to_awaited_action
@@ -383,19 +382,18 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         );
                         continue;
                     };
-                    let connected_clients = match self
+                    let connected_clients = if let Some(connected_clients) = self
                         .connected_clients_for_operation_id
                         .remove(&operation_id)
                     {
-                        Some(connected_clients) => connected_clients - 1,
-                        None => {
-                            event!(
-                                Level::ERROR,
-                                ?operation_id,
-                                "connected_clients_for_operation_id does not have operation_id"
-                            );
-                            0
-                        }
+                        connected_clients - 1
+                    } else {
+                        event!(
+                            Level::ERROR,
+                            ?operation_id,
+                            "connected_clients_for_operation_id does not have operation_id"
+                        );
+                        0
                     };
                     // Note: It is rare to have more than one client listening
                     // to the same action, so we assume that we are the last
@@ -697,7 +695,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             ActionUniqueQualifier::Uncachable(_unique_key) => None,
         };
         let operation_id = OperationId::default();
-        let awaited_action = AwaitedAction::new(operation_id.clone(), action_info);
+        let awaited_action =
+            AwaitedAction::new(operation_id.clone(), action_info, (self.now_fn)().now());
         debug_assert!(
             ActionStage::Queued == awaited_action.state().stage,
             "Expected action to be queued"

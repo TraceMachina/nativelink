@@ -14,6 +14,7 @@
 
 use std::borrow::{BorrowMut, Cow};
 use std::collections::hash_map::DefaultHasher as StdHasher;
+use std::convert::Into;
 use std::hash::{Hash, Hasher};
 use std::ops::{Bound, Deref, RangeBounds};
 use std::pin::Pin;
@@ -23,7 +24,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::future::{select, Either};
-use futures::{join, try_join, Future, FutureExt};
+use futures::{join, try_join, Future, FutureExt, Stream};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use rand::rngs::StdRng;
@@ -34,7 +35,6 @@ use tokio::time::timeout;
 
 use crate::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use crate::common::DigestInfo;
-use crate::default_store_key_subscribe::default_store_key_subscribe;
 use crate::digest_hasher::{default_digest_hasher_func, DigestHasher, DigestHasherFunc};
 use crate::fs::{self, idle_file_descriptor_timeout};
 use crate::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
@@ -64,13 +64,13 @@ pub fn set_default_digest_size_health_check(size: usize) -> Result<(), Error> {
 pub enum UploadSizeInfo {
     /// When the data transfer amount is known to be exact size, this enum should be used.
     /// The receiver store can use this to better optimize the way the data is sent or stored.
-    ExactSize(usize),
+    ExactSize(u64),
 
     /// When the data transfer amount is not known to be exact, the caller should use this enum
     /// to provide the maximum size that could possibly be sent. This will bypass the exact size
     /// checks, but still provide useful information to the underlying store about the data being
     /// sent that it can then use to optimize the upload process.
-    MaxSize(usize),
+    MaxSize(u64),
 }
 
 /// Utility to send all the data to the store from a file.
@@ -119,14 +119,13 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
             Either::Right((read_result, _)) => read_result,
         }
     };
-    match timeout(idle_file_descriptor_timeout(), &mut update_fut).await {
-        Ok(update_result) => update_result.merge(read_result),
-        Err(_) => {
-            file.close_file()
-                .await
-                .err_tip(|| "Failed to close file in upload_file_to_store")?;
-            update_fut.await.merge(read_result)
-        }
+    if let Ok(update_result) = timeout(idle_file_descriptor_timeout(), &mut update_fut).await {
+        update_result.merge(read_result)
+    } else {
+        file.close_file()
+            .await
+            .err_tip(|| "Failed to close file in upload_file_to_store")?;
+        update_fut.await.merge(read_result)
     }
 }
 
@@ -143,44 +142,6 @@ pub enum StoreOptimizations {
 
     /// If the store will never serve downloads.
     NoopDownloads,
-
-    /// If the store is optimized for serving subscriptions to keys.
-    SubscribeChanges,
-}
-
-/// A key that has been subscribed to in the store. This can be used
-/// to wait for changes to the data for the key.
-#[async_trait]
-pub trait StoreSubscription: Send + Sync + Unpin {
-    /// Get the current store subscription item.
-    fn peek(&self) -> Result<Arc<dyn StoreSubscriptionItem>, Error>;
-
-    /// Wait for the data to change and return the new store subscription item.
-    /// Note: This will always have a value ready when struct is first created.
-    async fn changed(&mut self) -> Result<Arc<dyn StoreSubscriptionItem>, Error>;
-}
-
-/// An item that has been subscribed to in the store. Some stores may have
-/// the data already available when the data changes. This allows the store
-/// to store a reference to the data and return it when requested, otherwise
-/// the store can lazily retrieve the data when requested.
-#[async_trait]
-pub trait StoreSubscriptionItem: Send + Sync + Unpin {
-    /// Returns the key of the item being represented.
-    async fn get_key(&self) -> Result<StoreKey, Error>;
-
-    /// Same as `StoreLike::get_part`, but without the key.
-    async fn get_part(
-        &self,
-        writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
-    ) -> Result<(), Error>;
-
-    /// Same as `Store::get`, but without the key.
-    async fn get(&self, writer: &mut DropCloserWriteHalf) -> Result<(), Error> {
-        self.get_part(writer, 0, None).await
-    }
 }
 
 /// Holds something that can be converted into a key the
@@ -360,28 +321,13 @@ impl Store {
     /// Note: If the store performs complex operations on the data, it should return itself.
     #[inline]
     pub fn inner_store<'a, K: Into<StoreKey<'a>>>(&self, digest: Option<K>) -> &dyn StoreDriver {
-        self.inner.inner_store(digest.map(|v| v.into()))
+        self.inner.inner_store(digest.map(Into::into))
     }
 
     /// Tries to cast the underlying store to the given type.
     #[inline]
     pub fn downcast_ref<U: StoreDriver>(&self, maybe_digest: Option<StoreKey<'_>>) -> Option<&U> {
         self.inner.inner_store(maybe_digest).as_any().downcast_ref()
-    }
-
-    /// Subscribe to a key in the store. The store will notify the subscriber
-    /// when the data for the key changes.
-    /// There is no guarantee that the store will notify the subscriber of all changes,
-    /// and there is no guarantee that the store will notify the subscriber of changes
-    /// in a timely manner.
-    /// Note: It can be quite expensive to subscribe to a key in stores that do not
-    /// have the optimization for this. One may check if a store has the optimization
-    /// by calling `optimized_for(StoreOptimizations::SubscribeChanges)`.
-    pub fn subscribe<'a>(
-        &self,
-        key: impl Into<StoreKey<'a>>,
-    ) -> impl Future<Output = Box<dyn StoreSubscription>> + 'a {
-        self.inner.clone().subscribe(key.into())
     }
 
     /// Register health checks used to monitor the store.
@@ -436,7 +382,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     fn has<'a>(
         &'a self,
         digest: impl Into<StoreKey<'a>>,
-    ) -> impl Future<Output = Result<Option<usize>, Error>> + 'a {
+    ) -> impl Future<Output = Result<Option<u64>, Error>> + 'a {
         self.as_store_driver_pin().has(digest.into())
     }
 
@@ -448,7 +394,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     fn has_many<'a>(
         &'a self,
         digests: &'a [StoreKey<'a>],
-    ) -> impl Future<Output = Result<Vec<Option<usize>>, Error>> + Send + 'a {
+    ) -> impl Future<Output = Result<Vec<Option<u64>>, Error>> + Send + 'a {
         self.as_store_driver_pin().has_many(digests)
     }
 
@@ -458,7 +404,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     fn has_with_results<'a>(
         &'a self,
         digests: &'a [StoreKey<'a>],
-        results: &'a mut [Option<usize>],
+        results: &'a mut [Option<u64>],
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
         self.as_store_driver_pin()
             .has_with_results(digests, results)
@@ -474,7 +420,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
         &'a self,
         range: impl RangeBounds<StoreKey<'b>> + Send + 'b,
         mut handler: impl for<'c> FnMut(&'c StoreKey) -> bool + Send + Sync + 'a,
-    ) -> impl Future<Output = Result<usize, Error>> + Send + 'a
+    ) -> impl Future<Output = Result<u64, Error>> + Send + 'a
     where
         'b: 'a,
     {
@@ -485,8 +431,8 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
             self.as_store_driver_pin()
                 .list(
                     (
-                        range.start_bound().map(|v| v.borrow()),
-                        range.end_bound().map(|v| v.borrow()),
+                        range.start_bound().map(StoreKey::borrow),
+                        range.end_bound().map(StoreKey::borrow),
                     ),
                     &mut handler,
                 )
@@ -544,8 +490,8 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
         &'a self,
         digest: impl Into<StoreKey<'a>>,
         mut writer: impl BorrowMut<DropCloserWriteHalf> + Send + 'a,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
         let key = digest.into();
         // Note: We need to capture `writer` just in case the caller
@@ -574,8 +520,8 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     fn get_part_unchunked<'a>(
         &'a self,
         key: impl Into<StoreKey<'a>>,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> impl Future<Output = Result<Bytes, Error>> + Send + 'a {
         self.as_store_driver_pin()
             .get_part_unchunked(key.into(), offset, length)
@@ -598,7 +544,7 @@ pub trait StoreDriver:
 {
     /// See: [`StoreLike::has`] for details.
     #[inline]
-    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {
         let mut result = [None];
         self.has_with_results(&[key], &mut result).await?;
         Ok(result[0])
@@ -609,7 +555,7 @@ pub trait StoreDriver:
     async fn has_many(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
-    ) -> Result<Vec<Option<usize>>, Error> {
+    ) -> Result<Vec<Option<u64>>, Error> {
         let mut results = vec![None; digests.len()];
         self.has_with_results(digests, &mut results).await?;
         Ok(results)
@@ -619,7 +565,7 @@ pub trait StoreDriver:
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error>;
 
     /// See: [`StoreLike::list`] for details.
@@ -627,7 +573,7 @@ pub trait StoreDriver:
         self: Pin<&Self>,
         _range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
         _handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
-    ) -> Result<usize, Error> {
+    ) -> Result<u64, Error> {
         // TODO(allada) We should force all stores to implement this function instead of
         // providing a default implementation.
         Err(make_err!(
@@ -677,7 +623,8 @@ pub trait StoreDriver:
         // that can take objects already fully in memory instead?
         let (mut tx, rx) = make_buf_channel_pair();
 
-        let data_len = data.len();
+        let data_len =
+            u64::try_from(data.len()).err_tip(|| "Could not convert data.len() to u64")?;
         let send_fut = async move {
             // Only send if we are not EOF.
             if !data.is_empty() {
@@ -701,8 +648,8 @@ pub trait StoreDriver:
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error>;
 
     /// See: [`StoreLike::get`] for details.
@@ -719,16 +666,20 @@ pub trait StoreDriver:
     async fn get_part_unchunked(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<Bytes, Error> {
+        let length_usize = length
+            .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
+            .transpose()?;
+
         // TODO(blaise.bruer) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
         let (mut tx, mut rx) = make_buf_channel_pair();
 
         let (data_res, get_part_res) = join!(
-            rx.consume(length),
+            rx.consume(length_usize),
             // We use a closure here to ensure that the `tx` is dropped when the
             // future is done.
             async move { self.get_part(key, &mut tx, offset, length).await },
@@ -736,11 +687,6 @@ pub trait StoreDriver:
         get_part_res
             .err_tip(|| "Failed to get_part in get_part_unchunked")
             .merge(data_res.err_tip(|| "Failed to read stream to completion in get_part_unchunked"))
-    }
-
-    /// See: [`Store::subscribe`] for details.
-    async fn subscribe(self: Arc<Self>, key: StoreKey<'_>) -> Box<dyn StoreSubscription> {
-        default_store_key_subscribe(self, key).await
     }
 
     /// See: [`StoreLike::check_health`] for details.
@@ -763,7 +709,7 @@ pub trait StoreDriver:
 
         let mut digest_hasher = default_digest_hasher_func().hasher();
         digest_hasher.update(&digest_data);
-        let digest_data_len = digest_data.len();
+        let digest_data_len = digest_data.len() as u64;
         let digest_info = StoreKey::from(digest_hasher.finalize_digest());
 
         let digest_bytes = bytes::Bytes::copy_from_slice(&digest_data);
@@ -834,3 +780,144 @@ pub trait StoreDriver:
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
 }
+
+/// The instructions on how to decode a value from a Bytes & version into
+/// the underlying type.
+pub trait SchedulerStoreDecodeTo {
+    type DecodeOutput;
+    fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error>;
+}
+
+pub trait SchedulerSubscription: Send + Sync {
+    fn changed(&mut self) -> impl Future<Output = Result<(), Error>> + Send;
+}
+
+pub trait SchedulerSubscriptionManager: Send + Sync {
+    type Subscription: SchedulerSubscription;
+
+    fn notify_for_test(&self, value: String);
+
+    fn subscribe<K>(&self, key: K) -> Result<Self::Subscription, Error>
+    where
+        K: SchedulerStoreKeyProvider;
+}
+
+/// The API surface for a scheduler store.
+pub trait SchedulerStore: Send + Sync + 'static {
+    type SubscriptionManager: SchedulerSubscriptionManager;
+
+    /// Returns the subscription manager for the scheduler store.
+    fn subscription_manager(&self) -> Result<Arc<Self::SubscriptionManager>, Error>;
+
+    /// Updates or inserts an entry into the underlying store.
+    /// Metadata about the key is attached to the compile-time type.
+    /// If StoreKeyProvider::Versioned is TrueValue, the data will not
+    /// be updated if the current version in the database does not match
+    /// the version in the passed in data.
+    /// No guarantees are made about when Version is FalseValue.
+    /// Indexes are guaranteed to be updated atomically with the data.
+    fn update_data<T>(&self, data: T) -> impl Future<Output = Result<Option<u64>, Error>> + Send
+    where
+        T: SchedulerStoreDataProvider
+            + SchedulerStoreKeyProvider
+            + SchedulerCurrentVersionProvider
+            + Send;
+
+    /// Searches for all keys in the store that match the given index prefix.
+    fn search_by_index_prefix<K>(
+        &self,
+        index: K,
+    ) -> impl Future<
+        Output = Result<
+            impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
+            Error,
+        >,
+    > + Send
+    where
+        K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send;
+
+    /// Returns data for the provided key with the given version if
+    /// StoreKeyProvider::Versioned is TrueValue.
+    fn get_and_decode<K>(
+        &self,
+        key: K,
+    ) -> impl Future<Output = Result<Option<<K as SchedulerStoreDecodeTo>::DecodeOutput>, Error>> + Send
+    where
+        K: SchedulerStoreKeyProvider + SchedulerStoreDecodeTo + Send;
+}
+
+/// A type that is used to let the scheduler store know what
+/// index is beign requested.
+pub trait SchedulerIndexProvider {
+    /// Only keys inserted with this prefix will be indexed.
+    const KEY_PREFIX: &'static str;
+
+    /// The name of the index.
+    const INDEX_NAME: &'static str;
+
+    /// If the data is versioned.
+    type Versioned: BoolValue;
+
+    /// The value of the index.
+    fn index_value_prefix(&self) -> Cow<'_, str>;
+}
+
+/// Provides a key to lookup data in the store.
+pub trait SchedulerStoreKeyProvider {
+    /// If the data is versioned.
+    type Versioned: BoolValue;
+
+    /// Returns the key for the data.
+    fn get_key(&self) -> StoreKey<'static>;
+}
+
+/// Provides data to be stored in the scheduler store.
+pub trait SchedulerStoreDataProvider {
+    /// Converts the data into bytes to be stored in the store.
+    fn try_into_bytes(self) -> Result<Bytes, Error>;
+
+    /// Returns the indexes for the data if any.
+    fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
+        Ok(Vec::new())
+    }
+}
+
+/// Provides the current version of the data in the store.
+pub trait SchedulerCurrentVersionProvider {
+    /// Returns the current version of the data in the store.
+    fn current_version(&self) -> u64;
+}
+
+/// Default implementation for when we are not providing a version
+/// for the data.
+impl<T> SchedulerCurrentVersionProvider for T
+where
+    T: SchedulerStoreKeyProvider<Versioned = FalseValue>,
+{
+    fn current_version(&self) -> u64 {
+        0
+    }
+}
+
+/// Compile time types for booleans.
+pub trait BoolValue {
+    const VALUE: bool;
+}
+/// Compile time check if something is false.
+pub trait IsFalse {}
+/// Compile time check if something is true.
+pub trait IsTrue {}
+
+/// Compile time true value.
+pub struct TrueValue;
+impl BoolValue for TrueValue {
+    const VALUE: bool = true;
+}
+impl IsTrue for TrueValue {}
+
+/// Compile time false value.
+pub struct FalseValue;
+impl BoolValue for FalseValue {
+    const VALUE: bool = false;
+}
+impl IsFalse for FalseValue {}

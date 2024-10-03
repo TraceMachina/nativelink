@@ -39,6 +39,7 @@ const DEFAULT_NORM_SIZE: u64 = 256 * 1024;
 const DEFAULT_MAX_SIZE: u64 = 512 * 1024;
 const DEFAULT_MAX_CONCURRENT_FETCH_PER_GET: u64 = 10;
 
+
 #[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
 pub struct DedupIndex {
     pub entries: Vec<DigestInfo>,
@@ -61,7 +62,7 @@ impl DedupStore {
         config: &nativelink_config::stores::DedupStore,
         index_store: Store,
         content_store: Store,
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>, Error> {
         let min_size = if config.min_size == 0 {
             DEFAULT_MIN_SIZE
         } else {
@@ -82,13 +83,18 @@ impl DedupStore {
         } else {
             config.max_concurrent_fetch_per_get as u64
         };
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             index_store,
             content_store,
-            fast_cdc_decoder: FastCDC::new(min_size, normal_size, max_size),
+            fast_cdc_decoder: FastCDC::new(
+                usize::try_from(min_size).err_tip(|| "Could not convert min_size to usize")?,
+                usize::try_from(normal_size)
+                    .err_tip(|| "Could not convert normal_size to usize")?,
+                usize::try_from(max_size).err_tip(|| "Could not convert max_size to usize")?,
+            ),
             max_concurrent_fetch_per_get,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
-        })
+        }))
     }
 
     async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {

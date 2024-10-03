@@ -7,8 +7,8 @@ rust-version = "1.79.0"
 [dependencies]
 nativelink-metric = { path = "../nativelink-metric" }
 opentelemetry = { version = "0.23.0", default-features = false }
-parking_lot = "0.12.2"
-serde = { version = "1.0.204", default-features = false }
+parking_lot = "0.12.3"
+serde = { version = "1.0.210", default-features = false }
 tracing = { version = "0.1.40", default-features = false }
 tracing-subscriber = { version = "0.3.18", default-features = false }
 
@@ -17,4 +17,4 @@ nativelink-error = { path = "../nativelink-error" }
 opentelemetry_sdk = { version = "0.23.0", default-features = false }
 opentelemetry-prometheus = "0.16.0"
 prometheus = { version = "0.13.4", default-features = false }
-serde_json = { version = "1.0.120", default-features = false }
+serde_json = { version = "1.0.128", default-features = false }

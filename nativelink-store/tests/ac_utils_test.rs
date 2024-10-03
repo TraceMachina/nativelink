@@ -66,7 +66,7 @@ async fn upload_file_to_store_with_large_file() -> Result<(), Error> {
             .update_with_whole_file(
                 digest,
                 resumeable_file,
-                UploadSizeInfo::ExactSize(expected_data.len()),
+                UploadSizeInfo::ExactSize(expected_data.len() as u64),
             )
             .await?;
     }

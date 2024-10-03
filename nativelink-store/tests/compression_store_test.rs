@@ -142,7 +142,7 @@ async fn partial_reads_test() -> Result<(), Error> {
     for read_slice_size in 0..(RAW_DATA.len() + 5) {
         for offset in 0..(RAW_DATA.len() + 5) {
             let store_data = store
-                .get_part_unchunked(digest, offset, Some(read_slice_size))
+                .get_part_unchunked(digest, offset as u64, Some(read_slice_size as u64))
                 .await
                 .err_tip(|| {
                     format!("Failed to get from inner store at {offset} - {read_slice_size}")
@@ -255,7 +255,7 @@ async fn sanity_check_zero_bytes_test() -> Result<(), Error> {
 #[nativelink_test]
 async fn check_header_test() -> Result<(), Error> {
     const BLOCK_SIZE: u32 = 150;
-    const MAX_SIZE_INPUT: usize = 1024 * 1024; // 1MB.
+    const MAX_SIZE_INPUT: u64 = 1024 * 1024; // 1MB.
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store_owned = CompressionStore::new(
         nativelink_config::stores::CompressionStore {

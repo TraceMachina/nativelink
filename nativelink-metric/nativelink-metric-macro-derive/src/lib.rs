@@ -160,9 +160,10 @@ impl<'a> ToTokens for MetricStruct<'a> {
             let field_name = &field.field_name;
             let group = &field.group;
 
-            let help = match field.help.as_ref() {
-                Some(help) => quote! { #help },
-                None => quote! { "" },
+            let help = if let Some(help) = field.help.as_ref() {
+                quote! { #help }
+            } else {
+                quote! { "" }
             };
             let value = match &field.handler {
                 Some(handler) => quote! { &#handler(&self.#field_name) },
@@ -193,9 +194,8 @@ impl<'a> ToTokens for MetricStruct<'a> {
 #[proc_macro_derive(MetricsComponent, attributes(metric))]
 pub fn metrics_component_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let data = match &input.data {
-        syn::Data::Struct(data) => data,
-        _ => panic!("MetricsComponent can only be derived for structs"),
+    let syn::Data::Struct(data) = &input.data else {
+        panic!("MetricsComponent can only be derived for structs")
     };
 
     let mut metric_fields = vec![];

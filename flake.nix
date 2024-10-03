@@ -15,7 +15,6 @@
     };
     crane = {
       url = "github:ipetkov/crane";
-      inputs.nixpkgs.follows = "nixpkgs";
     };
     nix2container = {
       url = "github:nlewo/nix2container";
@@ -42,6 +41,8 @@
       imports = [
         inputs.git-hooks.flakeModule
         ./local-remote-execution/flake-module.nix
+        ./tools/darwin/flake-module.nix
+        ./flake-module.nix
       ];
       perSystem = {
         config,
@@ -49,7 +50,7 @@
         system,
         ...
       }: let
-        stable-rust-version = "1.79.0";
+        stable-rust-version = "1.81.0";
         nightly-rust-version = "2024-07-24";
 
         # TODO(aaronmondal): Make musl builds work on Darwin.
@@ -70,6 +71,7 @@
         stable-rust-native = pkgs.rust-bin.stable.${stable-rust-version};
 
         maybeDarwinDeps = pkgs.lib.optionals pkgs.stdenv.isDarwin [
+          pkgs.darwin.apple_sdk.frameworks.CoreFoundation
           pkgs.darwin.apple_sdk.frameworks.Security
           pkgs.libiconv
         ];
@@ -338,11 +340,8 @@
             name = "nixpkgs-patched";
             src = self.inputs.nixpkgs;
             patches = [
-              ./tools/nixpkgs_all-packages.diff
               ./tools/nixpkgs_link_libunwind_and_libcxx.diff
               ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
-              ./tools/nixpkgs_bun.diff
-              ./tools/nixpkgs_playwright_driver.diff
             ];
           };
         in
@@ -422,7 +421,7 @@
             if pkgs.stdenv.isDarwin
             then [] # Doesn't support Darwin yet.
             else lre-cc.meta.Env;
-          prefix = "lre";
+          prefix = "linux";
         };
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = let
@@ -460,7 +459,6 @@
 
               ## Web
               pkgs.bun # got patched to the newest version (v.1.1.25)
-              pkgs.deno
               pkgs.lychee
               pkgs.nodejs_22 # For pagefind search
               pkgs.playwright-driver
@@ -473,30 +471,51 @@
               native-cli
               docs
             ]
-            ++ maybeDarwinDeps;
-          shellHook = ''
-            # Generate the .pre-commit-config.yaml symlink when entering the
-            # development shell.
-            ${config.pre-commit.installationScript}
+            ++ maybeDarwinDeps
+            ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [
+              # Old darwin systems are incompatible with deno.
+              pkgs.deno
+            ];
 
-            # Generate lre.bazelrc which configures LRE toolchains when running
-            # in the nix environment.
-            ${config.local-remote-execution.installationScript}
+          shellHook =
+            ''
+              # Generate the .pre-commit-config.yaml symlink when entering the
+              # development shell.
+              ${config.pre-commit.installationScript}
 
-            # The Bazel and Cargo builds in nix require a Clang toolchain.
-            # TODO(aaronmondal): The Bazel build currently uses the
-            #                    irreproducible host C++ toolchain. Provide
-            #                    this toolchain via nix for bitwise identical
-            #                    binaries across machines.
-            export CC=clang
-            export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
-            export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
-            export PATH=$HOME/.deno/bin:$PATH
-          '';
+              # Generate lre.bazelrc which configures LRE toolchains when
+              # running in the nix environment.
+              ${config.local-remote-execution.installationScript}
+
+              # Generate nativelink.bazelrc which gives Bazel invocations access
+              # to NativeLink's read-only cache.
+              ${config.nativelink.installationScript}
+
+              # The Bazel and Cargo builds in nix require a Clang toolchain.
+              # TODO(aaronmondal): The Bazel build currently uses the
+              #                    irreproducible host C++ toolchain. Provide
+              #                    this toolchain via nix for bitwise identical
+              #                    binaries across machines.
+              export CC=clang
+              export PULUMI_K8S_AWAIT_ALL=true
+              export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
+              export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
+              export PATH=$HOME/.deno/bin:$PATH
+              deno types > web/platform/utils/deno.d.ts
+            ''
+            + (pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              # On Darwin generate darwin.bazelrc which configures
+              # darwin libs & frameworks when running in the nix environment.
+              ${config.darwin.installationScript}
+            '');
         };
       };
     }
     // {
-      flakeModule = ./local-remote-execution/flake-module.nix;
+      flakeModule = {
+        default = ./flake-module.nix;
+        darwin = ./tools/darwin/flake-module.nix;
+        local-remote-execution = ./local-remote-execution/flake-module.nix;
+      };
     };
 }
