@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
-use futures::future::{select_all, BoxFuture, Either, OptionFuture, TryFutureExt};
+use futures::future::{try_join_all, BoxFuture, Either, OptionFuture, TryFutureExt};
 use hyper::{Response, StatusCode};
 use hyper_util::rt::tokio::TokioIo;
 use hyper_util::server::conn::auto;
@@ -66,8 +66,10 @@ use prometheus::{Encoder, TextEncoder};
 use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
 use scopeguard::guard;
 use tokio::net::TcpListener;
+use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{signal, SignalKind};
+use tokio::sync::broadcast;
 use tokio_rustls::rustls::pki_types::{CertificateDer, CertificateRevocationListDer};
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
@@ -160,6 +162,7 @@ impl RootMetricsComponent for ConnectedClientsMetrics {}
 async fn inner_main(
     cfg: CasConfig,
     server_start_timestamp: u64,
+    shutdown_tx: broadcast::Sender<()>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let health_registry_builder = Arc::new(AsyncMutex::new(HealthRegistryBuilder::new(
         "nativelink".into(),
@@ -771,99 +774,119 @@ async fn inner_main(
             http.http2().max_header_list_size(value);
         }
 
+        let shutdown_tx_clone = shutdown_tx.clone();
+
         event!(Level::WARN, "Ready, listening on {socket_addr}",);
         root_futures.push(Box::pin(async move {
+            // Subscribe to the shutdown signal
+            let mut shutdown_rx = shutdown_tx_clone.subscribe();
+
             loop {
-                // Wait for client to connect.
-                let (tcp_stream, remote_addr) = match tcp_listener.accept().await {
-                    Ok(result) => result,
-                    Err(err) => {
-                        event!(Level::ERROR, ?err, "Failed to accept tcp connection");
-                        continue;
-                    }
-                };
-                event!(
-                    target: "nativelink::services",
-                    Level::INFO,
-                    ?remote_addr,
-                    ?socket_addr,
-                    "Client connected"
-                );
-                connected_clients_mux
-                    .inner
-                    .lock()
-                    .insert(SocketAddrWrapper(remote_addr));
-                connected_clients_mux.counter.inc();
+                select! {
+                    // Listen for incoming TCP connections
+                    accept_result = tcp_listener.accept() => {
+                        match accept_result {
+                            Ok((tcp_stream, remote_addr)) => {
+                                event!(
+                                    target: "nativelink::services",
+                                    Level::INFO,
+                                    ?remote_addr,
+                                    ?socket_addr,
+                                    "Client connected"
+                                );
+                                connected_clients_mux
+                                    .inner
+                                    .lock()
+                                    .insert(SocketAddrWrapper(remote_addr));
+                                connected_clients_mux.counter.inc();
 
-                // This is the safest way to guarantee that if our future
-                // is ever dropped we will cleanup our data.
-                let scope_guard = guard(
-                    Arc::downgrade(&connected_clients_mux),
-                    move |weak_connected_clients_mux| {
-                        event!(
-                            target: "nativelink::services",
-                            Level::INFO,
-                            ?remote_addr,
-                            ?socket_addr,
-                            "Client disconnected"
-                        );
-                        if let Some(connected_clients_mux) = weak_connected_clients_mux.upgrade() {
-                            connected_clients_mux
-                                .inner
-                                .lock()
-                                .remove(&SocketAddrWrapper(remote_addr));
-                        }
-                    },
-                );
+                                // This is the safest way to guarantee that if our future
+                                // is ever dropped we will cleanup our data.
+                                let scope_guard = guard(
+                                    Arc::downgrade(&connected_clients_mux),
+                                    move |weak_connected_clients_mux| {
+                                        event!(
+                                            target: "nativelink::services",
+                                            Level::INFO,
+                                            ?remote_addr,
+                                            ?socket_addr,
+                                            "Client disconnected"
+                                        );
+                                        if let Some(connected_clients_mux) = weak_connected_clients_mux.upgrade() {
+                                            connected_clients_mux
+                                                .inner
+                                                .lock()
+                                                .remove(&SocketAddrWrapper(remote_addr));
+                                        }
+                                    },
+                                );
 
-                let (http, svc, maybe_tls_acceptor) =
-                    (http.clone(), svc.clone(), maybe_tls_acceptor.clone());
-                Arc::new(OriginContext::new()).background_spawn(
-                    error_span!(
-                        target: "nativelink::services",
-                        "http_connection",
-                        ?remote_addr,
-                        ?socket_addr
-                    ),
-                    async move {},
-                );
-                background_spawn!(
-                    name: "http_connection",
-                    fut: async move {
-                        // Move it into our spawn, so if our spawn dies the cleanup happens.
-                        let _guard = scope_guard;
-                        let serve_connection = if let Some(tls_acceptor) = maybe_tls_acceptor {
-                            match tls_acceptor.accept(tcp_stream).await {
-                                Ok(tls_stream) => Either::Left(http.serve_connection(
-                                    TokioIo::new(tls_stream),
-                                    TowerToHyperService::new(svc),
-                                )),
-                                Err(err) => {
-                                    event!(Level::ERROR, ?err, "Failed to accept tls stream");
-                                    return;
-                                }
+                                let (http, svc, maybe_tls_acceptor) =
+                                    (http.clone(), svc.clone(), maybe_tls_acceptor.clone());
+                                Arc::new(OriginContext::new()).background_spawn(
+                                    error_span!(
+                                        target: "nativelink::services",
+                                        "http_connection",
+                                        ?remote_addr,
+                                        ?socket_addr
+                                    ),
+                                    async move {},
+                                );
+                                background_spawn!(
+                                    name: "http_connection",
+                                    fut: async move {
+                                        // Move it into our spawn, so if our spawn dies the cleanup happens.
+                                        let _guard = scope_guard;
+                                        let serve_connection = if let Some(tls_acceptor) = maybe_tls_acceptor {
+                                            match tls_acceptor.accept(tcp_stream).await {
+                                                Ok(tls_stream) => Either::Left(http.serve_connection(
+                                                    TokioIo::new(tls_stream),
+                                                    TowerToHyperService::new(svc),
+                                                )),
+                                                Err(err) => {
+                                                    event!(Level::ERROR, ?err, "Failed to accept tls stream");
+                                                    return;
+                                                }
+                                            }
+                                        } else {
+                                            Either::Right(http.serve_connection(
+                                                TokioIo::new(tcp_stream),
+                                                TowerToHyperService::new(svc),
+                                            ))
+                                        };
+
+                                        if let Err(err) = serve_connection.await {
+                                            event!(
+                                                target: "nativelink::services",
+                                                Level::ERROR,
+                                                ?err,
+                                                "Failed running service"
+                                            );
+                                        }
+                                    },
+                                    target: "nativelink::services",
+                                    ?remote_addr,
+                                    ?socket_addr,
+                                );
+                            },
+                            Err(err) => {
+                                event!(Level::ERROR, ?err, "Failed to accept tcp connection");
+                                continue;
                             }
-                        } else {
-                            Either::Right(http.serve_connection(
-                                TokioIo::new(tcp_stream),
-                                TowerToHyperService::new(svc),
-                            ))
-                        };
-
-                        if let Err(err) = serve_connection.await {
-                            event!(
-                                target: "nativelink::services",
-                                Level::ERROR,
-                                ?err,
-                                "Failed running service"
-                            );
                         }
                     },
-                    target: "nativelink::services",
-                    ?remote_addr,
-                    ?socket_addr,
-                );
+
+                    // Listen for shutdown signal
+                    _ = shutdown_rx.recv() => {
+                        event!(Level::INFO, "Shutdown signal received. Stopping server loop.");
+                        break;
+                    },
+                }
             }
+
+            // Perform any necessary cleanup after exiting the loop
+            event!(Level::INFO, "Server loop has been terminated gracefully.");
+            Ok(())
         }));
     }
 
@@ -916,11 +939,15 @@ async fn inner_main(
                     )
                     .await
                     .err_tip(|| "Could not make LocalWorker")?;
+
+                    let local_worker = Arc::new(local_worker);
+
                     let name = if local_worker.name().is_empty() {
                         format!("worker_{i}")
                     } else {
                         local_worker.name().clone()
                     };
+
                     if worker_names.contains(&name) {
                         Err(Box::new(make_err!(
                             Code::InvalidArgument,
@@ -930,8 +957,12 @@ async fn inner_main(
                     }
                     worker_names.insert(name.clone());
                     worker_metrics.insert(name.clone(), metrics);
+
+                    // Subscribe to the shutdown channel
+                    let shutdown_rx = shutdown_tx.subscribe();
+
                     let fut = Arc::new(OriginContext::new())
-                        .wrap_async(trace_span!("worker_ctx"), local_worker.run());
+                        .wrap_async(trace_span!("worker_ctx"), local_worker.run(shutdown_rx));
                     spawn!("worker", fut, ?name)
                 }
             };
@@ -940,10 +971,12 @@ async fn inner_main(
         root_metrics.write().workers = worker_metrics;
     }
 
-    if let Err(e) = select_all(root_futures).await.0 {
+    if let Err(e) = try_join_all(root_futures).await {
         panic!("{e:?}");
-    }
-    unreachable!("None of the futures should resolve in main()");
+    };
+
+    Ok(())
+    // unreachable!("All tasks should have terminated gracefully.");
 }
 
 async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
@@ -1022,27 +1055,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .enable_all()
             .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
             .build()?;
+
+        // Create a broadcast channel for shutdown signals
+        let (shutdown_tx, _) = broadcast::channel::<()>(16);
+        let shutdown_tx_clone = shutdown_tx.clone();
+
         runtime.spawn(async move {
             tokio::signal::ctrl_c()
                 .await
                 .expect("Failed to listen to SIGINT");
+            if shutdown_tx_clone.send(()).is_err() {
+                eprintln!("Failed to send shutdown signal");
+            }
+
             eprintln!("User terminated process via SIGINT");
-            std::process::exit(130);
+            // std::process::exit(130);
         });
 
         #[cfg(target_family = "unix")]
-        runtime.spawn(async move {
-            signal(SignalKind::terminate())
-                .expect("Failed to listen to SIGTERM")
-                .recv()
-                .await;
-            eprintln!("Process terminated via SIGTERM");
-            std::process::exit(143);
-        });
+        {
+            let shutdown_tx_clone = shutdown_tx.clone();
+            runtime.spawn(async move {
+                signal(SignalKind::terminate())
+                    .expect("Failed to listen to SIGTERM")
+                    .recv()
+                    .await;
+                if shutdown_tx_clone.send(()).is_err() {
+                    eprintln!("Failed to send shutdown signal");
+                }
+                eprintln!("Process terminated via SIGTERM");
+                // std::process::exit(143);
+            });
+        }
 
-        runtime.block_on(
-            Arc::new(OriginContext::new())
-                .wrap_async(trace_span!("main"), inner_main(cfg, server_start_time)),
-        )
+        let _ = runtime.block_on(Arc::new(OriginContext::new()).wrap_async(
+            trace_span!("main"),
+            inner_main(cfg, server_start_time, shutdown_tx.clone()),
+        ));
     }
+
+    Ok(())
 }

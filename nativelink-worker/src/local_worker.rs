@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::process::Stdio;
 use std::str;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -28,7 +28,7 @@ use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ExecuteResult, KeepAliveRequest, UpdateForWorker,
+    execute_result, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -39,7 +39,7 @@ use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
 use tokio::process;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
@@ -168,6 +168,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
     async fn run(
         &mut self,
         update_for_worker_stream: Streaming<UpdateForWorker>,
+        shutdown_rx: &mut broadcast::Receiver<()>,
     ) -> Result<(), Error> {
         // This big block of logic is designed to help simplify upstream components. Upstream
         // components can write standard futures that return a `Result<(), Error>` and this block
@@ -349,19 +350,30 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                     futures.push(fut);
                 },
                 res = futures.next() => res.err_tip(|| "Keep-alive should always pending. Likely unable to send data to scheduler")??,
+                // Handle shutdown signal
+                _ = shutdown_rx.recv().fuse() => {
+                    println!("Shutdown signal received. Shutting down worker...");
+                    let mut grpc_client = self.grpc_client.clone();
+                    let _ = grpc_client.going_away(GoingAwayRequest { worker_id: self.worker_id.clone() }).await;
+                    self.running_actions_manager.complete_actions().await;
+                    break;
+                },
             };
         }
-        // Unreachable.
+        // Initiate graceful shutdown procedures
+        println!("Worker '{}' has shut down gracefully.", self.worker_id);
+        std::process::exit(130);
     }
 }
 
 type ConnectionFactory<T> = Box<dyn Fn() -> BoxFuture<'static, Result<T, Error>> + Send + Sync>;
+type SleepFnType = Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>;
 
 pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
     config: Arc<LocalWorkerConfig>,
     running_actions_manager: Arc<U>,
     connection_factory: ConnectionFactory<T>,
-    sleep_fn: Option<Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>>,
+    sleep_fn: Mutex<Option<SleepFnType>>,
     metrics: Arc<Metrics>,
 }
 
@@ -468,7 +480,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             config,
             running_actions_manager,
             connection_factory,
-            sleep_fn: Some(sleep_fn),
+            sleep_fn: Some(sleep_fn).into(),
             metrics,
         }
     }
@@ -478,7 +490,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
     }
 
     async fn register_worker(
-        &mut self,
+        &self,
         client: &mut T,
     ) -> Result<(String, Streaming<UpdateForWorker>), Error> {
         let supported_properties =
@@ -509,11 +521,16 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
     }
 
     #[instrument(skip(self), level = Level::INFO)]
-    pub async fn run(mut self) -> Result<(), Error> {
-        let sleep_fn = self
-            .sleep_fn
-            .take()
-            .err_tip(|| "Could not unwrap sleep_fn in LocalWorker::run")?;
+    pub async fn run(
+        self: Arc<Self>,
+        mut shutdown_rx: broadcast::Receiver<()>,
+    ) -> Result<(), Error> {
+        let sleep_fn = self.sleep_fn.lock().unwrap().take().ok_or_else(|| {
+            make_err!(
+                Code::Internal,
+                "Could not unwrap sleep_fn in LocalWorker::run"
+            )
+        })?;
         let sleep_fn_pin = Pin::new(&sleep_fn);
         let error_handler = Box::pin(move |err| async move {
             event!(Level::ERROR, ?err, "Error");
@@ -555,7 +572,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             );
 
             // Now listen for connections and run all other services.
-            if let Err(err) = inner.run(update_for_worker_stream).await {
+            if let Err(err) = inner.run(update_for_worker_stream, &mut shutdown_rx).await {
                 'no_more_actions: {
                     // Ensure there are no actions in transit before we try to kill
                     // all our actions.
