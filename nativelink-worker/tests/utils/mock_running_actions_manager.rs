@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use futures::Future;
+use std::future;
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -21,7 +23,7 @@ use nativelink_util::action_messages::{ActionResult, OperationId};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_worker::running_actions_manager::{Metrics, RunningAction, RunningActionsManager};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
 enum RunningActionManagerCalls {
@@ -163,6 +165,13 @@ impl RunningActionsManager for MockRunningActionsManager {
             ))))
             .expect("Could not send request to mpsc");
         Ok(())
+    }
+
+    fn complete_actions(
+        &self,
+        _complete_msg: Arc<oneshot::Sender<()>>,
+    ) -> impl Future<Output = ()> + Send {
+        future::ready(())
     }
 
     async fn kill_operation(&self, operation_id: &OperationId) -> Result<(), Error> {
