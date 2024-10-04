@@ -194,7 +194,10 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
         }),
         Box::new(move |_| Box::pin(async move { /* No sleep */ })),
     );
-    let drop_guard = spawn!("local_worker_spawn", async move { worker.run().await });
+    let drop_guard = spawn!(
+        "local_worker_spawn",
+        async move { Arc::new(worker).run().await }
+    );
 
     let (tx_stream, streaming_response) = setup_grpc_stream();
     TestContext {

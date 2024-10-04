@@ -58,7 +58,9 @@ use nativelink_util::store_trait::{
 };
 use nativelink_util::task::TaskExecutor;
 use nativelink_util::{background_spawn, init_tracing, spawn, spawn_blocking};
-use nativelink_worker::local_worker::new_local_worker;
+use nativelink_worker::local_worker::{new_local_worker, LocalWorker};
+use nativelink_worker::running_actions_manager::RunningActionsManagerImpl;
+use nativelink_worker::worker_api_client_wrapper::WorkerApiClientWrapper;
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use parking_lot::{Mutex, RwLock};
@@ -160,6 +162,7 @@ impl RootMetricsComponent for ConnectedClientsMetrics {}
 async fn inner_main(
     cfg: CasConfig,
     server_start_timestamp: u64,
+    instance: Arc<AsyncMutex<Instance>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let health_registry_builder = Arc::new(AsyncMutex::new(HealthRegistryBuilder::new(
         "nativelink".into(),
@@ -916,11 +919,19 @@ async fn inner_main(
                     )
                     .await
                     .err_tip(|| "Could not make LocalWorker")?;
+
+                    let local_worker = Arc::new(local_worker);
+                    {
+                        let mut instance_lock = instance.lock().await;
+                        instance_lock.workers.push(local_worker.clone());
+                    }
+
                     let name = if local_worker.name().is_empty() {
                         format!("worker_{i}")
                     } else {
                         local_worker.name().clone()
                     };
+
                     if worker_names.contains(&name) {
                         Err(Box::new(make_err!(
                             Code::InvalidArgument,
@@ -959,6 +970,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing()?;
 
     let mut cfg = futures::executor::block_on(get_config())?;
+
+    // Initialize the Instance empty
+    let instance = Arc::new(AsyncMutex::new(Instance::new(vec![])));
 
     let (mut metrics_enabled, max_blocking_threads) = {
         // Note: If the default changes make sure you update the documentation in
@@ -1022,27 +1036,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .enable_all()
             .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
             .build()?;
+        let instance_for_ctrl_c = instance.clone();
         runtime.spawn(async move {
             tokio::signal::ctrl_c()
                 .await
                 .expect("Failed to listen to SIGINT");
+            let instance_guard = instance_for_ctrl_c.lock().await;
+            instance_guard.graceful_shutdown().await;
             eprintln!("User terminated process via SIGINT");
             std::process::exit(130);
         });
 
         #[cfg(target_family = "unix")]
-        runtime.spawn(async move {
-            signal(SignalKind::terminate())
-                .expect("Failed to listen to SIGTERM")
-                .recv()
-                .await;
-            eprintln!("Process terminated via SIGTERM");
-            std::process::exit(143);
-        });
+        {
+            let instance_for_sigterm = instance.clone();
+            runtime.spawn(async move {
+                signal(SignalKind::terminate())
+                    .expect("Failed to listen to SIGTERM")
+                    .recv()
+                    .await;
 
-        runtime.block_on(
-            Arc::new(OriginContext::new())
-                .wrap_async(trace_span!("main"), inner_main(cfg, server_start_time)),
-        )
+                let instance_guard = instance_for_sigterm.lock().await;
+                instance_guard.graceful_shutdown().await;
+                eprintln!("Process terminated via SIGTERM");
+                std::process::exit(143);
+            });
+        }
+
+        runtime.block_on(Arc::new(OriginContext::new()).wrap_async(
+            trace_span!("main"),
+            inner_main(cfg, server_start_time, instance.clone()),
+        ))
+    }
+}
+
+struct Instance {
+    workers: Vec<Arc<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>>>,
+}
+
+impl Instance {
+    fn new(
+        workers: Vec<Arc<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>>>,
+    ) -> Self {
+        Instance { workers }
+    }
+
+    async fn graceful_shutdown(&self) {
+        for worker in &self.workers {
+            worker.shutdown().await;
+        }
     }
 }

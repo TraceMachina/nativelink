@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::process::Stdio;
 use std::str;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -28,7 +28,7 @@ use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ExecuteResult, KeepAliveRequest, UpdateForWorker,
+    execute_result, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -356,13 +356,16 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 }
 
 type ConnectionFactory<T> = Box<dyn Fn() -> BoxFuture<'static, Result<T, Error>> + Send + Sync>;
+type SleepFnType = Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>;
 
 pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
     config: Arc<LocalWorkerConfig>,
     running_actions_manager: Arc<U>,
     connection_factory: ConnectionFactory<T>,
-    sleep_fn: Option<Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>>,
+    sleep_fn: Mutex<Option<SleepFnType>>,
     metrics: Arc<Metrics>,
+    grpc_client: Mutex<Option<T>>,
+    worker_id: Mutex<Option<String>>,
 }
 
 /// Creates a new `LocalWorker`. The `cas_store` must be an instance of
@@ -468,8 +471,10 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             config,
             running_actions_manager,
             connection_factory,
-            sleep_fn: Some(sleep_fn),
+            sleep_fn: Some(sleep_fn).into(),
             metrics,
+            grpc_client: Mutex::new(None),
+            worker_id: Mutex::new(None),
         }
     }
 
@@ -477,8 +482,66 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         &self.config.name
     }
 
+    pub async fn shutdown(&self) {
+        println!("Shutting down worker: {}", self.name());
+
+        let max_wait_duration = Duration::from_secs(60);
+
+        // Attempt to complete actions within the timeout
+        if (tokio::time::timeout(
+            max_wait_duration,
+            self.running_actions_manager.complete_actions(),
+        )
+        .await)
+            .is_ok()
+        {
+            println!("All actions completed before timeout.");
+        } else {
+            println!(
+                "Timeout of {} seconds reached: Some actions are still running during shutdown.",
+                max_wait_duration.as_secs()
+            );
+            // Forcefully terminate remaining actions
+            self.running_actions_manager.kill_all().await;
+        }
+
+        // Extract grpc_client and worker_id while holding the locks
+        let mut grpc_client = {
+            let mut grpc_client_lock = self.grpc_client.lock().unwrap();
+            if let Some(client) = grpc_client_lock.as_mut() {
+                client.clone()
+            } else {
+                println!("No grpc_client available; cannot notify scheduler.");
+                return;
+            }
+        };
+
+        let worker_id = {
+            let worker_id_lock = self.worker_id.lock().unwrap();
+            if let Some(id) = worker_id_lock.as_ref() {
+                id.clone()
+            } else {
+                println!("No worker_id available; cannot notify scheduler.");
+                return;
+            }
+        };
+
+        // Notify the scheduler with the going_away request
+        println!("Notify Scheduler: Local Worker is going away...");
+        if let Err(e) = grpc_client.going_away(GoingAwayRequest { worker_id }).await {
+            println!("Failed to send going_away to scheduler: {e:?}");
+        } else {
+            println!("Successfully notified scheduler that worker is going away.");
+        }
+
+        {
+            let mut grpc_client_lock = self.grpc_client.lock().unwrap();
+            *grpc_client_lock = None;
+        }
+    }
+
     async fn register_worker(
-        &mut self,
+        &self,
         client: &mut T,
     ) -> Result<(String, Streaming<UpdateForWorker>), Error> {
         let supported_properties =
@@ -509,11 +572,13 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
     }
 
     #[instrument(skip(self), level = Level::INFO)]
-    pub async fn run(mut self) -> Result<(), Error> {
-        let sleep_fn = self
-            .sleep_fn
-            .take()
-            .err_tip(|| "Could not unwrap sleep_fn in LocalWorker::run")?;
+    pub async fn run(self: Arc<Self>) -> Result<(), Error> {
+        let sleep_fn = self.sleep_fn.lock().unwrap().take().ok_or_else(|| {
+            make_err!(
+                Code::Internal,
+                "Could not unwrap sleep_fn in LocalWorker::run"
+            )
+        })?;
         let sleep_fn_pin = Pin::new(&sleep_fn);
         let error_handler = Box::pin(move |err| async move {
             event!(Level::ERROR, ?err, "Error");
@@ -530,6 +595,11 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                 }
             };
 
+            {
+                let mut grpc_client_lock = self.grpc_client.lock().unwrap();
+                *grpc_client_lock = Some(client.clone());
+            }
+
             // Next register our worker with the scheduler.
             let (mut inner, update_for_worker_stream) =
                 match self.register_worker(&mut client).await {
@@ -537,16 +607,23 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                         (error_handler)(e).await;
                         continue; // Try to connect again.
                     }
-                    Ok((worker_id, update_for_worker_stream)) => (
-                        LocalWorkerImpl::new(
-                            &self.config,
-                            client,
-                            worker_id,
-                            self.running_actions_manager.clone(),
-                            self.metrics.clone(),
-                        ),
-                        update_for_worker_stream,
-                    ),
+                    Ok((worker_id, update_for_worker_stream)) => {
+                        // Store the worker_id
+                        {
+                            let mut worker_id_lock = self.worker_id.lock().unwrap();
+                            *worker_id_lock = Some(worker_id.clone());
+                        }
+                        (
+                            LocalWorkerImpl::new(
+                                &self.config,
+                                client,
+                                worker_id,
+                                self.running_actions_manager.clone(),
+                                self.metrics.clone(),
+                            ),
+                            update_for_worker_stream,
+                        )
+                    }
                 };
             event!(
                 Level::WARN,
