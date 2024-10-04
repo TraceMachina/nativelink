@@ -1349,6 +1349,8 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
         hasher: DigestHasherFunc,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 
+    fn complete_actions(&self) -> impl Future<Output = ()> + Send;
+
     fn kill_all(&self) -> impl Future<Output = ()> + Send;
 
     fn kill_operation(
@@ -1877,6 +1879,22 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         };
         Self::kill_operation(running_action).await;
         Ok(())
+    }
+
+    async fn complete_actions(&self) {
+        let mut receiver = self.action_done_tx.subscribe();
+        loop {
+            {
+                let running_actions = self.running_actions.lock();
+                if running_actions.is_empty() {
+                    break;
+                }
+            }
+            // Wait for a change in the action_done_tx
+            if receiver.changed().await.is_err() {
+                break;
+            }
+        }
     }
 
     // Note: When the future returns the process should be fully killed and cleaned up.

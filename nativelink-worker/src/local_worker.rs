@@ -28,7 +28,7 @@ use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ExecuteResult, KeepAliveRequest, UpdateForWorker,
+    execute_result, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -39,7 +39,7 @@ use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
 use tokio::process;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
@@ -168,6 +168,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
     async fn run(
         &mut self,
         update_for_worker_stream: Streaming<UpdateForWorker>,
+        shutdown_rx: &mut broadcast::Receiver<Arc<oneshot::Sender<()>>>,
     ) -> Result<(), Error> {
         // This big block of logic is designed to help simplify upstream components. Upstream
         // components can write standard futures that return a `Result<(), Error>` and this block
@@ -349,6 +350,18 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                     futures.push(fut);
                 },
                 res = futures.next() => res.err_tip(|| "Keep-alive should always pending. Likely unable to send data to scheduler")??,
+                // Handle shutdown signal
+                complete_msg = shutdown_rx.recv().fuse() => {
+                    println!("Shutdown signal received. Shutting down worker...");
+
+                    // Perform worker cleanup tasks
+                    let mut grpc_client = self.grpc_client.clone();
+                    let _ = grpc_client.going_away(GoingAwayRequest { worker_id: self.worker_id.clone() }).await;
+                    self.running_actions_manager.complete_actions().await;
+
+                    // Drop the Result<Arc<Sender<()>>, RecvError> to trigger the oneshot err.
+                    drop(complete_msg);
+                },
             };
         }
         // Unreachable.
@@ -478,7 +491,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
     }
 
     async fn register_worker(
-        &mut self,
+        &self,
         client: &mut T,
     ) -> Result<(String, Streaming<UpdateForWorker>), Error> {
         let supported_properties =
@@ -509,7 +522,10 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
     }
 
     #[instrument(skip(self), level = Level::INFO)]
-    pub async fn run(mut self) -> Result<(), Error> {
+    pub async fn run(
+        mut self,
+        mut shutdown_rx: broadcast::Receiver<Arc<oneshot::Sender<()>>>,
+    ) -> Result<(), Error> {
         let sleep_fn = self
             .sleep_fn
             .take()
@@ -555,7 +571,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             );
 
             // Now listen for connections and run all other services.
-            if let Err(err) = inner.run(update_for_worker_stream).await {
+            if let Err(err) = inner.run(update_for_worker_stream, &mut shutdown_rx).await {
                 'no_more_actions: {
                     // Ensure there are no actions in transit before we try to kill
                     // all our actions.

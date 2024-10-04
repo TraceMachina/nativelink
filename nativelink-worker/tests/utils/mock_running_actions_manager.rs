@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use futures::Future;
+use std::future;
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -161,6 +163,10 @@ impl RunningActionsManager for MockRunningActionsManager {
             ))))
             .expect("Could not send request to mpsc");
         Ok(())
+    }
+
+    fn complete_actions(&self) -> impl Future<Output = ()> + Send {
+        future::ready(())
     }
 
     async fn kill_operation(&self, operation_id: &OperationId) -> Result<(), Error> {
