@@ -28,7 +28,7 @@ use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_worker::local_worker::LocalWorker;
 use nativelink_worker::worker_api_client_wrapper::WorkerApiClientTrait;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 use tonic::{
     codec::Codec, // Needed for .decoder().
@@ -39,6 +39,10 @@ use tonic::{
 };
 
 use super::mock_running_actions_manager::MockRunningActionsManager;
+
+/// Broadcast Channel Capacity
+/// Note: The actual capacity may be greater than the provided capacity.
+const BROADCAST_CAPACITY: usize = 1;
 
 #[derive(Debug)]
 enum WorkerClientApiCalls {
@@ -194,7 +198,11 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
         }),
         Box::new(move |_| Box::pin(async move { /* No sleep */ })),
     );
-    let drop_guard = spawn!("local_worker_spawn", async move { worker.run().await });
+    let (shutdown_tx_test, _) = broadcast::channel::<Arc<oneshot::Sender<()>>>(BROADCAST_CAPACITY);
+
+    let drop_guard = spawn!("local_worker_spawn", async move {
+        worker.run(shutdown_tx_test.subscribe()).await
+    });
 
     let (tx_stream, streaming_response) = setup_grpc_stream();
     TestContext {
