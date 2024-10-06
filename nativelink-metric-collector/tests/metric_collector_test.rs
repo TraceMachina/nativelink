@@ -18,7 +18,6 @@ use std::io::{BufRead, Cursor};
 use std::marker::PhantomData;
 use std::str::from_utf8;
 
-use nativelink_error::Error;
 use nativelink_metric::{MetricFieldData, MetricKind, MetricsComponent};
 use nativelink_metric_collector::{otel_export, MetricsCollectorLayer};
 use opentelemetry::metrics::MeterProvider;
@@ -59,7 +58,7 @@ struct Foo<'a, T: Debug + Send + Sync> {
 // Note: Special case to not use nativelink-test macro. We want this test
 // to be very lightweight and not depend on other crates.
 #[test]
-fn test_metric_collector() -> Result<(), Error> {
+fn test_metric_collector() {
     let multi_struct = MultiStruct {
         pub_u64: 1,
         str: "str_data".to_string(),
@@ -108,14 +107,12 @@ fn test_metric_collector() -> Result<(), Error> {
         serde_json::to_string(&final_output_metrics).unwrap().len(),
         expected_json_data.len()
     );
-
-    Ok(())
 }
 
 // Note: Special case to not use nativelink-test macro. We want this test
 // to be very lightweight and not depend on other crates.
 #[test]
-fn test_prometheus_exporter() -> Result<(), Error> {
+fn test_prometheus_exporter() {
     let multi_struct = MultiStruct {
         pub_u64: 1,
         str: "str_data".to_string(),
@@ -190,5 +187,4 @@ target_info{service_name="unknown_service",telemetry_sdk_language="rust",telemet
     expected_output.sort();
 
     assert_eq!(output, expected_output);
-    Ok(())
 }
