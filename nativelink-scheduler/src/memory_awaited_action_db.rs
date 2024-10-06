@@ -502,25 +502,22 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         &'a self,
         state: SortedAwaitedActionState,
         range: impl RangeBounds<SortedAwaitedAction> + 'b,
-    ) -> Result<
-        impl DoubleEndedIterator<
-                Item = Result<
-                    (
-                        &'a SortedAwaitedAction,
-                        MemoryAwaitedActionSubscriber<I, NowFn>,
-                    ),
-                    Error,
-                >,
-            > + 'a,
-        Error,
-    > {
+    ) -> impl DoubleEndedIterator<
+        Item = Result<
+            (
+                &'a SortedAwaitedAction,
+                MemoryAwaitedActionSubscriber<I, NowFn>,
+            ),
+            Error,
+        >,
+    > + 'a {
         let btree = match state {
             SortedAwaitedActionState::CacheCheck => &self.sorted_action_info_hash_keys.cache_check,
             SortedAwaitedActionState::Queued => &self.sorted_action_info_hash_keys.queued,
             SortedAwaitedActionState::Executing => &self.sorted_action_info_hash_keys.executing,
             SortedAwaitedActionState::Completed => &self.sorted_action_info_hash_keys.completed,
         };
-        Ok(btree.range(range).map(|sorted_awaited_action| {
+        btree.range(range).map(|sorted_awaited_action| {
             let operation_id = &sorted_awaited_action.operation_id;
             self.get_by_operation_id(operation_id)
                 .ok_or_else(|| {
@@ -531,16 +528,16 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     )
                 })
                 .map(|subscriber| (sorted_awaited_action, subscriber))
-        }))
+        })
     }
 
     fn process_state_changes_for_hash_key_map(
         action_info_hash_key_to_awaited_action: &mut HashMap<ActionUniqueKey, OperationId>,
         new_awaited_action: &AwaitedAction,
-    ) -> Result<(), Error> {
+    ) {
         // Only process changes if the stage is not finished.
         if !new_awaited_action.state().stage.is_finished() {
-            return Ok(());
+            return;
         }
         match &new_awaited_action.action_info().unique_qualifier {
             ActionUniqueQualifier::Cachable(action_key) => {
@@ -567,13 +564,11 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         );
                     }
                 }
-                Ok(())
             }
             ActionUniqueQualifier::Uncachable(_action_key) => {
                 // If we are not cachable, the action should not be in the
                 // hash_key map, so we don't need to process anything in
                 // action_info_hash_key_to_awaited_action.
-                Ok(())
             }
         }
     }
@@ -635,7 +630,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 Self::process_state_changes_for_hash_key_map(
                     &mut self.action_info_hash_key_to_awaited_action,
                     &new_awaited_action,
-                )?;
+                );
             }
         }
 
@@ -928,7 +923,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
 
                 let iterator = inner
                     .get_range_of_actions(state, (start.as_ref(), end.as_ref()))
-                    .err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
+                    .map(|res| res.err_tip(|| "In AwaitedActionDb::get_range_of_actions"));
+
                 // TODO(allada) This should probably use the `.left()/right()` pattern,
                 // but that doesn't exist in the std or any libraries we use.
                 if desc {
