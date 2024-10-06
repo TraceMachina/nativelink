@@ -32,6 +32,8 @@ use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
 use tracing::{event, Level};
 
+use crate::cas_utils::is_zero_digest;
+
 // NOTE: If these change update the comments in `stores.rs` to reflect
 // the new defaults.
 const DEFAULT_MIN_SIZE: u64 = 64 * 1024;
@@ -159,6 +161,11 @@ impl StoreDriver for DedupStore {
             .iter()
             .zip(results.iter_mut())
             .map(|(key, result)| async move {
+                if is_zero_digest(key.borrow()) {
+                    *result = Some(0);
+                    return Ok(());
+                }
+
                 match self.has(key.borrow()).await {
                     Ok(maybe_size) => {
                         *result = maybe_size;
