@@ -594,9 +594,9 @@ return new_version
 /// being a valid CRC32 checksum, just that it's a unique identifier with a low chance of
 /// collision.
 const fn fingerprint_create_index_template() -> u32 {
-    const POLY: u32 = 0xEDB88320;
+    const POLY: u32 = 0xEDB8_8320;
     const DATA: &[u8] = get_create_index_template!().as_bytes();
-    let mut crc = 0xFFFFFFFF;
+    let mut crc = 0xFFFF_FFFF;
     let mut i = 0;
     while i < DATA.len() {
         let byte = DATA[i];

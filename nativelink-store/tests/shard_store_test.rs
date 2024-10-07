@@ -263,7 +263,7 @@ async fn upload_download_has_check() -> Result<(), Error> {
 #[nativelink_test]
 async fn weights_send_to_proper_store() -> Result<(), Error> {
     // Very low chance anything will ever go to second store due to weights being so much diff.
-    let (shard_store, stores) = make_stores(&[100000, 1]);
+    let (shard_store, stores) = make_stores(&[100_000, 1]);
 
     let original_data1 = make_random_data(MEGABYTE_SZ);
     let digest1 = DigestInfo::try_new(STORE1_HASH, 100).unwrap();
