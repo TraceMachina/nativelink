@@ -309,7 +309,7 @@ pin_project! {
             //            `PinnedDrop::drop()` is guaranteed to be called only
             //            once.
             unsafe {
-                ManuallyDrop::drop(this.inner.get_unchecked_mut())
+                ManuallyDrop::drop(this.inner.get_unchecked_mut());
             }
         }
     }

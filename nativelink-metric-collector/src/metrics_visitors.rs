@@ -90,7 +90,7 @@ impl Visit for MetricDataVisitor {
 
     fn record_f64(&mut self, field: &Field, value: f64) {
         if field.name() == "__value" {
-            self.value = ValueWithPrimitiveType::String(value.to_string())
+            self.value = ValueWithPrimitiveType::String(value.to_string());
         }
     }
     fn record_i64(&mut self, field: &Field, value: i64) {
