@@ -95,7 +95,7 @@ async fn test_random_20mb_16k_chunks() -> Result<(), std::io::Error> {
     for frame in get_frames(&mut frame_reader).await? {
         lens.push(frame.len());
     }
-    lens.sort();
+    lens.sort_unstable();
     Ok(())
 }
 
