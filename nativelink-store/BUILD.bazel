@@ -120,7 +120,6 @@ rust_test_suite(
         "@crates//:hyper-0.14.30",
         "@crates//:memory-stats",
         "@crates//:mock_instant",
-        "@crates//:once_cell",
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",
         "@crates//:rand",

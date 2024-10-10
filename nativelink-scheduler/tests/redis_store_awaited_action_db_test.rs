@@ -24,7 +24,7 @@ use fred::error::{RedisError, RedisErrorKind};
 use fred::mocks::{MockCommand, Mocks};
 use fred::prelude::Builder;
 use fred::types::{RedisConfig, RedisValue};
-use mock_instant::SystemTime as MockSystemTime;
+use mock_instant::thread_local::SystemTime as MockSystemTime;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_scheduler::awaited_action_db::{

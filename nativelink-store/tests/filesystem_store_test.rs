@@ -19,7 +19,7 @@ use std::marker::PhantomData;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime};
 
 use async_lock::RwLock;
@@ -40,7 +40,6 @@ use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::origin_context::ContextAwareFuture;
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
-use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
 use rand::{thread_rng, Rng};
@@ -803,7 +802,8 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
     let small_digest = DigestInfo::try_new(HASH1, SMALL_VALUE.len())?;
     let big_digest = DigestInfo::try_new(HASH1, BIG_VALUE.len())?;
 
-    static UNREFED_DIGESTS: Lazy<Mutex<Vec<DigestInfo>>> = Lazy::new(|| Mutex::new(Vec::new()));
+    static UNREFED_DIGESTS: LazyLock<Mutex<Vec<DigestInfo>>> =
+        LazyLock::new(|| Mutex::new(Vec::new()));
     struct LocalHooks {}
     impl FileEntryHooks for LocalHooks {
         fn on_unref<Fe: FileEntry>(file_entry: &Fe) {
@@ -863,7 +863,8 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
 
-    static FILE_DELETED_BARRIER: Lazy<Arc<Barrier>> = Lazy::new(|| Arc::new(Barrier::new(2)));
+    static FILE_DELETED_BARRIER: LazyLock<Arc<Barrier>> =
+        LazyLock::new(|| Arc::new(Barrier::new(2)));
 
     struct LocalHooks {}
     impl FileEntryHooks for LocalHooks {

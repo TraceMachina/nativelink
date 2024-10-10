@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use mock_instant::MockClock;
+use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;

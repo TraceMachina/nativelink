@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_lock::Mutex;
 use futures::task::Poll;
 use futures::{poll, Stream, StreamExt};
-use mock_instant::{MockClock, SystemTime as MockSystemTime};
+use mock_instant::thread_local::{MockClock, SystemTime as MockSystemTime};
 use nativelink_config::schedulers::PropertyType;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;

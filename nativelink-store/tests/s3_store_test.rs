@@ -25,7 +25,7 @@ use futures::task::Poll;
 use http::header;
 use http::status::StatusCode;
 use hyper::Body;
-use mock_instant::MockClock;
+use mock_instant::thread_local::MockClock;
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::s3_store::S3Store;

@@ -15,7 +15,7 @@
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mock_instant::{Instant as MockInstant, MockClock};
+use mock_instant::thread_local::{Instant as MockInstant, MockClock};
 
 /// Wrapper used to abstract away which underlying Instant impl we are using.
 /// This is needed for testing.
