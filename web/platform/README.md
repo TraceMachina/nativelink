@@ -20,7 +20,7 @@ challenging. Feel free to copy-paste it into your own projects.
 
 ## 🚀 Common workflows
 
-See [`docs/package.json`](https://github.com/TraceMachina/nativelink/blob/main/docs/package.json)
+See [`web/platform/package.json`](https://github.com/TraceMachina/nativelink/blob/main/web/platform/package.json)
 for build scripts.
 
 This project requires `bun` and `deno`. The nix flake ships compatible versions.
