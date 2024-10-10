@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use mock_instant::MockClock;
+use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::{
     EvictionPolicy, ExistenceCacheStore as ExistenceCacheStoreConfig, StoreConfig,
 };
