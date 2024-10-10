@@ -14,6 +14,7 @@
 
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
+use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::dedup_store::DedupStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
@@ -388,6 +389,38 @@ async fn has_with_no_existing_index_returns_none_test() -> Result<(), Error> {
         assert_eq!(
             size_info, None,
             "Expected None to be returned, got {:?}",
+            size_info
+        );
+    }
+    Ok(())
+}
+
+/// Ensure that when we run a `.has()` on a dedup store to check for empty blobs it will
+/// properly return Some(0).
+#[nativelink_test]
+async fn has_with_zero_digest_returns_some_test() -> Result<(), Error> {
+    let index_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let content_store = MemoryStore::new(&nativelink_config::stores::MemoryStore {
+        eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+            max_count: 10,
+            ..Default::default()
+        }),
+    });
+
+    let store = DedupStore::new(
+        &make_default_config(),
+        Store::new(index_store.clone()),
+        Store::new(content_store.clone()),
+    )?;
+
+    let digest = ZERO_BYTE_DIGESTS[0];
+
+    {
+        let size_info = store.has(digest).await.err_tip(|| "Failed to run .has")?;
+        assert_eq!(
+            size_info,
+            Some(0),
+            "Expected Sone(0) to be returned, got {:?}",
             size_info
         );
     }
