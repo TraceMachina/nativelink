@@ -22,7 +22,7 @@ use std::io::{Cursor, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::str::from_utf8;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
@@ -54,7 +54,6 @@ use nativelink_worker::running_actions_manager::{
     download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl,
     RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
 };
-use once_cell::sync::Lazy;
 use pretty_assertions::assert_eq;
 use prost::Message;
 use rand::{thread_rng, Rng};
@@ -2562,7 +2561,7 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     type StaticOneshotTuple = Mutex<(Option<oneshot::Sender<()>>, Option<oneshot::Receiver<()>>)>;
-    static TIMEOUT_ONESHOT: Lazy<StaticOneshotTuple> = Lazy::new(|| {
+    static TIMEOUT_ONESHOT: LazyLock<StaticOneshotTuple> = LazyLock::new(|| {
         let (tx, rx) = oneshot::channel();
         Mutex::new((Some(tx), Some(rx)))
     });

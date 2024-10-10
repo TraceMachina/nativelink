@@ -71,7 +71,6 @@ rust_test_suite(
         "@crates//:bytes",
         "@crates//:futures",
         "@crates//:hyper-1.4.1",
-        "@crates//:once_cell",
         "@crates//:pin-project-lite",
         "@crates//:pretty_assertions",
         "@crates//:prost",
