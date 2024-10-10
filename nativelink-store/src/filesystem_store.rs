@@ -126,12 +126,13 @@ impl Drop for EncodedFilePath {
             .active_drop_spawns
             .fetch_add(1, Ordering::Relaxed);
         background_spawn!("filesystem_delete_file", async move {
-            debug!(?file_path, "File deleted",);
             let result = fs::remove_file(&file_path)
                 .await
                 .err_tip(|| format!("Failed to remove file {}", file_path.display()));
             if let Err(err) = result {
                 error!(?file_path, ?err, "Failed to delete file",);
+            } else {
+                debug!(?file_path, "File deleted",);
             }
             shared_context
                 .active_drop_spawns
