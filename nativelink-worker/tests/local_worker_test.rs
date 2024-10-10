@@ -73,6 +73,7 @@ fn make_temp_path(data: &str) -> String {
     )
 }
 
+#[cfg_attr(feature = "nix", ignore)]
 #[nativelink_test]
 async fn platform_properties_smoke_test() -> Result<(), Error> {
     let mut platform_properties = HashMap::new();
