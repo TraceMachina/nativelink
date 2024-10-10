@@ -243,7 +243,7 @@ async fn simple_update_ac() -> Result<(), Error> {
     let spawn_fut = spawn!("simple_update_ac", async move {
         tokio::try_join!(update_fut, async move {
             for i in 0..CONTENT_LENGTH {
-                tx.send(send_data_copy.slice(i..(i + 1))).await?;
+                tx.send(send_data_copy.slice(i..=i)).await?;
             }
             tx.send_eof()
         })
