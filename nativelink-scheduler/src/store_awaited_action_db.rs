@@ -193,7 +193,7 @@ impl SchedulerIndexProvider for SearchUniqueQualifierToAwaitedAction<'_> {
     const KEY_PREFIX: &'static str = OPERATION_ID_TO_AWAITED_ACTION_KEY_PREFIX;
     const INDEX_NAME: &'static str = "unique_qualifier";
     type Versioned = TrueValue;
-    fn index_value_prefix(&self) -> Cow<'_, str> {
+    fn index_value(&self) -> Cow<'_, str> {
         Cow::Owned(format!("{}", self.0))
     }
 }
@@ -204,16 +204,17 @@ impl SchedulerStoreDecodeTo for SearchUniqueQualifierToAwaitedAction<'_> {
     }
 }
 
-struct SearchSortKeyPrefixToAwaitedAction(&'static str);
-impl SchedulerIndexProvider for SearchSortKeyPrefixToAwaitedAction {
+struct SearchStateToAwaitedAction(&'static str);
+impl SchedulerIndexProvider for SearchStateToAwaitedAction {
     const KEY_PREFIX: &'static str = OPERATION_ID_TO_AWAITED_ACTION_KEY_PREFIX;
-    const INDEX_NAME: &'static str = "sort_key";
+    const INDEX_NAME: &'static str = "state";
+    const MAYBE_SORT_KEY: Option<&'static str> = Some("sort_key");
     type Versioned = TrueValue;
-    fn index_value_prefix(&self) -> Cow<'_, str> {
+    fn index_value(&self) -> Cow<'_, str> {
         Cow::Borrowed(self.0)
     }
 }
-impl SchedulerStoreDecodeTo for SearchSortKeyPrefixToAwaitedAction {
+impl SchedulerStoreDecodeTo for SearchStateToAwaitedAction {
     type DecodeOutput = AwaitedAction;
     fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
         awaited_action_decode(version, data)
@@ -222,10 +223,10 @@ impl SchedulerStoreDecodeTo for SearchSortKeyPrefixToAwaitedAction {
 
 fn get_state_prefix(state: &SortedAwaitedActionState) -> &'static str {
     match state {
-        SortedAwaitedActionState::CacheCheck => "x_",
-        SortedAwaitedActionState::Queued => "q_",
-        SortedAwaitedActionState::Executing => "e_",
-        SortedAwaitedActionState::Completed => "c_",
+        SortedAwaitedActionState::CacheCheck => "cache_check",
+        SortedAwaitedActionState::Queued => "queued",
+        SortedAwaitedActionState::Executing => "executing",
+        SortedAwaitedActionState::Completed => "completed",
     }
 }
 
@@ -263,14 +264,12 @@ impl SchedulerStoreDataProvider for UpdateOperationIdToAwaitedAction {
         {
             let state = SortedAwaitedActionState::try_from(&self.0.state().stage)
                 .err_tip(|| "In UpdateOperationIdToAwaitedAction::get_index")?;
+            output.push(("state", Bytes::from(get_state_prefix(&state))));
             let sorted_awaited_action = SortedAwaitedAction::from(&self.0);
             output.push((
                 "sort_key",
-                Bytes::from(format!(
-                    "{}{}",
-                    get_state_prefix(&state),
-                    sorted_awaited_action.sort_key.as_u64(),
-                )),
+                // We encode to hex to ensure that the sort key is lexicographically sorted.
+                Bytes::from(format!("{:016x}", sorted_awaited_action.sort_key.as_u64())),
             ));
         }
         Ok(output)
@@ -534,7 +533,7 @@ impl<S: SchedulerStore, F: Fn() -> OperationId + Send + Sync + Unpin + 'static> 
         }
         Ok(self
             .store
-            .search_by_index_prefix(SearchSortKeyPrefixToAwaitedAction(get_state_prefix(&state)))
+            .search_by_index_prefix(SearchStateToAwaitedAction(get_state_prefix(&state)))
             .await
             .err_tip(|| "In RedisAwaitedActionDb::get_range_of_actions")?
             .map_ok(move |awaited_action| {
@@ -552,7 +551,7 @@ impl<S: SchedulerStore, F: Fn() -> OperationId + Send + Sync + Unpin + 'static> 
     ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>>, Error> {
         Ok(self
             .store
-            .search_by_index_prefix(SearchSortKeyPrefixToAwaitedAction(""))
+            .search_by_index_prefix(SearchStateToAwaitedAction(""))
             .await
             .err_tip(|| "In RedisAwaitedActionDb::get_range_of_actions")?
             .map_ok(move |awaited_action| {
