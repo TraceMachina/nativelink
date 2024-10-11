@@ -40,6 +40,6 @@ pub const ZERO_BYTE_DIGESTS: [DigestInfo; 2] = [
 pub fn is_zero_digest<'a>(digest: impl Into<StoreKey<'a>>) -> bool {
     match digest.into() {
         StoreKey::Digest(digest) => digest.size_bytes() == 0 && ZERO_BYTE_DIGESTS.contains(&digest),
-        _ => false,
+        StoreKey::Str(_) => false,
     }
 }
