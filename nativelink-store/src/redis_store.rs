@@ -681,11 +681,12 @@ const fn fingerprint_create_index_template() -> u32 {
 /// This will add some prefix data to the name to try and ensure
 /// if the index definition changes, the name will get a new name.
 macro_rules! get_index_name {
-    ($prefix:expr, $field:expr) => {
+    ($prefix:expr, $field:expr, $maybe_sort:expr) => {
         format_args!(
-            "{}_{}_{:08x}",
+            "{}_{}_{}_{:08x}",
             $prefix,
             $field,
+            $maybe_sort.unwrap_or(""),
             fingerprint_create_index_template(),
         )
     };
@@ -1026,19 +1027,20 @@ impl SchedulerStore for RedisStore {
     where
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
     {
-        let index_value_prefix = index.index_value_prefix();
+        let index_value = index.index_value();
         let run_ft_aggregate = || {
             let client = self.client_pool.next().clone();
-            let sanitized_field = try_sanitize(index_value_prefix.as_ref()).err_tip(|| {
-                format!(
-                    "In RedisStore::search_by_index_prefix::try_sanitize - {index_value_prefix:?}"
-                )
+            let sanitized_field = try_sanitize(index_value.as_ref()).err_tip(|| {
+                format!("In RedisStore::search_by_index_prefix::try_sanitize - {index_value:?}")
             })?;
             Ok::<_, Error>(async move {
                 ft_aggregate(
                     client,
-                    format!("{}", get_index_name!(K::KEY_PREFIX, K::INDEX_NAME)),
-                    format!("@{}:{{ {}* }}", K::INDEX_NAME, sanitized_field),
+                    format!(
+                        "{}",
+                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+                    ),
+                    format!("@{}:{{ {} }}", K::INDEX_NAME, sanitized_field),
                     fred::types::FtAggregateOptions {
                         load: Some(fred::types::Load::Some(vec![
                             fred::types::SearchField {
@@ -1055,10 +1057,9 @@ impl SchedulerStore for RedisStore {
                             max_idle: Some(CURSOR_IDLE_MS),
                         }),
                         pipeline: vec![fred::types::AggregateOperation::SortBy {
-                            properties: vec![(
-                                format!("@{}", K::INDEX_NAME).into(),
-                                fred::types::SortOrder::Asc,
-                            )],
+                            properties: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| {
+                                vec![(format!("@{v}").into(), fred::types::SortOrder::Asc)]
+                            }),
                             max: None,
                         }],
                         ..Default::default()
@@ -1069,11 +1070,40 @@ impl SchedulerStore for RedisStore {
         };
         let stream = run_ft_aggregate()?
             .or_else(|_| async move {
+                let mut schema = vec![SearchSchema {
+                    field_name: K::INDEX_NAME.into(),
+                    alias: None,
+                    kind: SearchSchemaKind::Tag {
+                        sortable: false,
+                        unf: false,
+                        separator: None,
+                        casesensitive: false,
+                        withsuffixtrie: false,
+                        noindex: false,
+                    },
+                }];
+                if let Some(sort_key) = K::MAYBE_SORT_KEY {
+                    schema.push(SearchSchema {
+                        field_name: sort_key.into(),
+                        alias: None,
+                        kind: SearchSchemaKind::Tag {
+                            sortable: true,
+                            unf: false,
+                            separator: None,
+                            casesensitive: false,
+                            withsuffixtrie: false,
+                            noindex: false,
+                        },
+                    });
+                }
                 let create_result = self
                     .client_pool
                     .next()
                     .ft_create::<(), _>(
-                        format!("{}", get_index_name!(K::KEY_PREFIX, K::INDEX_NAME)),
+                        format!(
+                            "{}",
+                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+                        ),
                         FtCreateOptions {
                             on: Some(fred::types::IndexKind::Hash),
                             prefixes: vec![K::KEY_PREFIX.into()],
@@ -1084,30 +1114,19 @@ impl SchedulerStore for RedisStore {
                             temporary: Some(INDEX_TTL_S),
                             ..Default::default()
                         },
-                        vec![SearchSchema {
-                            field_name: K::INDEX_NAME.into(),
-                            alias: None,
-                            kind: SearchSchemaKind::Tag {
-                                sortable: true,
-                                unf: false,
-                                separator: None,
-                                casesensitive: false,
-                                withsuffixtrie: false,
-                                noindex: false,
-                            },
-                        }],
+                        schema,
                     )
                     .await
                     .err_tip(|| {
                         format!(
                             "Error with ft_create in RedisStore::search_by_index_prefix({})",
-                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME),
+                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
                         )
                     });
                 let run_result = run_ft_aggregate()?.await.err_tip(|| {
                     format!(
                         "Error with second ft_aggregate in RedisStore::search_by_index_prefix({})",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME),
+                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
                     )
                 });
                 // Creating the index will race which is ok. If it fails to create, we only
