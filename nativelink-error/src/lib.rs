@@ -76,8 +76,8 @@ impl Error {
 
     #[inline]
     #[must_use]
-    pub fn append<S: std::string::ToString>(mut self, msg: S) -> Self {
-        self.messages.push(msg.to_string());
+    pub fn append<S: Into<String>>(mut self, msg: S) -> Self {
+        self.messages.push(msg.into());
         self
     }
 

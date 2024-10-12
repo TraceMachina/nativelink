@@ -197,7 +197,7 @@ impl ExecutionServer {
     }
 
     fn to_execute_stream(
-        nl_client_operation_id: NativelinkOperationId,
+        nl_client_operation_id: &NativelinkOperationId,
         action_listener: Box<dyn ActionStateResult>,
     ) -> Response<ExecuteStream> {
         let client_operation_id = OperationId::from(nl_client_operation_id.to_string());
@@ -277,7 +277,7 @@ impl ExecutionServer {
             .err_tip(|| "Failed to schedule task")?;
 
         Ok(Self::to_execute_stream(
-            NativelinkOperationId::new(
+            &NativelinkOperationId::new(
                 instance_name,
                 action_listener
                     .as_state()
@@ -315,7 +315,7 @@ impl ExecutionServer {
         else {
             return Err(Status::not_found("Failed to find existing task"));
         };
-        Ok(Self::to_execute_stream(nl_operation_id, rx))
+        Ok(Self::to_execute_stream(&nl_operation_id, rx))
     }
 }
 

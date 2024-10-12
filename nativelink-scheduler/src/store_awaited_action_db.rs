@@ -133,8 +133,8 @@ impl<S: SchedulerStore> AwaitedActionSubscriber for OperationSubscriber<S> {
     }
 }
 
-fn awaited_action_decode(version: u64, data: Bytes) -> Result<AwaitedAction, Error> {
-    let mut awaited_action: AwaitedAction = serde_json::from_slice(&data)
+fn awaited_action_decode(version: u64, data: &Bytes) -> Result<AwaitedAction, Error> {
+    let mut awaited_action: AwaitedAction = serde_json::from_slice(data)
         .map_err(|e| make_input_err!("In AwaitedAction::decode - {e:?}"))?;
     awaited_action.set_version(version);
     Ok(awaited_action)
@@ -165,7 +165,7 @@ impl SchedulerStoreKeyProvider for OperationIdToAwaitedAction<'_> {
 impl SchedulerStoreDecodeTo for OperationIdToAwaitedAction<'_> {
     type DecodeOutput = AwaitedAction;
     fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
-        awaited_action_decode(version, data)
+        awaited_action_decode(version, &data)
     }
 }
 
@@ -200,7 +200,7 @@ impl SchedulerIndexProvider for SearchUniqueQualifierToAwaitedAction<'_> {
 impl SchedulerStoreDecodeTo for SearchUniqueQualifierToAwaitedAction<'_> {
     type DecodeOutput = AwaitedAction;
     fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
-        awaited_action_decode(version, data)
+        awaited_action_decode(version, &data)
     }
 }
 
@@ -216,7 +216,7 @@ impl SchedulerIndexProvider for SearchSortKeyPrefixToAwaitedAction {
 impl SchedulerStoreDecodeTo for SearchSortKeyPrefixToAwaitedAction {
     type DecodeOutput = AwaitedAction;
     fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
-        awaited_action_decode(version, data)
+        awaited_action_decode(version, &data)
     }
 }
 

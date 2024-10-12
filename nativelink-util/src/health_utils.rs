@@ -127,7 +127,7 @@ pub struct HealthRegistryBuilder {
 /// sub building scoped health registries and building the health registry.
 /// `build()` should be called once for finalizing the production of a health registry.
 impl HealthRegistryBuilder {
-    pub fn new(namespace: Cow<'static, str>) -> Self {
+    pub fn new(namespace: &str) -> Self {
         Self {
             namespace: format!("/{namespace}").into(),
             state: Arc::new(Mutex::new(HashMap::new())),
@@ -141,7 +141,7 @@ impl HealthRegistryBuilder {
     }
 
     /// Create a sub builder for a namespace.
-    pub fn sub_builder(&mut self, namespace: Cow<'static, str>) -> HealthRegistryBuilder {
+    pub fn sub_builder(&mut self, namespace: &str) -> HealthRegistryBuilder {
         HealthRegistryBuilder {
             namespace: format!("{}/{}", self.namespace, namespace).into(),
             state: self.state.clone(),
