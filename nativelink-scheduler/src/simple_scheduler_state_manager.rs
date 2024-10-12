@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime};
 
 use async_lock::Mutex;
 use async_trait::async_trait;
-use futures::{future, stream, FutureExt, StreamExt, TryStreamExt};
+use futures::{stream, StreamExt, TryStreamExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
@@ -58,71 +58,6 @@ impl ActionStateResult for ErrorActionStateResult {
     async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
         Err(self.0.clone())
     }
-}
-
-fn apply_filter_predicate(awaited_action: &AwaitedAction, filter: &OperationFilter) -> bool {
-    // Note: The caller must filter `client_operation_id`.
-
-    if let Some(operation_id) = &filter.operation_id {
-        if operation_id != awaited_action.operation_id() {
-            return false;
-        }
-    }
-
-    if filter.worker_id.is_some() && filter.worker_id != awaited_action.worker_id() {
-        return false;
-    }
-
-    {
-        if let Some(filter_unique_key) = &filter.unique_key {
-            match &awaited_action.action_info().unique_qualifier {
-                ActionUniqueQualifier::Cachable(unique_key) => {
-                    if filter_unique_key != unique_key {
-                        return false;
-                    }
-                }
-                ActionUniqueQualifier::Uncachable(_) => {
-                    return false;
-                }
-            }
-        }
-        if let Some(action_digest) = filter.action_digest {
-            if action_digest != awaited_action.action_info().digest() {
-                return false;
-            }
-        }
-    }
-
-    {
-        let last_worker_update_timestamp = awaited_action.last_worker_updated_timestamp();
-        if let Some(worker_update_before) = filter.worker_update_before {
-            if worker_update_before < last_worker_update_timestamp {
-                return false;
-            }
-        }
-        if let Some(completed_before) = filter.completed_before {
-            if awaited_action.state().stage.is_finished()
-                && completed_before < last_worker_update_timestamp
-            {
-                return false;
-            }
-        }
-        if filter.stages != OperationStageFlags::Any {
-            let stage_flag = match awaited_action.state().stage {
-                ActionStage::Unknown => OperationStageFlags::Any,
-                ActionStage::CacheCheck => OperationStageFlags::CacheCheck,
-                ActionStage::Queued => OperationStageFlags::Queued,
-                ActionStage::Executing => OperationStageFlags::Executing,
-                ActionStage::Completed(_) => OperationStageFlags::Completed,
-                ActionStage::CompletedFromCache(_) => OperationStageFlags::Completed,
-            };
-            if !filter.stages.intersects(stage_flag) {
-                return false;
-            }
-        }
-    }
-
-    true
 }
 
 struct ClientActionStateResult<U, T, I, NowFn>
@@ -329,6 +264,11 @@ where
     )]
     no_event_action_timeout: Duration,
 
+    /// Mark operation as timed out if the worker has not updated in this duration.
+    /// This is used to prevent operations from being stuck in the queue forever
+    /// if it is not being processed by any worker.
+    client_action_timeout: Duration,
+
     // A lock to ensure only one timeout operation is running at a time
     // on this service.
     timeout_operation_mux: Mutex<()>,
@@ -352,6 +292,7 @@ where
     pub fn new(
         max_job_retries: usize,
         no_event_action_timeout: Duration,
+        client_action_timeout: Duration,
         action_db: T,
         now_fn: NowFn,
     ) -> Arc<Self> {
@@ -359,10 +300,109 @@ where
             action_db,
             max_job_retries,
             no_event_action_timeout,
+            client_action_timeout,
             timeout_operation_mux: Mutex::new(()),
             weak_self: weak_self.clone(),
             now_fn,
         })
+    }
+
+    async fn apply_filter_predicate(
+        &self,
+        awaited_action: &AwaitedAction,
+        filter: &OperationFilter,
+    ) -> bool {
+        // Note: The caller must filter `client_operation_id`.
+
+        if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout
+            < (self.now_fn)().now()
+        {
+            if !awaited_action.state().stage.is_finished() {
+                let mut state = awaited_action.state().as_ref().clone();
+                state.stage = ActionStage::Completed(ActionResult {
+                    error: Some(make_err!(
+                        Code::DeadlineExceeded,
+                        "Operation timed out {} seconds of having no more clients listening",
+                        self.client_action_timeout.as_secs_f32(),
+                    )),
+                    ..ActionResult::default()
+                });
+                let mut new_awaited_action = awaited_action.clone();
+                new_awaited_action.worker_set_state(Arc::new(state), (self.now_fn)().now());
+                if let Err(err) = self
+                    .action_db
+                    .update_awaited_action(new_awaited_action)
+                    .await
+                {
+                    event!(
+                        Level::WARN,
+                        "Failed to update action to timed out state after client keepalive timeout. This is ok if multiple schedulers tried to set the state at the same time: {err}",
+                    );
+                }
+            }
+            return false;
+        }
+
+        if let Some(operation_id) = &filter.operation_id {
+            if operation_id != awaited_action.operation_id() {
+                return false;
+            }
+        }
+
+        if filter.worker_id.is_some() && filter.worker_id != awaited_action.worker_id() {
+            return false;
+        }
+
+        {
+            if let Some(filter_unique_key) = &filter.unique_key {
+                match &awaited_action.action_info().unique_qualifier {
+                    ActionUniqueQualifier::Cachable(unique_key) => {
+                        if filter_unique_key != unique_key {
+                            return false;
+                        }
+                    }
+                    ActionUniqueQualifier::Uncachable(_) => {
+                        return false;
+                    }
+                }
+            }
+            if let Some(action_digest) = filter.action_digest {
+                if action_digest != awaited_action.action_info().digest() {
+                    return false;
+                }
+            }
+        }
+
+        {
+            let last_worker_update_timestamp = awaited_action.last_worker_updated_timestamp();
+            if let Some(worker_update_before) = filter.worker_update_before {
+                if worker_update_before < last_worker_update_timestamp {
+                    return false;
+                }
+            }
+            if let Some(completed_before) = filter.completed_before {
+                if awaited_action.state().stage.is_finished()
+                    && completed_before < last_worker_update_timestamp
+                {
+                    return false;
+                }
+            }
+            if filter.stages != OperationStageFlags::Any {
+                let stage_flag = match awaited_action.state().stage {
+                    ActionStage::Unknown => OperationStageFlags::Any,
+                    ActionStage::CacheCheck => OperationStageFlags::CacheCheck,
+                    ActionStage::Queued => OperationStageFlags::Queued,
+                    ActionStage::Executing => OperationStageFlags::Executing,
+                    ActionStage::Completed(_) => OperationStageFlags::Completed,
+                    ActionStage::CompletedFromCache(_) => OperationStageFlags::Completed,
+                };
+                if !filter.stages.intersects(stage_flag) {
+                    return false;
+                }
+            }
+        }
+
+        true
     }
 
     /// Let the scheduler know that an operation has timed out from
@@ -488,7 +528,7 @@ where
 
             let stage = match &update {
                 UpdateOperationType::KeepAlive => {
-                    awaited_action.keep_alive((self.now_fn)().now());
+                    awaited_action.worker_keep_alive((self.now_fn)().now());
                     return self
                         .action_db
                         .update_awaited_action(awaited_action)
@@ -531,7 +571,7 @@ where
             } else {
                 awaited_action.set_worker_id(maybe_worker_id.copied(), now);
             }
-            awaited_action.set_state(
+            awaited_action.worker_set_state(
                 Arc::new(ActionState {
                     stage,
                     // Client id is not known here, it is the responsibility of
@@ -540,7 +580,7 @@ where
                     client_operation_id: operation_id.clone(),
                     action_digest: awaited_action.action_info().digest(),
                 }),
-                Some(now),
+                now,
             );
 
             let update_action_result = self
@@ -615,7 +655,7 @@ where
                 .borrow()
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
-            if !apply_filter_predicate(&awaited_action, &filter) {
+            if !self.apply_filter_predicate(&awaited_action, &filter).await {
                 return Ok(Box::pin(stream::empty()));
             }
             return Ok(Box::pin(stream::once(async move {
@@ -635,7 +675,7 @@ where
                 .borrow()
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
-            if !apply_filter_predicate(&awaited_action, &filter) {
+            if !self.apply_filter_predicate(&awaited_action, &filter).await {
                 return Ok(Box::pin(stream::empty()));
             }
             return Ok(Box::pin(stream::once(async move {
@@ -659,11 +699,13 @@ where
                     Ok((awaited_action_subscriber, awaited_action))
                 })
                 .try_filter_map(|(subscriber, awaited_action)| {
-                    if apply_filter_predicate(&awaited_action, &filter) {
-                        future::ready(Ok(Some((subscriber, awaited_action.sort_key()))))
-                            .left_future()
-                    } else {
-                        future::ready(Result::<_, Error>::Ok(None)).right_future()
+                    let filter = filter.clone();
+                    async move {
+                        if self.apply_filter_predicate(&awaited_action, &filter).await {
+                            Ok(Some((subscriber, awaited_action.sort_key())))
+                        } else {
+                            Ok(None)
+                        }
                     }
                 })
                 .try_collect()
@@ -703,10 +745,13 @@ where
                 Ok((awaited_action_subscriber, awaited_action))
             })
             .try_filter_map(move |(subscriber, awaited_action)| {
-                if apply_filter_predicate(&awaited_action, &filter) {
-                    future::ready(Ok(Some(subscriber))).left_future()
-                } else {
-                    future::ready(Result::<_, Error>::Ok(None)).right_future()
+                let filter = filter.clone();
+                async move {
+                    if self.apply_filter_predicate(&awaited_action, &filter).await {
+                        Ok(Some(subscriber))
+                    } else {
+                        Ok(None)
+                    }
                 }
             })
             .map(move |result| -> Box<dyn ActionStateResult> {

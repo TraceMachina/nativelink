@@ -66,6 +66,10 @@ pub struct AwaitedAction {
     #[metric(help = "The last time the worker updated the AwaitedAction")]
     last_worker_updated_timestamp: SystemTime,
 
+    /// The last time the client sent a keepalive message.
+    #[metric(help = "The last time the client sent a keepalive message")]
+    last_client_keepalive_timestamp: SystemTime,
+
     /// Worker that is currently running this action, None if unassigned.
     #[metric(help = "The worker id of the AwaitedAction")]
     worker_id: Option<WorkerId>,
@@ -103,6 +107,7 @@ impl AwaitedAction {
             sort_key,
             attempts: 0,
             last_worker_updated_timestamp: now,
+            last_client_keepalive_timestamp: now,
             worker_id: None,
             state,
         }
@@ -144,25 +149,33 @@ impl AwaitedAction {
         self.last_worker_updated_timestamp
     }
 
-    pub(crate) fn keep_alive(&mut self, now: SystemTime) {
+    pub(crate) fn worker_keep_alive(&mut self, now: SystemTime) {
         self.last_worker_updated_timestamp = now;
+    }
+
+    pub(crate) fn last_client_keepalive_timestamp(&self) -> SystemTime {
+        self.last_client_keepalive_timestamp
+    }
+    pub(crate) fn update_client_keep_alive(&mut self, now: SystemTime) {
+        self.last_client_keepalive_timestamp = now;
+    }
+
+    pub(crate) fn set_client_operation_id(&mut self, client_operation_id: OperationId) {
+        Arc::make_mut(&mut self.state).client_operation_id = client_operation_id;
     }
 
     /// Sets the worker id that is currently processing this action.
     pub(crate) fn set_worker_id(&mut self, new_maybe_worker_id: Option<WorkerId>, now: SystemTime) {
         if self.worker_id != new_maybe_worker_id {
             self.worker_id = new_maybe_worker_id;
-            self.keep_alive(now);
+            self.worker_keep_alive(now);
         }
     }
 
-    /// Sets the current state of the action and notifies subscribers.
-    /// Returns true if the state was set, false if there are no subscribers.
-    pub fn set_state(&mut self, mut state: Arc<ActionState>, now: Option<SystemTime>) {
+    /// Sets the current state of the action and updates the last worker updated timestamp.
+    pub fn worker_set_state(&mut self, mut state: Arc<ActionState>, now: SystemTime) {
         std::mem::swap(&mut self.state, &mut state);
-        if let Some(now) = now {
-            self.keep_alive(now);
-        }
+        self.worker_keep_alive(now);
     }
 }
 
