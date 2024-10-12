@@ -80,8 +80,8 @@ impl DigestInfo {
             ));
         }
         Ok(DigestInfo {
-            size_bytes,
             packed_hash,
+            size_bytes,
         })
     }
 
@@ -285,8 +285,8 @@ impl TryFrom<Digest> for DigestInfo {
             .try_into()
             .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
         Ok(DigestInfo {
-            size_bytes,
             packed_hash,
+            size_bytes,
         })
     }
 }
@@ -302,8 +302,8 @@ impl TryFrom<&Digest> for DigestInfo {
             .try_into()
             .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
         Ok(DigestInfo {
-            size_bytes,
             packed_hash,
+            size_bytes,
         })
     }
 }
