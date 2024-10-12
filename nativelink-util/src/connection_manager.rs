@@ -300,8 +300,8 @@ impl ConnectionManagerWorker {
                 |err| Err((identifier, err)),
                 |channel| {
                     Ok(EstablishedChannel {
-                        identifier,
                         channel,
+                        identifier,
                     })
                 },
             )

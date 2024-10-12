@@ -255,9 +255,9 @@ impl ByteStreamServer {
         });
         Ok(ActiveStreamGuard {
             stream_state: Some(StreamState {
+                uuid,
                 tx,
                 store_update_fut,
-                uuid,
             }),
             bytes_received,
             bytestream_server: self,

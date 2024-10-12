@@ -1140,8 +1140,8 @@ impl ActionState {
             .err_tip(|| "Could not convert action_digest into DigestInfo")?;
 
         Ok(Self {
-            client_operation_id,
             stage,
+            client_operation_id,
             action_digest,
         })
     }
