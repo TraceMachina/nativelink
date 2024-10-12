@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::convert::Into;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::convert::Into;
 
 use futures::stream::unfold;
 use futures::Stream;

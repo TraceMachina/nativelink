@@ -324,7 +324,7 @@ where
         }))
     }
 
-    fn make_s3_path(&self, key: StoreKey<'_>) -> String {
+    fn make_s3_path(&self, key: &StoreKey<'_>) -> String {
         format!("{}{}", self.key_prefix, key.as_str(),)
     }
 
@@ -335,7 +335,7 @@ where
                     .s3_client
                     .head_object()
                     .bucket(&self.bucket)
-                    .key(self.make_s3_path(digest.borrow()))
+                    .key(self.make_s3_path(&digest.borrow()))
                     .send()
                     .await;
 
@@ -412,7 +412,7 @@ where
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let s3_path = &self.make_s3_path(digest.borrow());
+        let s3_path = &self.make_s3_path(&digest.borrow());
 
         let max_size = match upload_size {
             UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
@@ -687,7 +687,7 @@ where
             return Ok(());
         }
 
-        let s3_path = &self.make_s3_path(key);
+        let s3_path = &self.make_s3_path(&key);
         let end_read_byte = length
             .map_or(Some(None), |length| Some(offset.checked_add(length)))
             .err_tip(|| "Integer overflow protection triggered")?;
