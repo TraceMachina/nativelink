@@ -105,10 +105,9 @@ impl InstanceInfo {
                 .input_root_digest
                 .err_tip(|| "Expected input_digest_root")?,
         )?;
-        let timeout = action
-            .timeout
-            .map(|v| Duration::new(v.seconds as u64, v.nanos as u32))
-            .unwrap_or(Duration::MAX);
+        let timeout = action.timeout.map_or(Duration::MAX, |v| {
+            Duration::new(v.seconds as u64, v.nanos as u32)
+        });
 
         let mut platform_properties = HashMap::new();
         if let Some(platform) = action.platform {
