@@ -440,7 +440,8 @@ async fn check_footer_test() -> Result<(), Error> {
             u64::from_le_bytes(compressed_data[pos - 8..pos].try_into().unwrap());
         pos -= 8;
         assert_eq!(
-            bincode_index_count, index_count as u64,
+            bincode_index_count,
+            u64::from(index_count),
             "Expected index_count and bincode_index_count to match"
         );
     }

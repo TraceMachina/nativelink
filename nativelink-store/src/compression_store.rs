@@ -163,7 +163,7 @@ impl UploadState {
             UploadSizeInfo::MaxSize(sz) => sz,
         };
 
-        let max_index_count = (input_max_size / store.config.block_size as u64) + 1;
+        let max_index_count = (input_max_size / u64::from(store.config.block_size)) + 1;
 
         let header = Header {
             version: CURRENT_STREAM_FORMAT_VERSION,
@@ -187,7 +187,7 @@ impl UploadState {
         };
 
         // This is more accurate of an estimate than what get_maximum_output_size calculates.
-        let max_block_size = lz4_compress_bound(store.config.block_size as u64) + U32_SZ + 1;
+        let max_block_size = lz4_compress_bound(u64::from(store.config.block_size)) + U32_SZ + 1;
 
         let max_output_size = {
             let header_size = store.bincode_options.serialized_size(&header).unwrap();
