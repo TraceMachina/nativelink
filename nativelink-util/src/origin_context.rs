@@ -75,7 +75,7 @@ pub trait Symbol {
     }
 
     fn as_ptr(&'static self) -> *const RawSymbol {
-        from_ref::<Self>(self) as *const RawSymbol
+        from_ref::<Self>(self).cast::<RawSymbol>()
     }
 }
 
