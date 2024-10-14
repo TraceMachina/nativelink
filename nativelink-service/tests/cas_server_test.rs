@@ -325,7 +325,7 @@ async fn setup_directory_structure(
             node_properties: Some(NodeProperties {
                 properties: vec![],
                 mtime: Some(Timestamp {
-                    seconds: i as i64,
+                    seconds: i64::from(i),
                     nanos: 0,
                 }),
                 unix_mode: Some(0o755),

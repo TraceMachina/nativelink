@@ -60,13 +60,14 @@ impl ShardStore {
         let total_weight: u64 = config
             .stores
             .iter()
-            .map(|shard_config| shard_config.weight.unwrap_or(1) as u64)
+            .map(|shard_config| u64::from(shard_config.weight.unwrap_or(1)))
             .sum();
         let mut weights: Vec<u32> = config
             .stores
             .iter()
             .map(|shard_config| {
-                (u32::MAX as u64 * shard_config.weight.unwrap_or(1) as u64 / total_weight) as u32
+                (u64::from(u32::MAX) * u64::from(shard_config.weight.unwrap_or(1)) / total_weight)
+                    as u32
             })
             .scan(0, |state, weight| {
                 *state += weight;
