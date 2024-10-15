@@ -108,13 +108,13 @@ impl GrpcStore {
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn.clone(),
-                config.retry.to_owned(),
+                config.retry.clone(),
             ),
             connection_manager: ConnectionManager::new(
                 endpoints.into_iter(),
                 config.connections_per_endpoint,
                 config.max_concurrent_requests,
-                config.retry.to_owned(),
+                config.retry.clone(),
                 jitter_fn,
             ),
         }))
