@@ -104,7 +104,7 @@ impl StoreDriver for SizePartitioningStore {
     ) -> Result<(), Error> {
         let digest = match key {
             StoreKey::Digest(digest) => digest,
-            other => {
+            other @ StoreKey::Str(_) => {
                 return Err(make_input_err!(
                     "SizePartitioningStore only supports Digest keys, got {other:?}"
                 ))
@@ -125,7 +125,7 @@ impl StoreDriver for SizePartitioningStore {
     ) -> Result<(), Error> {
         let digest = match key {
             StoreKey::Digest(digest) => digest,
-            other => {
+            other @ StoreKey::Str(_) => {
                 return Err(make_input_err!(
                     "SizePartitioningStore only supports Digest keys, got {other:?}"
                 ))

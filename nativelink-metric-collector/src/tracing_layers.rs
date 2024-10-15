@@ -141,7 +141,7 @@ where
 
     collected_component = match collected_metric {
         CollectedMetrics::Component(component) => component.deref_mut(),
-        _ => panic!("Expected to be component"),
+        CollectedMetrics::Primitive(_) => panic!("Expected to be component"),
     };
     // DFS the iterator of keys and return the first leaf found matching the name query.
     find_component(iter, known_spans, collected_component)
