@@ -6,7 +6,7 @@ rust-version = "1.79.0"
 
 [dependencies]
 nativelink-metric = { path = "../nativelink-metric" }
-opentelemetry = { version = "0.24.0", default-features = false }
+opentelemetry = { version = "0.24.0", features = ["metrics"], default-features = false }
 parking_lot = "0.12.3"
 serde = { version = "1.0.210", default-features = false }
 tracing = { version = "0.1.40", default-features = false }

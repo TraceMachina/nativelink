@@ -20,11 +20,12 @@ use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use fred::bytes_utils::string::Str;
+use fred::clients::SubscriberClient;
 use fred::error::{RedisError, RedisErrorKind};
 use fred::mocks::{MockCommand, Mocks};
-use fred::prelude::Builder;
-use fred::types::{RedisConfig, RedisValue};
-use mock_instant::thread_local::SystemTime as MockSystemTime;
+use fred::prelude::{Builder, RedisPool};
+use fred::types::{PerformanceConfig, RedisConfig, RedisValue};
+use mock_instant::global::SystemTime as MockSystemTime;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_scheduler::awaited_action_db::{
@@ -46,6 +47,7 @@ const INSTANCE_NAME: &str = "instance_name";
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 const SCRIPT_VERSION: &str = "3e762c15";
 const VERSION_SCRIPT_HASH: &str = "fdf1152fd21705c8763752809b86b55c5d4511ce";
+const MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 
 fn mock_uuid_generator() -> String {
     uuid::Uuid::parse_str(TEMP_UUID).unwrap().to_string()
@@ -145,6 +147,20 @@ impl Drop for MockRedisBackend {
     }
 }
 
+fn make_clients(mut builder: Builder) -> (RedisPool, SubscriberClient) {
+    const CONNECTION_POOL_SIZE: usize = 1;
+    let client_pool = builder
+        .set_performance_config(PerformanceConfig {
+            broadcast_channel_capacity: 4096,
+            ..Default::default()
+        })
+        .build_pool(CONNECTION_POOL_SIZE)
+        .unwrap();
+
+    let subscriber_client = builder.build_subscriber_client().unwrap();
+    (client_pool, subscriber_client)
+}
+
 #[nativelink_test]
 async fn add_action_smoke_test() -> Result<(), Error> {
     const CLIENT_OPERATION_ID: &str = "my_client_operation_id";
@@ -178,16 +194,14 @@ async fn add_action_smoke_test() -> Result<(), Error> {
 
     const SUB_CHANNEL: &str = "sub_channel";
     let ft_aggregate_args = vec![
-        format!("aa__unique_qualifier_{SCRIPT_VERSION}").into(),
-        format!("@unique_qualifier:{{ {INSTANCE_NAME}_SHA256_0000000000000000000000000000000000000000000000000000000000000000_0_c* }}").into(),
+        format!("aa__unique_qualifier__{SCRIPT_VERSION}").into(),
+        format!("@unique_qualifier:{{ {INSTANCE_NAME}_SHA256_0000000000000000000000000000000000000000000000000000000000000000_0_c }}").into(),
         "LOAD".into(),
         2.into(),
         "data".into(),
         "version".into(),
         "SORTBY".into(),
-        2.into(),
-        "@unique_qualifier".into(),
-        "ASC".into(),
+        0.into(),
         "WITHCURSOR".into(),
         "COUNT".into(),
         256.into(),
@@ -223,7 +237,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
                 cmd: Str::from_static("FT.CREATE"),
                 subcommand: None,
                 args: vec![
-                    format!("aa__unique_qualifier_{SCRIPT_VERSION}").into(),
+                    format!("aa__unique_qualifier__{SCRIPT_VERSION}").into(),
                     "ON".into(),
                     "HASH".into(),
                     "PREFIX".into(),
@@ -238,7 +252,6 @@ async fn add_action_smoke_test() -> Result<(), Error> {
                     "SCHEMA".into(),
                     "unique_qualifier".into(),
                     "TAG".into(),
-                    "SORTABLE".into(),
                 ],
             },
             Ok(RedisValue::Bytes(Bytes::from("data"))),
@@ -270,8 +283,10 @@ async fn add_action_smoke_test() -> Result<(), Error> {
                     RedisValue::Bytes(Bytes::from(serde_json::to_string(&worker_awaited_action).unwrap())),
                     "unique_qualifier".as_bytes().into(),
                     format!("{INSTANCE_NAME}_SHA256_0000000000000000000000000000000000000000000000000000000000000000_0_c").as_bytes().into(),
+                    "state".as_bytes().into(),
+                    "queued".as_bytes().into(),
                     "sort_key".as_bytes().into(),
-                    "q_9223372041149743103".as_bytes().into(),
+                    "80000000ffffffff".as_bytes().into(),
                 ],
             },
             Ok(1.into() /* New version */),
@@ -344,8 +359,10 @@ async fn add_action_smoke_test() -> Result<(), Error> {
                     RedisValue::Bytes(Bytes::from(serde_json::to_string(&new_awaited_action).unwrap())),
                     "unique_qualifier".as_bytes().into(),
                     format!("{INSTANCE_NAME}_SHA256_0000000000000000000000000000000000000000000000000000000000000000_0_c").as_bytes().into(),
+                    "state".as_bytes().into(),
+                    "executing".as_bytes().into(),
                     "sort_key".as_bytes().into(),
-                    "e_9223372041149743103".as_bytes().into(),
+                    "80000000ffffffff".as_bytes().into(),
                 ],
             },
             Ok(2.into() /* New version */),
@@ -389,13 +406,16 @@ async fn add_action_smoke_test() -> Result<(), Error> {
             mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
             ..Default::default()
         });
-
+        let (client_pool, subscriber_client) = make_clients(builder);
         Arc::new(
             RedisStore::new_from_builder_and_parts(
-                builder,
+                client_pool,
+                subscriber_client,
                 Some(SUB_CHANNEL.into()),
                 mock_uuid_generator,
                 String::new(),
+                4064,
+                MAX_CHUNK_UPLOADS_PER_UPDATE,
             )
             .unwrap(),
         )
