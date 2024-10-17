@@ -222,7 +222,7 @@ impl AwaitedActionSortKey {
         Self::new(priority, timestamp)
     }
 
-    pub(crate) fn as_u64(&self) -> u64 {
+    pub(crate) fn as_u64(self) -> u64 {
         self.0
     }
 }
