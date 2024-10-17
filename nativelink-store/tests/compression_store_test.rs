@@ -71,7 +71,7 @@ const MEGABYTE_SZ: usize = 1024 * 1024;
 #[nativelink_test]
 async fn simple_smoke_test() -> Result<(), Error> {
     let store = CompressionStore::new(
-        nativelink_config::stores::CompressionStore {
+        &nativelink_config::stores::CompressionStore {
             backend: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
@@ -107,7 +107,7 @@ async fn simple_smoke_test() -> Result<(), Error> {
 #[nativelink_test]
 async fn partial_reads_test() -> Result<(), Error> {
     let store_owned = CompressionStore::new(
-        nativelink_config::stores::CompressionStore {
+        &nativelink_config::stores::CompressionStore {
             backend: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
@@ -166,7 +166,7 @@ async fn partial_reads_test() -> Result<(), Error> {
 #[nativelink_test]
 async fn rand_5mb_smoke_test() -> Result<(), Error> {
     let store_owned = CompressionStore::new(
-        nativelink_config::stores::CompressionStore {
+        &nativelink_config::stores::CompressionStore {
             backend: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
@@ -203,7 +203,7 @@ async fn rand_5mb_smoke_test() -> Result<(), Error> {
 async fn sanity_check_zero_bytes_test() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store_owned = CompressionStore::new(
-        nativelink_config::stores::CompressionStore {
+        &nativelink_config::stores::CompressionStore {
             backend: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
@@ -258,7 +258,7 @@ async fn check_header_test() -> Result<(), Error> {
     const MAX_SIZE_INPUT: u64 = 1024 * 1024; // 1MB.
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store_owned = CompressionStore::new(
-        nativelink_config::stores::CompressionStore {
+        &nativelink_config::stores::CompressionStore {
             backend: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
@@ -345,7 +345,7 @@ async fn check_footer_test() -> Result<(), Error> {
     const BLOCK_SIZE: u32 = 32 * 1024;
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store_owned = CompressionStore::new(
-        nativelink_config::stores::CompressionStore {
+        &nativelink_config::stores::CompressionStore {
             backend: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),
@@ -492,7 +492,7 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     const BLOCK_SIZE: u32 = 32 * 1024;
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store_owned = CompressionStore::new(
-        nativelink_config::stores::CompressionStore {
+        &nativelink_config::stores::CompressionStore {
             backend: nativelink_config::stores::StoreConfig::memory(
                 nativelink_config::stores::MemoryStore::default(),
             ),

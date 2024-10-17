@@ -220,7 +220,7 @@ pub struct CompressionStore {
 
 impl CompressionStore {
     pub fn new(
-        compression_config: nativelink_config::stores::CompressionStore,
+        compression_config: &nativelink_config::stores::CompressionStore,
         inner_store: Store,
     ) -> Result<Arc<Self>, Error> {
         let lz4_config = match compression_config.compression_algorithm {

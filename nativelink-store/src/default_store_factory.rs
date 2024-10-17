@@ -59,7 +59,7 @@ pub fn store_factory<'a>(
                 store_factory(&config.backend, store_manager, None).await?,
             ),
             StoreConfig::compression(config) => CompressionStore::new(
-                *config.clone(),
+                &config.clone(),
                 store_factory(&config.backend, store_manager, None).await?,
             )?,
             StoreConfig::dedup(config) => DedupStore::new(

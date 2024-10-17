@@ -161,9 +161,8 @@ async fn inner_main(
     cfg: CasConfig,
     server_start_timestamp: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let health_registry_builder = Arc::new(AsyncMutex::new(HealthRegistryBuilder::new(
-        "nativelink".into(),
-    )));
+    let health_registry_builder =
+        Arc::new(AsyncMutex::new(HealthRegistryBuilder::new("nativelink")));
 
     let store_manager = Arc::new(StoreManager::new());
     {
@@ -172,7 +171,7 @@ async fn inner_main(
         for (name, store_cfg) in cfg.stores {
             let health_component_name = format!("stores/{name}");
             let mut health_register_store =
-                health_registry_lock.sub_builder(health_component_name.into());
+                health_registry_lock.sub_builder(&health_component_name);
             let store = store_factory(&store_cfg, &store_manager, Some(&mut health_register_store))
                 .await
                 .err_tip(|| format!("Failed to create store '{name}'"))?;

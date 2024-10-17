@@ -27,7 +27,7 @@ use pretty_assertions::assert_eq;
 
 #[nativelink_test]
 async fn create_empty_indicator() -> Result<(), Error> {
-    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
+    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink");
     let health_registry = health_registry_builder.build();
     let health_status: Vec<HealthStatusDescription> =
         health_registry.health_status_report().collect().await;
@@ -39,7 +39,7 @@ async fn create_empty_indicator() -> Result<(), Error> {
 async fn create_register_indicator() -> Result<(), Error> {
     generate_health_status_indicator!(MockComponentImpl, Ok, "ok");
 
-    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
+    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink");
 
     health_registry_builder.register_indicator(Arc::new(MockComponentImpl {}));
 
@@ -66,11 +66,11 @@ async fn create_register_indicator() -> Result<(), Error> {
 async fn create_sub_registry() -> Result<(), Error> {
     generate_health_status_indicator!(MockComponentImpl, Ok, "ok");
 
-    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
+    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink");
 
     health_registry_builder.register_indicator(Arc::new(MockComponentImpl {}));
 
-    let mut namespace1_registry = health_registry_builder.sub_builder("namespace1".into());
+    let mut namespace1_registry = health_registry_builder.sub_builder("namespace1");
 
     namespace1_registry.register_indicator(Arc::new(MockComponentImpl {}));
 
@@ -107,7 +107,7 @@ async fn create_multiple_indicators_same_registry() -> Result<(), Error> {
     generate_health_status_indicator!(MockComponentImpl2, Ok, "ok");
     generate_health_status_indicator!(MockComponentImpl3, Ok, "ok");
 
-    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
+    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink");
 
     health_registry_builder.register_indicator(Arc::new(MockComponentImpl1 {}));
     health_registry_builder.register_indicator(Arc::new(MockComponentImpl2 {}));
@@ -153,15 +153,15 @@ async fn create_multiple_indicators_with_sub_registry() -> Result<(), Error> {
     generate_health_status_indicator!(MockComponentImpl2, Ok, "ok");
     generate_health_status_indicator!(MockComponentImpl3, Ok, "ok");
 
-    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
+    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink");
 
-    let mut sub_builder = health_registry_builder.sub_builder("namespace1".into());
+    let mut sub_builder = health_registry_builder.sub_builder("namespace1");
     sub_builder.register_indicator(Arc::new(MockComponentImpl1 {}));
-    let mut sub_builder = health_registry_builder.sub_builder("namespace2".into());
+    let mut sub_builder = health_registry_builder.sub_builder("namespace2");
     sub_builder.register_indicator(Arc::new(MockComponentImpl2 {}));
 
     health_registry_builder
-        .sub_builder("namespace3".into())
+        .sub_builder("namespace3")
         .register_indicator(Arc::new(MockComponentImpl3 {}));
 
     let health_registry = health_registry_builder.build();

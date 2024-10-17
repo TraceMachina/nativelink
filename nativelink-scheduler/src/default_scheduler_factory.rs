@@ -99,7 +99,7 @@ fn simple_scheduler_factory(
             let task_change_notify = Arc::new(Notify::new());
             let awaited_action_db = memory_awaited_action_db_factory(
                 config.retain_completed_for_s,
-                task_change_notify.clone(),
+                &task_change_notify.clone(),
                 SystemTime::now,
             );
             let (action_scheduler, worker_scheduler) =
@@ -141,7 +141,7 @@ fn simple_scheduler_factory(
 
 pub fn memory_awaited_action_db_factory<I, NowFn>(
     mut retain_completed_for_s: u32,
-    task_change_notify: Arc<Notify>,
+    task_change_notify: &Arc<Notify>,
     now_fn: NowFn,
 ) -> MemoryAwaitedActionDb<I, NowFn>
 where

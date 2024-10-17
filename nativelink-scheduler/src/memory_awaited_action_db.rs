@@ -251,7 +251,7 @@ impl SortedAwaitedActions {
     fn insert_sort_map_for_stage(
         &mut self,
         stage: &ActionStage,
-        sorted_awaited_action: SortedAwaitedAction,
+        sorted_awaited_action: &SortedAwaitedAction,
     ) -> Result<(), Error> {
         let newly_inserted = match stage {
             ActionStage::Unknown => self.unknown.insert(sorted_awaited_action.clone()),
@@ -294,7 +294,7 @@ impl SortedAwaitedActions {
             ));
         };
 
-        self.insert_sort_map_for_stage(&new_awaited_action.state().stage, sorted_awaited_action)
+        self.insert_sort_map_for_stage(&new_awaited_action.state().stage, &sorted_awaited_action)
             .err_tip(|| "In AwaitedActionDb::update_awaited_action")?;
         Ok(())
     }
@@ -655,7 +655,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
     /// cleanup of the other maps on drop.
     fn make_client_awaited_action(
         &mut self,
-        operation_id: OperationId,
+        operation_id: &OperationId,
         awaited_action: AwaitedAction,
     ) -> (Arc<ClientAwaitedAction>, watch::Receiver<AwaitedAction>) {
         let (tx, rx) = watch::channel(awaited_action);
@@ -704,7 +704,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         let sort_key = awaited_action.sort_key();
 
         let (client_awaited_action, rx) =
-            self.make_client_awaited_action(operation_id.clone(), awaited_action);
+            self.make_client_awaited_action(&operation_id.clone(), awaited_action);
 
         event!(
             Level::DEBUG,
@@ -736,7 +736,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         self.sorted_action_info_hash_keys
             .insert_sort_map_for_stage(
                 &ActionStage::Queued,
-                SortedAwaitedAction {
+                &SortedAwaitedAction {
                     sort_key,
                     operation_id,
                 },
