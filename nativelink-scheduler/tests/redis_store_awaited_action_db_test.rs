@@ -20,11 +20,12 @@ use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use fred::bytes_utils::string::Str;
+use fred::clients::SubscriberClient;
 use fred::error::{RedisError, RedisErrorKind};
 use fred::mocks::{MockCommand, Mocks};
-use fred::prelude::Builder;
-use fred::types::{RedisConfig, RedisValue};
-use mock_instant::thread_local::SystemTime as MockSystemTime;
+use fred::prelude::{Builder, RedisPool};
+use fred::types::{PerformanceConfig, RedisConfig, RedisValue};
+use mock_instant::global::SystemTime as MockSystemTime;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_scheduler::awaited_action_db::{
@@ -46,6 +47,7 @@ const INSTANCE_NAME: &str = "instance_name";
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 const SCRIPT_VERSION: &str = "3e762c15";
 const VERSION_SCRIPT_HASH: &str = "fdf1152fd21705c8763752809b86b55c5d4511ce";
+const MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 
 fn mock_uuid_generator() -> String {
     uuid::Uuid::parse_str(TEMP_UUID).unwrap().to_string()
@@ -143,6 +145,20 @@ impl Drop for MockRedisBackend {
         // Panicking isn't enough inside a tokio task, we need to `exit(1)`
         std::process::exit(1)
     }
+}
+
+fn make_clients(mut builder: Builder) -> (RedisPool, SubscriberClient) {
+    const CONNECTION_POOL_SIZE: usize = 1;
+    let client_pool = builder
+        .set_performance_config(PerformanceConfig {
+            broadcast_channel_capacity: 4096,
+            ..Default::default()
+        })
+        .build_pool(CONNECTION_POOL_SIZE)
+        .unwrap();
+
+    let subscriber_client = builder.build_subscriber_client().unwrap();
+    (client_pool, subscriber_client)
 }
 
 #[nativelink_test]
@@ -389,13 +405,16 @@ async fn add_action_smoke_test() -> Result<(), Error> {
             mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
             ..Default::default()
         });
-
+        let (client_pool, subscriber_client) = make_clients(builder);
         Arc::new(
             RedisStore::new_from_builder_and_parts(
-                builder,
+                client_pool,
+                subscriber_client,
                 Some(SUB_CHANNEL.into()),
                 mock_uuid_generator,
                 String::new(),
+                4064,
+                MAX_CHUNK_UPLOADS_PER_UPDATE,
             )
             .unwrap(),
         )
