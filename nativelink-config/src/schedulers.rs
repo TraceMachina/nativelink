@@ -100,6 +100,12 @@ pub struct SimpleScheduler {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub retain_completed_for_s: u32,
 
+    /// Mark operations as completed with error if no client has updated them
+    /// within this duration.
+    /// Default: 60 (seconds)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub client_action_timeout_s: u64,
+
     /// Remove workers from pool once the worker has not responded in this
     /// amount of time in seconds.
     /// Default: 5 (seconds)

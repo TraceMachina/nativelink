@@ -201,18 +201,14 @@ where
         // At this stage we know that this event is a client request, so we need
         // to populate the client_operation_id.
         let mut awaited_action = self.awaited_action_rx.borrow().clone();
-        let mut state = awaited_action.state().as_ref().clone();
-        state.client_operation_id = client_operation_id;
-        awaited_action.set_state(Arc::new(state), None);
+        awaited_action.set_client_operation_id(client_operation_id);
         Ok(awaited_action)
     }
 
     async fn borrow(&self) -> Result<AwaitedAction, Error> {
         let mut awaited_action = self.awaited_action_rx.borrow().clone();
         if let Some(client_info) = self.client_info.as_ref() {
-            let mut state = awaited_action.state().as_ref().clone();
-            state.client_operation_id = client_info.client_operation_id.clone();
-            awaited_action.set_state(Arc::new(state), None);
+            awaited_action.set_client_operation_id(client_info.client_operation_id.clone());
         }
         Ok(awaited_action)
     }

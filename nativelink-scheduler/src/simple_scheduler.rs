@@ -44,6 +44,11 @@ use crate::worker_scheduler::WorkerScheduler;
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
 
+/// Mark operations as completed with error if no client has updated them
+/// within this duration.
+/// If this changes, remember to change the documentation in the config.
+const DEFAULT_CLIENT_ACTION_TIMEOUT_S: u64 = 60;
+
 /// Default times a job can retry before failing.
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_MAX_JOB_RETRIES: usize = 3;
@@ -324,6 +329,11 @@ impl SimpleScheduler {
             worker_timeout_s = DEFAULT_WORKER_TIMEOUT_S;
         }
 
+        let mut client_action_timeout_s = scheduler_cfg.client_action_timeout_s;
+        if client_action_timeout_s == 0 {
+            client_action_timeout_s = DEFAULT_CLIENT_ACTION_TIMEOUT_S;
+        }
+
         let mut max_job_retries = scheduler_cfg.max_job_retries;
         if max_job_retries == 0 {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
@@ -333,6 +343,7 @@ impl SimpleScheduler {
         let state_manager = SimpleSchedulerStateManager::new(
             max_job_retries,
             Duration::from_secs(worker_timeout_s),
+            Duration::from_secs(client_action_timeout_s),
             awaited_action_db,
             now_fn,
         );
