@@ -59,7 +59,7 @@ pub struct Retrier {
     config: Retry,
 }
 
-fn to_error_code(code: &Code) -> ErrorCode {
+fn to_error_code(code: Code) -> ErrorCode {
     match code {
         Code::Cancelled => ErrorCode::Cancelled,
         Code::Unknown => ErrorCode::Unknown,
@@ -92,8 +92,8 @@ impl Retrier {
 
     /// This should only return true if the error code should be interpreted as
     /// temporary.
-    fn should_retry(&self, code: &Code) -> bool {
-        if *code == Code::Ok {
+    fn should_retry(&self, code: Code) -> bool {
+        if code == Code::Ok {
             false
         } else if let Some(retry_codes) = &self.config.retry_on_errors {
             retry_codes.contains(&to_error_code(code))
@@ -155,7 +155,7 @@ impl Retrier {
                         return Err(e.append(format!("On attempt {attempt}")));
                     }
                     Some(RetryResult::Retry(err)) => {
-                        if !self.should_retry(&err.code) {
+                        if !self.should_retry(err.code) {
                             event!(Level::ERROR, ?attempt, ?err, "Not retrying permanent error");
                             return Err(err);
                         }
