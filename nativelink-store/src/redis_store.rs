@@ -55,6 +55,7 @@ use crate::redis_utils::ft_aggregate;
 pub const READ_CHUNK_SIZE: usize = 64 * 1024;
 const CONNECTION_POOL_SIZE: usize = 3;
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn to_hex(value: &u32) -> String {
     format!("{value:08x}")
 }
