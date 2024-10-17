@@ -28,7 +28,7 @@ use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_worker::local_worker::LocalWorker;
 use nativelink_worker::worker_api_client_wrapper::WorkerApiClientTrait;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 use tonic::{
     codec::Codec, // Needed for .decoder().
@@ -194,7 +194,12 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
         }),
         Box::new(move |_| Box::pin(async move { /* No sleep */ })),
     );
-    let drop_guard = spawn!("local_worker_spawn", async move { worker.run().await });
+    // Create a shutdown channel for the test
+    let (shutdown_tx_test, _) = broadcast::channel::<Arc<oneshot::Sender<()>>>(16);
+
+    let drop_guard = spawn!("local_worker_spawn", async move {
+        worker.run(shutdown_tx_test.subscribe()).await
+    });
 
     let (tx_stream, streaming_response) = setup_grpc_stream();
     TestContext {
