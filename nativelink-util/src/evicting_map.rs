@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::future::Future;
 use std::hash::Hash;
-use std::ops::{DerefMut, RangeBounds};
+use std::ops::RangeBounds;
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -372,7 +372,7 @@ where
         Q: Ord + Hash + Eq + Debug,
     {
         let mut state = self.state.lock().await;
-        self.evict_items(state.deref_mut()).await;
+        self.evict_items(&mut *state).await;
 
         let entry = state.lru.get_mut(key.borrow())?;
 
@@ -417,7 +417,7 @@ where
 
     async fn inner_insert_many(
         &self,
-        mut state: &mut State<K, T>,
+        state: &mut State<K, T>,
         inserts: impl IntoIterator<Item = (K, T)>,
         seconds_since_anchor: i32,
     ) -> Vec<T> {
@@ -434,7 +434,7 @@ where
             }
             state.sum_store_size += new_item_size;
             state.lifetime_inserted_bytes.add(new_item_size);
-            self.evict_items(state.deref_mut()).await;
+            self.evict_items(state).await;
         }
         replaced_items
     }
@@ -448,12 +448,12 @@ where
         self.inner_remove(&mut state, key).await
     }
 
-    async fn inner_remove<Q>(&self, mut state: &mut State<K, T>, key: &Q) -> bool
+    async fn inner_remove<Q>(&self, state: &mut State<K, T>, key: &Q) -> bool
     where
         K: Borrow<Q>,
         Q: Ord + Hash + Eq + Debug,
     {
-        self.evict_items(state.deref_mut()).await;
+        self.evict_items(state).await;
         if let Some(entry) = state.lru.pop(key.borrow()) {
             state.remove(key, &entry, false).await;
             return true;
