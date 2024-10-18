@@ -124,7 +124,7 @@ pub struct HealthRegistryBuilder {
 
 /// Health registry builder that is used to build a health registry.
 /// The builder provides creation, registering of health status indicators,
-/// sub building scoped health registries and building the health registry.
+/// sub-building scoped health registries and building the health registry.
 /// `build()` should be called once for finalizing the production of a health registry.
 impl HealthRegistryBuilder {
     pub fn new(namespace: Cow<'static, str>) -> Self {

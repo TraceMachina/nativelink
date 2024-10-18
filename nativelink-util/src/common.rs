@@ -191,7 +191,7 @@ impl Serialize for DigestInfo {
     }
 }
 
-/// Custom deserializer for `DigestInfo` becaues the default Deserializer
+/// Custom deserializer for `DigestInfo` because the default Deserializer
 /// would try to decode the data as a byte array, but we use {hex}-{size}.
 impl<'de> Deserialize<'de> for DigestInfo {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>

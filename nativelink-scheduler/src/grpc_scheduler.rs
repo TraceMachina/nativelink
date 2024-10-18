@@ -265,8 +265,8 @@ impl GrpcScheduler {
             })
         };
         let skip_cache_lookup = match action_info.unique_qualifier {
-            ActionUniqueQualifier::Cachable(_) => false,
-            ActionUniqueQualifier::Uncachable(_) => true,
+            ActionUniqueQualifier::Cacheable(_) => false,
+            ActionUniqueQualifier::Uncacheable(_) => true,
         };
         let request = ExecuteRequest {
             instance_name: action_info.instance_name().clone(),

@@ -56,7 +56,7 @@ use crate::worker_utils::make_supported_properties;
 /// consider an error to have occurred.
 const ACTIONS_IN_TRANSIT_TIMEOUT_S: f32 = 10.;
 
-/// If we loose connection to the worker api server we will wait this many seconds
+/// If we lose connection to the worker api server we will wait this many seconds
 /// before trying to connect.
 const CONNECTION_RETRY_DELAY_S: f32 = 0.5;
 

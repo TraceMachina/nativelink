@@ -26,6 +26,6 @@ use crate::operation_state_manager::ClientStateManager;
 pub trait KnownPlatformPropertyProvider:
     ClientStateManager + Sync + Send + Unpin + RootMetricsComponent + 'static
 {
-    // / Returns the platform property manager.
+    // Returns the platform property manager.
     async fn get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error>;
 }
