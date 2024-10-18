@@ -76,12 +76,12 @@ fn apply_filter_predicate(awaited_action: &AwaitedAction, filter: &OperationFilt
     {
         if let Some(filter_unique_key) = &filter.unique_key {
             match &awaited_action.action_info().unique_qualifier {
-                ActionUniqueQualifier::Cachable(unique_key) => {
+                ActionUniqueQualifier::Cacheable(unique_key) => {
                     if filter_unique_key != unique_key {
                         return false;
                     }
                 }
-                ActionUniqueQualifier::Uncachable(_) => {
+                ActionUniqueQualifier::Uncacheable(_) => {
                     return false;
                 }
             }
@@ -806,9 +806,9 @@ where
     async fn assign_operation(
         &self,
         operation_id: &OperationId,
-        worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
+        worker_id_or_reason_for_unassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error> {
-        let (maybe_worker_id, update) = match worker_id_or_reason_for_unsassign {
+        let (maybe_worker_id, update) = match worker_id_or_reason_for_unassign {
             Ok(worker_id) => (
                 Some(worker_id),
                 UpdateOperationType::UpdateWithActionStage(ActionStage::Executing),

@@ -161,7 +161,7 @@ impl ResumeableFileSlot {
 
     /// Utility function to read data from a handler and handles file descriptor
     /// timeouts. Chunk size is based on the `buf`'s capacity.
-    /// Note: If the `handler` changes `buf`s capcity, it is responsible for reserving
+    /// Note: If the `handler` changes `buf`s capacity, it is responsible for reserving
     /// more before returning.
     pub async fn read_buf_cb<'b, T, F, Fut>(
         &'b mut self,

@@ -93,7 +93,7 @@ const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
 #[allow(non_camel_case_types)]
 #[derive(Debug, Deserialize)]
 enum SideChannelFailureReason {
-    /// Task should be considered timedout.
+    /// Task should be considered timed out.
     timeout,
 }
 

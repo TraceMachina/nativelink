@@ -100,7 +100,7 @@ async fn test_random_20mb_16k_chunks() -> Result<(), std::io::Error> {
 }
 
 #[nativelink_test]
-async fn insert_garbage_check_boundarys_recover_test() -> Result<(), std::io::Error> {
+async fn insert_garbage_check_boundaries_recover_test() -> Result<(), std::io::Error> {
     let mut rand_data = {
         let mut data = vec![0u8; 100_000];
         let mut rng = SmallRng::seed_from_u64(1);

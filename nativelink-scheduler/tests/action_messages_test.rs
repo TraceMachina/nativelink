@@ -30,7 +30,7 @@ use pretty_assertions::assert_eq;
 
 #[nativelink_test]
 async fn action_state_any_url_test() -> Result<(), Error> {
-    let unique_qualifier = ActionUniqueQualifier::Cachable(ActionUniqueKey {
+    let unique_qualifier = ActionUniqueQualifier::Cacheable(ActionUniqueKey {
         instance_name: "foo_instance".to_string(),
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::new([1u8; 32], 5),

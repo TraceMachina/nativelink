@@ -376,7 +376,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
     let action_digest = DigestInfo::new([7u8; 32], 123);
     let instance_name = "instance_name".to_string();
 
-    let unique_qualifier = ActionUniqueQualifier::Uncachable(ActionUniqueKey {
+    let unique_qualifier = ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
         instance_name: instance_name.clone(),
         digest_function: DigestHasherFunc::Sha256,
         digest: action_digest,

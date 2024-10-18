@@ -180,13 +180,13 @@ impl TryFrom<String> for WorkerId {
 }
 
 /// Holds the information needed to uniquely identify an action
-/// and if it is cachable or not.
+/// and if it is cacheable or not.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionUniqueQualifier {
-    /// The action is cachable.
-    Cachable(ActionUniqueKey),
-    /// The action is uncachable.
-    Uncachable(ActionUniqueKey),
+    /// The action is cacheable.
+    Cacheable(ActionUniqueKey),
+    /// The action is uncacheable.
+    Uncacheable(ActionUniqueKey),
 }
 
 impl MetricsComponent for ActionUniqueQualifier {
@@ -195,15 +195,15 @@ impl MetricsComponent for ActionUniqueQualifier {
         _kind: MetricKind,
         field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
-        let (cachable, action) = match self {
-            Self::Cachable(action) => (true, action),
-            Self::Uncachable(action) => (false, action),
+        let (cacheable, action) = match self {
+            Self::Cacheable(action) => (true, action),
+            Self::Uncacheable(action) => (false, action),
         };
         publish!(
-            cachable,
-            &cachable,
+            cacheable,
+            &cacheable,
             MetricKind::Default,
-            "If the action is cachable.",
+            "If the action is cacheable.",
             ""
         );
         action.publish(MetricKind::Component, field_metadata)?;
@@ -215,33 +215,33 @@ impl ActionUniqueQualifier {
     /// Get the instance_name of the action.
     pub const fn instance_name(&self) -> &String {
         match self {
-            Self::Cachable(action) => &action.instance_name,
-            Self::Uncachable(action) => &action.instance_name,
+            Self::Cacheable(action) => &action.instance_name,
+            Self::Uncacheable(action) => &action.instance_name,
         }
     }
 
     /// Get the digest function of the action.
     pub const fn digest_function(&self) -> DigestHasherFunc {
         match self {
-            Self::Cachable(action) => action.digest_function,
-            Self::Uncachable(action) => action.digest_function,
+            Self::Cacheable(action) => action.digest_function,
+            Self::Uncacheable(action) => action.digest_function,
         }
     }
 
     /// Get the digest of the action.
     pub const fn digest(&self) -> DigestInfo {
         match self {
-            Self::Cachable(action) => action.digest,
-            Self::Uncachable(action) => action.digest,
+            Self::Cacheable(action) => action.digest,
+            Self::Uncacheable(action) => action.digest,
         }
     }
 }
 
 impl std::fmt::Display for ActionUniqueQualifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (cachable, unique_key) = match self {
-            Self::Cachable(action) => (true, action),
-            Self::Uncachable(action) => (false, action),
+        let (cacheable, unique_key) = match self {
+            Self::Cacheable(action) => (true, action),
+            Self::Uncacheable(action) => (false, action),
         };
         f.write_fmt(format_args!(
             // Note: We use underscores because it makes escaping easier
@@ -251,7 +251,7 @@ impl std::fmt::Display for ActionUniqueQualifier {
             unique_key.digest_function,
             unique_key.digest.packed_hash(),
             unique_key.digest.size_bytes(),
-            if cachable { 'c' } else { 'u' },
+            if cacheable { 'c' } else { 'u' },
         ))
     }
 }
@@ -308,9 +308,9 @@ pub struct ActionInfo {
     /// When this action was created.
     #[metric(help = "When this action was created.")]
     pub insert_timestamp: SystemTime,
-    /// Info used to uniquely identify this ActionInfo and if it is cachable.
+    /// Info used to uniquely identify this ActionInfo and if it is cacheable.
     /// This is primarily used to join actions/operations together using this key.
-    #[metric(help = "Info used to uniquely identify this ActionInfo and if it is cachable.")]
+    #[metric(help = "Info used to uniquely identify this ActionInfo and if it is cacheable.")]
     pub unique_qualifier: ActionUniqueQualifier,
 }
 
@@ -342,9 +342,9 @@ impl ActionInfo {
                 .try_into()?,
         };
         let unique_qualifier = if execute_request.skip_cache_lookup {
-            ActionUniqueQualifier::Uncachable(unique_key)
+            ActionUniqueQualifier::Uncacheable(unique_key)
         } else {
-            ActionUniqueQualifier::Cachable(unique_key)
+            ActionUniqueQualifier::Cacheable(unique_key)
         };
 
         let proto_properties = action.platform.unwrap_or_default();
@@ -383,8 +383,8 @@ impl From<&ActionInfo> for ExecuteRequest {
     fn from(val: &ActionInfo) -> Self {
         let digest = val.digest().into();
         let (skip_cache_lookup, unique_qualifier) = match &val.unique_qualifier {
-            ActionUniqueQualifier::Cachable(unique_qualifier) => (false, unique_qualifier),
-            ActionUniqueQualifier::Uncachable(unique_qualifier) => (true, unique_qualifier),
+            ActionUniqueQualifier::Cacheable(unique_qualifier) => (false, unique_qualifier),
+            ActionUniqueQualifier::Uncacheable(unique_qualifier) => (true, unique_qualifier),
         };
         Self {
             instance_name: unique_qualifier.instance_name.clone(),
