@@ -81,7 +81,7 @@ pub struct OperationFilter {
     /// The digest of the action that the operation must have.
     pub action_digest: Option<DigestInfo>,
 
-    /// The operation must have it's worker timestamp before this time.
+    /// The operation must have its worker timestamp before this time.
     pub worker_update_before: Option<SystemTime>,
 
     /// The operation must have been completed before this time.
@@ -160,6 +160,6 @@ pub trait MatchingEngineStateManager: Sync + Send + MetricsComponent {
     async fn assign_operation(
         &self,
         operation_id: &OperationId,
-        worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
+        worker_id_or_reason_for_unassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error>;
 }

@@ -157,7 +157,7 @@ pub struct AsyncCounterWrapper {
     pub successes: AtomicU64,
     pub failures: AtomicU64,
     pub drops: AtomicU64,
-    // Time spent in nano seconds in the future.
+    // Time spent in nanoseconds in the future.
     // 64 bit address space gives ~584 years of nanoseconds.
     pub sum_func_duration_ns: AtomicU64,
 }
@@ -278,7 +278,7 @@ impl AsyncCounterWrapper {
     }
 }
 
-/// Tracks an number.
+/// Tracks a number.
 #[derive(Default)]
 pub struct Counter(AtomicU64);
 

@@ -31,7 +31,7 @@ use crate::common::DigestInfo;
 use crate::origin_context::{ActiveOriginContext, OriginContext};
 use crate::{fs, make_symbol, spawn_blocking};
 
-// The symbol can be use to retrieve the active hasher function.
+// The symbol can be used to retrieve the active hasher function.
 // from an `OriginContext`.
 make_symbol!(ACTIVE_HASHER_FUNC, DigestHasherFunc);
 

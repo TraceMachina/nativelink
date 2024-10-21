@@ -806,9 +806,9 @@ where
     async fn assign_operation(
         &self,
         operation_id: &OperationId,
-        worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
+        worker_id_or_reason_for_unassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error> {
-        let (maybe_worker_id, update) = match worker_id_or_reason_for_unsassign {
+        let (maybe_worker_id, update) = match worker_id_or_reason_for_unassign {
             Ok(worker_id) => (
                 Some(worker_id),
                 UpdateOperationType::UpdateWithActionStage(ActionStage::Executing),
