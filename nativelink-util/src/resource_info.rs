@@ -206,9 +206,9 @@ enum State {
     OptionalMetadata,
 }
 
-// Iterate backwards looking for "(compressed-)blobs", once found, move foward
+// Iterate backwards looking for "(compressed-)blobs", once found, move forward
 // populating the output struct. This recursive function utilises the stack to
-// temporarly hold the reference to the previous item reducing the need for
+// temporarily hold the reference to the previous item reducing the need for
 // a heap allocation.
 fn recursive_parse<'a>(
     rparts: &mut impl Iterator<Item = &'a str>,

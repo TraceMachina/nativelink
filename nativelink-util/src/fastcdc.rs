@@ -25,7 +25,7 @@ impl State {
 /// In layman's terms this means we can take an input of unknown size and composition
 /// and chunk it into smaller chunks with chunk boundaries that will be very similar
 /// even when a small part of the file is changed. This use cases where a large file
-/// (say 1G) has a few minor changes weather they byte inserts, deletes or updates
+/// (say 1G) has a few minor changes whether they byte inserts, deletes or updates
 /// and when running through this algorithm it will slice the file up so that under
 /// normal conditions all the chunk boundaries will be identical except the ones near
 /// the mutations.
