@@ -131,6 +131,7 @@ struct TestContext {
     worker_id: WorkerId,
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn static_now_fn() -> Result<Duration, Error> {
     Ok(Duration::from_secs(BASE_NOW_S))
 }
