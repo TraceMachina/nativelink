@@ -220,7 +220,7 @@ impl SchedulerStoreDecodeTo for SearchSortKeyPrefixToAwaitedAction {
     }
 }
 
-fn get_state_prefix(state: &SortedAwaitedActionState) -> &'static str {
+fn get_state_prefix(state: SortedAwaitedActionState) -> &'static str {
     match state {
         SortedAwaitedActionState::CacheCheck => "x_",
         SortedAwaitedActionState::Queued => "q_",
@@ -268,7 +268,7 @@ impl SchedulerStoreDataProvider for UpdateOperationIdToAwaitedAction {
                 "sort_key",
                 Bytes::from(format!(
                     "{}{}",
-                    get_state_prefix(&state),
+                    get_state_prefix(state),
                     sorted_awaited_action.sort_key.as_u64(),
                 )),
             ));
@@ -534,7 +534,7 @@ impl<S: SchedulerStore, F: Fn() -> OperationId + Send + Sync + Unpin + 'static> 
         }
         Ok(self
             .store
-            .search_by_index_prefix(SearchSortKeyPrefixToAwaitedAction(get_state_prefix(&state)))
+            .search_by_index_prefix(SearchSortKeyPrefixToAwaitedAction(get_state_prefix(state)))
             .await
             .err_tip(|| "In RedisAwaitedActionDb::get_range_of_actions")?
             .map_ok(move |awaited_action| {
