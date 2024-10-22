@@ -855,11 +855,14 @@ pub trait SchedulerIndexProvider {
     /// The name of the index.
     const INDEX_NAME: &'static str;
 
+    /// The sort key for the index (if any).
+    const MAYBE_SORT_KEY: Option<&'static str> = None;
+
     /// If the data is versioned.
     type Versioned: BoolValue;
 
     /// The value of the index.
-    fn index_value_prefix(&self) -> Cow<'_, str>;
+    fn index_value(&self) -> Cow<'_, str>;
 }
 
 /// Provides a key to lookup data in the store.
