@@ -17,7 +17,8 @@
       url = "github:ipetkov/crane";
     };
     nix2container = {
-      url = "github:nlewo/nix2container";
+      # TODO(SchahinRohani): Use a specific commit hash until nix2container is stable.
+      url = "github:nlewo/nix2container/cc96df7c3747c61c584d757cfc083922b4f4b33e";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
