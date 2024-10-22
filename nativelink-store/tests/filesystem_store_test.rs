@@ -16,7 +16,6 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -894,7 +893,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
     // This will process as much of the future as it can before it needs to pause.
     // Our temp file will be created and opened and ready to have contents streamed
     // to it.
-    assert_eq!(poll!(update_fut.lock().await.deref_mut())?, Poll::Pending);
+    assert_eq!(poll!(&mut *update_fut.lock().await)?, Poll::Pending);
     const INITIAL_CONTENT: &str = "hello";
     tx.send(INITIAL_CONTENT.into()).await?;
 
@@ -943,10 +942,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
         async move {
             // This will ensure we yield to our future and other potential spawns.
             tokio::task::yield_now().await;
-            assert_eq!(
-                poll!(update_fut_clone.lock().await.deref_mut())?,
-                Poll::Pending
-            );
+            assert_eq!(poll!(&mut *update_fut_clone.lock().await)?, Poll::Pending);
             Ok(())
         }
     })
@@ -966,9 +962,9 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
 
     // Now finish waiting on update(). This should reuslt in an error because we deleted our dest
     // folder.
-    let update_result = update_fut.lock().await.deref_mut().await;
+    let update_result = &mut *update_fut.lock().await;
     assert!(
-        update_result.is_err(),
+        update_result.await.is_err(),
         "Expected update to fail due to temp file being deleted before rename"
     );
 

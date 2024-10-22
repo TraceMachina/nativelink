@@ -16,7 +16,6 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::ops::DerefMut;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -88,7 +87,7 @@ where
         let name = event_visitor.name.clone();
 
         let mut root_collected_metrics = self.root_collected_metrics.lock();
-        let collected_component = root_collected_metrics.deref_mut().deref_mut();
+        let collected_component = &mut **root_collected_metrics;
 
         // Find out which span we are currently in and retrieve its metadata.
         // It is possible to not be in a span in the tracing library.
@@ -103,7 +102,7 @@ where
             // Find the layer in our output struct we are going to populate
             // the data into.
             let collected_component =
-                find_component(span_iter, known_spans.deref_mut(), collected_component);
+                find_component(span_iter, &mut known_spans, collected_component);
 
             // Get the new value from the event and update it in the component.
             let primitive = CollectedMetricPrimitive::from(event_visitor);
@@ -140,7 +139,7 @@ where
         .or_insert_with(CollectedMetrics::new_component);
 
     collected_component = match collected_metric {
-        CollectedMetrics::Component(component) => component.deref_mut(),
+        CollectedMetrics::Component(component) => &mut **component,
         CollectedMetrics::Primitive(_) => panic!("Expected to be component"),
     };
     // DFS the iterator of keys and return the first leaf found matching the name query.
