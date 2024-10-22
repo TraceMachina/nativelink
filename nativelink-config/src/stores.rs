@@ -924,6 +924,71 @@ pub struct RedisStore {
     /// Default: standard,
     #[serde(default)]
     pub mode: RedisMode,
+
+    /// When using pubsub interface, this is the maximum number of items to keep
+    /// queued up before dropping old items.
+    ///
+    /// Default: 4096
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub broadcast_channel_capacity: usize,
+
+    /// The amount of time in milliseconds until the redis store considers the
+    /// command to be timed out. This will trigger a retry of the command and
+    /// potentially a reconnection to the redis server.
+    ///
+    /// Default: 10000 (10 seconds)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub command_timeout_ms: u64,
+
+    /// The amount of time in milliseconds until the redis store considers the
+    /// connection to unresponsive. This will trigger a reconnection to the
+    /// redis server.
+    ///
+    /// Default: 3000 (3 seconds)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub connection_timeout_ms: u64,
+
+    /// The amount of data to read from the redis server at a time.
+    /// This is used to limit the amount of memory used when reading
+    /// large objects from the redis server as well as limiting the
+    /// amount of time a single read operation can take.
+    ///
+    /// IMPORTANT: If this value is too high, the `command_timeout_ms`
+    /// might be triggered if the latency or throughput to the redis
+    /// server is too low.
+    ///
+    /// Default: 64KiB
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub read_chunk_size: usize,
+
+    /// The number of connections to keep open to the redis server(s).
+    ///
+    /// Default: 3
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub connection_pool_size: usize,
+
+    /// The maximum number of upload chunks to allow per update.
+    /// This is used to limit the amount of memory used when uploading
+    /// large objects to the redis server. A good rule of thumb is to
+    /// think of the data as:
+    /// AVAIL_MEMORY / (read_chunk_size * max_chunk_uploads_per_update) = THORETICAL_MAX_CONCURRENT_UPLOADS
+    /// (note: it is a good idea to divide AVAIL_MAX_MEMORY by ~10 to account for other memory usage)
+    ///
+    /// Default: 10
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_chunk_uploads_per_update: usize,
+
+    /// Retry configuration to use when a network request fails.
+    /// See the `Retry` struct for more information.
+    ///
+    /// Default: Retry {
+    ///   max_retries: 0, /* unlimited */
+    ///   delay: 0.1, /* 100ms */
+    ///   jitter: 0.5, /* 50% */
+    ///   retry_on_errors: None, /* not used in redis store */
+    /// }
+    #[serde(default)]
+    pub retry: Retry,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
