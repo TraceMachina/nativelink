@@ -29,6 +29,7 @@ use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use nativelink_config::cas_server::EnvironmentSource;
 use nativelink_error::{make_input_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
+use nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable;
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
 use nativelink_proto::build::bazel::remote::execution::v2::{
     digest_function::Value as ProtoDigestFunction, platform::Property, Action,
@@ -1039,6 +1040,10 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
             ],
             output_paths: vec!["dir1".to_string(), "empty_sym".to_string()],
             working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: std::env::var("PATH").unwrap(),
+            }],
             ..Default::default()
         };
         let command_digest = serialize_and_upload_message(
@@ -1435,7 +1440,7 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
 async fn entrypoint_does_invoke_if_set() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_family = "unix")]
     const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
-#!/bin/bash
+#!/usr/bin/env bash
 # Print some static text to stderr. This is what the test uses to
 # make sure the script did run.
 >&2 printf \"Wrapper script did run\"
@@ -1512,6 +1517,10 @@ exit 0
     let command = Command {
         arguments,
         working_directory: ".".to_string(),
+        environment_variables: vec![EnvironmentVariable {
+            name: "PATH".to_string(),
+            value: std::env::var("PATH").unwrap(),
+        }],
         ..Default::default()
     };
     let command_digest = serialize_and_upload_message(
@@ -1579,7 +1588,7 @@ exit 0
 async fn entrypoint_injects_properties() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_family = "unix")]
     const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
-#!/bin/bash
+#!/usr/bin/env bash
 # Print some static text to stderr. This is what the test uses to
 # make sure the script did run.
 >&2 printf \"Wrapper script did run with property $PROPERTY $VALUE $INNER_TIMEOUT\"
@@ -1648,6 +1657,10 @@ exit 0
                     (
                         "INNER_TIMEOUT".to_string(),
                         EnvironmentSource::timeout_millis,
+                    ),
+                    (
+                        "PATH".to_string(),
+                        EnvironmentSource::value(std::env::var("PATH").unwrap()),
                     ),
                 ])),
             },
@@ -2740,6 +2753,10 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
         arguments,
         output_paths: vec![],
         working_directory: ".".to_string(),
+        environment_variables: vec![EnvironmentVariable {
+            name: "PATH".to_string(),
+            value: std::env::var("PATH").unwrap(),
+        }],
         ..Default::default()
     };
     let command_digest = serialize_and_upload_message(
@@ -2893,6 +2910,10 @@ async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
             ],
             output_paths: vec![FILE_1_NAME.to_string()],
             working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: std::env::var("PATH").unwrap(),
+            }],
             ..Default::default()
         };
         let command_digest = serialize_and_upload_message(
@@ -2982,6 +3003,10 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
         arguments,
         output_paths: vec![],
         working_directory: ".".to_string(),
+        environment_variables: vec![EnvironmentVariable {
+            name: "PATH".to_string(),
+            value: std::env::var("PATH").unwrap(),
+        }],
         ..Default::default()
     };
     let command_digest = serialize_and_upload_message(
@@ -3280,6 +3305,10 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
     let command = Command {
         arguments,
         working_directory: ".".to_string(),
+        environment_variables: vec![EnvironmentVariable {
+            name: "PATH".to_string(),
+            value: std::env::var("PATH").unwrap(),
+        }],
         ..Default::default()
     };
     let command_digest = serialize_and_upload_message(
