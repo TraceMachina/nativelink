@@ -11,16 +11,6 @@ const team = [
     title: "Director of Operations",
   },
   {
-    img: "https://static.wixstatic.com/media/b37b63_91da001c7ad84712b5cfaf3b66a51a7e~mv2.png/v1/fill/w_618,h_618,al_c,q_90,usm_0.66_1.00_0.01,enc_auto/Harper%20Carroll%20-%20Developer%20Relations%20%2B%20AI_ML.png",
-    name: "Harper Carroll",
-    title: "Developer Relations & AI/ML",
-  },
-  {
-    img: "https://static.wixstatic.com/media/b37b63_e180f3f2a04a4a4cbd76063e379c3785~mv2.png/v1/fill/w_618,h_618,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_auto/Zach%20Birenbaum%20-%20Software%20Engineer_edited.jpg",
-    name: "Cass Fridkin",
-    title: "Software Engineer",
-  },
-  {
     img: "https://static.wixstatic.com/media/b37b63_06a9f6629b70404895da49decb2954a0~mv2.jpg/v1/fill/w_618,h_618,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_auto/Aaron%20Mondal%20-%20Software%20Engineer_edited.jpg",
     name: "Aaron Mondal",
     title: "Software Engineer",
