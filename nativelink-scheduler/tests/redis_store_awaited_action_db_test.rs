@@ -38,6 +38,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::store_trait::{SchedulerStore, SchedulerSubscriptionManager};
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
@@ -188,7 +189,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         let mut new_awaited_action = worker_awaited_action.clone();
         let mut new_state = new_awaited_action.state().as_ref().clone();
         new_state.stage = ActionStage::Executing;
-        new_awaited_action.set_state(Arc::new(new_state), Some(MockSystemTime::now().into()));
+        new_awaited_action.worker_set_state(Arc::new(new_state), MockSystemTime::now().into());
         new_awaited_action
     };
 
@@ -428,7 +429,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
     let awaited_action_db = StoreAwaitedActionDb::new(
         store.clone(),
         notifier.clone(),
-        || MockSystemTime::now().into(),
+        MockInstantWrapped::default,
         move || WORKER_OPERATION_ID.into(),
     )
     .unwrap();
