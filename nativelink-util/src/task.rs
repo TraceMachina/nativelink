@@ -25,7 +25,6 @@ use tracing::{Instrument, Span};
 
 use crate::origin_context::{ActiveOriginContext, ContextAwareFuture, OriginContext};
 
-#[inline(always)]
 pub fn __spawn_with_span_and_context<F, T>(
     f: F,
     span: Span,
@@ -39,7 +38,6 @@ where
     tokio::spawn(ContextAwareFuture::new(ctx, f.instrument(span)))
 }
 
-#[inline(always)]
 pub fn __spawn_with_span<F, T>(f: F, span: Span) -> JoinHandle<T>
 where
     T: Send + 'static,
@@ -48,7 +46,6 @@ where
     __spawn_with_span_and_context(f, span, ActiveOriginContext::get())
 }
 
-#[inline(always)]
 pub fn __spawn_blocking<F, T>(f: F, span: Span) -> JoinHandle<T>
 where
     F: FnOnce() -> T + Send + 'static,
