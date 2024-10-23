@@ -67,17 +67,17 @@ impl DedupStore {
         let min_size = if config.min_size == 0 {
             DEFAULT_MIN_SIZE
         } else {
-            config.min_size as u64
+            u64::from(config.min_size)
         };
         let normal_size = if config.normal_size == 0 {
             DEFAULT_NORM_SIZE
         } else {
-            config.normal_size as u64
+            u64::from(config.normal_size)
         };
         let max_size = if config.max_size == 0 {
             DEFAULT_MAX_SIZE
         } else {
-            config.max_size as u64
+            u64::from(config.max_size)
         };
         let max_concurrent_fetch_per_get = if config.max_concurrent_fetch_per_get == 0 {
             DEFAULT_MAX_CONCURRENT_FETCH_PER_GET
