@@ -595,9 +595,8 @@ where
                 if err.code == Code::Aborted {
                     last_err = Some(err);
                     continue;
-                } else {
-                    return Err(err);
                 }
+                return Err(err);
             }
             return Ok(());
         }

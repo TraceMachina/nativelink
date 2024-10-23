@@ -242,9 +242,8 @@ fn recursive_parse<'a>(
                     output.compressor = Some(Cow::Borrowed(part));
                     *bytes_processed += part.len() + SLASH_SIZE;
                     return Ok(state);
-                } else {
-                    return Err(make_input_err!("Expected compressor, got {part}"));
                 }
+                return Err(make_input_err!("Expected compressor, got {part}"));
             }
             State::DigestFunction => {
                 state = State::Hash;
