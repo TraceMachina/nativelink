@@ -19,6 +19,7 @@ use std::clone::Clone;
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::pin::Pin;
+use std::ptr::from_ref;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -74,7 +75,7 @@ pub trait Symbol {
     }
 
     fn as_ptr(&'static self) -> *const RawSymbol {
-        self as *const Self as *const RawSymbol
+        from_ref::<Self>(self) as *const RawSymbol
     }
 }
 

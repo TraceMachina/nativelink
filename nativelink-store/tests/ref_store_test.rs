@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::ptr::from_ref;
 use std::sync::Arc;
 
 use nativelink_error::Error;
@@ -159,9 +160,9 @@ async fn inner_store_test() -> Result<(), Error> {
 
     // Ensure the result of inner_store() points to exact same memory store.
     assert_eq!(
-        ref_store_outer.inner_store(Option::<DigestInfo>::None) as *const dyn StoreDriver
+        from_ref::<dyn StoreDriver>(ref_store_outer.inner_store(Option::<DigestInfo>::None))
             as *const (),
-        memory_store.into_inner().as_ref() as *const dyn StoreDriver as *const (),
+        from_ref::<dyn StoreDriver>(memory_store.into_inner().as_ref()) as *const (),
         "Expected inner store to be memory store"
     );
     Ok(())
