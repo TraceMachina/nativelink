@@ -2,141 +2,72 @@ package components
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/yaml"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
-// The configuration for Tekton Pipelines.
-type TektonPipelines struct {
-	Version string
+type TektonOperator struct {
+	Version      string
+	Dependencies []pulumi.Resource
 }
 
-// Install installs Tekton Pipelines on the cluster.
-//
-// This function performs an additional feature-flag transformation to set
-// `disable-affinity-assistant=true` and `coscheduling=pipelineruns`.
-func (component *TektonPipelines) Install(
+// Install installs Tekton Operator on the cluster and applies the TektonConfig.
+func (component *TektonOperator) Install(
 	ctx *pulumi.Context,
 	name string,
 ) ([]pulumi.Resource, error) {
-	// This transformation disables the affinity assistant switches coscheduling
-	// from "workspace" to "pipelineruns". This allows us to use multiple PVCs
-	// in the same task. Usually this is discouraged for storage locality
-	// reasons, but since we're running on a local kind cluster that doesn't
-	// matter to us.
-	transformation := func(state map[string]interface{}, _ ...pulumi.ResourceOption) {
-		if kind, kindExists := state["kind"].(string); kindExists &&
-			kind == "ConfigMap" {
-			metadata, metadataExists := state["metadata"].(map[string]interface{})
-			if !metadataExists {
-				return
-			}
+	// URL for TektonConfig
+	urlBase := "https://raw.githubusercontent.com/tektoncd/operator/"
+	urlPath := "/config/crs/kubernetes/config/all/operator_v1alpha1_config_cr.yaml"
 
-			name, nameExists := metadata["name"].(string)
-
-			namespace, namespaceExists := metadata["namespace"].(string)
-
-			if nameExists && namespaceExists && name == "feature-flags" &&
-				namespace == "tekton-pipelines" {
-				data, dataExists := state["data"].(map[string]interface{})
-				if dataExists {
-					data["disable-affinity-assistant"] = "true" // Your specific configuration change
-					data["coschedule"] = "pipelineruns"
+	//  Install Tekton Operator with transformations
+	tektonOperator, err := yaml.NewConfigGroup(ctx, name, &yaml.ConfigGroupArgs{
+		Files: []string{
+			fmt.Sprintf(
+				"https://storage.googleapis.com/tekton-releases/operator/previous/v%s/release.yaml",
+				component.Version,
+			),
+			fmt.Sprintf(
+				urlBase+"v%s"+urlPath,
+				component.Version,
+			),
+		},
+		Transformations: []yaml.Transformation{
+			func(state map[string]interface{}, _ ...pulumi.ResourceOption) {
+				if kind, kindExists := state["kind"].(string); kindExists &&
+					kind == "TektonConfig" {
+					spec, specExists := state["spec"].(map[string]interface{})
+					if !specExists {
+						return
+					}
+					pipeline, pipelineExists := spec["pipeline"].(map[string]interface{})
+					if !pipelineExists {
+						pipeline = map[string]interface{}{}
+						spec["pipeline"] = pipeline
+					}
+					pipeline["disable-affinity-assistant"] = true
+					pipeline["coschedule"] = "pipelineruns"
 				}
-			}
-		}
-	}
-
-	tektonPipelines, err := yaml.NewConfigFile(ctx, name, &yaml.ConfigFileArgs{
-		File: fmt.Sprintf(
-			"https://storage.googleapis.com/tekton-releases/pipeline/previous/v%s/release.yaml",
-			component.Version,
-		),
-		Transformations: []yaml.Transformation{transformation},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errPulumi, err)
-	}
-
-	return []pulumi.Resource{tektonPipelines}, nil
-}
-
-// The configuration for Tekton Triggers.
-type TektonTriggers struct {
-	Version      string
-	Dependencies []pulumi.Resource
-}
-
-// Install installs the Tekton Triggers release and interceptors on the cluster.
-func (component *TektonTriggers) Install(
-	ctx *pulumi.Context,
-	name string,
-) ([]pulumi.Resource, error) {
-	tektonTriggers, err := yaml.NewConfigFile(
-		ctx,
-		name,
-		&yaml.ConfigFileArgs{
-			File: fmt.Sprintf(
-				"https://storage.googleapis.com/tekton-releases/triggers/previous/v%s/release.yaml",
-				component.Version,
-			),
+			},
 		},
-		pulumi.DependsOn(
-			component.Dependencies,
-		),
-	)
+	}, pulumi.DependsOn(component.Dependencies))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errPulumi, err)
+		return nil, fmt.Errorf("failed to install Tekton Operator: %w", err)
 	}
 
-	tektonTriggersInterceptors, err := yaml.NewConfigFile(
-		ctx,
-		name+"-interceptors",
-		&yaml.ConfigFileArgs{
-			File: fmt.Sprintf(
-				"https://storage.googleapis.com/tekton-releases/triggers/previous/v%s/interceptors.yaml",
-				component.Version,
-			),
-		},
-		pulumi.DependsOn(
-			[]pulumi.Resource{tektonTriggers},
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errPulumi, err)
+	ready := waitForTektonToBeReady()
+	if !ready {
+		return nil, fmt.Errorf("tekton webhook is not ready: %w", err)
 	}
 
-	return []pulumi.Resource{tektonTriggers, tektonTriggersInterceptors}, nil
+	return []pulumi.Resource{tektonOperator}, nil
 }
 
-// Configuration for the Tekton Dashboard.
-type TektonDashboard struct {
-	Version      string
-	Dependencies []pulumi.Resource
-}
+func waitForTektonToBeReady() bool {
+	// Simulate Tekton State Gathering
+	time.Sleep(60 * time.Second) //nolint:mnd
 
-// Install installs the Tekton Dashboard on the cluster.
-func (component *TektonDashboard) Install(
-	ctx *pulumi.Context,
-	name string,
-) ([]pulumi.Resource, error) {
-	tektonDashboard, err := yaml.NewConfigFile(
-		ctx,
-		name,
-		&yaml.ConfigFileArgs{
-			File: fmt.Sprintf(
-				"https://storage.googleapis.com/tekton-releases/dashboard/previous/v%s/release.yaml",
-				component.Version,
-			),
-		},
-		pulumi.DependsOn(
-			component.Dependencies,
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errPulumi, err)
-	}
-
-	return []pulumi.Resource{tektonDashboard}, nil
+	return true
 }
