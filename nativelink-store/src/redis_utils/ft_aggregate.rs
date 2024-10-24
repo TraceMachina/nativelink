@@ -54,20 +54,19 @@ where
             loop {
                 if let Some(map) = state.data.data.pop_front() {
                     return Some((Ok(map), Some(state)));
-                } else {
-                    if state.data.cursor == 0 {
-                        return None;
-                    }
-                    let data_res = state
-                        .client
-                        .ft_cursor_read(state.index.clone(), state.data.cursor, None)
-                        .await;
-                    state.data = match data_res {
-                        Ok(data) => data,
-                        Err(err) => return Some((Err(err), None)),
-                    };
-                    continue;
                 }
+                if state.data.cursor == 0 {
+                    return None;
+                }
+                let data_res = state
+                    .client
+                    .ft_cursor_read(state.index.clone(), state.data.cursor, None)
+                    .await;
+                state.data = match data_res {
+                    Ok(data) => data,
+                    Err(err) => return Some((Err(err), None)),
+                };
+                continue;
             }
         },
     ))
