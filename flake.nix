@@ -43,6 +43,7 @@
         inputs.git-hooks.flakeModule
         ./local-remote-execution/flake-module.nix
         ./tools/darwin/flake-module.nix
+        ./tools/nixos/flake-module.nix
         ./flake-module.nix
       ];
       perSystem = {
@@ -463,6 +464,16 @@
             else lre-cc.meta.Env;
           prefix = "linux";
         };
+        nixos.settings = {
+          path = with pkgs; [
+            "/run/current-system/sw/bin"
+            "${binutils.bintools}/bin"
+            "${uutils-coreutils-noprefix}/bin"
+            "${customClang}/bin"
+            "${git}/bin"
+            "${python3}/bin"
+          ];
+        };
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = let
             bazel = pkgs.writeShellScriptBin "bazel" ''
@@ -538,6 +549,15 @@
               #                    binaries across machines.
               export CC=clang
               export PULUMI_K8S_AWAIT_ALL=true
+
+              # If on NixOS, generate nixos.bazelrc which adds the required
+              # NixOS binary paths to the bazel environment.
+              if [ -e /etc/nixos ]; then
+                ${config.nixos.installationScript}
+                export CC=customClang
+              fi
+            ''
+            + pkgs.lib.optionalString (!pkgs.stdenv.isDarwin) ''
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
               export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
               export PATH=$HOME/.deno/bin:$PATH
@@ -556,6 +576,7 @@
         default = ./flake-module.nix;
         darwin = ./tools/darwin/flake-module.nix;
         local-remote-execution = ./local-remote-execution/flake-module.nix;
+        nixos = ./tools/nixos/flake-module.nix;
       };
     };
 }
