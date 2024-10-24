@@ -468,7 +468,7 @@ pub enum EnvironmentSource {
     /// (requested by the client).
     timeout_millis,
 
-    /// A special file path will be provided that can be used to comminicate
+    /// A special file path will be provided that can be used to communicate
     /// with the parent process about out-of-band information. This file
     /// will be read after the command has finished executing. Based on the
     /// contents of the file, the behavior of the result may be modified.
@@ -665,7 +665,7 @@ pub enum WorkerConfig {
 pub struct GlobalConfig {
     /// Maximum number of open files that can be opened at one time.
     /// This value is not strictly enforced, it is a best effort. Some internal libraries
-    /// open files or read metadata from a files which do not obay this limit, however
+    /// open files or read metadata from a files which do not obey this limit, however
     /// the vast majority of cases will have this limit be honored.
     /// As a rule of thumb this value should be less than half the value of `ulimit -n`.
     /// Any network open file descriptors is not counted in this limit, but is counted
@@ -696,7 +696,7 @@ pub struct GlobalConfig {
     /// are collected at runtime (performance metrics) from being tallied. The
     /// overhead of collecting metrics is very low, so this flag should only be
     /// used if there is a very good reason to disable metrics.
-    /// This flag can be forcably set using the `NATIVELINK_DISABLE_METRICS` variable.
+    /// This flag can be forcibly set using the `NATIVELINK_DISABLE_METRICS` variable.
     /// If the variable is set it will always disable metrics regardless of what
     /// this flag is set to.
     ///

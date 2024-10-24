@@ -847,7 +847,7 @@ pub trait SchedulerStore: Send + Sync + 'static {
 }
 
 /// A type that is used to let the scheduler store know what
-/// index is beign requested.
+/// index is being requested.
 pub trait SchedulerIndexProvider {
     /// Only keys inserted with this prefix will be indexed.
     const KEY_PREFIX: &'static str;
