@@ -13,6 +13,9 @@ rust_binary(
     srcs = [
         "src/bin/nativelink.rs",
     ],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.5.3",
+    },
     deps = [
         "//nativelink-config",
         "//nativelink-error",
