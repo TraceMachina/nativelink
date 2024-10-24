@@ -273,6 +273,8 @@
             };
           };
 
+        webBridge = pkgs.callPackage ./web/bridge/image.nix {inherit buildImage pullImage pkgs;};
+
         nativelink-worker-init = pkgs.callPackage ./tools/nativelink-worker-init.nix {inherit buildImage self nativelink-image;};
 
         rbe-autogen = pkgs.callPackage ./local-remote-execution/rbe-autogen.nix {
@@ -413,6 +415,7 @@
               nativelink-worker-init
               nativelink-x86_64-linux
               publish-ghcr
+              webBridge
               ;
             default = nativelink;
 

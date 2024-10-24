@@ -1,0 +1,15 @@
+{
+  "name": "bridge",
+  "module": "index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "^1.1.8"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "protobufjs": "^7.4.0",
+    "redis": "^4.7.0"
+  }
+}
