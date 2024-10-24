@@ -235,10 +235,7 @@ const CLIENT_ID_TO_OPERATION_ID_KEY_PREFIX: &str = "cid_";
 struct OperationIdToAwaitedAction<'a>(Cow<'a, OperationId>);
 impl OperationIdToAwaitedAction<'_> {
     fn borrow(&self) -> OperationIdToAwaitedAction<'_> {
-        match self.0 {
-            Cow::Borrowed(operation_id) => OperationIdToAwaitedAction(Cow::Borrowed(operation_id)),
-            Cow::Owned(ref operation_id) => OperationIdToAwaitedAction(Cow::Borrowed(operation_id)),
-        }
+        OperationIdToAwaitedAction(Cow::Borrowed(self.0.as_ref()))
     }
 }
 impl SchedulerStoreKeyProvider for OperationIdToAwaitedAction<'_> {

@@ -114,10 +114,10 @@ impl PlatformPropertyValue {
 
     pub fn as_str(&self) -> Cow<str> {
         match self {
-            Self::Exact(value) => Cow::Borrowed(value),
+            Self::Exact(value) | Self::Priority(value) | Self::Unknown(value) => {
+                Cow::Borrowed(&**value)
+            }
             Self::Minimum(value) => Cow::Owned(value.to_string()),
-            Self::Priority(value) => Cow::Borrowed(value),
-            Self::Unknown(value) => Cow::Borrowed(value),
         }
     }
 }

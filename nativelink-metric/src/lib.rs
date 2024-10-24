@@ -72,7 +72,7 @@ impl From<u64> for MetricKind {
             1 => MetricKind::Counter,
             2 => MetricKind::String,
             3 => MetricKind::Component,
-            _ => MetricKind::Default,
+            4_u64..=u64::MAX => todo!(),
         }
     }
 }
