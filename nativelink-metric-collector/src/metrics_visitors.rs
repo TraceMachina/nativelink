@@ -34,7 +34,7 @@ impl From<MetricKind> for CollectionKind {
         match kind {
             MetricKind::Counter => CollectionKind::Counter,
             MetricKind::String => CollectionKind::String,
-            _ => CollectionKind::String,
+            MetricKind::Default | MetricKind::Component => todo!(),
         }
     }
 }

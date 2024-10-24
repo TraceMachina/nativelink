@@ -393,8 +393,9 @@ where
                     ActionStage::CacheCheck => OperationStageFlags::CacheCheck,
                     ActionStage::Queued => OperationStageFlags::Queued,
                     ActionStage::Executing => OperationStageFlags::Executing,
-                    ActionStage::Completed(_) => OperationStageFlags::Completed,
-                    ActionStage::CompletedFromCache(_) => OperationStageFlags::Completed,
+                    ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => {
+                        OperationStageFlags::Completed
+                    }
                 };
                 if !filter.stages.intersects(stage_flag) {
                     return false;

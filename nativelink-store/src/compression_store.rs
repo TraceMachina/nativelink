@@ -159,8 +159,7 @@ struct UploadState {
 impl UploadState {
     pub fn new(store: &CompressionStore, upload_size: UploadSizeInfo) -> Result<Self, Error> {
         let input_max_size = match upload_size {
-            UploadSizeInfo::ExactSize(sz) => sz,
-            UploadSizeInfo::MaxSize(sz) => sz,
+            UploadSizeInfo::MaxSize(sz) | UploadSizeInfo::ExactSize(sz) => sz,
         };
 
         let max_index_count = (input_max_size / u64::from(store.config.block_size)) + 1;
