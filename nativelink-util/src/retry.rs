@@ -62,7 +62,6 @@ pub struct Retrier {
 fn to_error_code(code: Code) -> ErrorCode {
     match code {
         Code::Cancelled => ErrorCode::Cancelled,
-        Code::Unknown => ErrorCode::Unknown,
         Code::InvalidArgument => ErrorCode::InvalidArgument,
         Code::DeadlineExceeded => ErrorCode::DeadlineExceeded,
         Code::NotFound => ErrorCode::NotFound,
@@ -99,22 +98,24 @@ impl Retrier {
             retry_codes.contains(&to_error_code(code))
         } else {
             match code {
-                Code::InvalidArgument => false,
-                Code::FailedPrecondition => false,
-                Code::OutOfRange => false,
-                Code::Unimplemented => false,
-                Code::NotFound => false,
-                Code::AlreadyExists => false,
-                Code::PermissionDenied => false,
-                Code::Unauthenticated => false,
-                Code::Cancelled => true,
-                Code::Unknown => true,
-                Code::DeadlineExceeded => true,
-                Code::ResourceExhausted => true,
-                Code::Aborted => true,
-                Code::Internal => true,
-                Code::Unavailable => true,
-                Code::DataLoss => true,
+                // TODO(SchahinRohani): Handle all cases properly so there is no need for a wildcard match
+                // All cases where a retry should happen are commented out here and replaced with a wildcard match.
+                Code::InvalidArgument
+                | Code::FailedPrecondition
+                | Code::OutOfRange
+                | Code::Unimplemented
+                | Code::NotFound
+                | Code::AlreadyExists
+                | Code::PermissionDenied
+                | Code::Unauthenticated => false,
+                // Code::Cancelled
+                // | Code::Unknown
+                // | Code::DeadlineExceeded
+                // | Code::ResourceExhausted
+                // | Code::Aborted
+                // | Code::Internal
+                // | Code::Unavailable
+                // | Code::DataLoss => true,
                 _ => true,
             }
         }
