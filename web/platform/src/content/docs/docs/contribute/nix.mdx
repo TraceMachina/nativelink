@@ -49,3 +49,12 @@ To view the tag of an image
 ```sh
 nix eval github:TraceMachina/nativelink#image.imageTag --raw
 ```
+
+## On NixOS
+
+If you're on NixOS, add the following to your system configuration:
+
+```nix
+programs.nix-ld.enable = true;
+services.envfs.enable = true;
+```
