@@ -34,7 +34,7 @@ uuid = { version = "1.10.0", default-features = false, features = ["v4", "serde"
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 
-hyper = "1.4.1"
+hyper = "1.5.0"
 hyper-util = "0.1.9"
 pretty_assertions = { version = "1.4.1", features = ["std"] }
 prost-types = { version = "0.13.3", default-features = false }
