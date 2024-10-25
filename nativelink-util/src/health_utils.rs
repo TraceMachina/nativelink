@@ -141,6 +141,7 @@ impl HealthRegistryBuilder {
     }
 
     /// Create a sub builder for a namespace.
+    #[must_use]
     pub fn sub_builder(&mut self, namespace: &str) -> HealthRegistryBuilder {
         HealthRegistryBuilder {
             namespace: format!("{}/{}", self.namespace, namespace).into(),

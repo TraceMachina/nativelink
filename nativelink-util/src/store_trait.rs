@@ -167,6 +167,7 @@ impl<'a> StoreKey<'a> {
     /// Returns a shallow clone of the key.
     /// This is extremely cheap and should be used when clone
     /// is needed but the key is not going to be modified.
+    #[must_use]
     pub fn borrow(&'a self) -> StoreKey<'a> {
         match self {
             StoreKey::Str(Cow::Owned(s)) => StoreKey::Str(Cow::Borrowed(s)),
