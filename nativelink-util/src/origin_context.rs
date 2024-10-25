@@ -32,13 +32,13 @@ use tracing::{Instrument, Span};
 use crate::background_spawn;
 
 /// Make a symbol that represents a unique memory pointer that is
-/// constant and choosen at compile time. This enables two modules
+/// constant and chosen at compile time. This enables two modules
 /// to use that memory location to reference data that lives in a
-/// shared module without the two modules knowing about eachother.
-/// For example, lets say we have a context that holds anonymous
+/// shared module without the two modules knowing about each other.
+/// For example, let's say we have a context that holds anonymous
 /// data; we can use these symbols to let one module set the data
 /// and tie the data to a symbol and another module read the data
-/// with the symbol, without the two modules knowing about eachother.
+/// with the symbol, without the two modules knowing about each other.
 #[macro_export]
 macro_rules! make_symbol {
     ($name:ident, $type:ident) => {
@@ -133,7 +133,7 @@ impl OriginContext {
     }
 
     /// Consumes the context and runs the given function with the context set
-    /// as the active context. When the function exists the context is restored
+    /// as the active context. When the function exits, the context is restored
     /// to the previous global context.
     #[inline]
     pub fn run<T>(self, span: Span, func: impl FnOnce() -> T) -> T {
@@ -141,7 +141,7 @@ impl OriginContext {
     }
 
     /// Wraps a function so when it is called the passed in context is set as
-    /// the active context and when the function exists the context is restored
+    /// the active context and when the function exits, the context is restored
     /// to the previous global context.
     #[inline]
     fn wrap<T>(self: Arc<Self>, span: Span, func: impl FnOnce() -> T) -> impl FnOnce() -> T {
@@ -154,7 +154,7 @@ impl OriginContext {
     }
 
     /// Wraps a future so when it is called the passed in context is set as
-    /// the active context and when the future exists the context is restored
+    /// the active context and when the future exits, the context is restored
     /// to the previous global context.
     #[inline]
     pub fn wrap_async<T>(
@@ -300,7 +300,7 @@ pin_project! {
             let this = this.project();
             // Note: If the future panics, the context will not be restored, so
             // this is a best effort to provide access to our global context
-            // in the desturctors the event of a panic.
+            // in the destructors the event of a panic.
             let _enter = this.context.take().map(OriginContext::enter);
             // SAFETY: 1. `Pin::get_unchecked_mut()` is safe, because this isn't
             //             different from wrapping `T` in `Option` and calling
