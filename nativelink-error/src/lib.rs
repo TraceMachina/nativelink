@@ -260,6 +260,23 @@ impl From<Error> for tonic::Status {
     }
 }
 
+impl From<mlua::Error> for Error {
+    fn from(val: mlua::Error) -> Self {
+        match val {
+            mlua::Error::CallbackError { traceback, cause } => {
+                Self::new(Code::Internal, traceback).merge(std::sync::Arc::unwrap_or_clone(cause))
+            }
+            _ => Self::new(Code::Internal, val.to_string()),
+        }
+    }
+}
+
+impl From<Error> for mlua::Error {
+    fn from(val: Error) -> Self {
+        Self::external(val)
+    }
+}
+
 pub trait ResultExt<T> {
     fn err_tip_with_code<F, S>(self, tip_fn: F) -> Result<T, Error>
     where

@@ -151,3 +151,25 @@ impl StoreDriver for RefStore {
 }
 
 default_health_status_indicator!(RefStore);
+
+impl mlua::UserData for RefStore {
+    fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("name", |_, this| Ok(this.ref_store_name.clone()));
+    }
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
+        use mlua::ExternalResult;
+        methods.add_async_method("has", |_lua, this, key| async move {
+            let mut results = [None];
+            this.has_with_results(&[key], &mut results)
+                .await
+                .map(|_| results[0])
+                .into_lua_err()
+        });
+        methods.add_async_method("get", |_lua, this, key: StoreKey<'_>| async move {
+            this.get_part_unchunked(key, 0, None)
+                .await
+                .map(|b| b.to_vec())
+                .into_lua_err()
+        });
+    }
+}

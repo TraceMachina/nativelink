@@ -27,6 +27,7 @@ hex = { version = "0.4.3", default-features = false, features = ["std"] }
 hyper = "1.4.1"
 hyper-util = "0.1.9"
 lru = { version = "0.12.4", default-features = false }
+mlua = { version = "0.10.0", features = ["macros"] }
 parking_lot = "0.12.3"
 pin-project-lite = "0.2.14"
 prost = { version = "0.13.3", default-features = false }

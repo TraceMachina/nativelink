@@ -53,6 +53,7 @@ futures = { version = "0.3.30", default-features = false }
 hyper = "1.4.1"
 hyper-util = "0.1.9"
 mimalloc = "0.1.43"
+mlua = { version = "0.10.0", features = ["lua54", "vendored", "async", "macros", "send"] }
 parking_lot = "0.12.3"
 rustls-pemfile = { version = "2.2.0", default-features = false }
 scopeguard = { version = "1.2.0", default-features = false }

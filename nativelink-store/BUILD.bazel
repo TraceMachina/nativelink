@@ -60,6 +60,7 @@ rust_library(
         "@crates//:hyper-0.14.30",
         "@crates//:hyper-rustls",
         "@crates//:lz4_flex",
+        "@crates//:mlua",
         "@crates//:parking_lot",
         "@crates//:patricia_tree",
         "@crates//:prost",

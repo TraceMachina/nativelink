@@ -16,6 +16,7 @@ rust_library(
         "//nativelink-proto",
         "@crates//:fred",
         "@crates//:hex",
+        "@crates//:mlua",
         "@crates//:prost",
         "@crates//:prost-types",
         "@crates//:serde",
