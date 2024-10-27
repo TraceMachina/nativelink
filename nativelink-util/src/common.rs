@@ -33,7 +33,7 @@ use tracing::{event, Level};
 
 pub use crate::fs;
 
-#[derive(Default, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Default, Clone, Copy, Eq, PartialEq, Hash, mlua::FromLua)]
 #[repr(C)]
 pub struct DigestInfo {
     /// Raw hash in packed form.
@@ -42,6 +42,8 @@ pub struct DigestInfo {
     /// Possibly the size of the digest in bytes.
     size_bytes: u64,
 }
+
+impl mlua::UserData for DigestInfo {}
 
 impl MetricsComponent for DigestInfo {
     fn publish(

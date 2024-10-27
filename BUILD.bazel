@@ -30,6 +30,7 @@ rust_binary(
         "@crates//:hyper-1.4.1",
         "@crates//:hyper-util",
         "@crates//:mimalloc",
+        "@crates//:mlua",
         "@crates//:opentelemetry",
         "@crates//:opentelemetry-prometheus",
         "@crates//:opentelemetry_sdk",

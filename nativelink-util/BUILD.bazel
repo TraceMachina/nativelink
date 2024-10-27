@@ -54,6 +54,7 @@ rust_library(
         "@crates//:hyper-1.4.1",
         "@crates//:hyper-util",
         "@crates//:lru",
+        "@crates//:mlua",
         "@crates//:mock_instant",
         "@crates//:parking_lot",
         "@crates//:pin-project",

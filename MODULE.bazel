@@ -77,7 +77,19 @@ crate.from_cargo(
         "x86_64-unknown-linux-gnu",
     ],
 )
+crate.annotation(
+    build_script_env = {
+        "LUA_LIB": "external/lua~",
+        "LUA_LIB_NAME": "liblua",
+    },
+    crate = "mlua-sys",
+    deps = ["@lua//:liblua"],
+)
 use_repo(crate, "crates")
+
+bazel_dep(name = "lua", version = "5.4.6")
+
+inject_repo(crate, "lua")
 
 rust_analyzer = use_extension(
     "@rules_rust//tools/rust_analyzer:extension.bzl",

@@ -149,3 +149,26 @@ impl StoreDriver for RefStore {
 }
 
 default_health_status_indicator!(RefStore);
+
+impl mlua::UserData for RefStore {
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
+        use futures::{stream, StreamExt};
+        use nativelink_util::common::DigestInfo;
+        methods.add_async_method(
+            "get_many",
+            |_lua, this, (digests, window, func): (Vec<DigestInfo>, usize, mlua::Function)| async move {
+                let store = this.get_store()?;
+                let mut data_stream = stream::iter(digests)
+                    .map(move |digest| async move {
+                        let key = StoreKey::from(digest);
+                        store.get_part_unchunked(key, 0, None).await
+                    })
+                    .buffered(window);
+                while let Some(result) = data_stream.next().await {
+                    func.call::<()>(result.map(|b| b.to_vec()).ok())?;
+                }
+                Ok(())
+            },
+        );
+    }
+}
