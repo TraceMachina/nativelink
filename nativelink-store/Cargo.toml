@@ -47,6 +47,7 @@ hyper-rustls = { version = "0.24.2", default-features = false, features = [
   "webpki-roots",
 ] }
 lz4_flex = { version = "0.11.3", default-features = false }
+mlua = { version = "0.10.0", features = ["async"] }
 parking_lot = "0.12.3"
 prost = { version = "0.13.3", default-features = false }
 rand = { version = "0.8.5", default-features = false }

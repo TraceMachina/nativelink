@@ -149,7 +149,7 @@ pub enum StoreOptimizations {
 /// but it can also be a string if the caller wishes to
 /// store the data directly and reference it by a string
 /// directly.
-#[derive(Debug, Eq)]
+#[derive(Debug, Eq, mlua::FromLua)]
 pub enum StoreKey<'a> {
     /// A string key.
     Str(Cow<'a, str>),
@@ -157,6 +157,8 @@ pub enum StoreKey<'a> {
     /// A key that is a digest.
     Digest(DigestInfo),
 }
+
+impl mlua::UserData for StoreKey<'_> {}
 
 impl<'a> StoreKey<'a> {
     /// Creates a new store key from a string.

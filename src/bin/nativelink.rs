@@ -110,6 +110,9 @@ struct Args {
     /// Config file to use.
     #[clap(value_parser)]
     config_file: String,
+    /// Lua script to run.
+    #[clap(value_parser)]
+    lua_file: Option<String>,
 }
 
 /// The root metrics collector struct. All metrics will be
@@ -953,6 +956,28 @@ async fn inner_main(
         root_metrics.write().workers = worker_metrics;
     }
 
+    let lua = mlua::Lua::new_with(mlua::StdLib::ALL_SAFE, mlua::LuaOptions::new())?;
+    if let Some(script) = futures::executor::block_on(get_lua())? {
+        let store_manager = store_manager.clone();
+        let get_store = lua.create_function(move |_, name: String| {
+            Ok(Arc::into_inner(nativelink_store::ref_store::RefStore::new(
+                &nativelink_config::stores::RefStore { name: name.clone() },
+                Arc::downgrade(&store_manager),
+            ))
+            .unwrap())
+        })?;
+        let storekey = lua.create_function(|_, (hash, length): (String, usize)| {
+            let digest = nativelink_util::common::DigestInfo::try_new(&hash, length)?;
+            Ok(nativelink_util::store_trait::StoreKey::Digest(digest))
+        })?;
+        let globals = lua.globals();
+        globals.set("get_store", get_store)?;
+        globals.set("storekey", storekey)?;
+        let fut = lua.load(script).call_async::<()>(()).map_err(Error::from);
+        let spawn_fut = spawn!("lua", fut);
+        root_futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));
+    }
+
     if let Err(e) = try_join_all(root_futures).await {
         panic!("{e:?}");
     };
@@ -967,6 +992,15 @@ async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
             .err_tip(|| format!("Could not open config file {}", args.config_file))?,
     )?;
     Ok(serde_json5::from_str(&json_contents)?)
+}
+
+async fn get_lua() -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    Ok(if let Some(script) = args.lua_file {
+        Some(std::fs::read(&script).err_tip(|| format!("Could not open Lua script {}", script))?)
+    } else {
+        None
+    })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
