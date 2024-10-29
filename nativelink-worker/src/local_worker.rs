@@ -36,10 +36,11 @@ use nativelink_util::common::fs;
 use nativelink_util::digest_hasher::{DigestHasherFunc, ACTIVE_HASHER_FUNC};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::origin_context::ActiveOriginContext;
+use nativelink_util::shutdown_manager::ShutdownManager;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
 use tokio::process;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
@@ -168,7 +169,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
     async fn run(
         &mut self,
         update_for_worker_stream: Streaming<UpdateForWorker>,
-        shutdown_rx: &mut broadcast::Receiver<Arc<oneshot::Sender<()>>>,
     ) -> Result<(), Error> {
         // This big block of logic is designed to help simplify upstream components. Upstream
         // components can write standard futures that return a `Result<(), Error>` and this block
@@ -350,18 +350,17 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                     futures.push(fut);
                 },
                 res = futures.next() => res.err_tip(|| "Keep-alive should always pending. Likely unable to send data to scheduler")??,
-                complete_msg = shutdown_rx.recv().fuse() => {
-                    event!(Level::WARN, "Worker loop reveiced shutdown signal. Shutting down worker...",);
+                complete_msg = ShutdownManager::wait_for_shutdown("LocalWorker").fuse() => {
+                    event!(Level::INFO, "Worker loop reveiced shutdown signal. Shutting down worker...",);
                     let mut grpc_client = self.grpc_client.clone();
                     let worker_id = self.worker_id.clone();
                     let running_actions_manager = self.running_actions_manager.clone();
-                    let complete_msg_clone = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?.clone();
                     let shutdown_future = async move {
                         if let Err(e) = grpc_client.going_away(GoingAwayRequest { worker_id }).await {
                             event!(Level::ERROR, "Failed to send GoingAwayRequest: {e}",);
                             return Err(e.into());
                         }
-                        running_actions_manager.complete_actions(complete_msg_clone).await;
+                        running_actions_manager.complete_actions(complete_msg).await;
                         Ok::<(), Error>(())
                     };
                     futures.push(shutdown_future.boxed());
@@ -526,10 +525,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
     }
 
     #[instrument(skip(self), level = Level::INFO)]
-    pub async fn run(
-        mut self,
-        mut shutdown_rx: broadcast::Receiver<Arc<oneshot::Sender<()>>>,
-    ) -> Result<(), Error> {
+    pub async fn run(mut self) -> Result<(), Error> {
         let sleep_fn = self
             .sleep_fn
             .take()
@@ -575,7 +571,10 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             );
 
             // Now listen for connections and run all other services.
-            if let Err(err) = inner.run(update_for_worker_stream, &mut shutdown_rx).await {
+            if let Err(err) = inner.run(update_for_worker_stream).await {
+                if ShutdownManager::is_shutting_down() {
+                    return Ok(()); // Do not reconnect if we are shutting down.
+                }
                 'no_more_actions: {
                     // Ensure there are no actions in transit before we try to kill
                     // all our actions.

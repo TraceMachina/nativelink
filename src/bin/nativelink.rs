@@ -53,6 +53,7 @@ use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::metrics_utils::{set_metrics_enabled_for_this_thread, Counter};
 use nativelink_util::operation_state_manager::ClientStateManager;
 use nativelink_util::origin_context::OriginContext;
+use nativelink_util::shutdown_manager::ShutdownManager;
 use nativelink_util::store_trait::{
     set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
 };
@@ -67,9 +68,6 @@ use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
 use scopeguard::guard;
 use tokio::net::TcpListener;
 use tokio::select;
-#[cfg(target_family = "unix")]
-use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::{broadcast, oneshot};
 use tokio_rustls::rustls::pki_types::{CertificateDer, CertificateRevocationListDer};
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
@@ -93,10 +91,6 @@ const DEFAULT_HEALTH_STATUS_CHECK_PATH: &str = "/status";
 
 /// Name of environment variable to disable metrics.
 const METRICS_DISABLE_ENV: &str = "NATIVELINK_DISABLE_METRICS";
-
-/// Broadcast Channel Capacity
-/// Note: The actual capacity may be greater than the provided capacity.
-const BROADCAST_CAPACITY: usize = 1;
 
 /// Backend for bazel remote execution / cache API.
 #[derive(Parser, Debug)]
@@ -166,7 +160,6 @@ impl RootMetricsComponent for ConnectedClientsMetrics {}
 async fn inner_main(
     cfg: CasConfig,
     server_start_timestamp: u64,
-    shutdown_tx: broadcast::Sender<Arc<oneshot::Sender<()>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let health_registry_builder =
         Arc::new(AsyncMutex::new(HealthRegistryBuilder::new("nativelink")));
@@ -243,8 +236,14 @@ async fn inner_main(
         schedulers: action_schedulers.clone(),
     }));
 
-    for (server_cfg, connected_clients_mux) in servers_and_clients {
+    for (i, (server_cfg, connected_clients_mux)) in servers_and_clients.into_iter().enumerate() {
         let services = server_cfg.services.ok_or("'services' must be configured")?;
+
+        let name = if server_cfg.name.is_empty() {
+            format!("{i}")
+        } else {
+            server_cfg.name.clone()
+        };
 
         // Currently we only support http as our socket type.
         let ListenerConfig::http(http_config) = server_cfg.listener;
@@ -776,10 +775,21 @@ async fn inner_main(
         if let Some(value) = http_config.experimental_http2_max_header_list_size {
             http.http2().max_header_list_size(value);
         }
-        event!(Level::WARN, "Ready, listening on {socket_addr}",);
+
+        event!(Level::WARN, "Ready, listening on {socket_addr}");
         root_futures.push(Box::pin(async move {
+            let shutdown_guard = Arc::new(Mutex::new(None));
+            let name = format!("TcpSocketListener_{name}");
             loop {
                 select! {
+                    inner_shutdown_guard = ShutdownManager::wait_for_shutdown(name.clone()) => {
+                        let connected_clients = connected_clients_mux.inner.lock();
+                        if connected_clients.is_empty() {
+                            drop(shutdown_guard.lock().take());
+                        } else {
+                            *shutdown_guard.lock() = Some(inner_shutdown_guard);
+                        }
+                    }
                     accept_result = tcp_listener.accept() => {
                         match accept_result {
                             Ok((tcp_stream, remote_addr)) => {
@@ -796,6 +806,8 @@ async fn inner_main(
                                     .insert(SocketAddrWrapper(remote_addr));
                                 connected_clients_mux.counter.inc();
 
+                                let shutdown_guard = shutdown_guard.clone();
+                                let name = name.clone();
                                 // This is the safest way to guarantee that if our future
                                 // is ever dropped we will cleanup our data.
                                 let scope_guard = guard(
@@ -806,13 +818,32 @@ async fn inner_main(
                                             Level::INFO,
                                             ?remote_addr,
                                             ?socket_addr,
+                                            name,
                                             "Client disconnected"
                                         );
                                         if let Some(connected_clients_mux) = weak_connected_clients_mux.upgrade() {
-                                            connected_clients_mux
-                                                .inner
-                                                .lock()
-                                                .remove(&SocketAddrWrapper(remote_addr));
+                                            let mut connected_clients = connected_clients_mux.inner.lock();
+                                            connected_clients.remove(&SocketAddrWrapper(remote_addr));
+
+                                            if connected_clients.is_empty() {
+                                                event!(
+                                                    target: "nativelink::services",
+                                                    Level::INFO,
+                                                    ?remote_addr,
+                                                    ?socket_addr,
+                                                    name,
+                                                    "No more clients connected & received shutdown signal."
+                                                );
+                                                drop(shutdown_guard.lock().take());
+                                            } else if ShutdownManager::is_shutting_down() {
+                                                event!(
+                                                    target: "nativelink::services",
+                                                    Level::INFO,
+                                                    name,
+                                                    "Waiting on {} more clients to disconnect before shutting down.",
+                                                    connected_clients.len()
+                                                );
+                                            }
                                         }
                                     },
                                 );
@@ -942,9 +973,8 @@ async fn inner_main(
                     }
                     worker_names.insert(name.clone());
                     worker_metrics.insert(name.clone(), metrics);
-                    let shutdown_rx = shutdown_tx.subscribe();
                     let fut = Arc::new(OriginContext::new())
-                        .wrap_async(trace_span!("worker_ctx"), local_worker.run(shutdown_rx));
+                        .wrap_async(trace_span!("worker_ctx"), local_worker.run());
                     spawn!("worker", fut, ?name)
                 }
             };
@@ -1037,41 +1067,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
             .build()?;
 
-        // Initiates the shutdown process by broadcasting the shutdown signal via the `oneshot::Sender` to all listeners.
-        // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.
-        // Once all `oneshot::Sender` instances are dropped, the worker knows it can safely terminate.
-        let (shutdown_tx, _) = broadcast::channel::<Arc<oneshot::Sender<()>>>(BROADCAST_CAPACITY);
-        let shutdown_tx_clone = shutdown_tx.clone();
-        let (complete_tx, complete_rx) = oneshot::channel::<()>();
+        ShutdownManager::init(runtime.handle());
 
-        runtime.spawn(async move {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to listen to SIGINT");
-            eprintln!("User terminated process via SIGINT");
-            std::process::exit(130);
-        });
-
-        #[cfg(target_family = "unix")]
-        {
-            let complete_tx = Arc::new(complete_tx);
-            runtime.spawn(async move {
-                signal(SignalKind::terminate())
-                    .expect("Failed to listen to SIGTERM")
-                    .recv()
-                    .await;
-                event!(Level::WARN, "Process terminated via SIGTERM",);
-                let _ = shutdown_tx_clone.send(complete_tx);
-                let _ = complete_rx.await;
-                event!(Level::WARN, "Successfully shut down nativelink.",);
-                std::process::exit(143);
-            });
-        }
-
-        let _ = runtime.block_on(Arc::new(OriginContext::new()).wrap_async(
-            trace_span!("main"),
-            inner_main(cfg, server_start_time, shutdown_tx),
-        ));
+        let _ = runtime.block_on(
+            Arc::new(OriginContext::new())
+                .wrap_async(trace_span!("main"), inner_main(cfg, server_start_time)),
+        );
     }
     Ok(())
 }
