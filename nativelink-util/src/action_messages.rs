@@ -215,24 +215,21 @@ impl ActionUniqueQualifier {
     /// Get the instance_name of the action.
     pub const fn instance_name(&self) -> &String {
         match self {
-            Self::Cachable(action) => &action.instance_name,
-            Self::Uncachable(action) => &action.instance_name,
+            Self::Cachable(action) | Self::Uncachable(action) => &action.instance_name,
         }
     }
 
     /// Get the digest function of the action.
     pub const fn digest_function(&self) -> DigestHasherFunc {
         match self {
-            Self::Cachable(action) => action.digest_function,
-            Self::Uncachable(action) => action.digest_function,
+            Self::Cachable(action) | Self::Uncachable(action) => action.digest_function,
         }
     }
 
     /// Get the digest of the action.
     pub const fn digest(&self) -> DigestInfo {
         match self {
-            Self::Cachable(action) => action.digest,
-            Self::Uncachable(action) => action.digest,
+            Self::Cachable(action) | Self::Uncachable(action) => action.digest,
         }
     }
 }

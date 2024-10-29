@@ -239,8 +239,7 @@ impl SortedAwaitedActions {
             ActionStage::CacheCheck => &mut self.cache_check,
             ActionStage::Queued => &mut self.queued,
             ActionStage::Executing => &mut self.executing,
-            ActionStage::Completed(_) => &mut self.completed,
-            ActionStage::CompletedFromCache(_) => &mut self.completed,
+            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => &mut self.completed,
         }
     }
 

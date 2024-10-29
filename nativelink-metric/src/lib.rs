@@ -68,11 +68,10 @@ pub enum MetricKind {
 impl From<u64> for MetricKind {
     fn from(value: u64) -> Self {
         match value {
-            0 => MetricKind::Default,
+            0 | 4_u64..=u64::MAX => MetricKind::Default,
             1 => MetricKind::Counter,
             2 => MetricKind::String,
             3 => MetricKind::Component,
-            _ => MetricKind::Default,
         }
     }
 }

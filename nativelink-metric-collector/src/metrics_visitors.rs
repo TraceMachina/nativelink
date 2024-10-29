@@ -33,8 +33,9 @@ impl From<MetricKind> for CollectionKind {
     fn from(kind: MetricKind) -> Self {
         match kind {
             MetricKind::Counter => CollectionKind::Counter,
-            MetricKind::String => CollectionKind::String,
-            _ => CollectionKind::String,
+            MetricKind::Default | MetricKind::String | MetricKind::Component => {
+                CollectionKind::String
+            }
         }
     }
 }
