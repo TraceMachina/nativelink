@@ -34,6 +34,7 @@ pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[allow(clippy::disallowed_methods)]
         #[tokio::test(#attr)]
         async fn #fn_name(#fn_inputs) #fn_output {
+            nativelink_util::shutdown_manager::ShutdownManager::init(&tokio::runtime::Handle::current());
             // Error means already initialized, which is ok.
             let _ = nativelink_util::init_tracing();
             // If already set it's ok.

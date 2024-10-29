@@ -36,10 +36,11 @@ use nativelink_util::common::fs;
 use nativelink_util::digest_hasher::{DigestHasherFunc, ACTIVE_HASHER_FUNC};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::origin_context::ActiveOriginContext;
+use nativelink_util::shutdown_manager::ShutdownManager;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
 use tokio::process;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
@@ -168,7 +169,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
     async fn run(
         &mut self,
         update_for_worker_stream: Streaming<UpdateForWorker>,
-        shutdown_rx: &mut broadcast::Receiver<Arc<oneshot::Sender<()>>>,
     ) -> Result<(), Error> {
         // This big block of logic is designed to help simplify upstream components. Upstream
         // components can write standard futures that return a `Result<(), Error>` and this block
@@ -190,9 +190,20 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
         let mut update_for_worker_stream = update_for_worker_stream.fuse();
 
+        // If we are shutting down we need to hold onto the shutdown guard
+        // until we are done processing all the futures.
+        let mut _maybe_shutdown_guard = None;
         loop {
             select! {
                 maybe_update = update_for_worker_stream.next() => {
+                    if maybe_update.is_none() && ShutdownManager::is_shutting_down() {
+                        event!(
+                            Level::ERROR,
+                            "Closed stream",
+                        );
+                        // Happy shutdown path, no need to log anything.
+                        continue;
+                    }
                     match maybe_update
                         .err_tip(|| "UpdateForWorker stream closed early")?
                         .err_tip(|| "Got error in UpdateForWorker stream")?
@@ -349,22 +360,39 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                     let fut = res.err_tip(|| "New future stream receives should never be closed")?;
                     futures.push(fut);
                 },
-                res = futures.next() => res.err_tip(|| "Keep-alive should always pending. Likely unable to send data to scheduler")??,
-                complete_msg = shutdown_rx.recv().fuse() => {
-                    event!(Level::WARN, "Worker loop reveiced shutdown signal. Shutting down worker...",);
+                res = futures.next() => {
+                    let res = res.err_tip(|| "Keep-alive should always pending. Likely unable to send data to scheduler")?;
+                    // If we are shutting down and we get an error, we want to
+                    // keep draining, but not reconnect.
+                    if ShutdownManager::is_shutting_down() {
+                        // If we are shutting down and we only have keep alive left,
+                        // we can exit.
+                        if futures.len() == 1 {
+                            return Ok(());
+                        }
+                        if res.is_err() {
+                            event!(
+                                Level::ERROR,
+                                "During shutdown future failed with error: {:?}", res.unwrap_err(),
+                            );
+                            continue;
+                        }
+                    }
+                    // If we are not shutting down and get an error, return the error.
+                    res?;
+                },
+                shutdown_guard = ShutdownManager::wait_for_shutdown("LocalWorker").fuse() => {
+                    _maybe_shutdown_guard = Some(shutdown_guard);
+                    event!(Level::INFO, "Worker loop reveiced shutdown signal. Shutting down worker...",);
                     let mut grpc_client = self.grpc_client.clone();
                     let worker_id = self.worker_id.clone();
-                    let running_actions_manager = self.running_actions_manager.clone();
-                    let complete_msg_clone = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?.clone();
-                    let shutdown_future = async move {
+                    futures.push(async move {
                         if let Err(e) = grpc_client.going_away(GoingAwayRequest { worker_id }).await {
                             event!(Level::ERROR, "Failed to send GoingAwayRequest: {e}",);
                             return Err(e.into());
                         }
-                        running_actions_manager.complete_actions(complete_msg_clone).await;
                         Ok::<(), Error>(())
-                    };
-                    futures.push(shutdown_future.boxed());
+                    }.boxed());
                 },
             };
         }
@@ -526,10 +554,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
     }
 
     #[instrument(skip(self), level = Level::INFO)]
-    pub async fn run(
-        mut self,
-        mut shutdown_rx: broadcast::Receiver<Arc<oneshot::Sender<()>>>,
-    ) -> Result<(), Error> {
+    pub async fn run(mut self) -> Result<(), Error> {
         let sleep_fn = self
             .sleep_fn
             .take()
@@ -575,7 +600,11 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             );
 
             // Now listen for connections and run all other services.
-            if let Err(err) = inner.run(update_for_worker_stream, &mut shutdown_rx).await {
+            let res = inner.run(update_for_worker_stream).await;
+            if ShutdownManager::is_shutting_down() {
+                return Ok(()); // Do not reconnect if we are shutting down.
+            }
+            if let Err(err) = res {
                 'no_more_actions: {
                     // Ensure there are no actions in transit before we try to kill
                     // all our actions.

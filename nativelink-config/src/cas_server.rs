@@ -406,6 +406,10 @@ pub struct ServerConfig {
 
     /// Services to attach to server.
     pub services: Option<ServicesConfig>,
+
+    /// Do not wait for connections to close during a graceful shutdown.
+    #[serde(default)]
+    pub experimental_connections_dont_block_graceful_shutdown: bool,
 }
 
 #[allow(non_camel_case_types)]
