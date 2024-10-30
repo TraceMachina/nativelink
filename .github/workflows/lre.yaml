@@ -89,9 +89,9 @@ jobs:
 
       - name: Start NativeLink operator
         env:
-          PR_URL: ${{ github.event.pull_request.head.repo.clone_url }}
-          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-          PR_COMMIT: ${{ github.event.pull_request.head.sha }}
+          REPO_URL: ${{ github.event.pull_request.head.repo.clone_url || github.repository }}
+          BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           nix develop --impure --command bash -c 'cat > kustomization.yaml << EOF
           apiVersion: kustomize.config.k8s.io/v1beta1
@@ -109,13 +109,13 @@ jobs:
           - patch: |-
               - op: replace
                 path: /spec/url
-                value: ${PR_URL}
+                value: ${REPO_URL}
               - op: replace
                 path: /spec/ref/branch
-                value: ${PR_BRANCH}
+                value: ${BRANCH}
               - op: replace
                 path: /spec/ref/commit
-                value: ${PR_COMMIT}
+                value: ${COMMIT}
             target:
               kind: GitRepository
               name: nativelink
