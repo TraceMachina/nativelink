@@ -1,0 +1,189 @@
+---
+title: Kubernetes example
+description: 'An example setup for NativeLink in Kubernetes'
+---
+
+In this example you'll spin up a local Kubernetes cluster with NativeLink and
+run some Bazel builds against it.
+
+**Requirements**
+
+- An `x86_64-linux` system. Either "real" Linux or WSL2.
+- A functional local Docker setup.
+- A recent version of Nix with flake support, for instance installed via the
+  [next-gen Nix installer](https://github.com/NixOS/experimental-nix-installer).
+
+:::caution
+This example doesn't work on Mac yet.
+:::
+
+
+## ☁️ Prepare the cluster
+
+First, enter the NativeLink development environment:
+
+```bash
+git clone https://github.com/aaronmondal/nativelink && \
+    cd nativelink && \
+    nix develop
+```
+
+This environment contains Bazel and some cloud tooling, so you don't need to set
+up any kubernetes-related software yourself.
+
+Now, start the development cluster:
+
+```bash
+native up
+```
+
+:::tip
+The `native up` command uses Pulumi under the hood. You can view and delete
+the stack with `pulumi stack` and `pulumi destroy`. If you're queried for a
+stack password, press enter, as the password is an empty string.
+:::
+
+Next, deploy NativeLink to the cluster:
+
+```bash
+kubectl apply -k \
+    https://github.com/TraceMachina/nativelink//deploy/kubernetes-example
+```
+
+:::danger
+This example is built for demo purposes only. It's not a secure production-grade
+setup and will only work in the local development cluster created with
+`native up`.
+
+One-liner production-grade setups are still under construction.
+:::
+
+## 🔭 Explore deployments
+
+The deployment might take a wile to boot up. You can monitor progress via the
+dashboards that come with the development cluster:
+
+- [localhost:8080](http://localhost:8080): Cilium's Hubble UI to view the
+  cluster topology. NativeLink will be deployed into the `default` namespace.
+- [localhost:8081](http://localhost:8081): The Tekton Dashboard to view the
+  progress of the in-cluster pipelines. You'll find the pipelines under the
+  `PipelineRuns` tab.
+- [localhost:9000](http://localhost:9000): The Capacitor Dashboard to view Flux
+  Kustomizations. You can view NatieLink's logs here once it's fully deployed.
+
+In terminals, the following commands can be helpful to view deployment progress:
+
+- `tkn pr logs -f` to view the logs of a `PipelineRun` in the terminal.
+- `flux get all -A` to view the state of the NativeLink deployments.
+- Once NativeLink is deployed:
+    - `kubectl logs deploy/nativelink-cas` for the CAS (cache) logs.
+    - `kubectl logs deploy/nativelink-scheduler` for the scheduler logs.
+    - `kubectl logs deploy/nativelink-worker` for the worker logs.
+
+## 🏗️ Build against NativeLink
+
+The demo setup creates gateways to expose the `cas` and `scheduler` deployments
+via your local docker network. You can pass the Gateway addresses to Bazel
+invocations to make builds run against the cluster:
+
+```bash
+CACHE=$(kubectl get gtw cache-gateway -o=jsonpath='{.status.addresses[0].value}')
+SCHEDULER=$(kubectl get gtw scheduler-gateway -o=jsonpath='{.status.addresses[0].value}')
+
+echo "Cache IP: $CACHE"
+echo "Scheduler IP: $SCHEDULER"
+
+bazel build \
+    --config=lre \
+    --remote_instance_name=main \
+    --remote_cache=grpc://$CACHE \
+    --remote_executor=grpc://$SCHEDULER \
+    //local-remote-execution/examples:hello_lre
+```
+
+:::caution
+While the Dashboard ports are static, the NativeLink endpoints aren't (yet).
+If you shut down the cluster and reboot it, the `$CACHE` and `$SCHEDULER` IP
+addresses will change.
+:::
+
+:::tip
+You can add these flags to a to a `.bazelrc.user` file in the workspace root.
+Note that you'll need to pass in explicit IP addresses as this file can't
+resolve environment variables:
+```bash
+# .bazelrc.user
+build --config=lre
+build --remote_instance_name=main
+build --remote_cache=grpc://172.20.255.4
+build --remote_executor=grpc://172.20.255.5
+```
+
+```bash
+# .bazelrc
+try-import %workspace%/.bazelrc.user
+```
+:::
+
+The crucial part is this bit:
+
+```txt
+INFO: 11 processes: 9 internal, 2 remote.
+```
+
+It tells us that the compilation ran against the cluster. Let's clean the Bazel
+cache and run the build again:
+
+```bash
+bazel clean && bazel build \
+    --config=lre \
+    --remote_instance_name=main \
+    --remote_cache=grpc://$CACHE \
+    --remote_executor=grpc://$SCHEDULER \
+    //local-remote-execution/examples:hello_lre
+```
+
+The build now shows cache hits instead of remote actions:
+
+```txt
+INFO: 11 processes: 2 remote cache hit, 9 internal.
+```
+
+## 🚀 Bonus: Local Remote Execution
+
+The worker deployment in this example leverages [Local Remote Execution](../explanations/lre).
+
+Local Remote Execution mirrors toolchains for remote execution in your local
+development environment. This lets you reuse build artifacts with virtually
+perfect cache hit rate across different repositories, developers, and CI.
+
+To test LRE in the cluster, clean the local cache and invoke another build
+against the cluster, but this time omit the `remote_executor` flag. This way
+you'll use remote caching without remote execution:
+
+```bash
+bazel clean && bazel build \
+    --config=lre \
+    --remote_instance_name=main \
+    --remote_cache=grpc://$CACHE \
+    //local-remote-execution/examples:hello_lre
+```
+
+You'll get remote cache hits as if your local machine was a `nativelink-worker`:
+
+```txt
+INFO: 11 processes: 2 remote cache hit, 9 internal.
+```
+
+## 🧹 Clean up
+
+When you're done testing, delete the cluster:
+
+```bash
+# Delete the kind cluster
+native down
+
+# Remove the container registry and loadbalancer
+docker container stop kind-registry | xargs docker rm
+docker container stop kind-loadbalancer | xargs docker rm
+```
