@@ -74,10 +74,12 @@ In terminals, the following commands can be helpful to view deployment progress:
 
 - `tkn pr logs -f` to view the logs of a `PipelineRun` in the terminal.
 - `flux get all -A` to view the state of the NativeLink deployments.
-- Once NativeLink is deployed:
-    - `kubectl logs deploy/nativelink-cas` for the CAS (cache) logs.
-    - `kubectl logs deploy/nativelink-scheduler` for the scheduler logs.
-    - `kubectl logs deploy/nativelink-worker` for the worker logs.
+
+Once NativeLink is deployed:
+
+- `kubectl logs deploy/nativelink-cas` for the CAS (cache) logs.
+- `kubectl logs deploy/nativelink-scheduler` for the scheduler logs.
+- `kubectl logs deploy/nativelink-worker` for the worker logs.
 
 ## 🏗️ Build against NativeLink
 

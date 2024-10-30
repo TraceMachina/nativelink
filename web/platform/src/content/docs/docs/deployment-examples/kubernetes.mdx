@@ -23,7 +23,7 @@ This example doesn't work on Mac yet.
 First, enter the NativeLink development environment:
 
 ```bash
-git clone https://github.com/aaronmondal/nativelink && \
+git clone https://github.com/TraceMachina/nativelink && \
     cd nativelink && \
     nix develop
 ```
@@ -75,10 +75,12 @@ In terminals, the following commands can be helpful to view deployment progress:
 
 - `tkn pr logs -f` to view the logs of a `PipelineRun` in the terminal.
 - `flux get all -A` to view the state of the NativeLink deployments.
-- Once NativeLink is deployed:
-    - `kubectl logs deploy/nativelink-cas` for the CAS (cache) logs.
-    - `kubectl logs deploy/nativelink-scheduler` for the scheduler logs.
-    - `kubectl logs deploy/nativelink-worker` for the worker logs.
+
+Once NativeLink is deployed:
+
+- `kubectl logs deploy/nativelink-cas` for the CAS (cache) logs.
+- `kubectl logs deploy/nativelink-scheduler` for the scheduler logs.
+- `kubectl logs deploy/nativelink-worker` for the worker logs.
 
 ## 🏗️ Build against NativeLink
 
@@ -94,8 +96,6 @@ echo "Cache IP: $CACHE"
 echo "Scheduler IP: $SCHEDULER"
 
 bazel build \
-    --config=lre \
-    --remote_instance_name=main \
     --remote_cache=grpc://$CACHE \
     --remote_executor=grpc://$SCHEDULER \
     //local-remote-execution/examples:hello_lre
@@ -113,8 +113,6 @@ Note that you'll need to pass in explicit IP addresses as this file can't
 resolve environment variables:
 ```bash
 # .bazelrc.user
-build --config=lre
-build --remote_instance_name=main
 build --remote_cache=grpc://172.20.255.4
 build --remote_executor=grpc://172.20.255.5
 ```
@@ -136,8 +134,6 @@ cache and run the build again:
 
 ```bash
 bazel clean && bazel build \
-    --config=lre \
-    --remote_instance_name=main \
     --remote_cache=grpc://$CACHE \
     --remote_executor=grpc://$SCHEDULER \
     //local-remote-execution/examples:hello_lre
@@ -163,8 +159,6 @@ you'll use remote caching without remote execution:
 
 ```bash
 bazel clean && bazel build \
-    --config=lre \
-    --remote_instance_name=main \
     --remote_cache=grpc://$CACHE \
     //local-remote-execution/examples:hello_lre
 ```
