@@ -1,7 +1,7 @@
 ---
 title: "Nativelink - The free & open source simulation infrastructure platform written in Rust"
 tags: ["news", "announcements"]
-image: https://static.wixstatic.com/media/48be99_87632b609ba84923b7d4d0c13ac4780e~mv2.png/v1/fill/w_814,h_550,al_c,q_90,usm_0.66_1.00_0.01,enc_auto/Untitled%20design%20(24).png
+image: https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_open_source.webp
 slug: NavtiveLink
 readTime: 30 seconds
 pubDate: 2024-09-17

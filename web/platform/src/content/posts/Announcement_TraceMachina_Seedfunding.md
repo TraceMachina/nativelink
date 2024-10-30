@@ -1,7 +1,7 @@
 ---
 title: "TraceMachina: Seedfunding"
 tags: ["news", "announcements"]
-image: https://static.wixstatic.com/media/48be99_ccab62facd624e21bc18c798753f709a~mv2.png/v1/fill/w_648,h_394,al_c,q_85,usm_0.66_1.00_0.01,enc_auto/Untitled%20design%20(23).png
+image: https://nativelink-cdn.s3.us-east-1.amazonaws.com/tracemachina_seedfunding.webp
 slug: tracemachina-seedfunding
 pubDate: 2024-09-10
 readTime: 30 seconds

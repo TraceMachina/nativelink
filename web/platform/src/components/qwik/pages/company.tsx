@@ -6,52 +6,52 @@ import { BackgroundVideo } from "../components/video";
 
 const team = [
   {
-    img: "https://static.wixstatic.com/media/b37b63_0656d59454a2475ebbd617004a6ca8cb~mv2.jpg/v1/fill/w_618,h_618,al_c,q_85,usm_0.66_1.00_0.01,enc_auto/Andrew%20Shipley%20-%20Director%20of%20Operations_edited.jpg",
+    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/andrew_shipley.webp",
     name: "Andrew Shipley",
     title: "Director of Operations",
   },
   {
-    img: "https://static.wixstatic.com/media/b37b63_06a9f6629b70404895da49decb2954a0~mv2.jpg/v1/fill/w_618,h_618,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_auto/Aaron%20Mondal%20-%20Software%20Engineer_edited.jpg",
+    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/aaron_mondal.webp",
     name: "Aaron Mondal",
     title: "Software Engineer",
   },
   {
-    img: "https://static.wixstatic.com/media/b37b63_14329a284c0f4a7c9abae9d9171b178b~mv2.jpg/v1/fill/w_618,h_618,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_auto/Tim%20Potter%20-%20Chief%20Technology%20Officer_edited.jpg",
+    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/tim_potter.webp",
     name: "Tim Potter",
     title: "Chief Technology Officer",
   },
   {
-    img: "https://static.wixstatic.com/media/b37b63_9c67683dba7a422fbf1cb197daa920b9~mv2.jpg/v1/fill/w_618,h_618,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_auto/Brian%20Clark%20-%20Software%20Engineer_edited.jpg",
+    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/brian_clark.webp",
     name: "Brian Clark",
     title: "Software Engineer",
   },
   {
-    img: "https://static.wixstatic.com/media/b37b63_afa6ff90e65944c4a0a241360ffd4b50~mv2.jpg/v1/fill/w_618,h_618,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_auto/Tyrone%20Greenfield%20_%20Chief%20of%20Staff_edited.jpg",
+    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/tyrone_greenfield.webp",
     name: "Tyrone Greenfield",
     title: "Chief of Staff",
   },
   {
-    img: "https://static.wixstatic.com/media/b37b63_8f270884e7b945caaf1a6293265386f5~mv2.jpg/v1/fill/w_618,h_618,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_auto/Nadine%20Farah%20-%20Product%20Marketing_edited.jpg",
+    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nadine_farah.webp",
     name: "Nadine Farah",
     title: "Product Marketing",
   },
   {
-    img: "https://static.wixstatic.com/media/b37b63_30b07f1bbce4444d8ab9fb6e4902db6a~mv2.jpg/v1/fill/w_618,h_618,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_auto/AdamSinger_edited.jpg",
+    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/adam_singer.webp",
     name: "Adam Singer",
     title: "Software Engineer",
   },
   {
-    img: "https://static.wixstatic.com/media/b37b63_c4d658064531477489510fae5dcca594~mv2.jpg/v1/fill/w_618,h_618,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_auto/Blake%20Hatch%20-%20Developer%20Relations_Cloud%20Engineering_edited.jpg",
+    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/blake_hatch.webp",
     name: "Blake Hatch",
     title: "Business Engineer",
   },
   {
-    img: "https://static.wixstatic.com/media/b37b63_f5492bab76244be9a590f0b7129fd2af~mv2.jpg/v1/fill/w_618,h_618,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_auto/Marcus%20Eagan%20-%20Co-Founder_edited.jpg",
+    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/marcus_eagan.webp",
     name: "Marcus Eagan",
     title: "Co-Founder",
   },
   {
-    img: "https://static.wixstatic.com/media/b37b63_40a02174d13c4f2fa6a1894ad2505499~mv2.jpg/v1/fill/w_618,h_618,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_auto/Blaise%20Bruer%20-%20Co-Founder_edited.jpg",
+    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/blaise_bruer.webp",
     name: "Blaise Bruer",
     title: "Co-Founder",
   },
@@ -109,7 +109,7 @@ const CompanyHero = component$(() => {
       </div>
       <picture class="z-10 py-14 w-full md:w-[650px] flex justify-center items-center">
         <img
-          src="https://static.wixstatic.com/media/e16379_35198dafb70c4384935c816f2f5d47e7~mv2.png/v1/fill/w_542,h_518,fp_0.50_0.50,lg_1,q_85,enc_auto/TM-logo.png"
+          src="https://nativelink-cdn.s3.us-east-1.amazonaws.com/tracemachina_logo.webp"
           alt=""
           class="w-3/4"
         />

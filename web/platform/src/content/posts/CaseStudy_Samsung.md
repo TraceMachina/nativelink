@@ -1,7 +1,7 @@
 ---
 title: "Case study Samsung"
 tags: ["news", "case-studies"]
-image: https://static.wixstatic.com/media/48be99_30ae224dc45f453d80e48f7b9078d330~mv2.png/v1/fill/w_648,h_394,al_c,q_85,usm_0.66_1.00_0.01,enc_auto/x%20(3).png
+image: https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_samsung.webp
 slug: case-study-samsung
 pubDate: 2024-08-13
 readTime: 30 seconds

@@ -3,11 +3,11 @@ import { Background, Cloud } from "../../media/icons/icons";
 import { LinearGradient } from "../components/text";
 
 const videoLink =
-  "https://video.wixstatic.com/video/e16379_17fe40ef02fe478fb675cced13e69dde/720p/mp4/file.mp4";
+  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/background_file.mp4";
 const _MockUp =
-  "https://static.wixstatic.com/media/e16379_a162a7e6486d4192b484d9651704d8fa~mv2.png/v1/fill/w_889,h_520,al_c,q_90,usm_0.33_1.00_0.00,enc_auto/e16379_a162a7e6486d4192b484d9651704d8fa~mv2.png";
+  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp";
 const videoMockUp =
-  "https://video.wixstatic.com/video/2dfb32_b816e13aabc5485c9df1eefe85dea61f/360p/mp4/file.mp4";
+  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_background.mp4";
 
 export const Hero = component$(() => {
   const videoElementSignal = useSignal<HTMLAudioElement | undefined>();

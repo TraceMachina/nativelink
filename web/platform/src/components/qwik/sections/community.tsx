@@ -5,7 +5,7 @@ import { LinearGradient } from "../components/text";
 import { GitHub, Slack } from "../../media/icons/icons";
 
 const _docsIcon =
-  "https://static.wixstatic.com/media/e16379_2257061ccd194af5bd1c80b2638538f6~mv2.png/v1/fill/w_43,h_43,al_c,lg_1,q_85,enc_auto/e16379_2257061ccd194af5bd1c80b2638538f6~mv2.png";
+  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/docs_icon.webp";
 
 const communityLinks = [
   {

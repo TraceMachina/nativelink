@@ -1,10 +1,10 @@
 import { $, component$, useSignal } from "@builder.io/qwik";
 
 const videoLink =
-  "https://video.wixstatic.com/video/e16379_17fe40ef02fe478fb675cced13e69dde/720p/mp4/file.mp4";
+  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/background_file.mp4";
 
 const Logo =
-  "https://static.wixstatic.com/media/e16379_7fa715a71b41439d93a362b05bbb98a3~mv2.png/v1/fill/w_274,h_52,al_c,lg_1,q_85,enc_auto/e16379_7fa715a71b41439d93a362b05bbb98a3~mv2.png";
+  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo.webp";
 
 const _links = [
   {
