@@ -24,5 +24,9 @@ writeShellScriptBin "local-image-test" ''
     ''${IMAGE_NAME}:''${IMAGE_TAG} \
     --highestWastedBytes=0
 
-  ${trivy}/bin/trivy image ''${IMAGE_NAME}:''${IMAGE_TAG}
+  # TODO(aaronmondal): Keep monitoring this for better solutions to ratelimits:
+  #                    https://github.com/aquasecurity/trivy-action/issues/389
+  ${trivy}/bin/trivy image \
+    ''${IMAGE_NAME}:''${IMAGE_TAG} \
+    --db-repository public.ecr.aws/aquasecurity/trivy-db:2
 ''
