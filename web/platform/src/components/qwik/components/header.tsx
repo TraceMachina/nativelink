@@ -14,10 +14,10 @@ import { GitHub, GitHubIcon, Slack, SlackIcon } from "../../media/icons/icons";
 import styles from "./header.css?inline";
 
 const Logo =
-  "https://static.wixstatic.com/media/e16379_7fa715a71b41439d93a362b05bbb98a3~mv2.png/v1/fill/w_274,h_52,al_c,lg_1,q_85,enc_auto/e16379_7fa715a71b41439d93a362b05bbb98a3~mv2.png";
+  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo.webp";
 
 const mobileLogo =
-  "https://static.wixstatic.com/media/e16379_ebaae466807343b0a880cc8811c53070~mv2.png/v1/fill/w_90,h_80,al_c,lg_1,q_85,enc_auto/Logo.png";
+  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo_mobile.webp";
 
 const links = [
   { name: "Home", href: "/" },

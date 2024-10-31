@@ -1,7 +1,7 @@
 import { component$, useSignal } from "@builder.io/qwik";
 
 const videoLink =
-  "https://video.wixstatic.com/video/e16379_17fe40ef02fe478fb675cced13e69dde/720p/mp4/file.mp4";
+  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/background_file.mp4";
 
 interface BackgroundVideoProps {
   class?: string;
