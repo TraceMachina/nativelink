@@ -89,7 +89,7 @@ jobs:
 
       - name: Start NativeLink operator
         env:
-          REPO_URL: ${{ github.event.pull_request.head.repo.clone_url || github.repository }}
+          REPO_URL: ${{ github.event.pull_request.head.repo.clone_url || format('https://github.com/{0}.git', github.repository) }}
           BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
           COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
