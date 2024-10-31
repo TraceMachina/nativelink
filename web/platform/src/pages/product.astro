@@ -37,16 +37,16 @@ const paddings = ["p-4"]
 
       <picture>
         <source
-          srcset="https://static.wixstatic.com/media/e16379_a162a7e6486d4192b484d9651704d8fa~mv2.png/v1/fill/w_2178,h_1218,fp_0.51_0.04,q_95,usm_0.66_1.00_0.01,enc_auto/Mockup.png"
+          srcset="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp"
           media="(min-width: 768px)"
         />
         <source
-          srcset="https://static.wixstatic.com/media/e16379_a162a7e6486d4192b484d9651704d8fa~mv2.png/v1/fill/w_958,h_858,fp_0.51_0.04,q_90,usm_0.66_1.00_0.01,enc_auto/Mockup.png"
+          srcset="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp"
           media="(max-width: 767px)"
         />
         <img
           fetchpriority="high"
-          src="https://static.wixstatic.com/media/e16379_a162a7e6486d4192b484d9651704d8fa~mv2.png/v1/fill/w_2178,h_1218,fp_0.51_0.04,q_95,usm_0.66_1.00_0.01,enc_auto/Mockup.png"
+          src="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp"
           alt="Mockup"
           class="object-fit md:w-[1000px] py-8 md:py-2"
         />
@@ -87,16 +87,16 @@ const paddings = ["p-4"]
             <picture>
               <source
                 media="(min-width: 320px) and (max-width: 750px)"
-                srcset="https://static.wixstatic.com/media/2dfb32_676d0414e0c44434b8f652bab63ff5d4~mv2.png/v1/crop/x_0,y_5,w_2576,h_2605/fill/w_684,h_692,fp_0.50_0.50,q_90,usm_0.66_1.00_0.01,enc_auto/Demo_Page_Product_Shot%20(1).png"
+                srcset="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_demo.webp"
               />
               <source
                 media="(min-width: 751px)"
-                srcset="https://static.wixstatic.com/media/2dfb32_676d0414e0c44434b8f652bab63ff5d4~mv2.png/v1/crop/x_0,y_0,w_3088,h_2548/fill/w_1224,h_1048,fp_0.50_0.50,q_90,usm_0.66_1.00_0.01,enc_auto/Demo_Page_Product_Shot%20(1).png"
+                srcset="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_demo.webp"
               />
               <img
                 fetchpriority="high"
                 class="rounded-xl"
-                src="https://static.wixstatic.com/media/2dfb32_676d0414e0c44434b8f652bab63ff5d4~mv2.png/v1/crop/x_0,y_0,w_3088,h_2548/fill/w_684,h_692,fp_0.50_0.50,q_90,usm_0.66_1.00_0.01,enc_auto/Demo_Page_Product_Shot%20(1).png"
+                src="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_demo.webp"
                 alt="Demo_Page_Product_Shot (1).png"
                 class="object-fit md:w-[1000px] py-8 md:py-2"
                 />
@@ -119,7 +119,19 @@ const paddings = ["p-4"]
           </div>
 
           <div class="shadow-images border border-gray-600 rounded-xl w-full bg-gray-900 flex justify-center">
-            <picture><source media="(min-width: 320px) and (max-width: 750px)" srcset="https://static.wixstatic.com/media/2dfb32_cea7da34802d481997a115d857a5b798~mv2.png/v1/crop/x_11,y_0,w_3015,h_1042/fill/w_683,h_236,al_c,q_85,usm_0.66_1.00_0.01,enc_auto/Cropped_Metrics_Product_Shot_1.png"><img class="rounded-xl" fetchpriority="high" src="https://static.wixstatic.com/media/2dfb32_cea7da34802d481997a115d857a5b798~mv2.png/v1/crop/x_11,y_0,w_3015,h_1042/fill/w_683,h_236,al_c,q_85,usm_0.66_1.00_0.01,enc_auto/Cropped_Metrics_Product_Shot_1.png" alt="Cropped_Metrics_Product_Shot_1.png" style="object-fit: contain; object-position: center center; width: 100%;"></picture>
+            <picture>
+              <source
+                media="(min-width: 320px) and (max-width: 750px)"
+                srcset="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_metrics.webp"
+              >
+              <img
+                class="rounded-xl"
+                fetchpriority="high"
+                src="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_metrics.webp"
+                alt="Nativelink Metrics"
+                style="object-fit: contain; object-position: center center; width: 100%;"
+              >
+            </picture>
           </div>
 
         </div>
