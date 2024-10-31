@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
+use futures::future::ready;
+use futures::FutureExt;
 use parking_lot::Mutex;
 use tokio::runtime::Handle;
 #[cfg(target_family = "unix")]
@@ -25,6 +28,7 @@ use tracing::{event, Level};
 static SHUTDOWN_MANAGER: ShutdownManager = ShutdownManager {
     is_shutting_down: AtomicBool::new(false),
     shutdown_tx: Mutex::new(None), // Will be initialized in `init`.
+    maybe_shutdown_weak_sender: Mutex::new(None),
 };
 
 /// Broadcast Channel Capacity
@@ -43,6 +47,7 @@ const BROADCAST_CAPACITY: usize = 1;
 pub struct ShutdownManager {
     is_shutting_down: AtomicBool,
     shutdown_tx: Mutex<Option<broadcast::Sender<Arc<oneshot::Sender<()>>>>>,
+    maybe_shutdown_weak_sender: Mutex<Option<Weak<oneshot::Sender<()>>>>,
 }
 
 impl ShutdownManager {
@@ -85,9 +90,14 @@ impl ShutdownManager {
             event!(Level::WARN, "Shutdown already in progress.");
             return;
         }
+        let (complete_tx, complete_rx) = oneshot::channel::<()>();
+        let shutdown_guard = Arc::new(complete_tx);
+        SHUTDOWN_MANAGER
+            .maybe_shutdown_weak_sender
+            .lock()
+            .replace(Arc::downgrade(&shutdown_guard))
+            .expect("Expected maybe_shutdown_weak_sender to be empty");
         tokio::spawn(async move {
-            let (complete_tx, complete_rx) = oneshot::channel::<()>();
-            let shutdown_guard = Arc::new(complete_tx);
             {
                 let shutdown_tx_lock = SHUTDOWN_MANAGER.shutdown_tx.lock();
                 // No need to check result of send, since it will only fail if
@@ -106,33 +116,58 @@ impl ShutdownManager {
         });
     }
 
-    pub async fn wait_for_shutdown(service_name: impl Into<String>) -> ShutdownGuard {
+    pub fn wait_for_shutdown(service_name: impl Into<String>) -> impl Future<Output = ShutdownGuard> + Send {
         let service_name = service_name.into();
+        if Self::is_shutting_down() {
+            let maybe_shutdown_weak_sender_lock = SHUTDOWN_MANAGER
+                .maybe_shutdown_weak_sender
+                .lock();
+            let maybe_sender = maybe_shutdown_weak_sender_lock
+                .as_ref()
+                .expect("Expected maybe_shutdown_weak_sender to be set");
+            if let Some(sender) = maybe_sender.upgrade() {
+                event!(
+                    Level::INFO,
+                    "Service {service_name} has been notified of shutdown request"
+                );
+                return ready(ShutdownGuard {
+                    service_name,
+                    _maybe_guard: Some(sender),
+                }).left_future();
+            }
+            return ready(ShutdownGuard {
+                service_name,
+                _maybe_guard: None,
+            }).left_future();
+        }
         let mut shutdown_receiver = SHUTDOWN_MANAGER
             .shutdown_tx
             .lock()
             .as_ref()
             .expect("ShutdownManager was never initialized")
             .subscribe();
-        let sender = shutdown_receiver
-            .recv()
-            .await
-            .expect("Shutdown sender dropped. This should never happen.");
-        event!(
-            Level::INFO,
-            "Service {service_name} has been notified of shutdown request"
-        );
-        ShutdownGuard {
-            service_name,
-            _guard: sender,
+        async move {
+            let sender = shutdown_receiver
+                .recv()
+                .await
+                .expect("Shutdown sender dropped. This should never happen.");
+            event!(
+                Level::INFO,
+                "Service {service_name} has been notified of shutdown request"
+            );
+            ShutdownGuard {
+                service_name,
+                _maybe_guard: Some(sender),
+            }
         }
+        .right_future()
     }
 }
 
 #[derive(Clone)]
 pub struct ShutdownGuard {
     service_name: String,
-    _guard: Arc<oneshot::Sender<()>>,
+    _maybe_guard: Option<Arc<oneshot::Sender<()>>>,
 }
 
 impl Drop for ShutdownGuard {

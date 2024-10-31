@@ -193,6 +193,8 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
         // If we are shutting down we need to hold onto the shutdown guard
         // until we are done processing all the futures.
         let mut _maybe_shutdown_guard = None;
+        let wait_for_shutdown_fut = ShutdownManager::wait_for_shutdown("LocalWorker").fuse();
+        tokio::pin!(wait_for_shutdown_fut);
         loop {
             select! {
                 maybe_update = update_for_worker_stream.next() => {
@@ -381,7 +383,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                     // If we are not shutting down and get an error, return the error.
                     res?;
                 },
-                shutdown_guard = ShutdownManager::wait_for_shutdown("LocalWorker").fuse() => {
+                shutdown_guard = wait_for_shutdown_fut.as_mut() => {
                     _maybe_shutdown_guard = Some(shutdown_guard);
                     event!(Level::INFO, "Worker loop reveiced shutdown signal. Shutting down worker...",);
                     let mut grpc_client = self.grpc_client.clone();

@@ -8,7 +8,7 @@ edition = "2021"
 rust-version = "1.81.0"
 
 [profile.release]
-lto = true
+lto = false
 opt-level = 3
 
 [profile.dev]

@@ -21,6 +21,7 @@ use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
 use futures::future::{try_join_all, BoxFuture, Either, OptionFuture, TryFutureExt};
+use futures::FutureExt;
 use hyper::{Response, StatusCode};
 use hyper_util::rt::tokio::TokioIo;
 use hyper_util::server::conn::auto;
@@ -58,7 +59,7 @@ use nativelink_util::store_trait::{
     set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
 };
 use nativelink_util::task::TaskExecutor;
-use nativelink_util::{background_spawn, init_tracing, spawn, spawn_blocking};
+use nativelink_util::{init_tracing, spawn, spawn_blocking};
 use nativelink_worker::local_worker::new_local_worker;
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
@@ -779,26 +780,12 @@ async fn inner_main(
         event!(Level::WARN, "Ready, listening on {socket_addr}");
         root_futures.push(Box::pin(async move {
             let shutdown_guard = Arc::new(Mutex::new(None));
-            let name = format!("TcpSocketListener_{name}");
+            let socket_name = format!("TcpSocketListener_{name}");
+            let wait_for_shutdown_fut = ShutdownManager::wait_for_shutdown(socket_name.clone()).fuse();
+            tokio::pin!(wait_for_shutdown_fut);
             loop {
                 select! {
-                    inner_shutdown_guard = ShutdownManager::wait_for_shutdown(name.clone()) => {
-                        if server_cfg.experimental_connections_dont_block_graceful_shutdown {
-                            event!(
-                                target: "nativelink",
-                                Level::INFO,
-                                name,
-                                "Connections will not block graceful shutdown"
-                            );
-                            continue;
-                        }
-                        let connected_clients = connected_clients_mux.inner.lock();
-                        if connected_clients.is_empty() {
-                            drop(shutdown_guard.lock().take());
-                        } else {
-                            *shutdown_guard.lock() = Some(inner_shutdown_guard);
-                        }
-                    }
+                    biased;
                     accept_result = tcp_listener.accept() => {
                         match accept_result {
                             Ok((tcp_stream, remote_addr)) => {
@@ -816,18 +803,19 @@ async fn inner_main(
                                 connected_clients_mux.counter.inc();
 
                                 let shutdown_guard = shutdown_guard.clone();
-                                let name = name.clone();
+                                let socket_name_clone = socket_name.clone();
                                 // This is the safest way to guarantee that if our future
                                 // is ever dropped we will cleanup our data.
                                 let scope_guard = guard(
                                     Arc::downgrade(&connected_clients_mux),
                                     move |weak_connected_clients_mux| {
+                                        let socket_name = socket_name_clone;
                                         event!(
                                             target: "nativelink::services",
                                             Level::INFO,
                                             ?remote_addr,
                                             ?socket_addr,
-                                            name,
+                                            socket_name,
                                             "Client disconnected"
                                         );
                                         if let Some(connected_clients_mux) = weak_connected_clients_mux.upgrade() {
@@ -841,7 +829,7 @@ async fn inner_main(
                                                         Level::INFO,
                                                         ?remote_addr,
                                                         ?socket_addr,
-                                                        name,
+                                                        socket_name,
                                                         "No more clients connected & received shutdown signal."
                                                     );
                                                     drop(shutdown_guard.lock().take());
@@ -849,7 +837,7 @@ async fn inner_main(
                                                     event!(
                                                         target: "nativelink::services",
                                                         Level::INFO,
-                                                        name,
+                                                        socket_name,
                                                         ?connected_clients,
                                                         "Waiting on {} more clients to disconnect before shutting down.",
                                                         connected_clients.len()
@@ -859,7 +847,7 @@ async fn inner_main(
                                         }
                                     },
                                 );
-
+                                let socket_name = socket_name.clone();
                                 let (http, svc, maybe_tls_acceptor) =
                                     (http.clone(), svc.clone(), maybe_tls_acceptor.clone());
                                 Arc::new(OriginContext::new()).background_spawn(
@@ -869,11 +857,7 @@ async fn inner_main(
                                         ?remote_addr,
                                         ?socket_addr
                                     ),
-                                    async move {},
-                                );
-                                background_spawn!(
-                                    name: "http_connection",
-                                    fut: async move {
+                                    async move {
                                         // Move it into our spawn, so if our spawn dies the cleanup happens.
                                         let _guard = scope_guard;
                                         let serve_connection = if let Some(tls_acceptor) = maybe_tls_acceptor {
@@ -893,19 +877,37 @@ async fn inner_main(
                                                 TowerToHyperService::new(svc),
                                             ))
                                         };
-
-                                        if let Err(err) = serve_connection.await {
-                                            event!(
-                                                target: "nativelink::services",
-                                                Level::ERROR,
-                                                ?err,
-                                                "Failed running service"
-                                            );
+                                        let connection_name = format!("Connection_{socket_name}_{remote_addr}");
+                                        let wait_for_shutdown_fut = ShutdownManager::wait_for_shutdown(connection_name.clone()).fuse();
+                                        tokio::pin!(wait_for_shutdown_fut);
+                                        tokio::pin!(serve_connection);
+                                        loop {
+                                            select! {
+                                                biased;
+                                                res = serve_connection.as_mut() => {
+                                                    if let Err(err) = res {
+                                                        event!(
+                                                            target: "nativelink::services",
+                                                            Level::ERROR,
+                                                            ?err,
+                                                            "Failed running service"
+                                                        );
+                                                    }
+                                                    break;
+                                                }
+                                                // Note: We don't need to hold onto this shutdown guard because
+                                                // we already have one captured in the outer scope.
+                                                _shutdown_guard = wait_for_shutdown_fut.as_mut() => {
+                                                    if !server_cfg.experimental_connections_dont_block_graceful_shutdown {
+                                                        match serve_connection.as_mut().as_pin_mut() {
+                                                            Either::Left(conn) => conn.graceful_shutdown(),
+                                                            Either::Right(conn) => conn.graceful_shutdown(),
+                                                        }
+                                                    }
+                                                },
+                                            }
                                         }
-                                    },
-                                    target: "nativelink::services",
-                                    ?remote_addr,
-                                    ?socket_addr,
+                                    }
                                 );
                             },
                             Err(err) => {
@@ -914,6 +916,23 @@ async fn inner_main(
                             }
                         }
                     },
+                    inner_shutdown_guard = wait_for_shutdown_fut.as_mut() => {
+                        if server_cfg.experimental_connections_dont_block_graceful_shutdown {
+                            event!(
+                                target: "nativelink",
+                                Level::INFO,
+                                socket_name,
+                                "Connections will not block graceful shutdown"
+                            );
+                            continue;
+                        }
+                        let connected_clients = connected_clients_mux.inner.lock();
+                        if connected_clients.is_empty() {
+                            drop(shutdown_guard.lock().take());
+                        } else {
+                            *shutdown_guard.lock() = Some(inner_shutdown_guard);
+                        }
+                    }
                 }
             }
             // Unreachable
