@@ -13,12 +13,12 @@
 // limitations under the License.
 
 use std::convert::Into;
+use serde::{Deserialize, Serialize};
 
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use prost_types::TimestampError;
-use serde::{Deserialize, Serialize};
 
 #[macro_export]
 macro_rules! make_err {
@@ -151,9 +151,10 @@ impl std::fmt::Display for Error {
 
 impl From<prost::DecodeError> for Error {
     fn from(err: prost::DecodeError) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
+        Error::new(Code::Internal, err.to_string())
     }
 }
+
 
 impl From<prost::EncodeError> for Error {
     fn from(err: prost::EncodeError) -> Self {

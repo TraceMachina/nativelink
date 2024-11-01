@@ -22,3 +22,5 @@ nixos.bazelrc
 rust-project.json
 darwin.bazelrc
 nativelink.bazelrc
+coverage_report/
+.gitignore
