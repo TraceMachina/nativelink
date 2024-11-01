@@ -6,7 +6,9 @@
       <img alt="NativeLink" src="web/platform/src/assets/logo-light.svg" width="376" height="100" />
     </picture>
   </a>
-
+  <!-- Matomo Image Tracker-->
+  <img referrerpolicy="no-referrer-when-downgrade" src="https://nativelink.matomo.cloud/matomo.php?idsite=2&amp;rec=1&amp;action_name=Readme.md" style="border:0" alt="" />
+  <!-- End Matomo -->
   <br />
 </div>
 
