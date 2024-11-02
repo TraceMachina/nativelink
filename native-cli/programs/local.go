@@ -32,31 +32,23 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		os.Exit(1)
 	}
 
-	localSources, err := components.AddComponent(
+	components.Check(components.AddComponent(
 		ctx,
 		"local-sources",
 		&components.LocalPVAndPVC{
 			Size:     "50Mi",
 			HostPath: "/mnt",
 		},
-	)
-	if err != nil {
-		log.Println(err)
-		os.Exit(1)
-	}
+	))
 
-	nixStore, err := components.AddComponent(
+	components.Check(components.AddComponent(
 		ctx,
 		"nix-store",
 		&components.LocalPVAndPVC{
 			Size:     "10Gi",
 			HostPath: "/nix",
 		},
-	)
-	if err != nil {
-		log.Println(err)
-		os.Exit(1)
-	}
+	))
 
 	flux, err := components.AddComponent(
 		ctx,
@@ -67,6 +59,16 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		log.Println(err)
 		os.Exit(1)
 	}
+
+	components.Check(components.AddComponent(
+		ctx,
+		"capacitor",
+		&components.Capacitor{
+			Dependencies: slices.Concat(
+				flux,
+			),
+		},
+	))
 
 	tektonPipelines, err := components.AddComponent(
 		ctx,
@@ -102,21 +104,6 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 			Version: "0.45.0",
 			Dependencies: slices.Concat(
 				tektonPipelines, tektonTriggers,
-			),
-		},
-	))
-
-	components.Check(components.AddComponent(
-		ctx,
-		"rebuild-nativelink",
-		&components.RebuildNativeLink{
-			Dependencies: slices.Concat(
-				cilium,
-				tektonPipelines,
-				tektonTriggers,
-				localSources,
-				nixStore,
-				flux,
 			),
 		},
 	))
