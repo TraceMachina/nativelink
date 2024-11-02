@@ -153,12 +153,23 @@ jobs:
 
       - name: Wait for Tekton pipelines
         run: >
-          nix develop --impure --command
-          bash -c "kubectl wait \
-            --for=condition=Succeeded \
-            --timeout=45m \
-            pipelinerun \
-                -l tekton.dev/pipeline=rebuild-nativelink"
+          nix develop --impure --command bash << 'EOF'
+            until pr=$(kubectl get pipelinerun -o name | \
+                       grep rebuild-nativelink-run-); do
+              echo "Waiting for pipeline to be created..."
+              sleep 1
+            done
+
+            echo "Found pipeline: $pr"
+            kubectl wait --for=create $pr
+
+            echo "Waiting for pipeline to succeed..."
+            kubectl wait \
+              --for=condition=Succeeded \
+              --timeout=45m \
+              pipelinerun \
+              -l tekton.dev/pipeline=rebuild-nativelink
+          EOF
 
       - name: Wait for Configmaps
         run: >
