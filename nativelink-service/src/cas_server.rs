@@ -76,7 +76,7 @@ impl CasServer {
             .clone();
 
         let mut requested_blobs = Vec::with_capacity(request.blob_digests.len());
-        for digest in request.blob_digests.iter() {
+        for digest in &request.blob_digests {
             requested_blobs.push(DigestInfo::try_from(digest.clone())?.into());
         }
         let sizes = store

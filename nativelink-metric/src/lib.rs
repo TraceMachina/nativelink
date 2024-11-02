@@ -183,7 +183,7 @@ impl<U: ToString, T: MetricsComponent> MetricsComponent for HashMap<U, T> {
         kind: MetricKind,
         field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, Error> {
-        for (key, item) in self.iter() {
+        for (key, item) in self {
             let guard = group!(key).entered();
             let publish_result = item.publish(kind, field_metadata.clone())?;
             drop(guard);
@@ -217,7 +217,7 @@ impl<U: ToString, T: MetricsComponent> MetricsComponent for BTreeMap<U, T> {
         kind: MetricKind,
         field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, Error> {
-        for (key, item) in self.iter() {
+        for (key, item) in self {
             group!(key).in_scope(|| item.publish(kind, field_metadata.clone()))?;
         }
         Ok(MetricPublishKnownKindData::Component)
