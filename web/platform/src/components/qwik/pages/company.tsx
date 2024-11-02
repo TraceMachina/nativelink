@@ -31,11 +31,6 @@ const team = [
     title: "Chief of Staff",
   },
   {
-    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nadine_farah.webp",
-    name: "Nadine Farah",
-    title: "Product Marketing",
-  },
-  {
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/adam_singer.webp",
     name: "Adam Singer",
     title: "Software Engineer",
