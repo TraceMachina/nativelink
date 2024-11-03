@@ -508,6 +508,11 @@ async fn new_local_worker_removes_work_directory_before_start_test(
 
 #[nativelink_test]
 async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_family = "unix")]
+    const EXPECTED_MSG: &str = "Preconditions script returned status exit status: 1 - ";
+    #[cfg(target_family = "windows")]
+    const EXPECTED_MSG: &str = "Preconditions script returned status exit code: 1 - ";
+
     let temp_path = make_temp_path("scripts");
     fs::create_dir_all(temp_path.clone()).await?;
     #[cfg(target_family = "unix")]
@@ -602,11 +607,6 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
         .client
         .expect_execution_response(Ok(Response::new(())))
         .await;
-
-    #[cfg(target_family = "unix")]
-    const EXPECTED_MSG: &str = "Preconditions script returned status exit status: 1 - ";
-    #[cfg(target_family = "windows")]
-    const EXPECTED_MSG: &str = "Preconditions script returned status exit code: 1 - ";
 
     // Now ensure the final results match our expectations.
     assert_eq!(

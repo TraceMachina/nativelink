@@ -166,6 +166,8 @@ fn make_clients(mut builder: Builder) -> (RedisPool, SubscriberClient) {
 async fn add_action_smoke_test() -> Result<(), Error> {
     const CLIENT_OPERATION_ID: &str = "my_client_operation_id";
     const WORKER_OPERATION_ID: &str = "my_worker_operation_id";
+    static SUBSCRIPTION_MANAGER: Mutex<Option<Arc<RedisSubscriptionManager>>> = Mutex::new(None);
+    const SUB_CHANNEL: &str = "sub_channel";
 
     let worker_awaited_action = AwaitedAction::new(
         WORKER_OPERATION_ID.into(),
@@ -193,7 +195,6 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         new_awaited_action
     };
 
-    const SUB_CHANNEL: &str = "sub_channel";
     let ft_aggregate_args = vec![
         format!("aa__unique_qualifier__{SCRIPT_VERSION}").into(),
         format!("@unique_qualifier:{{ {INSTANCE_NAME}_SHA256_0000000000000000000000000000000000000000000000000000000000000000_0_c }}").into(),
@@ -209,7 +210,6 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         "MAXIDLE".into(),
         2000.into(),
     ];
-    static SUBSCRIPTION_MANAGER: Mutex<Option<Arc<RedisSubscriptionManager>>> = Mutex::new(None);
     let mocks = Arc::new(MockRedisBackend::new());
     mocks
         .expect(

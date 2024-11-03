@@ -32,10 +32,11 @@ const INSTANCE_NAME: &str = "test-instance";
 // Regression test for TraceMachina/nativelink#745.
 #[nativelink_test]
 async fn ensure_no_errors_if_only_first_message_has_resource_name_set() -> Result<(), Error> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<WriteRequest, Error>>();
-
     const RAW_DATA: &str = "thisdatafoo";
     const DIGEST: DigestInfo = DigestInfo::new([0u8; 32], RAW_DATA.len() as u64);
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<WriteRequest, Error>>();
+
     let message1 = WriteRequest {
         resource_name: format!(
             "{INSTANCE_NAME}/uploads/some-uuid/blobs/{}/{}",

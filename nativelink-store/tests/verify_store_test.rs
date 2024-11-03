@@ -32,6 +32,8 @@ const VALID_HASH1: &str = "0123456789abcdef0000000000000000000100000000000001234
 
 #[nativelink_test]
 async fn verify_size_false_passes_on_update() -> Result<(), Error> {
+    const VALUE1: &str = "123";
+
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
@@ -44,7 +46,6 @@ async fn verify_size_false_passes_on_update() -> Result<(), Error> {
         Store::new(inner_store.clone()),
     );
 
-    const VALUE1: &str = "123";
     let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
     let result = store.update_oneshot(digest, VALUE1.into()).await;
     assert_eq!(
@@ -63,6 +64,9 @@ async fn verify_size_false_passes_on_update() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn verify_size_true_fails_on_update() -> Result<(), Error> {
+    const VALUE1: &str = "123";
+    const EXPECTED_ERR: &str = "Expected size 100 but got size 3 on insert";
+
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
@@ -75,7 +79,6 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
         Store::new(inner_store.clone()),
     );
 
-    const VALUE1: &str = "123";
     let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
     let (mut tx, rx) = make_buf_channel_pair();
     let send_fut = async move {
@@ -87,7 +90,6 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
         store.update(digest, rx, UploadSizeInfo::ExactSize(100))
     );
     assert!(result.is_err(), "Expected error, got: {:?}", &result);
-    const EXPECTED_ERR: &str = "Expected size 100 but got size 3 on insert";
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains(EXPECTED_ERR),
@@ -103,6 +105,8 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
+    const VALUE1: &str = "123";
+
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
@@ -115,7 +119,6 @@ async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
         Store::new(inner_store.clone()),
     );
 
-    const VALUE1: &str = "123";
     let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
     let result = store.update_oneshot(digest, VALUE1.into()).await;
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
@@ -167,6 +170,10 @@ async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), E
 
 #[nativelink_test]
 async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
+    /// This value is sha256("123").
+    const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
+    const VALUE: &str = "123";
+
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
@@ -179,9 +186,6 @@ async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
         Store::new(inner_store.clone()),
     );
 
-    /// This value is sha256("123").
-    const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
-    const VALUE: &str = "123";
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
     let result = store.update_oneshot(digest, VALUE.into()).await;
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
@@ -195,6 +199,11 @@ async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
+    /// This value is sha256("12").
+    const HASH: &str = "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918";
+    const VALUE: &str = "123";
+    const ACTUAL_HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
+
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
@@ -207,13 +216,9 @@ async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
         Store::new(inner_store.clone()),
     );
 
-    /// This value is sha256("12").
-    const HASH: &str = "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918";
-    const VALUE: &str = "123";
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
     let result = store.update_oneshot(digest, VALUE.into()).await;
     let err = result.unwrap_err().to_string();
-    const ACTUAL_HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
     let expected_err =
         format!("Hashes do not match, got: {HASH} but digest hash was {ACTUAL_HASH}");
     assert!(
@@ -230,6 +235,10 @@ async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
+    /// This value is blake3("123").
+    const HASH: &str = "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
+    const VALUE: &str = "123";
+
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
@@ -242,9 +251,6 @@ async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
         Store::new(inner_store.clone()),
     );
 
-    /// This value is blake3("123").
-    const HASH: &str = "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
-    const VALUE: &str = "123";
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
     let result = make_ctx_for_hash_func(DigestHasherFunc::Blake3)?
         .wrap_async(
@@ -264,6 +270,11 @@ async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
+    /// This value is blake3("12").
+    const HASH: &str = "b944a0a3b20cf5927e594ff306d256d16cd5b0ba3e27b3285f40d7ef5e19695b";
+    const VALUE: &str = "123";
+    const ACTUAL_HASH: &str = "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
+
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
@@ -276,9 +287,6 @@ async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
         Store::new(inner_store.clone()),
     );
 
-    /// This value is blake3("12").
-    const HASH: &str = "b944a0a3b20cf5927e594ff306d256d16cd5b0ba3e27b3285f40d7ef5e19695b";
-    const VALUE: &str = "123";
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
 
     let result = make_ctx_for_hash_func(DigestHasherFunc::Blake3)?
@@ -290,7 +298,6 @@ async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
 
     // let result = store.update_oneshot(digest, VALUE.into()).await;
     let err = result.unwrap_err().to_string();
-    const ACTUAL_HASH: &str = "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
     let expected_err =
         format!("Hashes do not match, got: {HASH} but digest hash was {ACTUAL_HASH}");
     assert!(
@@ -310,6 +317,9 @@ async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
 // case is double protected.
 #[nativelink_test]
 async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), Error> {
+    const VALUE: &str = "123";
+    const EXPECTED_ERR: &str = "Expected size 4 but already received 6 on insert";
+
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
@@ -322,7 +332,6 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
         Store::new(inner_store.clone()),
     );
 
-    const VALUE: &str = "123";
     let digest = DigestInfo::try_new(VALID_HASH1, 4).unwrap();
     let (mut tx, rx) = make_buf_channel_pair();
     let send_fut = async move {
@@ -338,7 +347,6 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
         store.update(digest, rx, UploadSizeInfo::ExactSize(4))
     );
     assert!(result.is_err(), "Expected error, got: {:?}", &result);
-    const EXPECTED_ERR: &str = "Expected size 4 but already received 6 on insert";
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains(EXPECTED_ERR),
@@ -354,6 +362,10 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
 
 #[nativelink_test]
 async fn verify_size_and_hash_suceeds_on_small_data() -> Result<(), Error> {
+    /// This value is sha256("123").
+    const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
+    const VALUE: &str = "123";
+
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
@@ -366,9 +378,6 @@ async fn verify_size_and_hash_suceeds_on_small_data() -> Result<(), Error> {
         Store::new(inner_store.clone()),
     );
 
-    /// This value is sha256("123").
-    const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
-    const VALUE: &str = "123";
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
     let result = store.update_oneshot(digest, VALUE.into()).await;
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);

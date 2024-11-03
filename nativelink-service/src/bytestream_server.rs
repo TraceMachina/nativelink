@@ -270,17 +270,17 @@ impl ByteStreamServer {
         digest: DigestInfo,
         read_request: ReadRequest,
     ) -> Result<Response<ReadStream>, Error> {
-        let read_limit = u64::try_from(read_request.read_limit)
-            .err_tip(|| "Could not convert read_limit to u64")?;
-
-        let (tx, rx) = make_buf_channel_pair();
-
         struct ReaderState {
             max_bytes_per_stream: usize,
             rx: DropCloserReadHalf,
             maybe_get_part_result: Option<Result<(), Error>>,
             get_part_fut: Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>,
         }
+
+        let read_limit = u64::try_from(read_request.read_limit)
+            .err_tip(|| "Could not convert read_limit to u64")?;
+
+        let (tx, rx) = make_buf_channel_pair();
 
         let read_limit = if read_limit != 0 {
             Some(read_limit)
@@ -399,15 +399,6 @@ impl ByteStreamServer {
         digest: DigestInfo,
         stream: WriteRequestStreamWrapper<Streaming<WriteRequest>, Status>,
     ) -> Result<Response<WriteResponse>, Error> {
-        let uuid = stream
-            .resource_info
-            .uuid
-            .as_ref()
-            .ok_or_else(|| make_input_err!("UUID must be set if writing data"))?
-            .to_string();
-        let mut active_stream_guard = self.create_or_join_upload_stream(uuid, store, digest)?;
-        let expected_size = stream.resource_info.expected_size as u64;
-
         async fn process_client_stream(
             mut stream: WriteRequestStreamWrapper<Streaming<WriteRequest>, Status>,
             tx: &mut DropCloserWriteHalf,
@@ -491,6 +482,15 @@ impl ByteStreamServer {
             }
             // Unreachable.
         }
+
+        let uuid = stream
+            .resource_info
+            .uuid
+            .as_ref()
+            .ok_or_else(|| make_input_err!("UUID must be set if writing data"))?
+            .to_string();
+        let mut active_stream_guard = self.create_or_join_upload_stream(uuid, store, digest)?;
+        let expected_size = stream.resource_info.expected_size as u64;
 
         let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
         try_join!(

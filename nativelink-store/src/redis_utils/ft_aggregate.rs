@@ -32,15 +32,15 @@ where
     I: Into<bytes_utils::string::Str>,
     Q: Into<bytes_utils::string::Str>,
 {
-    let index = index.into();
-    let query = query.into();
-    let data: RedisCursorData = client.ft_aggregate(index.clone(), query, options).await?;
-
     struct State<C: RediSearchInterface> {
         client: C,
         index: bytes_utils::string::Str,
         data: RedisCursorData,
     }
+
+    let index = index.into();
+    let query = query.into();
+    let data: RedisCursorData = client.ft_aggregate(index.clone(), query, options).await?;
 
     let state = State {
         client,

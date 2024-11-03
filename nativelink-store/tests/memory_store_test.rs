@@ -87,9 +87,9 @@ async fn ensure_full_copy_of_bytes_is_made_test() -> Result<(), Error> {
     // Arbitrary value, this may be increased if we find out that this is
     // too low for some kernels/operating systems.
     const MAXIMUM_MEMORY_USAGE_INCREASE_PERC: f64 = 1.3; // 30% increase.
+    const MAX_STATS_ITERATIONS: usize = 100;
 
     let mut sum_memory_usage_increase_perc: f64 = 0.0;
-    const MAX_STATS_ITERATIONS: usize = 100;
     for _ in 0..MAX_STATS_ITERATIONS {
         let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
         let store = Pin::new(&store_owned);
@@ -284,16 +284,6 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn list_test() -> Result<(), Error> {
-    let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
-
-    const KEY1: StoreKey = StoreKey::new_str("key1");
-    const KEY2: StoreKey = StoreKey::new_str("key2");
-    const KEY3: StoreKey = StoreKey::new_str("key3");
-    const VALUE: &str = "value1";
-    store.update_oneshot(KEY1, VALUE.into()).await?;
-    store.update_oneshot(KEY2, VALUE.into()).await?;
-    store.update_oneshot(KEY3, VALUE.into()).await?;
-
     async fn get_list(
         store: &MemoryStore,
         range: impl RangeBounds<StoreKey<'static>> + Send + Sync + 'static,
@@ -308,6 +298,17 @@ async fn list_test() -> Result<(), Error> {
             .unwrap();
         found_keys
     }
+
+    const KEY1: StoreKey = StoreKey::new_str("key1");
+    const KEY2: StoreKey = StoreKey::new_str("key2");
+    const KEY3: StoreKey = StoreKey::new_str("key3");
+    const VALUE: &str = "value1";
+
+    let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    store.update_oneshot(KEY1, VALUE.into()).await?;
+    store.update_oneshot(KEY2, VALUE.into()).await?;
+    store.update_oneshot(KEY3, VALUE.into()).await?;
+
     {
         // Test listing all keys.
         let keys = get_list(&store, ..).await;

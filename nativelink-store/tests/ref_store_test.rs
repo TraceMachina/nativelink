@@ -46,9 +46,10 @@ fn setup_stores() -> (Arc<StoreManager>, Store, Store) {
 
 #[nativelink_test]
 async fn has_test() -> Result<(), Error> {
+    const VALUE1: &str = "13";
+
     let (_store_manager, memory_store, ref_store) = setup_stores();
 
-    const VALUE1: &str = "13";
     {
         // Insert data into memory store.
         memory_store
@@ -75,9 +76,10 @@ async fn has_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn get_test() -> Result<(), Error> {
+    const VALUE1: &str = "13";
+
     let (_store_manager, memory_store, ref_store) = setup_stores();
 
-    const VALUE1: &str = "13";
     {
         // Insert data into memory store.
         memory_store
@@ -105,9 +107,10 @@ async fn get_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn update_test() -> Result<(), Error> {
+    const VALUE1: &str = "13";
+
     let (_store_manager, memory_store, ref_store) = setup_stores();
 
-    const VALUE1: &str = "13";
     {
         // Insert data into ref_store.
         ref_store
