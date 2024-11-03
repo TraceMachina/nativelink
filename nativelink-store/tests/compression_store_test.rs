@@ -70,6 +70,8 @@ const MEGABYTE_SZ: usize = 1024 * 1024;
 
 #[nativelink_test]
 async fn simple_smoke_test() -> Result<(), Error> {
+    const RAW_INPUT: &str = "123";
+
     let store = CompressionStore::new(
         &nativelink_config::stores::CompressionStore {
             backend: nativelink_config::stores::StoreConfig::memory(
@@ -87,7 +89,6 @@ async fn simple_smoke_test() -> Result<(), Error> {
     )
     .err_tip(|| "Failed to create compression store")?;
 
-    const RAW_INPUT: &str = "123";
     let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
     store.update_oneshot(digest, RAW_INPUT.into()).await?;
 
@@ -106,6 +107,12 @@ async fn simple_smoke_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn partial_reads_test() -> Result<(), Error> {
+    const RAW_DATA: [u8; 30] = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, // BR.
+        10, 11, 12, 13, 14, 15, 16, 17, 18, 19, // BR.
+        20, 21, 22, 23, 24, 25, 26, 27, 28, 29, // BR.
+    ];
+
     let store_owned = CompressionStore::new(
         &nativelink_config::stores::CompressionStore {
             backend: nativelink_config::stores::StoreConfig::memory(
@@ -124,12 +131,6 @@ async fn partial_reads_test() -> Result<(), Error> {
     )
     .err_tip(|| "Failed to create compression store")?;
     let store = Pin::new(&store_owned);
-
-    const RAW_DATA: [u8; 30] = [
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, // BR.
-        10, 11, 12, 13, 14, 15, 16, 17, 18, 19, // BR.
-        20, 21, 22, 23, 24, 25, 26, 27, 28, 29, // BR.
-    ];
 
     let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
     store
@@ -256,6 +257,8 @@ async fn sanity_check_zero_bytes_test() -> Result<(), Error> {
 async fn check_header_test() -> Result<(), Error> {
     const BLOCK_SIZE: u32 = 150;
     const MAX_SIZE_INPUT: u64 = 1024 * 1024; // 1MB.
+    const RAW_INPUT: &str = "123";
+
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store_owned = CompressionStore::new(
         &nativelink_config::stores::CompressionStore {
@@ -274,7 +277,6 @@ async fn check_header_test() -> Result<(), Error> {
     .err_tip(|| "Failed to create compression store")?;
     let store = Pin::new(&store_owned);
 
-    const RAW_INPUT: &str = "123";
     let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
 
     let (mut tx, rx) = make_buf_channel_pair();
@@ -343,6 +345,8 @@ async fn check_header_test() -> Result<(), Error> {
 #[nativelink_test]
 async fn check_footer_test() -> Result<(), Error> {
     const BLOCK_SIZE: u32 = 32 * 1024;
+    const EXPECTED_INDEXES: [u32; 7] = [32898, 32898, 32898, 32898, 140, 140, 140];
+
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store_owned = CompressionStore::new(
         &nativelink_config::stores::CompressionStore {
@@ -406,7 +410,6 @@ async fn check_footer_test() -> Result<(), Error> {
             "Expected uncompressed_data_size to match original data size"
         );
     }
-    const EXPECTED_INDEXES: [u32; 7] = [32898, 32898, 32898, 32898, 140, 140, 140];
     let index_count = {
         // Check index count in footer.
         let index_count = u32::from_le_bytes(compressed_data[pos - 4..pos].try_into().unwrap());
@@ -488,9 +491,10 @@ async fn check_footer_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn get_part_is_zero_digest() -> Result<(), Error> {
+    const BLOCK_SIZE: u32 = 32 * 1024;
+
     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
 
-    const BLOCK_SIZE: u32 = 32 * 1024;
     let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store_owned = CompressionStore::new(
         &nativelink_config::stores::CompressionStore {

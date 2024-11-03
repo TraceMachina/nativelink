@@ -267,6 +267,8 @@ where
     type Item = WriteRequest;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        const IS_UPLOAD_TRUE: bool = true;
+
         // This should be an uncontended lock since write was called.
         let mut local_state = self.shared_state.lock();
         // If this is the first or second call after a failure and we have
@@ -281,7 +283,6 @@ where
             return Poll::Pending;
         };
         // Update the instance name in the write request and forward it on.
-        const IS_UPLOAD_TRUE: bool = true;
         let result = match maybe_message {
             Some(Ok(mut message)) => {
                 if !message.resource_name.is_empty() {

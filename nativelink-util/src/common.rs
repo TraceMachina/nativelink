@@ -450,10 +450,12 @@ impl<K: std::cmp::Eq + std::hash::Hash, T> HashMapExt<K, T> for HashMap<K, T> {
 
 // Utility to encode our proto into GRPC stream format.
 pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::error::Error>> {
-    let mut buf = BytesMut::new();
     // See below comment on spec.
     use std::mem::size_of;
     const PREFIX_BYTES: usize = size_of::<u8>() + size_of::<u32>();
+
+    let mut buf = BytesMut::new();
+
     for _ in 0..PREFIX_BYTES {
         // Advance our buffer first.
         // We will backfill it once we know the size of the message.

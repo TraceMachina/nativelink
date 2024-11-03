@@ -80,6 +80,11 @@ async fn simple_round_trip_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn check_missing_last_chunk_test() -> Result<(), Error> {
+    // This is the hash & size of the last chunk item in the content_store.
+    const LAST_CHUNK_HASH: &str =
+        "7c8608f5b079bef66c45bd67f7d8ede15d2e1830ea38fd8ad4c6de08b6f21a0c";
+    const LAST_CHUNK_SIZE: usize = 25779;
+
     let content_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = DedupStore::new(
         &make_default_config(),
@@ -96,11 +101,6 @@ async fn check_missing_last_chunk_test() -> Result<(), Error> {
         .update_oneshot(digest, original_data.into())
         .await
         .err_tip(|| "Failed to write data to dedup store")?;
-
-    // This is the hash & size of the last chunk item in the content_store.
-    const LAST_CHUNK_HASH: &str =
-        "7c8608f5b079bef66c45bd67f7d8ede15d2e1830ea38fd8ad4c6de08b6f21a0c";
-    const LAST_CHUNK_SIZE: usize = 25779;
 
     let did_delete = content_store
         .remove_entry(
@@ -127,6 +127,9 @@ async fn check_missing_last_chunk_test() -> Result<(), Error> {
 /// requested data; this test covers that use case.
 #[nativelink_test]
 async fn fetch_part_test() -> Result<(), Error> {
+    const DATA_SIZE: usize = MEGABYTE_SZ / 4;
+    const ONE_THIRD_SZ: usize = DATA_SIZE / 3;
+
     let store = DedupStore::new(
         &make_default_config(),
         Store::new(MemoryStore::new(
@@ -137,7 +140,6 @@ async fn fetch_part_test() -> Result<(), Error> {
         )), // Content store.
     )?;
 
-    const DATA_SIZE: usize = MEGABYTE_SZ / 4;
     let original_data = make_random_data(DATA_SIZE);
     let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
@@ -146,7 +148,6 @@ async fn fetch_part_test() -> Result<(), Error> {
         .await
         .err_tip(|| "Failed to write data to dedup store")?;
 
-    const ONE_THIRD_SZ: usize = DATA_SIZE / 3;
     let rt_data = store
         .get_part_unchunked(digest, ONE_THIRD_SZ as u64, Some(ONE_THIRD_SZ as u64))
         .await
@@ -168,6 +169,9 @@ async fn fetch_part_test() -> Result<(), Error> {
 #[nativelink_test]
 async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test(
 ) -> Result<(), Error> {
+    const DATA_SIZE: usize = 30;
+    const START_READ_BYTE: usize = 7;
+
     let store = DedupStore::new(
         &nativelink_config::stores::DedupStore {
             index_store: nativelink_config::stores::StoreConfig::memory(
@@ -189,7 +193,6 @@ async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test
         )), // Content store.
     )?;
 
-    const DATA_SIZE: usize = 30;
     let original_data = make_random_data(DATA_SIZE);
     let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
@@ -199,7 +202,6 @@ async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test
         .err_tip(|| "Failed to write data to dedup store")?;
 
     // This value must be larger than `max_size` in the config above.
-    const START_READ_BYTE: usize = 7;
     let rt_data = store
         .get_part_unchunked(digest, START_READ_BYTE as u64, None)
         .await
@@ -220,6 +222,9 @@ async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test
 
 #[nativelink_test]
 async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
+    const DATA_SIZE: usize = 30;
+    const START_READ_BYTE: usize = 10;
+
     let store = DedupStore::new(
         &nativelink_config::stores::DedupStore {
             index_store: nativelink_config::stores::StoreConfig::memory(
@@ -241,7 +246,6 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
         )), // Content store.
     )?;
 
-    const DATA_SIZE: usize = 30;
     let original_data = make_random_data(DATA_SIZE);
     let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
     store
@@ -279,7 +283,6 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
     }
 
     // This value must be larger than `max_size` in the config above.
-    const START_READ_BYTE: usize = 10;
     let rt_data = store
         .get_part_unchunked(digest, START_READ_BYTE as u64, None)
         .await
@@ -302,6 +305,8 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
 /// content items exist instead of just checking the entry in the index store.
 #[nativelink_test]
 async fn has_checks_content_store() -> Result<(), Error> {
+    const DATA_SIZE: usize = MEGABYTE_SZ / 4;
+
     let index_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let content_store = MemoryStore::new(&nativelink_config::stores::MemoryStore {
         eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
@@ -316,7 +321,6 @@ async fn has_checks_content_store() -> Result<(), Error> {
         Store::new(content_store.clone()),
     )?;
 
-    const DATA_SIZE: usize = MEGABYTE_SZ / 4;
     let original_data = make_random_data(DATA_SIZE);
     let digest1 = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
@@ -367,6 +371,8 @@ async fn has_checks_content_store() -> Result<(), Error> {
 /// properly return None.
 #[nativelink_test]
 async fn has_with_no_existing_index_returns_none_test() -> Result<(), Error> {
+    const DATA_SIZE: usize = 10;
+
     let index_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let content_store = MemoryStore::new(&nativelink_config::stores::MemoryStore {
         eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
@@ -381,7 +387,6 @@ async fn has_with_no_existing_index_returns_none_test() -> Result<(), Error> {
         Store::new(content_store.clone()),
     )?;
 
-    const DATA_SIZE: usize = 10;
     let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
     {

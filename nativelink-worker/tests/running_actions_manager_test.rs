@@ -1610,6 +1610,7 @@ exit 0
 ";
     const WORKER_ID: &str = "foo_worker_id";
     const EXPECTED_STDOUT: &str = "Action did run";
+    const TASK_TIMEOUT: Duration = Duration::from_secs(122);
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
     let root_action_directory = make_temp_path("root_action_directory");
@@ -1696,7 +1697,6 @@ exit 0
         &mut DigestHasherFunc::Sha256.hasher(),
     )
     .await?;
-    const TASK_TIMEOUT: Duration = Duration::from_secs(122);
     let action = Action {
         command_digest: Some(command_digest.into()),
         input_root_digest: Some(input_root_digest.into()),
@@ -3257,16 +3257,16 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
 {
     const WORKER_ID: &str = "foo_worker_id";
 
-    let (_, _, cas_store, ac_store) = setup_stores().await?;
-    let root_action_directory = make_temp_path("root_work_directory");
-    fs::create_dir_all(&root_action_directory).await?;
-
     // Ignore the sleep and immediately timeout.
     static ACTION_TIMEOUT: i64 = 1;
     fn test_monotonic_clock() -> SystemTime {
         static CLOCK: AtomicU64 = AtomicU64::new(0);
         monotonic_clock(&CLOCK)
     }
+
+    let (_, _, cas_store, ac_store) = setup_stores().await?;
+    let root_action_directory = make_temp_path("root_work_directory");
+    fs::create_dir_all(&root_action_directory).await?;
 
     let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
         RunningActionsManagerArgs {

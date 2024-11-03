@@ -94,11 +94,11 @@ async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
 
 #[nativelink_test]
 async fn store_one_item_existence() -> Result<(), Box<dyn std::error::Error>> {
+    const VALUE: &str = "1";
+
     let store_manager = make_store_manager().await?;
     let cas_server = make_cas_server(&store_manager)?;
     let store = store_manager.get_store("main_cas").unwrap();
-
-    const VALUE: &str = "1";
 
     store
         .update_oneshot(DigestInfo::try_new(HASH1, VALUE.len())?, VALUE.into())
@@ -121,11 +121,11 @@ async fn store_one_item_existence() -> Result<(), Box<dyn std::error::Error>> {
 
 #[nativelink_test]
 async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::error::Error>> {
+    const VALUE: &str = "1";
+
     let store_manager = make_store_manager().await?;
     let cas_server = make_cas_server(&store_manager)?;
     let store = store_manager.get_store("main_cas").unwrap();
-
-    const VALUE: &str = "1";
 
     store
         .update_oneshot(DigestInfo::try_new(HASH1, VALUE.len())?, VALUE.into())
@@ -160,12 +160,12 @@ async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::error::Err
 
 #[nativelink_test]
 async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
+    const VALUE1: &str = "1";
+    const VALUE2: &str = "2";
+
     let store_manager = make_store_manager().await?;
     let cas_server = make_cas_server(&store_manager)?;
     let store = store_manager.get_store("main_cas").unwrap();
-
-    const VALUE1: &str = "1";
-    const VALUE2: &str = "2";
 
     let digest = Digest {
         hash: HASH1.to_string(),
@@ -217,12 +217,12 @@ async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
 #[nativelink_test]
 async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dyn std::error::Error>>
 {
+    const VALUE1: &str = "1";
+    const VALUE2: &str = "23";
+
     let store_manager = make_store_manager().await?;
     let cas_server = make_cas_server(&store_manager)?;
     let store = store_manager.get_store("main_cas").unwrap();
-
-    const VALUE1: &str = "1";
-    const VALUE2: &str = "23";
 
     let digest1 = Digest {
         hash: HASH1.to_string(),
@@ -576,11 +576,11 @@ async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::erro
 #[nativelink_test]
 async fn batch_update_blobs_two_items_existence_with_third_missing(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let store_manager = make_store_manager().await?;
-    let cas_server = make_cas_server(&store_manager)?;
-
     const VALUE1: &str = "1";
     const VALUE2: &str = "23";
+
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server(&store_manager)?;
 
     let digest1 = Digest {
         hash: HASH1.to_string(),

@@ -67,8 +67,8 @@ async fn resumeable_file_slot_write_close_write_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn resumeable_file_slot_read_close_read_test() -> Result<(), Error> {
-    let _permit = TEST_EXCLUSIVE_SEMAPHORE.acquire().await; // One test at a time.
     const DUMMYDATA: &str = "DummyDataTest";
+    let _permit = TEST_EXCLUSIVE_SEMAPHORE.acquire().await; // One test at a time.
     let filename = make_temp_path("test_file.txt").await;
     {
         let mut file = fs::create_file(&filename).await?;
@@ -101,8 +101,8 @@ async fn resumeable_file_slot_read_close_read_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn resumeable_file_slot_read_close_read_with_take_test() -> Result<(), Error> {
-    let _permit = TEST_EXCLUSIVE_SEMAPHORE.acquire().await; // One test at a time.
     const DUMMYDATA: &str = "DummyDataTest";
+    let _permit = TEST_EXCLUSIVE_SEMAPHORE.acquire().await; // One test at a time.
     let filename = make_temp_path("test_file.txt").await;
     {
         let mut file = fs::create_file(&filename).await?;
@@ -139,8 +139,8 @@ async fn resumeable_file_slot_read_close_read_with_take_test() -> Result<(), Err
 
 #[nativelink_test]
 async fn resumeable_file_slot_read_close_read_with_take_and_seek_test() -> Result<(), Error> {
-    let _permit = TEST_EXCLUSIVE_SEMAPHORE.acquire().await; // One test at a time.
     const DUMMYDATA: &str = "DummyDataTest";
+    let _permit = TEST_EXCLUSIVE_SEMAPHORE.acquire().await; // One test at a time.
     let filename = make_temp_path("test_file.txt").await;
     {
         let mut file = fs::create_file(&filename).await?;

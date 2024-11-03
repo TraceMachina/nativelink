@@ -111,6 +111,7 @@ async fn insert_purges_at_max_count() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn insert_purges_at_max_bytes() -> Result<(), Error> {
+    const DATA: &str = "12345678";
     let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
         &EvictionPolicy {
             max_count: 0,
@@ -120,7 +121,6 @@ async fn insert_purges_at_max_bytes() -> Result<(), Error> {
         },
         MockInstantWrapped::default(),
     );
-    const DATA: &str = "12345678";
     evicting_map
         .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
         .await;
@@ -168,6 +168,7 @@ async fn insert_purges_at_max_bytes() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
+    const DATA: &str = "12345678";
     let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
         &EvictionPolicy {
             max_count: 0,
@@ -177,7 +178,6 @@ async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
         },
         MockInstantWrapped::default(),
     );
-    const DATA: &str = "12345678";
     evicting_map
         .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
         .await;
@@ -225,6 +225,8 @@ async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn insert_purges_at_max_seconds() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+
     let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
         &EvictionPolicy {
             max_count: 0,
@@ -235,7 +237,6 @@ async fn insert_purges_at_max_seconds() -> Result<(), Error> {
         MockInstantWrapped::default(),
     );
 
-    const DATA: &str = "12345678";
     evicting_map
         .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
         .await;
@@ -286,6 +287,8 @@ async fn insert_purges_at_max_seconds() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn get_refreshes_time() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+
     let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
         &EvictionPolicy {
             max_count: 0,
@@ -296,7 +299,6 @@ async fn get_refreshes_time() -> Result<(), Error> {
         MockInstantWrapped::default(),
     );
 
-    const DATA: &str = "12345678";
     evicting_map
         .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
         .await;
@@ -364,6 +366,9 @@ async fn unref_called_on_replace() -> Result<(), Error> {
         }
     }
 
+    const DATA1: &str = "12345678";
+    const DATA2: &str = "87654321";
+
     let evicting_map = EvictingMap::<DigestInfo, Arc<MockEntry>, MockInstantWrapped>::new(
         &EvictionPolicy {
             max_count: 1,
@@ -373,9 +378,6 @@ async fn unref_called_on_replace() -> Result<(), Error> {
         },
         MockInstantWrapped::default(),
     );
-
-    const DATA1: &str = "12345678";
-    const DATA2: &str = "87654321";
 
     let (entry1, entry2) = {
         let entry1 = Arc::new(MockEntry {
@@ -410,6 +412,8 @@ async fn unref_called_on_replace() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn contains_key_refreshes_time() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+
     let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
         &EvictionPolicy {
             max_count: 0,
@@ -420,7 +424,6 @@ async fn contains_key_refreshes_time() -> Result<(), Error> {
         MockInstantWrapped::default(),
     );
 
-    const DATA: &str = "12345678";
     evicting_map
         .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
         .await;
@@ -517,6 +520,8 @@ async fn hashes_equal_sizes_different_doesnt_override() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn get_evicts_on_time() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+
     let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
         &EvictionPolicy {
             max_count: 0,
@@ -527,7 +532,6 @@ async fn get_evicts_on_time() -> Result<(), Error> {
         MockInstantWrapped::default(),
     );
 
-    const DATA: &str = "12345678";
     let digest_info1: DigestInfo = DigestInfo::try_new(HASH1, 0)?;
     evicting_map
         .insert(digest_info1, Bytes::from(DATA).into())
@@ -549,6 +553,8 @@ async fn get_evicts_on_time() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn remove_evicts_on_time() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+
     let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
         &EvictionPolicy {
             max_count: 0,
@@ -559,7 +565,6 @@ async fn remove_evicts_on_time() -> Result<(), Error> {
         MockInstantWrapped::default(),
     );
 
-    const DATA: &str = "12345678";
     let digest_info1: DigestInfo = DigestInfo::try_new(HASH1, 0)?;
     evicting_map
         .insert(digest_info1, Bytes::from(DATA).into())
@@ -583,32 +588,6 @@ async fn remove_evicts_on_time() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn range_multiple_items_test() -> Result<(), Error> {
-    let evicting_map = EvictingMap::<String, BytesWrapper, MockInstantWrapped>::new(
-        &EvictionPolicy {
-            max_count: 0,
-            max_seconds: 0,
-            max_bytes: 0,
-            evict_bytes: 0,
-        },
-        MockInstantWrapped::default(),
-    );
-
-    const KEY1: &str = "key-123";
-    const DATA1: &str = "123";
-    evicting_map
-        .insert(KEY1.into(), Bytes::from(DATA1).into())
-        .await;
-    const KEY2: &str = "key-234";
-    const DATA2: &str = "234";
-    evicting_map
-        .insert(KEY2.into(), Bytes::from(DATA2).into())
-        .await;
-    const KEY3: &str = "key-345";
-    const DATA3: &str = "345";
-    evicting_map
-        .insert(KEY3.into(), Bytes::from(DATA3).into())
-        .await;
-
     async fn get_map_range(
         evicting_map: &EvictingMap<String, BytesWrapper, MockInstantWrapped>,
         range: impl std::ops::RangeBounds<String>,
@@ -622,6 +601,37 @@ async fn range_multiple_items_test() -> Result<(), Error> {
             .await;
         found_values
     }
+
+    const KEY1: &str = "key-123";
+    const DATA1: &str = "123";
+
+    const KEY2: &str = "key-234";
+    const DATA2: &str = "234";
+
+    const KEY3: &str = "key-345";
+    const DATA3: &str = "345";
+
+    let evicting_map = EvictingMap::<String, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+
+    evicting_map
+        .insert(KEY1.into(), Bytes::from(DATA1).into())
+        .await;
+
+    evicting_map
+        .insert(KEY2.into(), Bytes::from(DATA2).into())
+        .await;
+
+    evicting_map
+        .insert(KEY3.into(), Bytes::from(DATA3).into())
+        .await;
 
     {
         // Ensure all range works.

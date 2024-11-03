@@ -580,6 +580,9 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                     // Ensure there are no actions in transit before we try to kill
                     // all our actions.
                     const ITERATIONS: usize = 1_000;
+
+                    const ERROR_MSG: &str = "Actions in transit did not reach zero before we disconnected from the scheduler";
+
                     let sleep_duration = ACTIONS_IN_TRANSIT_TIMEOUT_S / ITERATIONS as f32;
                     for _ in 0..ITERATIONS {
                         if inner.actions_in_transit.load(Ordering::Acquire) == 0 {
@@ -587,7 +590,6 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                         }
                         (sleep_fn_pin)(Duration::from_secs_f32(sleep_duration)).await;
                     }
-                    const ERROR_MSG: &str = "Actions in transit did not reach zero before we disconnected from the scheduler";
                     event!(Level::ERROR, ERROR_MSG);
                     return Err(err.append(ERROR_MSG));
                 }

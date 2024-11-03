@@ -215,6 +215,15 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
+    async fn advance_time<T>(duration: Duration, poll_fut: &mut Pin<&mut impl Future<Output = T>>) {
+        const STEP_AMOUNT: Duration = Duration::from_millis(100);
+        for _ in 0..(duration.as_millis() / STEP_AMOUNT.as_millis()) {
+            MockClock::advance(STEP_AMOUNT);
+            tokio::task::yield_now().await;
+            assert!(poll!(&mut *poll_fut).is_pending());
+        }
+    }
+
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
     let task_change_notify = Arc::new(Notify::new());
@@ -251,15 +260,6 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
         action_listener.changed().await.unwrap().stage,
         ActionStage::Executing
     );
-
-    async fn advance_time<T>(duration: Duration, poll_fut: &mut Pin<&mut impl Future<Output = T>>) {
-        const STEP_AMOUNT: Duration = Duration::from_millis(100);
-        for _ in 0..(duration.as_millis() / STEP_AMOUNT.as_millis()) {
-            MockClock::advance(STEP_AMOUNT);
-            tokio::task::yield_now().await;
-            assert!(poll!(&mut *poll_fut).is_pending());
-        }
-    }
 
     let changed_fut = action_listener.changed();
     tokio::pin!(changed_fut);

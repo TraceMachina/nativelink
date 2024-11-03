@@ -297,10 +297,6 @@ async fn valid_results_after_shutdown_test() -> Result<(), Error> {
 #[serial]
 #[nativelink_test]
 async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
-    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
-    let content_path = make_temp_path("content_path");
-    let temp_path = make_temp_path("temp_path");
-
     static DELETES_FINISHED: AtomicU32 = AtomicU32::new(0);
     struct LocalHooks {}
     impl FileEntryHooks for LocalHooks {
@@ -308,6 +304,10 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
             DELETES_FINISHED.fetch_add(1, Ordering::Relaxed);
         }
     }
+
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
 
     let store = Box::pin(
         FilesystemStore::<TestFileEntry<LocalHooks>>::new(
@@ -377,10 +377,6 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
 #[serial]
 #[nativelink_test]
 async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error> {
-    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
-    let content_path = make_temp_path("content_path");
-    let temp_path = make_temp_path("temp_path");
-
     static DELETES_FINISHED: AtomicU32 = AtomicU32::new(0);
     struct LocalHooks {}
     impl FileEntryHooks for LocalHooks {
@@ -388,6 +384,10 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
             DELETES_FINISHED.fetch_add(1, Ordering::Relaxed);
         }
     }
+
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
 
     let store = Arc::new(
         FilesystemStore::<TestFileEntry<LocalHooks>>::new(
@@ -499,11 +499,6 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
 #[serial]
 #[nativelink_test]
 async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
-    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
-    let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
-    let content_path = make_temp_path("content_path");
-    let temp_path = make_temp_path("temp_path");
-
     static DELETES_FINISHED: AtomicU32 = AtomicU32::new(0);
     struct LocalHooks {}
     impl FileEntryHooks for LocalHooks {
@@ -511,6 +506,11 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
             DELETES_FINISHED.fetch_add(1, Ordering::Relaxed);
         }
     }
+
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
 
     let store = Arc::new(
         FilesystemStore::<TestFileEntry<LocalHooks>>::new(
@@ -798,8 +798,6 @@ async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error
 async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
     const SMALL_VALUE: &str = "01";
     const BIG_VALUE: &str = "0123";
-    let small_digest = DigestInfo::try_new(HASH1, SMALL_VALUE.len())?;
-    let big_digest = DigestInfo::try_new(HASH1, BIG_VALUE.len())?;
 
     static UNREFED_DIGESTS: LazyLock<Mutex<Vec<DigestInfo>>> =
         LazyLock::new(|| Mutex::new(Vec::new()));
@@ -816,6 +814,9 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
             .unwrap();
         }
     }
+
+    let small_digest = DigestInfo::try_new(HASH1, SMALL_VALUE.len())?;
+    let big_digest = DigestInfo::try_new(HASH1, BIG_VALUE.len())?;
 
     let store = Box::pin(
         FilesystemStore::<TestFileEntry<LocalHooks>>::new(
@@ -857,47 +858,8 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
 #[allow(clippy::await_holding_refcell_ref)]
 async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens() -> Result<(), Error>
 {
-    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
-
-    let content_path = make_temp_path("content_path");
-    let temp_path = make_temp_path("temp_path");
-
-    static FILE_DELETED_BARRIER: LazyLock<Arc<Barrier>> =
-        LazyLock::new(|| Arc::new(Barrier::new(2)));
-
-    struct LocalHooks {}
-    impl FileEntryHooks for LocalHooks {
-        fn on_drop<Fe: FileEntry>(_file_entry: &Fe) {
-            background_spawn!("rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens_local_hooks_on_drop", FILE_DELETED_BARRIER.wait());
-        }
-    }
-
-    let store = Box::pin(
-        FilesystemStore::<TestFileEntry<LocalHooks>>::new(
-            &nativelink_config::stores::FilesystemStore {
-                content_path: content_path.clone(),
-                temp_path: temp_path.clone(),
-                eviction_policy: None,
-                ..Default::default()
-            },
-        )
-        .await?,
-    );
-
-    let (mut tx, rx) = make_buf_channel_pair();
-    let update_fut = Arc::new(async_lock::Mutex::new(store.update(
-        digest,
-        rx,
-        UploadSizeInfo::MaxSize(100),
-    )));
-    // This will process as much of the future as it can before it needs to pause.
-    // Our temp file will be created and opened and ready to have contents streamed
-    // to it.
-    assert_eq!(poll!(&mut *update_fut.lock().await)?, Poll::Pending);
     const INITIAL_CONTENT: &str = "hello";
-    tx.send(INITIAL_CONTENT.into()).await?;
 
-    // Now we extract that temp file that is generated.
     async fn wait_for_temp_file<Fut: Future<Output = Result<(), Error>>, F: Fn() -> Fut>(
         temp_path: &str,
         yield_fn: F,
@@ -937,6 +899,47 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
         }
         // Unreachable.
     }
+
+    static FILE_DELETED_BARRIER: LazyLock<Arc<Barrier>> =
+        LazyLock::new(|| Arc::new(Barrier::new(2)));
+
+    struct LocalHooks {}
+    impl FileEntryHooks for LocalHooks {
+        fn on_drop<Fe: FileEntry>(_file_entry: &Fe) {
+            background_spawn!("rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens_local_hooks_on_drop", FILE_DELETED_BARRIER.wait());
+        }
+    }
+
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let store = Box::pin(
+        FilesystemStore::<TestFileEntry<LocalHooks>>::new(
+            &nativelink_config::stores::FilesystemStore {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                eviction_policy: None,
+                ..Default::default()
+            },
+        )
+        .await?,
+    );
+
+    let (mut tx, rx) = make_buf_channel_pair();
+    let update_fut = Arc::new(async_lock::Mutex::new(store.update(
+        digest,
+        rx,
+        UploadSizeInfo::MaxSize(100),
+    )));
+    // This will process as much of the future as it can before it needs to pause.
+    // Our temp file will be created and opened and ready to have contents streamed
+    // to it.
+    assert_eq!(poll!(&mut *update_fut.lock().await)?, Poll::Pending);
+    tx.send(INITIAL_CONTENT.into()).await?;
+
+    // Now we extract that temp file that is generated.
     wait_for_temp_file(&temp_path, || {
         let update_fut_clone = update_fut.clone();
         async move {
@@ -1084,6 +1087,31 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
 #[serial]
 #[nativelink_test]
 async fn has_with_results_on_zero_digests() -> Result<(), Error> {
+    async fn wait_for_empty_content_file<
+        Fut: Future<Output = Result<(), Error>>,
+        F: Fn() -> Fut,
+    >(
+        content_path: &str,
+        digest: DigestInfo,
+        yield_fn: F,
+    ) -> Result<(), Error> {
+        loop {
+            yield_fn().await?;
+
+            let empty_digest_file_name = OsString::from(format!("{content_path}/{digest}"));
+
+            let file_metadata = fs::metadata(empty_digest_file_name)
+                .await
+                .err_tip(|| "Failed to open content file")?;
+
+            // Test that the empty digest file is created and contains an empty length.
+            if file_metadata.is_file() && file_metadata.len() == 0 {
+                return Ok(());
+            }
+        }
+        // Unreachable.
+    }
+
     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
@@ -1110,31 +1138,6 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
         .err_tip(|| "Failed to get_part");
     assert_eq!(results, vec!(Some(0)));
 
-    async fn wait_for_empty_content_file<
-        Fut: Future<Output = Result<(), Error>>,
-        F: Fn() -> Fut,
-    >(
-        content_path: &str,
-        digest: DigestInfo,
-        yield_fn: F,
-    ) -> Result<(), Error> {
-        loop {
-            yield_fn().await?;
-
-            let empty_digest_file_name = OsString::from(format!("{content_path}/{digest}"));
-
-            let file_metadata = fs::metadata(empty_digest_file_name)
-                .await
-                .err_tip(|| "Failed to open content file")?;
-
-            // Test that the empty digest file is created and contains an empty length.
-            if file_metadata.is_file() && file_metadata.len() == 0 {
-                return Ok(());
-            }
-        }
-        // Unreachable.
-    }
-
     wait_for_empty_content_file(&content_path, digest, || async move {
         tokio::task::yield_now().await;
         Ok(())
@@ -1148,12 +1151,12 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
 #[serial]
 #[nativelink_test(flavor = "multi_thread")]
 async fn update_file_future_drops_before_rename() -> Result<(), Error> {
-    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
-
     // Mutex can be used to signal to the rename function to pause execution.
     static RENAME_REQUEST_PAUSE_MUX: async_lock::Mutex<()> = async_lock::Mutex::new(());
     // Boolean used to know if the rename function is currently paused.
     static RENAME_IS_PAUSED: AtomicBool = AtomicBool::new(false);
+
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
     let content_path = make_temp_path("content_path");
     let store = Arc::pin(

@@ -1015,6 +1015,14 @@ impl RunningActionImpl {
     }
 
     async fn inner_upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        enum OutputType {
+            None,
+            File(FileInfo),
+            Directory(DirectoryInfo),
+            FileSymlink(SymlinkInfo),
+            DirectorySymlink(SymlinkInfo),
+        }
+
         event!(Level::INFO, "Worker uploading results",);
         let (mut command_proto, execution_result, mut execution_metadata) = {
             let mut state = self.state.lock();
@@ -1034,13 +1042,6 @@ impl RunningActionImpl {
         };
         let cas_store = self.running_actions_manager.cas_store.as_ref();
         let hasher = self.action_info.unique_qualifier.digest_function();
-        enum OutputType {
-            None,
-            File(FileInfo),
-            Directory(DirectoryInfo),
-            FileSymlink(SymlinkInfo),
-            DirectorySymlink(SymlinkInfo),
-        }
 
         let mut output_path_futures = FuturesUnordered::new();
         let mut output_paths = command_proto.output_paths;

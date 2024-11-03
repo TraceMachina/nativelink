@@ -139,6 +139,8 @@ fn static_now_fn() -> Result<Duration, Error> {
 async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestContext, Error> {
     const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
 
+    const UUID_SIZE: usize = 36;
+
     let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
     let tasks_or_worker_change_notify = Arc::new(Notify::new());
     let state_manager = Arc::new(MockWorkerStateManager::new());
@@ -184,7 +186,6 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
         other => unreachable!("Expected ConnectionResult, got {:?}", other),
     };
 
-    const UUID_SIZE: usize = 36;
     assert_eq!(
         worker_id.len(),
         UUID_SIZE,

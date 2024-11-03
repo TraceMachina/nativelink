@@ -357,6 +357,8 @@ impl GrpcStore {
         &self,
         grpc_request: Request<QueryWriteStatusRequest>,
     ) -> Result<Response<QueryWriteStatusResponse>, Error> {
+        const IS_UPLOAD_TRUE: bool = true;
+
         error_if!(
             matches!(self.store_type, nativelink_config::stores::StoreType::ac),
             "CAS operation on AC store"
@@ -364,7 +366,6 @@ impl GrpcStore {
 
         let mut request = grpc_request.into_inner();
 
-        const IS_UPLOAD_TRUE: bool = true;
         let mut request_info = ResourceInfo::new(&request.resource_name, IS_UPLOAD_TRUE)?;
         if request_info.instance_name != self.instance_name {
             request_info.instance_name = Cow::Borrowed(&self.instance_name);

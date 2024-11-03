@@ -168,6 +168,13 @@ async fn inner_main(
     server_start_timestamp: u64,
     shutdown_tx: broadcast::Sender<Arc<oneshot::Sender<()>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
+        match from {
+            HttpCompressionAlgorithm::gzip => Some(CompressionEncoding::Gzip),
+            HttpCompressionAlgorithm::none => None,
+        }
+    }
+
     let health_registry_builder =
         Arc::new(AsyncMutex::new(HealthRegistryBuilder::new("nativelink")));
 
@@ -199,13 +206,6 @@ async fn inner_main(
             if let Some(worker_scheduler) = maybe_worker_scheduler {
                 worker_schedulers.insert(name.clone(), worker_scheduler.clone());
             }
-        }
-    }
-
-    fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
-        match from {
-            HttpCompressionAlgorithm::gzip => Some(CompressionEncoding::Gzip),
-            HttpCompressionAlgorithm::none => None,
         }
     }
 
