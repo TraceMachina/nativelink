@@ -59,3 +59,5 @@ bun preview
 ## 🐛 Known issues
 
 - `bun dev` doesn't hot reload the changes in the starlight.conf.ts
+
+<img referrerpolicy="no-referrer-when-downgrade" src="https://nativelink.matomo.cloud/matomo.php?idsite=2&amp;rec=1&amp;action_name=web%20platform%20Readme.md" style="border:0" alt="" />

@@ -148,3 +148,5 @@ implemented with a cleanup service or script.
 The Docker Compose setup can be modified for testing and development. For
 example, you can change the RUST_LOG environment variable to control the logging
 level of the services.
+
+<img referrerpolicy="no-referrer-when-downgrade" src="https://nativelink.matomo.cloud/matomo.php?idsite=2&amp;rec=1&amp;action_name=deployment-examples%20docker-compose%20Readme.md" style="border:0" alt="" />
