@@ -690,7 +690,7 @@ async fn inner_main(
             }
             let verifier = if let Some(client_ca_file) = &tls_config.client_ca_file {
                 let mut client_auth_roots = RootCertStore::empty();
-                for cert in read_cert(client_ca_file)?.into_iter() {
+                for cert in read_cert(client_ca_file)? {
                     client_auth_roots.add(cert).map_err(|e| {
                         make_err!(Code::Internal, "Could not read client CA: {e:?}")
                     })?;
