@@ -326,3 +326,5 @@ and check it against the digest instead.
   // Place rest of configuration here ...
 }
 ```
+
+<img referrerpolicy="no-referrer-when-downgrade" src="https://nativelink.matomo.cloud/matomo.php?idsite=2&amp;rec=1&amp;action_name=nativelink-config%20Readme.md" style="border:0" alt="" />

@@ -556,3 +556,5 @@ The `public` server consists of a `listener` object and a `services` object. The
 ```
 
 </details>
+
+<img referrerpolicy="no-referrer-when-downgrade" src="https://nativelink.matomo.cloud/matomo.php?idsite=2&amp;rec=1&amp;action_name=nativelink-config%20examples%20Readme.md" style="border:0" alt="" />
