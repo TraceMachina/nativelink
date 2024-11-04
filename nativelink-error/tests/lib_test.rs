@@ -1,32 +1,55 @@
-use nativelink_error::{Error, Code, ResultExt, make_err, make_input_err};
-use std::io;
-use nativelink_metric::{MetricKind, MetricFieldData, MetricsComponent};
+// Copyright 2024 The NativeLink Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use std::borrow::Cow;
-use nativelink_proto::google::rpc::Status;
-use tonic::{Status as TonicStatus, Code as TonicCode};
-use std::num::{TryFromIntError, ParseIntError};
-use hex::FromHexError;
+use std::io;
+use std::num::{ParseIntError, TryFromIntError};
+
 use fred::error::{RedisError, RedisErrorKind};
-use serde::{ser::Error as SerError, de::Error as DeError};
+use hex::FromHexError;
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_metric::{MetricFieldData, MetricKind, MetricsComponent};
+use nativelink_proto::google::rpc::Status;
+use serde::de::Error as DeError;
+use serde::ser::Error as SerError;
+use tonic::{Code as TonicCode, Status as TonicStatus};
 
 #[test]
 fn test_serde_serialization_error_custom() {
     let error = <Error as SerError>::custom("Serialization failed due to invalid input");
     assert_eq!(error.code, Code::InvalidArgument);
-    assert_eq!(error.messages, vec!["Serialization failed due to invalid input".to_string()]);
+    assert_eq!(
+        error.messages,
+        vec!["Serialization failed due to invalid input".to_string()]
+    );
 }
 
 #[test]
 fn test_serde_deserialization_error_custom() {
     let error = <Error as DeError>::custom("Deserialization failed due to corrupted data");
     assert_eq!(error.code, Code::InvalidArgument);
-    assert_eq!(error.messages, vec!["Deserialization failed due to corrupted data".to_string()]);
+    assert_eq!(
+        error.messages,
+        vec!["Deserialization failed due to corrupted data".to_string()]
+    );
 }
 
 #[test]
 fn test_err_tip_with_code_some() {
     let option = Some(42);
-    let result: Result<i32, Error> = option.err_tip_with_code(|_error| (Code::Unknown, "Should not appear"));
+    let result: Result<i32, Error> =
+        option.err_tip_with_code(|_error| (Code::Unknown, "Should not appear"));
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 42);
 }
@@ -34,7 +57,8 @@ fn test_err_tip_with_code_some() {
 #[test]
 fn test_err_tip_with_code_none() {
     let option: Option<i32> = None;
-    let result: Result<i32, Error> = option.err_tip_with_code(|_error| (Code::InvalidArgument, "Missing value in option"));
+    let result: Result<i32, Error> =
+        option.err_tip_with_code(|_error| (Code::InvalidArgument, "Missing value in option"));
     assert!(result.is_err());
     let error = result.unwrap_err();
     assert_eq!(error.code, Code::InvalidArgument);
@@ -43,11 +67,18 @@ fn test_err_tip_with_code_none() {
 #[test]
 fn test_code_to_error_conversion() {
     let error: Error = Code::InvalidArgument.into();
-    println!("Debug: Error Code - {:?}, Messages - {:?}", error.code, error.messages);
-    assert_eq!(error.code, Code::InvalidArgument, "Expected code to be InvalidArgument");
+    println!(
+        "Debug: Error Code - {:?}, Messages - {:?}",
+        error.code, error.messages
+    );
+    assert_eq!(
+        error.code,
+        Code::InvalidArgument,
+        "Expected code to be InvalidArgument"
+    );
     assert!(
         error.messages.is_empty() || error.messages[0].is_empty(),
-        "Expected messages to be empty or contain an empty string, but found: {:?}", 
+        "Expected messages to be empty or contain an empty string, but found: {:?}",
         error.messages
     );
 }
@@ -114,7 +145,9 @@ fn test_error_to_status_conversion() {
     };
     let tonic_status: TonicStatus = error.into();
     assert_eq!(tonic_status.code(), TonicCode::Internal);
-    assert!(tonic_status.message().contains("An internal error occurred"));
+    assert!(tonic_status
+        .message()
+        .contains("An internal error occurred"));
 }
 
 #[test]
@@ -150,7 +183,9 @@ fn test_from_hex_error_conversion() {
 
 #[tokio::test]
 async fn test_join_error_conversion() {
-    let join_error = tokio::spawn(async { panic!("JoinError mock") }).await.unwrap_err();
+    let join_error = tokio::spawn(async { panic!("JoinError mock") })
+        .await
+        .unwrap_err();
     let error: Error = join_error.into();
     assert_eq!(error.code, Code::Internal);
     assert!(error.messages[0].contains("JoinError mock"));
@@ -177,7 +212,6 @@ fn test_timestamp_error_conversion() {
     assert!(error.messages[0].contains("Timestamp error mock"));
 }
 
-
 #[test]
 fn test_status_to_error_conversion() {
     let status = Status {
@@ -202,8 +236,8 @@ fn test_metrics_component_publish() {
     let result = error.publish(kind, field_metadata);
     match result {
         Ok(data) => {
-            println!("Published data: {:?}", data); 
-        },
+            println!("Published data: {:?}", data);
+        }
         Err(e) => panic!("Publish failed with error: {:?}", e),
     }
 }
@@ -217,8 +251,7 @@ fn test_error_new() {
 
 #[test]
 fn test_error_append() {
-    let error = Error::new(Code::Internal, "Initial error".to_string())
-        .append("Additional error");
+    let error = Error::new(Code::Internal, "Initial error".to_string()).append("Additional error");
     assert_eq!(error.messages, vec!["Initial error", "Additional error"]);
 }
 
@@ -236,7 +269,10 @@ fn test_error_merge_option() {
     let error2 = Some(Error::new(Code::Unknown, "Error 2".to_string()));
     let merged_error = Error::merge_option(error1, error2);
     assert!(merged_error.is_some());
-    assert_eq!(merged_error.unwrap().messages, vec!["Error 1", "---", "Error 2"]);
+    assert_eq!(
+        merged_error.unwrap().messages,
+        vec!["Error 1", "---", "Error 2"]
+    );
 }
 
 #[test]
@@ -249,8 +285,7 @@ fn test_error_to_std_err() {
 
 #[test]
 fn test_error_message_string() {
-    let error = Error::new(Code::Internal, "Part 1".to_string())
-        .append("Part 2");
+    let error = Error::new(Code::Internal, "Part 1".to_string()).append("Part 2");
     assert_eq!(error.message_string(), "Part 1 : Part 2");
 }
 
@@ -258,7 +293,9 @@ fn test_error_message_string() {
 fn test_error_make_err_macro() {
     let error = make_err!(Code::InvalidArgument, "Invalid argument: {}", "value");
     assert_eq!(error.code, Code::InvalidArgument);
-    assert!(error.messages.contains(&"Invalid argument: value".to_string()));
+    assert!(error
+        .messages
+        .contains(&"Invalid argument: value".to_string()));
 }
 
 #[test]
@@ -273,9 +310,12 @@ fn test_error_conversion_from_prost_decode_error() {
     let prost_error = prost::DecodeError::new("Decode failure");
     let error: Error = prost_error.into();
     assert_eq!(error.code, Code::Internal);
-    assert!(error.messages[0].contains("Decode failure"), "Error message was: {:?}", error.messages);
+    assert!(
+        error.messages[0].contains("Decode failure"),
+        "Error message was: {:?}",
+        error.messages
+    );
 }
-
 
 #[test]
 fn test_error_conversion_from_std_io_error() {
@@ -287,8 +327,8 @@ fn test_error_conversion_from_std_io_error() {
 
 #[test]
 fn test_result_ext_err_tip() {
-    let result: Result<(), Error> = Err(Error::new(Code::Internal, "Base error".to_string()))
-        .err_tip(|| "Additional context");
+    let result: Result<(), Error> =
+        Err(Error::new(Code::Internal, "Base error".to_string())).err_tip(|| "Additional context");
     let error = result.unwrap_err();
     assert!(error.messages.contains(&"Additional context".to_string()));
 }
@@ -307,20 +347,38 @@ fn test_tonic_code_to_code_conversion() {
     assert_eq!(Code::from(TonicCode::Ok), Code::Ok);
     assert_eq!(Code::from(TonicCode::Cancelled), Code::Cancelled);
     assert_eq!(Code::from(TonicCode::Unknown), Code::Unknown);
-    assert_eq!(Code::from(TonicCode::InvalidArgument), Code::InvalidArgument);
-    assert_eq!(Code::from(TonicCode::DeadlineExceeded), Code::DeadlineExceeded);
+    assert_eq!(
+        Code::from(TonicCode::InvalidArgument),
+        Code::InvalidArgument
+    );
+    assert_eq!(
+        Code::from(TonicCode::DeadlineExceeded),
+        Code::DeadlineExceeded
+    );
     assert_eq!(Code::from(TonicCode::NotFound), Code::NotFound);
     assert_eq!(Code::from(TonicCode::AlreadyExists), Code::AlreadyExists);
-    assert_eq!(Code::from(TonicCode::PermissionDenied), Code::PermissionDenied);
-    assert_eq!(Code::from(TonicCode::ResourceExhausted), Code::ResourceExhausted);
-    assert_eq!(Code::from(TonicCode::FailedPrecondition), Code::FailedPrecondition);
+    assert_eq!(
+        Code::from(TonicCode::PermissionDenied),
+        Code::PermissionDenied
+    );
+    assert_eq!(
+        Code::from(TonicCode::ResourceExhausted),
+        Code::ResourceExhausted
+    );
+    assert_eq!(
+        Code::from(TonicCode::FailedPrecondition),
+        Code::FailedPrecondition
+    );
     assert_eq!(Code::from(TonicCode::Aborted), Code::Aborted);
     assert_eq!(Code::from(TonicCode::OutOfRange), Code::OutOfRange);
     assert_eq!(Code::from(TonicCode::Unimplemented), Code::Unimplemented);
     assert_eq!(Code::from(TonicCode::Internal), Code::Internal);
     assert_eq!(Code::from(TonicCode::Unavailable), Code::Unavailable);
     assert_eq!(Code::from(TonicCode::DataLoss), Code::DataLoss);
-    assert_eq!(Code::from(TonicCode::Unauthenticated), Code::Unauthenticated);
+    assert_eq!(
+        Code::from(TonicCode::Unauthenticated),
+        Code::Unauthenticated
+    );
 }
 
 #[test]
@@ -328,20 +386,44 @@ fn test_code_to_tonic_code_conversion() {
     assert_eq!(TonicCode::from(Code::Ok), TonicCode::Ok);
     assert_eq!(TonicCode::from(Code::Cancelled), TonicCode::Cancelled);
     assert_eq!(TonicCode::from(Code::Unknown), TonicCode::Unknown);
-    assert_eq!(TonicCode::from(Code::InvalidArgument), TonicCode::InvalidArgument);
-    assert_eq!(TonicCode::from(Code::DeadlineExceeded), TonicCode::DeadlineExceeded);
+    assert_eq!(
+        TonicCode::from(Code::InvalidArgument),
+        TonicCode::InvalidArgument
+    );
+    assert_eq!(
+        TonicCode::from(Code::DeadlineExceeded),
+        TonicCode::DeadlineExceeded
+    );
     assert_eq!(TonicCode::from(Code::NotFound), TonicCode::NotFound);
-    assert_eq!(TonicCode::from(Code::AlreadyExists), TonicCode::AlreadyExists);
-    assert_eq!(TonicCode::from(Code::PermissionDenied), TonicCode::PermissionDenied);
-    assert_eq!(TonicCode::from(Code::ResourceExhausted), TonicCode::ResourceExhausted);
-    assert_eq!(TonicCode::from(Code::FailedPrecondition), TonicCode::FailedPrecondition);
+    assert_eq!(
+        TonicCode::from(Code::AlreadyExists),
+        TonicCode::AlreadyExists
+    );
+    assert_eq!(
+        TonicCode::from(Code::PermissionDenied),
+        TonicCode::PermissionDenied
+    );
+    assert_eq!(
+        TonicCode::from(Code::ResourceExhausted),
+        TonicCode::ResourceExhausted
+    );
+    assert_eq!(
+        TonicCode::from(Code::FailedPrecondition),
+        TonicCode::FailedPrecondition
+    );
     assert_eq!(TonicCode::from(Code::Aborted), TonicCode::Aborted);
     assert_eq!(TonicCode::from(Code::OutOfRange), TonicCode::OutOfRange);
-    assert_eq!(TonicCode::from(Code::Unimplemented), TonicCode::Unimplemented);
+    assert_eq!(
+        TonicCode::from(Code::Unimplemented),
+        TonicCode::Unimplemented
+    );
     assert_eq!(TonicCode::from(Code::Internal), TonicCode::Internal);
     assert_eq!(TonicCode::from(Code::Unavailable), TonicCode::Unavailable);
     assert_eq!(TonicCode::from(Code::DataLoss), TonicCode::DataLoss);
-    assert_eq!(TonicCode::from(Code::Unauthenticated), TonicCode::Unauthenticated);
+    assert_eq!(
+        TonicCode::from(Code::Unauthenticated),
+        TonicCode::Unauthenticated
+    );
 }
 
 #[test]

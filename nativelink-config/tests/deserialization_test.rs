@@ -1,11 +1,22 @@
+// Copyright 2024 The NativeLink Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use nativelink_config::serde_utils::{
-    convert_data_size_with_shellexpand, 
-    convert_duration_with_shellexpand,
-    convert_numeric_with_shellexpand,
-    convert_optional_numeric_with_shellexpand,
-    convert_string_with_shellexpand,
+    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
+    convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
+    convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
     convert_vec_string_with_shellexpand,
-    convert_optional_string_with_shellexpand,
 };
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
@@ -30,7 +41,10 @@ struct NumericEntity {
 
 #[derive(Deserialize)]
 struct OptionalNumericEntity {
-    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     optional_value: Option<usize>,
 }
 
@@ -55,8 +69,8 @@ struct StringEntity {
 #[test]
 fn test_duration_human_readable_deserialize() {
     let example = r#"
-            {"duration": "1m 10s"}
-        "#;
+        {"duration": "1m 10s"}
+    "#;
     let deserialized: DurationEntity = serde_json5::from_str(example).unwrap();
     assert_eq!(deserialized.duration, 70);
 }
@@ -64,8 +78,8 @@ fn test_duration_human_readable_deserialize() {
 #[test]
 fn test_duration_usize_deserialize() {
     let example = r#"
-            {"duration": 10}
-        "#;
+        {"duration": 10}
+    "#;
     let deserialized: DurationEntity = serde_json5::from_str(example).unwrap();
     assert_eq!(deserialized.duration, 10);
 }
@@ -73,17 +87,23 @@ fn test_duration_usize_deserialize() {
 #[test]
 fn test_duration_invalid_string() {
     let example = r#"
-            {"duration": {size:10, in:8}}
-        "#;
+        {"duration": {size:10, in:8}}
+    "#;
     let result: Result<DurationEntity, _> = serde_json5::from_str(example);
     assert!(result.is_err());
+    if let Err(e) = result {
+        assert_eq!(
+            e.to_string(),
+            "invalid type: map, expected a string containing json data"
+        );
+    }
 }
 
 #[test]
 fn test_data_size_unit_deserialize() {
     let example = r#"
-            {"data_size": "1KiB"}
-        "#;
+        {"data_size": "1KiB"}
+    "#;
     let deserialized: DataSizeEntity = serde_json5::from_str(example).unwrap();
     assert_eq!(deserialized.data_size, 1024);
 }
@@ -91,8 +111,8 @@ fn test_data_size_unit_deserialize() {
 #[test]
 fn test_data_size_usize_deserialize() {
     let example = r#"
-            {"data_size": 10}
-        "#;
+        {"data_size": 10}
+    "#;
     let deserialized: DataSizeEntity = serde_json5::from_str(example).unwrap();
     assert_eq!(deserialized.data_size, 10);
 }
@@ -100,15 +120,21 @@ fn test_data_size_usize_deserialize() {
 #[test]
 fn test_data_size_invalid_string() {
     let example = r#"
-            {"data_size": {size:10, in:8}}
-        "#;
+        {"data_size": {size:10, in:8}}
+    "#;
     let result: Result<DataSizeEntity, _> = serde_json5::from_str(example);
     assert!(result.is_err());
+    if let Err(e) = result {
+        assert_eq!(
+            e.to_string(),
+            "invalid type: map, expected a string containing json data"
+        );
+    }
 }
 
 #[test]
 fn test_numeric_with_shellexpand_integer() {
-    let example = r#"{ "value": 42 }"#;
+    let example = "{ \"value\": 42 }";
     let deserialized: NumericEntity = serde_json5::from_str(example).unwrap();
     assert_eq!(deserialized.value, 42);
 }
@@ -122,9 +148,15 @@ fn test_numeric_with_shellexpand_string() {
 
 #[test]
 fn test_numeric_with_shellexpand_invalid_string() {
-    let example = r#"{ "value": {size:10, in:8} }"#;
+    let example = "{ \"value\": {size:10, in:8} }";
     let result: Result<NumericEntity, _> = serde_json5::from_str(example);
     assert!(result.is_err());
+    if let Err(e) = result {
+        assert_eq!(
+            e.to_string(),
+            "invalid type: map, expected a string containing json data"
+        );
+    }
 }
 
 #[test]
@@ -144,8 +176,8 @@ fn test_optional_numeric_with_shellexpand_string() {
 #[test]
 fn test_optional_numeric_with_shellexpand_empty_string() {
     let example = r#"
-            {"optional_value": ""}
-        "#;
+        {"optional_value": ""}
+    "#;
     let deserialized: OptionalNumericEntity = serde_json5::from_str(example).unwrap();
     assert_eq!(deserialized.optional_value, None);
 }
@@ -155,13 +187,19 @@ fn test_optional_numeric_with_shellexpand_invalid_string() {
     let example = r#"{ "optional_value": {size:10, in:8} }"#;
     let result: Result<OptionalNumericEntity, _> = serde_json5::from_str(example);
     assert!(result.is_err());
+    if let Err(e) = result {
+        assert_eq!(
+            e.to_string(),
+            "invalid type: map, expected a string containing json data"
+        );
+    }
 }
 
 #[test]
 fn test_convert_string_with_shellexpand_literal_string() {
     let example = r#"
-            {"expanded_string": "Hello, World!"}
-        "#;
+        {"expanded_string": "Hello, World!"}
+    "#;
     let deserialized: StringEntity = serde_json5::from_str(example).unwrap();
     assert_eq!(deserialized.expanded_string, "Hello, World!");
 }
@@ -169,17 +207,23 @@ fn test_convert_string_with_shellexpand_literal_string() {
 #[test]
 fn test_convert_string_with_shellexpand_invalid() {
     let example = r#"
-            {"expanded_string": "$INVALID_ENV_VAR"}
-        "#;
+        {"expanded_string": "$INVALID_ENV_VAR"}
+    "#;
     let result: Result<StringEntity, _> = serde_json5::from_str(example);
     assert!(result.is_err());
+    if let Err(e) = result {
+        assert_eq!(
+            e.to_string(),
+            "error looking key 'INVALID_ENV_VAR' up: environment variable not found"
+        );
+    }
 }
 
 #[test]
 fn test_convert_string_with_shellexpand_empty() {
     let example = r#"
-            {"expanded_string": ""}
-        "#;
+        {"expanded_string": ""}
+    "#;
     let deserialized: StringEntity = serde_json5::from_str(example).unwrap();
     assert_eq!(deserialized.expanded_string, "");
 }
@@ -187,8 +231,8 @@ fn test_convert_string_with_shellexpand_empty() {
 #[test]
 fn test_convert_vec_string_with_shellexpand_empty() {
     let example = r#"
-            {"expanded_strings": []}
-        "#;
+        {"expanded_strings": []}
+    "#;
     let deserialized: VecStringEntity = serde_json5::from_str(example).unwrap();
     assert_eq!(deserialized.expanded_strings, Vec::<String>::new());
 }
@@ -196,26 +240,38 @@ fn test_convert_vec_string_with_shellexpand_empty() {
 #[test]
 fn test_convert_vec_string_with_shellexpand_invalid() {
     let example = r#"
-            {"expanded_strings": ["$HOME", "$INVALID_ENV_VAR"]}
-        "#;
+        {"expanded_strings": ["$INVALID_ENV_VAR", "$ANOTHER_MISSING_VAR"]}
+    "#;
     let result: Result<VecStringEntity, _> = serde_json5::from_str(example);
     assert!(result.is_err());
+    if let Err(e) = result {
+        assert_eq!(
+            e.to_string(),
+            "error looking key 'INVALID_ENV_VAR' up: environment variable not found"
+        );
+    }
 }
 
 #[test]
-fn test_convert_vec_string_with_shellexpand_mixed() {
+fn test_convert_vec_string_with_shellexpand_invalid_alternate() {
     let example = r#"
-            {"expanded_strings": ["$HOME", "config.json", "$INVALID_ENV_VAR"]}
-        "#;
+        {"expanded_strings": ["config.json", "$INVALID_ENV_VAR"]}
+    "#;
     let result: Result<VecStringEntity, _> = serde_json5::from_str(example);
     assert!(result.is_err());
+    if let Err(e) = result {
+        assert_eq!(
+            e.to_string(),
+            "error looking key 'INVALID_ENV_VAR' up: environment variable not found"
+        );
+    }
 }
 
 #[test]
 fn test_convert_optional_string_with_shellexpand_none() {
     let example = r#"
-            {"expanded_string": null}
-        "#;
+        {"expanded_string": null}
+    "#;
     let deserialized: OptionalStringEntity = serde_json5::from_str(example).unwrap();
     assert_eq!(deserialized.expanded_string, None);
 }
@@ -223,17 +279,23 @@ fn test_convert_optional_string_with_shellexpand_none() {
 #[test]
 fn test_convert_optional_string_with_shellexpand_empty() {
     let example = r#"
-            {"expanded_string": ""}
-        "#;
+        {"expanded_string": ""}
+    "#;
     let deserialized: OptionalStringEntity = serde_json5::from_str(example).unwrap();
-    assert_eq!(deserialized.expanded_string, Some("".to_string()));
+    assert_eq!(deserialized.expanded_string, Some(String::new()));
 }
 
 #[test]
 fn test_convert_optional_string_with_shellexpand_invalid() {
     let example = r#"
-            {"expanded_string": "$INVALID_ENV_VAR"}
-        "#;
+        {"expanded_string": "$INVALID_ENV_VAR"}
+    "#;
     let result: Result<OptionalStringEntity, _> = serde_json5::from_str(example);
     assert!(result.is_err());
+    if let Err(e) = result {
+        assert_eq!(
+            e.to_string(),
+            "error looking key 'INVALID_ENV_VAR' up: environment variable not found"
+        );
+    }
 }
