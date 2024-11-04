@@ -422,7 +422,7 @@ where
         seconds_since_anchor: i32,
     ) -> Vec<T> {
         let mut replaced_items = Vec::new();
-        for (key, data) in inserts.into_iter() {
+        for (key, data) in inserts {
             let new_item_size = data.len();
             let eviction_item = EvictionItem {
                 seconds_since_anchor,

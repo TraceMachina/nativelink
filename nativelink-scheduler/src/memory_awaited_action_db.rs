@@ -364,7 +364,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         &mut self,
         action_events: impl IntoIterator<Item = ActionEvent>,
     ) -> NoEarlyReturn {
-        for action in action_events.into_iter() {
+        for action in action_events {
             event!(Level::DEBUG, ?action, "Handling action");
             match action {
                 ActionEvent::ClientDroppedOperation(operation_id) => {
