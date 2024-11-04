@@ -106,9 +106,24 @@ spec:
     substituteFrom:
       - kind: ConfigMap
         name: nativelink-image-tags
+  patches:
+    - patch: |-
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: not-used
+        spec:
+          template:
+            metadata:
+              annotations:
+                sidecar.opentelemetry.io/inject: "true"
+      target:
+        kind: Deployment
+        labelSelector: "app.kubernetes.io/part-of=nativelink"
   dependsOn:
     - name: nativelink-configmaps
     - name: nativelink-tekton-resources
+    - name: opentelemetry-collector
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -127,3 +142,99 @@ spec:
     kind: GitRepository
     name: nativelink
     namespace: default
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cert-manager
+  namespace: flux-system
+spec:
+  interval: 2m
+  path: "./kubernetes/components/cert-manager"
+  prune: true
+  force: true
+  retryInterval: 20s
+  targetNamespace: cert-manager
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: nativelink
+    namespace: default
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: nats
+  namespace: flux-system
+spec:
+  interval: 2m
+  path: "./kubernetes/components/nats"
+  prune: true
+  force: true
+  retryInterval: 20s
+  targetNamespace: nats-system
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: nativelink
+    namespace: default
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: nats-kafka
+  namespace: nats-system
+spec:
+  interval: 10m
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: nativelink
+    namespace: default
+  path: ./kubernetes/components/nats-kafka
+  dependsOn:
+    - name: nats
+      namespace: flux-system
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: opentelemetry-operator
+  namespace: flux-system
+spec:
+  interval: 2m
+  path: "./kubernetes/components/opentelemetry-operator"
+  prune: true
+  force: true
+  retryInterval: 20s
+  targetNamespace: opentelemetry-operator-system
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: nativelink
+    namespace: default
+  dependsOn:
+    - name: cert-manager
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: opentelemetry-collector
+  namespace: default
+spec:
+  interval: 2m
+  path: "./kubernetes/components/opentelemetry-collector"
+  prune: true
+  force: true
+  retryInterval: 20s
+  targetNamespace: default
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: nativelink
+    namespace: default
+  dependsOn:
+    - name: opentelemetry-operator
+      namespace: flux-system
+    - name: nats
+      namespace: flux-system

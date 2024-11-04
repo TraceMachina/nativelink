@@ -43,6 +43,7 @@ use nativelink_service::capabilities_server::CapabilitiesServer;
 use nativelink_service::cas_server::CasServer;
 use nativelink_service::execution_server::ExecutionServer;
 use nativelink_service::health_server::HealthServer;
+use nativelink_service::otlp_server::OtlpServer;
 use nativelink_service::worker_api_server::WorkerApiServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
@@ -84,6 +85,9 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 /// Note: This must be kept in sync with the documentation in `PrometheusConfig::path`.
 const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
+
+/// Note: This must be kept in sync with the documentation in `OtlpConfig::endpoint`.
+const DEFAULT_OTLP_ENDPOINT: &str = "http://localhost:4317";
 
 /// Note: This must be kept in sync with the documentation in `AdminConfig::path`.
 const DEFAULT_ADMIN_API_PATH: &str = "/admin";
@@ -591,6 +595,22 @@ async fn inner_main(
                         },
                     )
                 }),
+            );
+        }
+
+        if let Some(otlp_cfg) = services.experimental_otlp {
+            let endpoint = if otlp_cfg.endpoint.is_empty() {
+                DEFAULT_OTLP_ENDPOINT
+            } else {
+                &otlp_cfg.endpoint
+            };
+
+            let server = OtlpServer::new(root_metrics.clone(), endpoint)?;
+
+            background_spawn!(
+                name: "otlp_metrics_loop",
+                fut: server.run_export_loop(),
+                target: "nativelink::services",
             );
         }
 

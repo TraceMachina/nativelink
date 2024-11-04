@@ -1,0 +1,232 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-kafka-bridge
+  namespace: nats-system
+spec:
+  ports:
+  - name: kafka
+    port: 9092
+    targetPort: 9092
+  selector:
+    app: nats-kafka-bridge
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-otel-to-kafka-bridge
+  namespace: nats-system
+spec:
+  podSelector:
+    matchLabels:
+      app: nats-kafka-bridge
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: default
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: nativelink
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: nats-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: nats
+    ports:
+    - protocol: TCP
+      port: 9092
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: nats
+    ports:
+    - protocol: TCP
+      port: 4222
+  - to:
+    - podSelector:
+        matchLabels:
+          app: kafka
+    ports:
+    - protocol: TCP
+      port: 9092
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats-kafka-bridge
+  namespace: nats-system
+  labels:
+    app: nats-kafka-bridge
+    app.kubernetes.io/part-of: nats
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nats-kafka-bridge
+  template:
+    metadata:
+      labels:
+        app: nats-kafka-bridge
+        app.kubernetes.io/part-of: nats
+    spec:
+      containers:
+      - name: bridge
+        image: natsio/nats-kafka:latest
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Config file contents:"
+            cat /config/bridge.conf
+            echo "Starting bridge with debug output..."
+            /nats-kafka -c /config/bridge.conf -DV || echo "Exit code: $?"
+        ports:
+        - containerPort: 9092
+          name: kafka
+        volumeMounts:
+        - name: config
+          mountPath: /config
+      volumes:
+      - name: config
+        configMap:
+          name: nats-kafka-bridge-config
+---
+# TODO(aaronmondal): This configmap doesn't properly update via flux.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-kafka-bridge-config
+  namespace: nats-system
+data:
+  bridge.conf: |
+    nats: {
+      Servers: ["nats://nats.nats-system.svc.cluster.local:4222"]
+      trace: true,
+      verbose: true,
+      debug: true
+    }
+
+    jetstream: {
+      maxwait: 5000,
+      publishasyncmaxpending: 256,
+      heartbeatinterval: 5,
+      reconnectwait: 2,
+      enableflowcontrol: true,
+      enableacksync: true
+    }
+
+    connect: [
+      {
+        type: "KafkaToJetStream"
+        id: "otel-bridge"
+        brokers: ["kafka.nats-system.svc.cluster.local:9092"]
+        topic: "otel-telemetry"
+        subject: "otel.telemetry.kafka"
+        stream: "TELEMETRY"
+      }
+    ]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nats-stream-init
+  namespace: nats-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: nats-cli
+        image: natsio/nats-box:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          nats stream add TELEMETRY \
+            --server=nats://nats.nats-system.svc.cluster.local:4222 \
+            --subjects="otel.telemetry.>" \
+            --storage=file \
+            --retention=limits \
+            --discard=old \
+            --max-msgs=-1 \
+            --max-bytes=-1 \
+            --max-age=24h \
+            --dupe-window=2m \
+            --replicas=1 \
+            --max-msgs-per-subject=-1 \
+            --max-msg-size=-1 \
+            --allow-direct \
+            --no-deny-delete \
+            --no-deny-purge \
+            --no-allow-rollup
+      restartPolicy: OnFailure
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  namespace: nats-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+      - name: kafka
+        image: bitnami/kafka:latest
+        ports:
+        - containerPort: 9092
+        env:
+        - name: KAFKA_CFG_NODE_ID
+          value: "1"
+        - name: KAFKA_CFG_PROCESS_ROLES
+          value: "controller,broker"
+        - name: KAFKA_CFG_CONTROLLER_QUORUM_VOTERS
+          value: "1@kafka.nats-system.svc.cluster.local:9093"
+        - name: KAFKA_CFG_CONTROLLER_LISTENER_NAMES
+          value: "CONTROLLER"
+        - name: KAFKA_CFG_LISTENERS
+          value: "CONTROLLER://:9093,PLAINTEXT://:9092"
+        - name: KAFKA_CFG_ADVERTISED_LISTENERS
+          value: "PLAINTEXT://kafka.nats-system.svc.cluster.local:9092"
+        - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
+          value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+        - name: KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE
+          value: "true"
+        - name: ALLOW_PLAINTEXT_LISTENER
+          value: "yes"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: nats-system
+spec:
+  selector:
+    app: kafka
+  ports:
+  - name: kafka
+    port: 9092
+    targetPort: 9092
+  - name: controller
+    port: 9093
+    targetPort: 9093

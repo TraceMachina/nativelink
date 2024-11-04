@@ -1898,10 +1898,14 @@ dependencies = [
  "nativelink-error",
  "nativelink-macro",
  "nativelink-metric",
+ "nativelink-metric-collector",
  "nativelink-proto",
  "nativelink-scheduler",
  "nativelink-store",
  "nativelink-util",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
  "parking_lot",
  "pretty_assertions",
  "prost",
@@ -1912,6 +1916,7 @@ dependencies = [
  "tonic",
  "tower 0.5.1",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -2124,6 +2129,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry-otlp"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b925a602ffb916fb7421276b86756027b37ee708f9dce2dbdcc51739f07e727"
+dependencies = [
+ "async-trait",
+ "futures-core",
+ "http 1.1.0",
+ "opentelemetry",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
+ "prost",
+ "thiserror",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
 name = "opentelemetry-prometheus"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2134,6 +2157,18 @@ dependencies = [
  "opentelemetry_sdk",
  "prometheus",
  "protobuf",
+]
+
+[[package]]
+name = "opentelemetry-proto"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30ee9f20bff9c984511a02f082dc8ede839e4a9bf15cc2487c8d6fea5ad850d9"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "prost",
+ "tonic",
 ]
 
 [[package]]
@@ -2149,7 +2184,12 @@ dependencies = [
  "glob",
  "once_cell",
  "opentelemetry",
+ "percent-encoding",
+ "rand",
+ "serde_json",
  "thiserror",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
