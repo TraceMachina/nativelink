@@ -6,6 +6,7 @@ import ViewTransitions from "astro/components/ViewTransitions.astro";
 import { ScrollTracker } from "@qwik/components/scroll"
 import { Header } from "@qwik/components/header"
 import { Footer } from "@qwik/components/footer"
+import Visitors from "@qwik/components/visitors"
 
 const { title } = Astro.props;
 
@@ -22,6 +23,7 @@ const scrolled = false;
 		<meta name="generator" content={Astro.generator} />
 		<title>{title}</title>
     	<ViewTransitions />
+		<Visitors />
 	</head>
 	<body class="bg-black w-screen">
 		<ScrollTracker scrolled={scrolled} />
