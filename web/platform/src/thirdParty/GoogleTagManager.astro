@@ -7,3 +7,10 @@ const measurementId = props.measurementId
   type='text/partytown'
   src={`https://www.googletagmanager.com/gtag/js?id=${measurementId}`}>
 </script>
+<script type="text/partytown">
+  window.dataLayer = window.dataLayer || [];
+  window.gtag = function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', measurementId);
+</script>
