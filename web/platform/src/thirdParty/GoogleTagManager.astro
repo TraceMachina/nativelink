@@ -1,0 +1,9 @@
+---
+type Props = { measurementId: string }
+const props = Astro.props as Props
+const measurementId = props.measurementId
+---
+<script
+  type='text/partytown'
+  src={`https://www.googletagmanager.com/gtag/js?id=${measurementId}`}>
+</script>
