@@ -29,7 +29,7 @@ export default defineConfig({
   redirects: {
     "/blog/case-study%3A-samsung-internet's-integration-with-nativelink": {
       status: 301,
-      destination: "/resources/blog/case-study-samsung",
+      destination: "/",
     },
   },
   integrations: [
