@@ -6,6 +6,7 @@ import ViewTransitions from "astro/components/ViewTransitions.astro";
 import { ScrollTracker } from "@qwik/components/scroll"
 import { Header } from "@qwik/components/header"
 import { Footer } from "@qwik/components/footer"
+import GoogleTagManager from "../thirdParty/GoogleTagManager.astro"
 
 const { title } = Astro.props;
 
@@ -15,6 +16,7 @@ const scrolled = false;
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
+		<GoogleTagManager measurementId={'GTM-NNLLRWGB'} />
 		<link rel="sitemap" href="/sitemap-index.xml" />
 		<link rel="icon" sizes="192x192" type="image/png" href="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_favicon.png" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
