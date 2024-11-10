@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 byte-unit = { version = "5.1.4", default-features = false, features = ["byte"] }
 humantime = "2.1.0"
-serde = { version = "1.0.210", default-features = false }
+serde = { version = "1.0.210", default-features = false, features = ["derive"] }
 serde_json5 = "0.1.0"
 shellexpand = { version = "3.1.0", default-features = false, features = ["base-0"] }
 
