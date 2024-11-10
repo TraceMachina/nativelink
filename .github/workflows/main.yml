@@ -129,7 +129,7 @@ jobs:
         docker/build-push-action@2cdde995de11925a030ce8070c3d77a52ffcf1c0
       with:
         context: .
-        file: ./deployment-examples/docker-compose/Dockerfile
+        file: ./examples/docker-compose/Dockerfile
         build-args: |
           OPT_LEVEL=opt
           OS_VERSION=${{ matrix.os_version }}
@@ -142,7 +142,7 @@ jobs:
         docker/build-push-action@2cdde995de11925a030ce8070c3d77a52ffcf1c0
       with:
         context: .
-        file: ./deployment-examples/docker-compose/Dockerfile
+        file: ./examples/docker-compose/Dockerfile
         build-args: |
           OPT_LEVEL=opt
           OS_VERSION=${{ matrix.os_version }}
@@ -153,7 +153,7 @@ jobs:
     - name: Compile NativeLink with NativeLink
       run: |
         mkdir -p ~/.cache && \
-        cd deployment-examples/docker-compose && \
+        cd examples/docker-compose && \
         (docker-compose up -d || docker compose up -d) && \
         cd ../../ && \
         docker run --rm --net=host -w /root/nativelink -v $PWD:/root/nativelink trace_machina/nativelink:builder sh -c ' \
@@ -193,7 +193,7 @@ jobs:
         docker/build-push-action@2cdde995de11925a030ce8070c3d77a52ffcf1c0
       with:
         context: .
-        file: ./deployment-examples/docker-compose/Dockerfile
+        file: ./examples/docker-compose/Dockerfile
         build-args: |
           OPT_LEVEL=fastbuild
           OS_VERSION=${{ matrix.os_version }}
