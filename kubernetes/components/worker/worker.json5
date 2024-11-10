@@ -1,8 +1,8 @@
 {
   "stores": [
     {
-      "name": "GRPC_LOCAL_STORE",
       // Note: This file is used to test GRPC store.
+      "name": "GRPC_LOCAL_STORE",
       "grpc": {
         "instance_name": "",
         "endpoints": [
@@ -11,8 +11,8 @@
         "store_type": "cas"
       }
     }, {
-      "name": "GRPC_LOCAL_AC_STORE",
       // Note: This file is used to test GRPC store.
+      "name": "GRPC_LOCAL_AC_STORE",
       "grpc": {
         "instance_name": "",
         "endpoints": [
@@ -22,8 +22,9 @@
       }
     }, {
       "name": "WORKER_FAST_SLOW_STORE",
-      "fast_slow": {
+      "fastSlow": {
         "fast": {
+          "name": "fs-worker",
           "filesystem": {
             "content_path": "~/.cache/nativelink/data-worker-test/content_path-cas",
             "temp_path": "~/.cache/nativelink/data-worker-test/tmp_path-cas",
@@ -33,8 +34,9 @@
           }
         },
         "slow": {
-          "ref_store": {
-            "name": "GRPC_LOCAL_STORE"
+          "name": "ref-worker",
+          "ref": {
+            "name": "GRPC_LOCAL_STORE",
           }
         }
       }

@@ -12,12 +12,12 @@
           "lz4": {}
         },
         "backend": {
+          "name": "fs-conent",
           "filesystem": {
             "content_path": "/tmp/nativelink/data/content_path-cas",
             "temp_path": "/tmp/nativelink/data/tmp_path-cas",
             "eviction_policy": {
-              // 2gb.
-              "max_bytes": 2000000000
+              "max_bytes": "2Gb",
             }
           }
         }
@@ -32,43 +32,48 @@
           // general build content, since many objects are quite small and by
           // putting this size distinguish store in place will prevent 1+ index
           // read/write per small object request.
-          "size_partitioning": {
+          "name": "cas-parts",
+          "sizePartitioning": {
             "size": 262144, // 256k.
             "lower_store": {
-              "ref_store": {
+              "name": "cas-lower",
+              "ref": {
                 "name": "FS_CONTENT_STORE"
               }
             },
             "upper_store": {
+              "name": "cas-upper",
               "dedup": {
                 "index_store": {
                   // Since our index store is queried so much, we use a fast_slow
                   // store so it will keep in memory objects that are accessed
                   // frequently before going to disk.
                   // Note: indexes are generally quite small, but accessed frequently.
-                  "fast_slow": {
+                  "name": "cas-index",
+                  "fastSlow": {
                     "fast": {
+                      "name": "cas-index-fast",
                       "memory": {
                         "eviction_policy": {
-                          // 10mb.
-                          "max_bytes": 10000000
+                          "max_bytes": "10Mb",
                         }
                       }
                     },
                     "slow": {
+                      "name": "cas-index-slow",
                       "filesystem": {
                         "content_path": "/tmp/nativelink/data/content_path-index",
                         "temp_path": "/tmp/nativelink/data/tmp_path-index",
                         "eviction_policy": {
-                          // 500mb.
-                          "max_bytes": 500000000
+                          "max_bytes": "500Mb",
                         }
                       }
                     }
                   }
                 },
                 "content_store": {
-                  "ref_store": {
+                  "name": "cas-content",
+                  "ref": {
                     "name": "FS_CONTENT_STORE"
                   }
                 }
@@ -85,8 +90,7 @@
         "content_path": "/tmp/nativelink/data/content_path-ac",
         "temp_path": "/tmp/nativelink/data/tmp_path-ac",
         "eviction_policy": {
-          // 500mb.
-          "max_bytes": 500000000
+          "max_bytes": "500Mb",
         }
       }
     }

@@ -37,6 +37,7 @@ crate.from_cargo(
     manifests = [
         "//:Cargo.toml",
         "//nativelink-config:Cargo.toml",
+        "//nativelink-controller:Cargo.toml",
         "//nativelink-error:Cargo.toml",
         "//nativelink-macro:Cargo.toml",
         "//nativelink-metric:Cargo.toml",

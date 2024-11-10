@@ -16,7 +16,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use nativelink_config::schedulers::{
-    ExperimentalSimpleSchedulerBackend, SchedulerSpec, SimpleSpec,
+    ExperimentalSimpleSchedulerBackend, MemoryBackend, SchedulerConfig, SchedulerRef,
+    SchedulerSpec, SimpleSpec,
 };
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{make_input_err, Error, ResultExt};
@@ -45,24 +46,26 @@ pub type SchedulerFactoryResults = (
 );
 
 pub fn scheduler_factory(
-    spec: &SchedulerSpec,
+    config: &SchedulerRef,
     store_manager: &StoreManager,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
 ) -> Result<SchedulerFactoryResults, Error> {
-    inner_scheduler_factory(spec, store_manager, maybe_origin_event_tx)
+    inner_scheduler_factory(config, store_manager, maybe_origin_event_tx)
 }
 
 fn inner_scheduler_factory(
-    spec: &SchedulerSpec,
+    scheduler_config: &SchedulerRef,
     store_manager: &StoreManager,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
 ) -> Result<SchedulerFactoryResults, Error> {
-    let scheduler: SchedulerFactoryResults = match spec {
-        SchedulerSpec::simple(spec) => {
+    let scheduler_cfg: SchedulerConfig = scheduler_config.clone().into();
+
+    let scheduler: SchedulerFactoryResults = match &scheduler_cfg.spec {
+        SchedulerSpec::Simple(spec) => {
             simple_scheduler_factory(spec, store_manager, SystemTime::now, maybe_origin_event_tx)?
         }
-        SchedulerSpec::grpc(spec) => (Some(Arc::new(GrpcScheduler::new(spec)?)), None),
-        SchedulerSpec::cache_lookup(spec) => {
+        SchedulerSpec::Grpc(spec) => (Some(Arc::new(GrpcScheduler::new(spec)?)), None),
+        SchedulerSpec::CacheLookup(spec) => {
             let ac_store = store_manager
                 .get_store(&spec.ac_store)
                 .err_tip(|| format!("'ac_store': '{}' does not exist", spec.ac_store))?;
@@ -75,7 +78,7 @@ fn inner_scheduler_factory(
             )?);
             (Some(cache_lookup_scheduler), worker_scheduler)
         }
-        SchedulerSpec::property_modifier(spec) => {
+        SchedulerSpec::PropertyModifier(spec) => {
             let (action_scheduler, worker_scheduler) =
                 inner_scheduler_factory(&spec.scheduler, store_manager, maybe_origin_event_tx)
                     .err_tip(|| "In nested PropertyModifierScheduler construction")?;
@@ -99,9 +102,10 @@ fn simple_scheduler_factory(
     match spec
         .experimental_backend
         .as_ref()
-        .unwrap_or(&ExperimentalSimpleSchedulerBackend::memory)
-    {
-        ExperimentalSimpleSchedulerBackend::memory => {
+        .unwrap_or(&ExperimentalSimpleSchedulerBackend::Memory(
+            MemoryBackend {},
+        )) {
+        ExperimentalSimpleSchedulerBackend::Memory(_) => {
             let task_change_notify = Arc::new(Notify::new());
             let awaited_action_db = memory_awaited_action_db_factory(
                 spec.retain_completed_for_s,

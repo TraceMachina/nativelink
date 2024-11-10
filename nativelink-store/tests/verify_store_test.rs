@@ -16,7 +16,7 @@ use std::pin::Pin;
 
 use futures::future::pending;
 use futures::try_join;
-use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec};
+use nativelink_config::stores::{MemorySpec, StoreRef, VerifySpec};
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
@@ -38,7 +38,7 @@ async fn verify_size_false_passes_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
         &VerifySpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
+            backend: StoreRef::new("memory", MemorySpec::default()),
             verify_size: false,
             verify_hash: false,
         },
@@ -69,7 +69,7 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
         &VerifySpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
+            backend: StoreRef::new("memory", MemorySpec::default()),
             verify_size: true,
             verify_hash: false,
         },
@@ -107,7 +107,7 @@ async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
         &VerifySpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
+            backend: StoreRef::new("memory", MemorySpec::default()),
             verify_size: true,
             verify_hash: false,
         },
@@ -130,7 +130,7 @@ async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), E
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
         &VerifySpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
+            backend: StoreRef::new("memory", MemorySpec::default()),
             verify_size: true,
             verify_hash: false,
         },
@@ -170,7 +170,7 @@ async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
         &VerifySpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
+            backend: StoreRef::new("memory", MemorySpec::default()),
             verify_size: false,
             verify_hash: true,
         },
@@ -198,7 +198,7 @@ async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
         &VerifySpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
+            backend: StoreRef::new("memory", MemorySpec::default()),
             verify_size: false,
             verify_hash: true,
         },
@@ -231,7 +231,7 @@ async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
         &VerifySpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
+            backend: StoreRef::new("memory", MemorySpec::default()),
             verify_size: false,
             verify_hash: true,
         },
@@ -265,7 +265,7 @@ async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
         &VerifySpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
+            backend: StoreRef::new("memory", MemorySpec::default()),
             verify_size: false,
             verify_hash: true,
         },
@@ -308,7 +308,7 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
         &VerifySpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
+            backend: StoreRef::new("memory", MemorySpec::default()),
             verify_size: true,
             verify_hash: false,
         },
@@ -352,7 +352,7 @@ async fn verify_size_and_hash_suceeds_on_small_data() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
         &VerifySpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
+            backend: StoreRef::new("memory", MemorySpec::default()),
             verify_size: true,
             verify_hash: true,
         },
