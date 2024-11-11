@@ -41,11 +41,7 @@ export default defineConfig({
     }),
     starlight(starlightConfig),
     sitemap(),
-    partytown({
-      config: {
-        forward: ["dataLayer.push"],
-      },
-    }),
+    partytown(),
   ],
   markdown: {
     rehypePlugins: [

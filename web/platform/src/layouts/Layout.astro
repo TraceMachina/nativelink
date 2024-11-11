@@ -3,32 +3,72 @@ import "@styles/global.css";
 import "@styles/tailwind.css";
 
 import ViewTransitions from "astro/components/ViewTransitions.astro";
-import { ScrollTracker } from "@qwik/components/scroll"
-import { Header } from "@qwik/components/header"
-import { Footer } from "@qwik/components/footer"
-import GoogleTagManager from "../thirdParty/GoogleTagManager.astro"
+import { ScrollTracker } from "@qwik/components/scroll";
+import { Header } from "@qwik/components/header";
+import { Footer } from "@qwik/components/footer";
+import GoogleTagManager from "../thirdParty/GoogleTagManager.astro";
 
 const { title } = Astro.props;
 
 const scrolled = false;
 ---
+
 <!doctype html>
 <html lang="en">
-	<head>
-		<meta charset="UTF-8" />
-		<GoogleTagManager measurementId={'GTM-NNLLRWGB'} />
-		<link rel="sitemap" href="/sitemap-index.xml" />
-		<link rel="icon" sizes="192x192" type="image/png" href="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_favicon.png" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
-		<meta name="description" content="NativeLink" />
-		<meta name="generator" content={Astro.generator} />
-		<title>{title}</title>
-    	<ViewTransitions />
-	</head>
-	<body class="bg-black w-screen">
-		<ScrollTracker scrolled={scrolled} />
-		<Header pathName={Astro.url.pathname}/>
-		<slot />
-    	<Footer />
-	</body>
+  <head>
+    <meta charset="UTF-8" />
+    <GoogleTagManager measurementId={"GTM-NNLLRWGB"} />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    <link
+      rel="icon"
+      sizes="192x192"
+      type="image/png"
+      href="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_favicon.png"
+    />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=5.0"
+    />
+    <meta name="description" content="NativeLink" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{title}</title>
+
+    <script>
+      declare global {
+        interface Window {
+          ldfdr?: LdfdrFunction;
+        }
+      }
+      type LdfdrFunction = ((...args: any[]) => void) & { _q?: any[] };
+      (function (ss: string, ex?: string) {
+        window.ldfdr =
+          window.ldfdr ||
+          function (...args: any[]) {
+            (window.ldfdr!._q = window.ldfdr!._q || []).push(args);
+          };
+        (function (d: Document, s: string) {
+          const fs = d.getElementsByTagName(s)[0] as HTMLScriptElement;
+          function ce(src: string) {
+            const cs = d.createElement(s) as HTMLScriptElement;
+            cs.src = src;
+            cs.async = true;
+            fs.parentNode!.insertBefore(cs, fs);
+          }
+          ce(
+            "https://sc.lfeeder.com/lftracker_v1_" +
+              ss +
+              (ex ? "_" + ex : "") +
+              ".js"
+          );
+        })(document, "script");
+      })("lAxoEaKMQGd7OYGd");
+    </script>
+    <ViewTransitions />
+  </head>
+  <body class="bg-black w-screen">
+    <ScrollTracker scrolled={scrolled} />
+    <Header pathName={Astro.url.pathname} />
+    <slot />
+    <Footer />
+  </body>
 </html>
