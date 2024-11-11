@@ -164,8 +164,8 @@ async fn inner_store_test() -> Result<(), Error> {
     // Ensure the result of inner_store() points to exact same memory store.
     assert_eq!(
         from_ref::<dyn StoreDriver>(ref_store_outer.inner_store(Option::<DigestInfo>::None))
-            as *const (),
-        from_ref::<dyn StoreDriver>(memory_store.into_inner().as_ref()) as *const (),
+            .cast::<()>(),
+        from_ref::<dyn StoreDriver>(memory_store.into_inner().as_ref()).cast::<()>(),
         "Expected inner store to be memory store"
     );
     Ok(())
