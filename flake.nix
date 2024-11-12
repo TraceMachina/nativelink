@@ -240,7 +240,7 @@
         build-chromium-tests =
           pkgs.writeShellScriptBin
           "build-chromium-tests"
-          ./deploy/chromium-example/build_chromium_tests.sh;
+          ./examples/chromium/build_chromium_tests.sh;
 
         docs = pkgs.callPackage ./tools/docs.nix {rust = stable-rust.default;};
 

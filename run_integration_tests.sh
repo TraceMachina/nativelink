@@ -64,7 +64,7 @@ if [[ "${#TEST_PATTERNS[@]}" -eq 0 ]]; then
 fi
 
 SELF_DIR=$(realpath $(dirname $0))
-cd "$SELF_DIR/deployment-examples/docker-compose"
+cd "$SELF_DIR/examples/docker-compose"
 
 export UNDER_TEST_RUNNER=1
 

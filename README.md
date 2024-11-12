@@ -59,7 +59,7 @@ To start, you can deploy NativeLink as a Docker image (as shown below) or by usi
 
 The setups below are **production-grade** installations. See the [contribution docs](https://nativelink.com/docs/contribute/nix/) for instructions on how to build from source with [Bazel](https://nativelink.com/docs/contribute/bazel/), [Cargo](https://nativelink.com/docs/contribute/cargo/), and [Nix](https://nativelink.com/docs/contribute/nix/).
 
-You can find a few example deployments in the [Docs](https://nativelink.com/docs/deployment-examples/kubernetes).
+You can find a few example deployments for Docker, Terraform, and Chromium in the [Docs](https://www.nativelink.com/docs/deployment-examples/on-prem-overview).
 
 ### 📦 Prebuilt images
 
