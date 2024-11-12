@@ -622,7 +622,7 @@ macro_rules! get_create_index_template {
 ///   The new version if the version matches. nil is returned if the
 ///   value was not set.
 const LUA_VERSION_SET_SCRIPT: &str = formatcp!(
-    r#"
+    r"
 local key = KEYS[1]
 local expected_version = tonumber(ARGV[1])
 local new_data = ARGV[2]
@@ -647,7 +647,7 @@ redis.call('DEL', key)
 redis.call('HSET', key, '{DATA_FIELD_NAME}', new_data, '{VERSION_FIELD_NAME}', new_version, unpack(indexes))
 
 return new_version
-"#
+"
 );
 
 /// Compile-time fingerprint of the `FT.CREATE` command used to create the index template.
