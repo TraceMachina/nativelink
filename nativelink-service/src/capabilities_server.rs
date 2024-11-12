@@ -27,23 +27,27 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionCacheUpdateCapabilities, CacheCapabilities, ExecutionCapabilities,
     GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities,
 };
+use nativelink_util::request_metadata_tracer;
 use nativelink_proto::build::bazel::semver::SemVer;
 use nativelink_util::digest_hasher::default_digest_hasher_func;
 use nativelink_util::operation_state_manager::ClientStateManager;
 use tonic::{Request, Response, Status};
 use tracing::{event, instrument, Level};
+use tracing::error_span;
 
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 
 #[derive(Debug, Default)]
 pub struct CapabilitiesServer {
     supported_node_properties_for_instance: HashMap<InstanceName, Vec<String>>,
+    metadata_tx: Option<tokio::sync::mpsc::UnboundedSender<nativelink_util::request_metadata_tracer::MetadataEvent>>
 }
 
 impl CapabilitiesServer {
     pub async fn new(
         config: &HashMap<InstanceName, CapabilitiesConfig>,
         scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
+        metadata_tx: tokio::sync::mpsc::UnboundedSender<nativelink_util::request_metadata_tracer::MetadataEvent>
     ) -> Result<Self, Error> {
         let mut supported_node_properties_for_instance = HashMap::new();
         for (instance_name, cfg) in config {
@@ -80,25 +84,16 @@ impl CapabilitiesServer {
         }
         Ok(CapabilitiesServer {
             supported_node_properties_for_instance,
+            metadata_tx: Some(metadata_tx.clone())
         })
     }
 
     pub fn into_service(self) -> Server<CapabilitiesServer> {
         Server::new(self)
     }
-}
 
-#[tonic::async_trait]
-impl Capabilities for CapabilitiesServer {
     #[allow(clippy::blocks_in_conditions)]
-    #[instrument(
-        err,
-        ret(level = Level::INFO),
-        level = Level::ERROR,
-        skip_all,
-        fields(request = ?grpc_request.get_ref())
-    )]
-    async fn get_capabilities(
+    async fn inner_get_capabilities(
         &self,
         grpc_request: Request<GetCapabilitiesRequest>,
     ) -> Result<Response<ServerCapabilities>, Status> {
@@ -154,5 +149,43 @@ impl Capabilities for CapabilitiesServer {
             }),
         };
         Ok(Response::new(resp))
+    }
+}
+
+#[tonic::async_trait]
+impl Capabilities for CapabilitiesServer {
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        ret(level = Level::INFO),
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
+    async fn get_capabilities(
+        &self,
+        grpc_request: Request<GetCapabilitiesRequest>,
+    ) -> Result<Response<ServerCapabilities>, Status> {
+        let metadata_bin = request_metadata_tracer::extract_request_metadata_bin(&grpc_request);
+        let result = match metadata_bin {
+            Some(
+                request_metadata_tracer
+            ) => {
+                let metadata_bin_str = request_metadata_tracer.metadata;
+                let context = request_metadata_tracer::make_ctx_request_metadata_tracer(&metadata_bin_str, &self.metadata_tx.as_ref().unwrap()).err_tip(|| "Unable to parse request metadata")?;
+                context.wrap_async(
+                    error_span!("get_capabilities"),
+                    CapabilitiesServer::inner_get_capabilities(self, grpc_request)
+                ).await
+                .map_err(Into::into)
+            },
+            _ => {
+                CapabilitiesServer::inner_get_capabilities(self, grpc_request).await
+            }
+        };
+
+        // Grab from origin and emit event
+        request_metadata_tracer::emit_metadata_event(String::from("get_capabilities"));
+        return result
     }
 }
