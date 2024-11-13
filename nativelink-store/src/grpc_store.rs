@@ -628,7 +628,7 @@ impl StoreDriver for GrpcStore {
             };
 
             let write_offset = local_state.bytes_received;
-            local_state.bytes_received += data.len() as i64;
+            local_state.bytes_received += data.len().try_into().unwrap_or(i64::MAX);
 
             Some((
                 Ok(WriteRequest {
@@ -729,7 +729,8 @@ impl StoreDriver for GrpcStore {
                             ))
                         }
                     };
-                    let length = data.len() as i64;
+                    let length = data.len().try_into().unwrap_or(i64::MAX);
+
                     // This is the usual exit from the loop at EOF.
                     if length == 0 {
                         let eof_result = local_state

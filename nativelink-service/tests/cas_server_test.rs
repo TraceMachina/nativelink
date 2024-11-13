@@ -108,7 +108,7 @@ async fn store_one_item_existence() -> Result<(), Box<dyn std::error::Error>> {
             instance_name: INSTANCE_NAME.to_string(),
             blob_digests: vec![Digest {
                 hash: HASH1.to_string(),
-                size_bytes: VALUE.len() as i64,
+                size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
             }],
             digest_function: digest_function::Value::Sha256.into(),
         }))
@@ -136,15 +136,15 @@ async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::error::Err
             blob_digests: vec![
                 Digest {
                     hash: HASH1.to_string(),
-                    size_bytes: VALUE.len() as i64,
+                    size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
                 },
                 Digest {
                     hash: BAD_HASH.to_string(),
-                    size_bytes: VALUE.len() as i64,
+                    size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
                 },
                 Digest {
                     hash: HASH1.to_string(),
-                    size_bytes: VALUE.len() as i64,
+                    size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
                 },
             ],
             digest_function: digest_function::Value::Sha256.into(),
@@ -169,7 +169,7 @@ async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
 
     let digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: VALUE2.len() as i64,
+        size_bytes: VALUE2.len().try_into().unwrap_or(i64::MAX),
     };
 
     store
@@ -226,11 +226,11 @@ async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dy
 
     let digest1 = Digest {
         hash: HASH1.to_string(),
-        size_bytes: VALUE1.len() as i64,
+        size_bytes: VALUE1.len().try_into().unwrap_or(i64::MAX),
     };
     let digest2 = Digest {
         hash: HASH2.to_string(),
-        size_bytes: VALUE2.len() as i64,
+        size_bytes: VALUE2.len().try_into().unwrap_or(i64::MAX),
     };
     {
         // Insert dummy data.
@@ -584,11 +584,11 @@ async fn batch_update_blobs_two_items_existence_with_third_missing(
 
     let digest1 = Digest {
         hash: HASH1.to_string(),
-        size_bytes: VALUE1.len() as i64,
+        size_bytes: VALUE1.len().try_into().unwrap_or(i64::MAX),
     };
     let digest2 = Digest {
         hash: HASH2.to_string(),
-        size_bytes: VALUE2.len() as i64,
+        size_bytes: VALUE2.len().try_into().unwrap_or(i64::MAX),
     };
 
     {
@@ -649,12 +649,12 @@ async fn batch_update_blobs_two_items_existence_with_third_missing(
                 blob_digests: vec![
                     Digest {
                         hash: HASH1.to_string(),
-                        size_bytes: VALUE1.len() as i64,
+                        size_bytes: VALUE1.len().try_into().unwrap_or(i64::MAX),
                     },
                     missing_digest.clone(),
                     Digest {
                         hash: HASH2.to_string(),
-                        size_bytes: VALUE2.len() as i64,
+                        size_bytes: VALUE2.len().try_into().unwrap_or(i64::MAX),
                     },
                 ],
                 digest_function: digest_function::Value::Sha256.into(),

@@ -343,7 +343,10 @@ where
                     Ok(head_object_output) => {
                         if self.consider_expired_after_s != 0 {
                             if let Some(last_modified) = head_object_output.last_modified {
-                                let now_s = (self.now_fn)().unix_timestamp() as i64;
+                                let now_s = (self.now_fn)()
+                                    .unix_timestamp()
+                                    .try_into()
+                                    .unwrap_or(i64::MAX);
                                 if last_modified.secs() + self.consider_expired_after_s <= now_s {
                                     return Some((RetryResult::Ok(None), state));
                                 }
@@ -449,7 +452,7 @@ where
                                 .put_object()
                                 .bucket(&self.bucket)
                                 .key(s3_path.clone())
-                                .content_length(sz as i64)
+                                .content_length(sz.try_into().unwrap_or(i64::MAX))
                                 .body(ByteStream::from_body_1_x(BodyWrapper {
                                     reader: rx,
                                     size: sz,

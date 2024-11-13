@@ -190,7 +190,7 @@ where
             anchor_time,
             max_bytes: config.max_bytes as u64,
             evict_bytes: config.evict_bytes as u64,
-            max_seconds: config.max_seconds as i32,
+            max_seconds: config.max_seconds.try_into().unwrap_or(i32::MAX),
             max_count: config.max_count,
         }
     }

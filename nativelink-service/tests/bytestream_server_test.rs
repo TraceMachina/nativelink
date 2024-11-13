@@ -224,13 +224,13 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error
             .await?;
 
         // Write empty set of data (clients are allowed to do this.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.data = vec![].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
             .await?;
 
         // Write final bit of data.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.data = raw_data[BYTE_SPLIT_OFFSET..].into();
         write_request.finish_write = true;
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -317,7 +317,7 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
     {
         // Write the remainder of our data.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -398,7 +398,7 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
     }
     {
         // Write the remainder of our data.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -477,7 +477,7 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
     }
     {
         // Write the remainder of our data.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -541,7 +541,7 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set(
     }
     {
         // Write our EOF.
-        write_request.write_offset = WRITE_DATA.len() as i64;
+        write_request.write_offset = WRITE_DATA.len().try_into().unwrap_or(i64::MAX);
         write_request.finish_write = true;
         write_request.data.clear();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -562,7 +562,7 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set(
                 .err_tip(|| "bs_server.write returned an error")?
                 .into_inner(),
             WriteResponse {
-                committed_size: WRITE_DATA.len() as i64
+                committed_size: WRITE_DATA.len().try_into().unwrap_or(i64::MAX)
             },
             "Expected Responses to match"
         );
@@ -611,7 +611,7 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>>
     }
     {
         // Write data it already has.
-        write_request.write_offset = (BYTE_SPLIT_OFFSET - 1) as i64;
+        write_request.write_offset = (BYTE_SPLIT_OFFSET - 1).try_into().unwrap_or(i64::MAX);
         write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
             .await?;
@@ -622,7 +622,7 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>>
     );
     {
         // Make sure stream was closed.
-        write_request.write_offset = (BYTE_SPLIT_OFFSET - 1) as i64;
+        write_request.write_offset = (BYTE_SPLIT_OFFSET - 1).try_into().unwrap_or(i64::MAX);
         write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
         assert!(
             tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -745,7 +745,7 @@ pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std:
     let read_request = ReadRequest {
         resource_name: format!("{}/blobs/{}/{}", INSTANCE_NAME, HASH1, VALUE1.len()),
         read_offset: 0,
-        read_limit: VALUE1.len() as i64,
+        read_limit: VALUE1.len().try_into().unwrap_or(i64::MAX),
     };
     let mut read_stream = bs_server
         .read(Request::new(read_request))
@@ -790,7 +790,7 @@ pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn std::erro
     let read_request = ReadRequest {
         resource_name: format!("{}/blobs/{}/{}", INSTANCE_NAME, HASH1, raw_data.len()),
         read_offset: 0,
-        read_limit: raw_data.len() as i64,
+        read_limit: raw_data.len().try_into().unwrap_or(i64::MAX),
     };
     let mut read_stream = bs_server
         .read(Request::new(read_request))
@@ -920,14 +920,14 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
         assert_eq!(
             data.into_inner(),
             QueryWriteStatusResponse {
-                committed_size: write_request.data.len() as i64,
+                committed_size: write_request.data.len().try_into().unwrap_or(i64::MAX),
                 complete: false,
             }
         );
     }
 
     // Finish writing our data.
-    write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+    write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
     write_request.data = raw_data[BYTE_SPLIT_OFFSET..].into();
     write_request.finish_write = true;
     tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -942,7 +942,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
         assert_eq!(
             data.into_inner(),
             QueryWriteStatusResponse {
-                committed_size: raw_data.len() as i64,
+                committed_size: raw_data.len().try_into().unwrap_or(i64::MAX),
                 complete: true,
             }
         );

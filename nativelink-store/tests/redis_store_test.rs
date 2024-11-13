@@ -218,7 +218,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
                 args: vec![temp_key.clone()],
             },
             Ok(RedisValue::Array(vec![RedisValue::Integer(
-                data.len() as i64
+                data.len().try_into().unwrap_or(i64::MAX),
             )])),
         )
         // Move the data from the fake key to the real key.
@@ -327,7 +327,7 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
                 args: vec![temp_key.clone()],
             },
             Ok(RedisValue::Array(vec![RedisValue::Integer(
-                data.len() as i64
+                data.len().try_into().unwrap_or(i64::MAX),
             )])),
         )
         .expect(
@@ -488,7 +488,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
                 args: vec![temp_key.clone()],
             },
             Ok(RedisValue::Array(vec![RedisValue::Integer(
-                data.len() as i64
+                data.len().try_into().unwrap_or(i64::MAX),
             )])),
         )
         .expect(
@@ -524,7 +524,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
                     RedisValue::Integer(0),
                     // We expect to be asked for data from `0..READ_CHUNK_SIZE`, but since GETRANGE is inclusive
                     // the actual call should be from `0..=(READ_CHUNK_SIZE - 1)`.
-                    RedisValue::Integer(READ_CHUNK_SIZE as i64 - 1),
+                    RedisValue::Integer(READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX) - 1),
                 ],
             },
             Ok(RedisValue::Bytes(data.slice(..READ_CHUNK_SIZE))),
@@ -535,9 +535,9 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
                 subcommand: None,
                 args: vec![
                     real_key,
-                    RedisValue::Integer(READ_CHUNK_SIZE as i64),
+                    RedisValue::Integer(READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX)),
                     // Similar GETRANCE index shenanigans here.
-                    RedisValue::Integer(data.len() as i64 - 1),
+                    RedisValue::Integer(data.len().try_into().unwrap_or(i64::MAX) - 1),
                 ],
             },
             Ok(RedisValue::Bytes(data.slice(READ_CHUNK_SIZE..))),
@@ -632,7 +632,7 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
                 args: vec![temp_key.clone()],
             },
             Ok(RedisValue::Array(vec![RedisValue::Integer(
-                data.len() as i64
+                data.len().try_into().unwrap_or(i64::MAX),
             )])),
         )
         .expect(
@@ -666,7 +666,9 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
                 args: vec![
                     real_key.clone(),
                     RedisValue::Integer(0),
-                    RedisValue::Integer((DEFAULT_READ_CHUNK_SIZE - 1) as i64),
+                    RedisValue::Integer(
+                        (DEFAULT_READ_CHUNK_SIZE - 1).try_into().unwrap_or(i64::MAX),
+                    ),
                 ],
             },
             Ok(RedisValue::Bytes(data.clone())),
@@ -677,8 +679,12 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
                 subcommand: None,
                 args: vec![
                     real_key.clone(),
-                    RedisValue::Integer(DEFAULT_READ_CHUNK_SIZE as i64),
-                    RedisValue::Integer((DEFAULT_READ_CHUNK_SIZE * 2 - 1) as i64),
+                    RedisValue::Integer(DEFAULT_READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX)),
+                    RedisValue::Integer(
+                        (DEFAULT_READ_CHUNK_SIZE * 2 - 1)
+                            .try_into()
+                            .unwrap_or(i64::MAX),
+                    ),
                 ],
             },
             Ok(RedisValue::Bytes(data.clone())),
@@ -689,8 +695,14 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
                 subcommand: None,
                 args: vec![
                     real_key,
-                    RedisValue::Integer((DEFAULT_READ_CHUNK_SIZE * 2) as i64),
-                    RedisValue::Integer((data_p1.len() + data_p2.len() - 1) as i64),
+                    RedisValue::Integer(
+                        (DEFAULT_READ_CHUNK_SIZE * 2).try_into().unwrap_or(i64::MAX),
+                    ),
+                    RedisValue::Integer(
+                        (data_p1.len() + data_p2.len() - 1)
+                            .try_into()
+                            .unwrap_or(i64::MAX),
+                    ),
                 ],
             },
             Ok(RedisValue::Bytes(data.clone())),
@@ -772,7 +784,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
                     RedisValue::Integer(0),
                     // We expect to be asked for data from `0..READ_CHUNK_SIZE`, but since GETRANGE is inclusive
                     // the actual call should be from `0..=(READ_CHUNK_SIZE - 1)`.
-                    RedisValue::Integer(DEFAULT_READ_CHUNK_SIZE as i64 - 1),
+                    RedisValue::Integer(DEFAULT_READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX) - 1),
                 ],
             },
             Ok(RedisValue::String(Str::from_static(""))),
