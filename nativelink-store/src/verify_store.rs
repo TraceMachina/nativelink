@@ -16,6 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use nativelink_config::stores::VerifySpec;
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
@@ -47,11 +48,11 @@ pub struct VerifyStore {
 }
 
 impl VerifyStore {
-    pub fn new(config: &nativelink_config::stores::VerifyStore, inner_store: Store) -> Arc<Self> {
+    pub fn new(spec: &VerifySpec, inner_store: Store) -> Arc<Self> {
         Arc::new(VerifyStore {
             inner_store,
-            verify_size: config.verify_size,
-            verify_hash: config.verify_hash,
+            verify_size: spec.verify_size,
+            verify_hash: spec.verify_hash,
             size_verification_failures: CounterWithTime::default(),
             hash_verification_failures: CounterWithTime::default(),
         })

@@ -30,7 +30,7 @@ use fred::types::{
 };
 use futures::stream::FuturesUnordered;
 use futures::{future, FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
-use nativelink_config::stores::RedisMode;
+use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -140,17 +140,17 @@ pub struct RedisStore {
 
 impl RedisStore {
     /// Create a new `RedisStore` from the given configuration.
-    pub fn new(mut config: nativelink_config::stores::RedisStore) -> Result<Arc<Self>, Error> {
-        if config.addresses.is_empty() {
+    pub fn new(mut spec: RedisSpec) -> Result<Arc<Self>, Error> {
+        if spec.addresses.is_empty() {
             return Err(make_err!(
                 Code::InvalidArgument,
                 "No addresses were specified in redis store configuration."
             ));
         };
-        let [addr] = config.addresses.as_slice() else {
+        let [addr] = spec.addresses.as_slice() else {
             return Err(make_err!(Code::Unimplemented, "Connecting directly to multiple redis nodes in a cluster is currently unsupported. Please specify a single URL to a single node, and nativelink will use cluster discover to find the other nodes."));
         };
-        let redis_config = match config.mode {
+        let redis_config = match spec.mode {
             RedisMode::Cluster => RedisConfig::from_url_clustered(addr),
             RedisMode::Sentinel => RedisConfig::from_url_sentinel(addr),
             RedisMode::Standard => RedisConfig::from_url_centralized(addr),
@@ -163,18 +163,18 @@ impl RedisStore {
         })?;
 
         let reconnect_policy = {
-            if config.retry.delay == 0.0 {
-                config.retry.delay = DEFAULT_RETRY_DELAY;
+            if spec.retry.delay == 0.0 {
+                spec.retry.delay = DEFAULT_RETRY_DELAY;
             }
-            if config.retry.jitter == 0.0 {
-                config.retry.jitter = DEFAULT_RETRY_JITTER;
+            if spec.retry.jitter == 0.0 {
+                spec.retry.jitter = DEFAULT_RETRY_JITTER;
             }
 
-            let max_retries = u32::try_from(config.retry.max_retries)
+            let max_retries = u32::try_from(spec.retry.max_retries)
                 .err_tip(|| "max_retries could not be converted to u32 in RedisStore::new")?;
-            let min_delay_ms = (config.retry.delay * 1000.0) as u32;
+            let min_delay_ms = (spec.retry.delay * 1000.0) as u32;
             let max_delay_ms = 8000;
-            let jitter = (config.retry.jitter * config.retry.delay * 1000.0) as u32;
+            let jitter = (spec.retry.jitter * spec.retry.delay * 1000.0) as u32;
 
             let mut reconnect_policy = ReconnectPolicy::new_exponential(
                 max_retries,  /* max_retries, 0 is unlimited */
@@ -187,33 +187,33 @@ impl RedisStore {
         };
 
         {
-            if config.broadcast_channel_capacity == 0 {
-                config.broadcast_channel_capacity = DEFAULT_BROADCAST_CHANNEL_CAPACITY;
+            if spec.broadcast_channel_capacity == 0 {
+                spec.broadcast_channel_capacity = DEFAULT_BROADCAST_CHANNEL_CAPACITY;
             }
-            if config.connection_timeout_ms == 0 {
-                config.connection_timeout_ms = DEFAULT_CONNECTION_TIMEOUT_MS;
+            if spec.connection_timeout_ms == 0 {
+                spec.connection_timeout_ms = DEFAULT_CONNECTION_TIMEOUT_MS;
             }
-            if config.command_timeout_ms == 0 {
-                config.command_timeout_ms = DEFAULT_COMMAND_TIMEOUT_MS;
+            if spec.command_timeout_ms == 0 {
+                spec.command_timeout_ms = DEFAULT_COMMAND_TIMEOUT_MS;
             }
-            if config.connection_pool_size == 0 {
-                config.connection_pool_size = DEFAULT_CONNECTION_POOL_SIZE;
+            if spec.connection_pool_size == 0 {
+                spec.connection_pool_size = DEFAULT_CONNECTION_POOL_SIZE;
             }
-            if config.read_chunk_size == 0 {
-                config.read_chunk_size = DEFAULT_READ_CHUNK_SIZE;
+            if spec.read_chunk_size == 0 {
+                spec.read_chunk_size = DEFAULT_READ_CHUNK_SIZE;
             }
-            if config.max_chunk_uploads_per_update == 0 {
-                config.max_chunk_uploads_per_update = DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE;
+            if spec.max_chunk_uploads_per_update == 0 {
+                spec.max_chunk_uploads_per_update = DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE;
             }
         }
-        let connection_timeout = Duration::from_millis(config.connection_timeout_ms);
-        let command_timeout = Duration::from_millis(config.command_timeout_ms);
+        let connection_timeout = Duration::from_millis(spec.connection_timeout_ms);
+        let command_timeout = Duration::from_millis(spec.command_timeout_ms);
 
         let mut builder = Builder::from_config(redis_config);
         builder
             .set_performance_config(PerformanceConfig {
                 default_command_timeout: command_timeout,
-                broadcast_channel_capacity: config.broadcast_channel_capacity,
+                broadcast_channel_capacity: spec.broadcast_channel_capacity,
                 ..Default::default()
             })
             .set_connection_config(ConnectionConfig {
@@ -231,7 +231,7 @@ impl RedisStore {
             .set_policy(reconnect_policy);
 
         let client_pool = builder
-            .build_pool(config.connection_pool_size)
+            .build_pool(spec.connection_pool_size)
             .err_tip(|| "while creating redis connection pool")?;
 
         let subscriber_client = builder
@@ -241,11 +241,11 @@ impl RedisStore {
         Self::new_from_builder_and_parts(
             client_pool,
             subscriber_client,
-            config.experimental_pub_sub_channel.clone(),
+            spec.experimental_pub_sub_channel.clone(),
             || Uuid::new_v4().to_string(),
-            config.key_prefix.clone(),
-            config.read_chunk_size,
-            config.max_chunk_uploads_per_update,
+            spec.key_prefix.clone(),
+            spec.read_chunk_size,
+            spec.max_chunk_uploads_per_update,
         )
         .map(Arc::new)
     }

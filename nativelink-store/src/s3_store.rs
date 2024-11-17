@@ -40,6 +40,7 @@ use hyper::client::connect::{Connected, Connection, HttpConnector};
 use hyper::service::Service;
 use hyper::Uri;
 use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
+use nativelink_config::stores::S3Spec;
 // Note: S3 store should be very careful about the error codes it returns
 // when in a retryable wrapper. Always prefer Code::Aborted or another
 // retryable code over Code::InvalidArgument or make_input_err!().
@@ -141,19 +142,16 @@ pub struct TlsConnector {
 
 impl TlsConnector {
     #[must_use]
-    pub fn new(
-        config: &nativelink_config::stores::S3Store,
-        jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
-    ) -> Self {
+    pub fn new(spec: &S3Spec, jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>) -> Self {
         let connector_with_roots = hyper_rustls::HttpsConnectorBuilder::new().with_webpki_roots();
 
-        let connector_with_schemes = if config.insecure_allow_http {
+        let connector_with_schemes = if spec.insecure_allow_http {
             connector_with_roots.https_or_http()
         } else {
             connector_with_roots.https_only()
         };
 
-        let connector = if config.disable_http2 {
+        let connector = if spec.disable_http2 {
             connector_with_schemes.enable_http1().build()
         } else {
             connector_with_schemes.enable_http1().enable_http2().build()
@@ -164,7 +162,7 @@ impl TlsConnector {
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn,
-                config.retry.clone(),
+                spec.retry.clone(),
             ),
         }
     }
@@ -260,11 +258,8 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
-    pub async fn new(
-        config: &nativelink_config::stores::S3Store,
-        now_fn: NowFn,
-    ) -> Result<Arc<Self>, Error> {
-        let jitter_amt = config.retry.jitter;
+    pub async fn new(spec: &S3Spec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
+        let jitter_amt = spec.retry.jitter;
         let jitter_fn = Arc::new(move |delay: Duration| {
             if jitter_amt == 0. {
                 return delay;
@@ -275,7 +270,7 @@ where
         });
         let s3_client = {
             let http_client =
-                HyperClientBuilder::new().build(TlsConnector::new(config, jitter_fn.clone()));
+                HyperClientBuilder::new().build(TlsConnector::new(spec, jitter_fn.clone()));
             let credential_provider = credentials::default_provider().await;
             let mut config_builder = aws_config::defaults(BehaviorVersion::v2024_03_28())
                 .credentials_provider(credential_provider)
@@ -285,7 +280,7 @@ where
                         .connect_timeout(Duration::from_secs(15))
                         .build(),
                 )
-                .region(Region::new(Cow::Owned(config.region.clone())))
+                .region(Region::new(Cow::Owned(spec.region.clone())))
                 .http_client(http_client);
             // TODO(allada) When aws-sdk supports this env variable we should be able
             // to remove this.
@@ -295,11 +290,11 @@ where
             }
             aws_sdk_s3::Client::new(&config_builder.load().await)
         };
-        Self::new_with_client_and_jitter(config, s3_client, jitter_fn, now_fn)
+        Self::new_with_client_and_jitter(spec, s3_client, jitter_fn, now_fn)
     }
 
     pub fn new_with_client_and_jitter(
-        config: &nativelink_config::stores::S3Store,
+        spec: &S3Spec,
         s3_client: Client,
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
         now_fn: NowFn,
@@ -307,18 +302,18 @@ where
         Ok(Arc::new(Self {
             s3_client: Arc::new(s3_client),
             now_fn,
-            bucket: config.bucket.to_string(),
-            key_prefix: config.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
+            bucket: spec.bucket.to_string(),
+            key_prefix: spec.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn,
-                config.retry.clone(),
+                spec.retry.clone(),
             ),
-            consider_expired_after_s: i64::from(config.consider_expired_after_s),
-            max_retry_buffer_per_request: config
+            consider_expired_after_s: i64::from(spec.consider_expired_after_s),
+            max_retry_buffer_per_request: spec
                 .max_retry_buffer_per_request
                 .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST),
-            multipart_max_concurrent_uploads: config
+            multipart_max_concurrent_uploads: spec
                 .multipart_max_concurrent_uploads
                 .map_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS, |v| v),
         }))

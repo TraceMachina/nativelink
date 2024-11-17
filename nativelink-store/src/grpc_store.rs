@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use bytes::BytesMut;
 use futures::stream::{unfold, FuturesUnordered};
 use futures::{future, Future, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use nativelink_config::stores::GrpcSpec;
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
@@ -70,10 +71,10 @@ pub struct GrpcStore {
 }
 
 impl GrpcStore {
-    pub async fn new(config: &nativelink_config::stores::GrpcStore) -> Result<Arc<Self>, Error> {
-        let jitter_amt = config.retry.jitter;
+    pub async fn new(spec: &GrpcSpec) -> Result<Arc<Self>, Error> {
+        let jitter_amt = spec.retry.jitter;
         Self::new_with_jitter(
-            config,
+            spec,
             Box::new(move |delay: Duration| {
                 if jitter_amt == 0. {
                     return delay;
@@ -87,15 +88,15 @@ impl GrpcStore {
     }
 
     pub async fn new_with_jitter(
-        config: &nativelink_config::stores::GrpcStore,
+        spec: &GrpcSpec,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Arc<Self>, Error> {
         error_if!(
-            config.endpoints.is_empty(),
+            spec.endpoints.is_empty(),
             "Expected at least 1 endpoint in GrpcStore"
         );
-        let mut endpoints = Vec::with_capacity(config.endpoints.len());
-        for endpoint_config in &config.endpoints {
+        let mut endpoints = Vec::with_capacity(spec.endpoints.len());
+        for endpoint_config in &spec.endpoints {
             let endpoint = tls_utils::endpoint(endpoint_config)
                 .map_err(|e| make_input_err!("Invalid URI for GrpcStore endpoint : {e:?}"))?;
             endpoints.push(endpoint);
@@ -103,18 +104,18 @@ impl GrpcStore {
 
         let jitter_fn = Arc::new(jitter_fn);
         Ok(Arc::new(GrpcStore {
-            instance_name: config.instance_name.clone(),
-            store_type: config.store_type,
+            instance_name: spec.instance_name.clone(),
+            store_type: spec.store_type,
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn.clone(),
-                config.retry.clone(),
+                spec.retry.clone(),
             ),
             connection_manager: ConnectionManager::new(
                 endpoints.into_iter(),
-                config.connections_per_endpoint,
-                config.max_concurrent_requests,
-                config.retry.clone(),
+                spec.connections_per_endpoint,
+                spec.max_concurrent_requests,
+                spec.retry.clone(),
                 jitter_fn,
             ),
         }))

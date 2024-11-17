@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_config::schedulers::PropertyModification;
+use nativelink_config::schedulers::{PropertyModification, PropertyModifierSpec};
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{ActionInfo, OperationId};
@@ -28,7 +28,7 @@ use parking_lot::Mutex;
 
 #[derive(MetricsComponent)]
 pub struct PropertyModifierScheduler {
-    modifications: Vec<nativelink_config::schedulers::PropertyModification>,
+    modifications: Vec<PropertyModification>,
     #[metric(group = "scheduler")]
     scheduler: Arc<dyn ClientStateManager>,
     #[metric(group = "property_manager")]
@@ -36,12 +36,9 @@ pub struct PropertyModifierScheduler {
 }
 
 impl PropertyModifierScheduler {
-    pub fn new(
-        config: &nativelink_config::schedulers::PropertyModifierScheduler,
-        scheduler: Arc<dyn ClientStateManager>,
-    ) -> Self {
+    pub fn new(spec: &PropertyModifierSpec, scheduler: Arc<dyn ClientStateManager>) -> Self {
         Self {
-            modifications: config.modifications.clone(),
+            modifications: spec.modifications.clone(),
             scheduler,
             known_properties: Mutex::new(HashMap::new()),
         }

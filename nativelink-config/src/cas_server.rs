@@ -16,14 +16,14 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::schedulers::SchedulerConfig;
+use crate::schedulers::SchedulerSpec;
 use crate::serde_utils::{
     convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
     convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
     convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
     convert_vec_string_with_shellexpand,
 };
-use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreConfig, StoreRefName};
+use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreRefName, StoreSpec};
 
 /// Name of the scheduler. This type will be used when referencing a
 /// scheduler in the `CasConfig::schedulers`'s map key.
@@ -215,12 +215,12 @@ pub struct BepConfig {
 #[serde(deny_unknown_fields)]
 pub struct ServicesConfig {
     /// The Content Addressable Storage (CAS) backend config.
-    /// The key is the instance_name used in the protocol and the
+    /// The key is the `instance_name` used in the protocol and the
     /// value is the underlying CAS store config.
     pub cas: Option<HashMap<InstanceName, CasStoreConfig>>,
 
     /// The Action Cache (AC) backend config.
-    /// The key is the instance_name used in the protocol and the
+    /// The key is the `instance_name` used in the protocol and the
     /// value is the underlying AC store config.
     pub ac: Option<HashMap<InstanceName, AcStoreConfig>>,
 
@@ -413,7 +413,7 @@ pub struct ServerConfig {
 pub enum WorkerProperty {
     /// List of static values.
     /// Note: Generally there should only ever be 1 value, but if the platform
-    /// property key is PropertyType::Priority it may have more than one value.
+    /// property key is `PropertyType::Priority` it may have more than one value.
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
     values(Vec<String>),
 
@@ -511,11 +511,11 @@ pub struct UploadActionResultConfig {
     /// Default: {No uploading is done}
     pub ac_store: Option<StoreRefName>,
 
-    /// In which situations should the results be published to the ac_store, if
-    /// set to SuccessOnly then only results with an exit code of 0 will be
+    /// In which situations should the results be published to the `ac_store`,
+    /// if set to `SuccessOnly` then only results with an exit code of 0 will be
     /// uploaded, if set to Everything all completed results will be uploaded.
     ///
-    /// Default: UploadCacheResultsStrategy::SuccessOnly
+    /// Default: `UploadCacheResultsStrategy::SuccessOnly`
     #[serde(default)]
     pub upload_ac_results_strategy: UploadCacheResultsStrategy,
 
@@ -529,18 +529,18 @@ pub struct UploadActionResultConfig {
     /// to the CAS key-value lookup format and are always a `HistoricalExecuteResponse`
     /// serialized message.
     ///
-    /// Default: UploadCacheResultsStrategy::FailuresOnly
+    /// Default: `UploadCacheResultsStrategy::FailuresOnly`
     #[serde(default)]
     pub upload_historical_results_strategy: Option<UploadCacheResultsStrategy>,
 
     /// Template to use for the `ExecuteResponse.message` property. This message
     /// is attached to the response before it is sent to the client. The following
     /// special variables are supported:
-    /// - {digest_function} - Digest function used to calculate the action digest.
-    /// - {action_digest_hash} - Action digest hash.
-    /// - {action_digest_size} - Action digest size.
-    /// - {historical_results_hash} - HistoricalExecuteResponse digest hash.
-    /// - {historical_results_size} - HistoricalExecuteResponse digest size.
+    /// - `digest_function`: Digest function used to calculate the action digest.
+    /// - `action_digest_hash`: Action digest hash.
+    /// - `action_digest_size`: Action digest size.
+    /// - `historical_results_hash`: `HistoricalExecuteResponse` digest hash.
+    /// - `historical_results_size`: `HistoricalExecuteResponse` digest size.
     ///
     /// A common use case of this is to provide a link to the web page that
     /// contains more useful information for the user.
@@ -571,7 +571,7 @@ pub struct LocalWorkerConfig {
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub name: String,
 
-    /// Endpoint which the worker will connect to the scheduler's WorkerApiService.
+    /// Endpoint which the worker will connect to the scheduler's `WorkerApiService`.
     pub worker_api_endpoint: EndpointConfig,
 
     /// The maximum time an action is allowed to run. If a task requests for a timeout
@@ -582,10 +582,10 @@ pub struct LocalWorkerConfig {
     pub max_action_timeout: usize,
 
     /// If timeout is handled in `entrypoint` or another wrapper script.
-    /// If set to true NativeLink will not honor the timeout the action requested
-    /// and instead will always force kill the action after max_action_timeout
+    /// If set to true `NativeLink` will not honor the timeout the action requested
+    /// and instead will always force kill the action after `max_action_timeout`
     /// has been reached. If this is set to false, the smaller value of the action's
-    /// timeout and max_action_timeout will be used to which NativeLink will kill
+    /// timeout and `max_action_timeout` will be used to which `NativeLink` will kill
     /// the action.
     ///
     /// The real timeout can be received via an environment variable set in:
@@ -597,7 +597,7 @@ pub struct LocalWorkerConfig {
     /// the action. In this case, action will likely be wrapped in another program,
     /// like `timeout` and propagate timeouts via `EnvironmentSource::SideChannelFile`.
     ///
-    /// Default: false (NativeLink fully handles timeouts)
+    /// Default: false (`NativeLink` fully handles timeouts)
     #[serde(default)]
     pub timeout_handled_externally: bool,
 
@@ -633,10 +633,10 @@ pub struct LocalWorkerConfig {
 
     /// The directory work jobs will be executed from. This directory will be fully
     /// managed by the worker service and will be purged on startup.
-    /// This directory and the directory referenced in local_filesystem_store_ref's
-    /// stores::FilesystemStore::content_path must be on the same filesystem.
+    /// This directory and the directory referenced in `local_filesystem_store_ref`'s
+    /// `stores::FilesystemStore::content_path` must be on the same filesystem.
     /// Hardlinks will be used when placing files that are accessible to the jobs
-    /// that are sourced from local_filesystem_store_ref's content_path.
+    /// that are sourced from `local_filesystem_store_ref`'s `content_path`.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub work_directory: String,
 
@@ -679,7 +679,7 @@ pub struct GlobalConfig {
     /// If a file descriptor is idle for this many milliseconds, it will be closed.
     /// In the event a client or store takes a long time to send or receive data
     /// the file descriptor will be closed, and since `max_open_files` blocks new
-    /// open_file requests until a slot opens up, it will allow new requests to be
+    /// `open_file` requests until a slot opens up, it will allow new requests to be
     /// processed. If a read or write is attempted on a closed file descriptor, the
     /// file will be reopened and the operation will continue.
     ///
@@ -707,7 +707,7 @@ pub struct GlobalConfig {
     /// Default hash function to use while uploading blobs to the CAS when not set
     /// by client.
     ///
-    /// Default: ConfigDigestHashFunction::sha256
+    /// Default: `ConfigDigestHashFunction::sha256`
     pub default_digest_hash_function: Option<ConfigDigestHashFunction>,
 
     /// Default digest size to use for health check when running
@@ -725,7 +725,7 @@ pub struct GlobalConfig {
 pub struct CasConfig {
     /// List of stores available to use in this config.
     /// The keys can be used in other configs when needing to reference a store.
-    pub stores: HashMap<StoreRefName, StoreConfig>,
+    pub stores: HashMap<StoreRefName, StoreSpec>,
 
     /// Worker configurations used to execute jobs.
     pub workers: Option<Vec<WorkerConfig>>,
@@ -733,7 +733,7 @@ pub struct CasConfig {
     /// List of schedulers available to use in this config.
     /// The keys can be used in other configs when needing to reference a
     /// scheduler.
-    pub schedulers: Option<HashMap<SchedulerRefName, SchedulerConfig>>,
+    pub schedulers: Option<HashMap<SchedulerRefName, SchedulerSpec>>,
 
     /// Servers to setup for this process.
     pub servers: Vec<ServerConfig>,

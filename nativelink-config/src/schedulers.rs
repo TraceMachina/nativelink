@@ -21,11 +21,11 @@ use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
-pub enum SchedulerConfig {
-    simple(SimpleScheduler),
-    grpc(GrpcScheduler),
-    cache_lookup(CacheLookupScheduler),
-    property_modifier(PropertyModifierScheduler),
+pub enum SchedulerSpec {
+    simple(SimpleSpec),
+    grpc(GrpcSpec),
+    cache_lookup(CacheLookupSpec),
+    property_modifier(PropertyModifierSpec),
 }
 
 /// When the scheduler matches tasks to workers that are capable of running
@@ -67,7 +67,7 @@ pub enum WorkerAllocationStrategy {
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
-pub struct SimpleScheduler {
+pub struct SimpleSpec {
     /// A list of supported platform properties mapped to how these properties
     /// are used when the scheduler looks for worker nodes capable of running
     /// the task.
@@ -81,21 +81,21 @@ pub struct SimpleScheduler {
     /// { "cpu_count": "8", "cpu_arch": "arm" }
     /// ```
     /// Will result in the scheduler filtering out any workers that do not have
-    /// "cpu_arch" = "arm" and filter out any workers that have less than 8 cpu
+    /// `"cpu_arch" = "arm"` and filter out any workers that have less than 8 cpu
     /// cores available.
     ///
     /// The property names here must match the property keys provided by the
     /// worker nodes when they join the pool. In other words, the workers will
     /// publish their capabilities to the scheduler when they join the worker
     /// pool. If the worker fails to notify the scheduler of its (for example)
-    /// "cpu_arch", the scheduler will never send any jobs to it, if all jobs
-    /// have the "cpu_arch" label. There is no special treatment of any platform
+    /// `"cpu_arch"`, the scheduler will never send any jobs to it, if all jobs
+    /// have the `"cpu_arch"` label. There is no special treatment of any platform
     /// property labels other and entirely driven by worker configs and this
     /// config.
     pub supported_platform_properties: Option<HashMap<String, PropertyType>>,
 
     /// The amount of time to retain completed actions in memory for in case
-    /// a WaitExecution is called after the action has completed.
+    /// a `WaitExecution` is called after the action has completed.
     /// Default: 60 (seconds)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub retain_completed_for_s: u32,
@@ -144,7 +144,7 @@ pub enum ExperimentalSimpleSchedulerBackend {
 #[serde(deny_unknown_fields)]
 pub struct ExperimentalRedisSchedulerBackend {
     /// A reference to the redis store to use for the scheduler.
-    /// Note: This MUST resolve to a RedisStore.
+    /// Note: This MUST resolve to a `RedisSpec`.
     pub redis_store: StoreRefName,
 }
 
@@ -154,7 +154,7 @@ pub struct ExperimentalRedisSchedulerBackend {
 /// build at the main scheduler directly though.
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
-pub struct GrpcScheduler {
+pub struct GrpcSpec {
     /// The upstream scheduler to forward requests to.
     pub endpoint: GrpcEndpoint,
 
@@ -176,14 +176,14 @@ pub struct GrpcScheduler {
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
-pub struct CacheLookupScheduler {
+pub struct CacheLookupSpec {
     /// The reference to the action cache store used to return cached
     /// actions from rather than running them again.
-    /// To prevent unintended issues, this store should probably be a CompletenessCheckingStore.
+    /// To prevent unintended issues, this store should probably be a `CompletenessCheckingSpec`.
     pub ac_store: StoreRefName,
 
     /// The nested scheduler to use if cache lookup fails.
-    pub scheduler: Box<SchedulerConfig>,
+    pub scheduler: Box<SchedulerSpec>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -206,7 +206,7 @@ pub enum PropertyModification {
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
-pub struct PropertyModifierScheduler {
+pub struct PropertyModifierSpec {
     /// A list of modifications to perform to incoming actions for the nested
     /// scheduler.  These are performed in order and blindly, so removing a
     /// property that doesn't exist is fine and overwriting an existing property
@@ -215,5 +215,5 @@ pub struct PropertyModifierScheduler {
     pub modifications: Vec<PropertyModification>,
 
     /// The nested scheduler to use after modifying the properties.
-    pub scheduler: Box<SchedulerConfig>,
+    pub scheduler: Box<SchedulerSpec>,
 }

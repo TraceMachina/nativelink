@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, TryStreamExt};
+use nativelink_config::stores::ShardSpec;
 use nativelink_error::{error_if, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -45,24 +46,21 @@ pub struct ShardStore {
 }
 
 impl ShardStore {
-    pub fn new(
-        config: &nativelink_config::stores::ShardStore,
-        stores: Vec<Store>,
-    ) -> Result<Arc<Self>, Error> {
+    pub fn new(spec: &ShardSpec, stores: Vec<Store>) -> Result<Arc<Self>, Error> {
         error_if!(
-            config.stores.len() != stores.len(),
+            spec.stores.len() != stores.len(),
             "Config shards do not match stores length"
         );
         error_if!(
-            config.stores.is_empty(),
+            spec.stores.is_empty(),
             "ShardStore must have at least one store"
         );
-        let total_weight: u64 = config
+        let total_weight: u64 = spec
             .stores
             .iter()
             .map(|shard_config| u64::from(shard_config.weight.unwrap_or(1)))
             .sum();
-        let mut weights: Vec<u32> = config
+        let mut weights: Vec<u32> = spec
             .stores
             .iter()
             .map(|shard_config| {

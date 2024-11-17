@@ -23,6 +23,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BufMut, BytesMut};
 use futures::future::FutureExt;
 use lz4_flex::block::{compress_into, decompress_into, get_maximum_output_size};
+use nativelink_config::stores::CompressionSpec;
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
@@ -218,11 +219,8 @@ pub struct CompressionStore {
 }
 
 impl CompressionStore {
-    pub fn new(
-        compression_config: &nativelink_config::stores::CompressionStore,
-        inner_store: Store,
-    ) -> Result<Arc<Self>, Error> {
-        let lz4_config = match compression_config.compression_algorithm {
+    pub fn new(spec: &CompressionSpec, inner_store: Store) -> Result<Arc<Self>, Error> {
+        let lz4_config = match spec.compression_algorithm {
             nativelink_config::stores::CompressionAlgorithm::lz4(mut lz4_config) => {
                 if lz4_config.block_size == 0 {
                     lz4_config.block_size = DEFAULT_BLOCK_SIZE;

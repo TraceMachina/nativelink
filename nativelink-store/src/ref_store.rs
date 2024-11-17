@@ -17,6 +17,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
+use nativelink_config::stores::RefSpec;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -45,12 +46,9 @@ pub struct RefStore {
 }
 
 impl RefStore {
-    pub fn new(
-        config: &nativelink_config::stores::RefStore,
-        store_manager: Weak<StoreManager>,
-    ) -> Arc<Self> {
+    pub fn new(spec: &RefSpec, store_manager: Weak<StoreManager>) -> Arc<Self> {
         Arc::new(RefStore {
-            ref_store_name: config.name.clone(),
+            ref_store_name: spec.name.clone(),
             store_manager,
             ref_store: StoreReference {
                 mux: Mutex::new(()),

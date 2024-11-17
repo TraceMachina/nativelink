@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use nativelink_config::stores::{EvictionPolicy, ExistenceCacheStore as ExistenceCacheStoreConfig};
+use nativelink_config::stores::{EvictionPolicy, ExistenceCacheSpec};
 use nativelink_error::{error_if, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -51,19 +51,19 @@ pub struct ExistenceCacheStore<I: InstantWrapper> {
 }
 
 impl ExistenceCacheStore<SystemTime> {
-    pub fn new(config: &ExistenceCacheStoreConfig, inner_store: Store) -> Arc<Self> {
-        Self::new_with_time(config, inner_store, SystemTime::now())
+    pub fn new(spec: &ExistenceCacheSpec, inner_store: Store) -> Arc<Self> {
+        Self::new_with_time(spec, inner_store, SystemTime::now())
     }
 }
 
 impl<I: InstantWrapper> ExistenceCacheStore<I> {
     pub fn new_with_time(
-        config: &ExistenceCacheStoreConfig,
+        spec: &ExistenceCacheSpec,
         inner_store: Store,
         anchor_time: I,
     ) -> Arc<Self> {
         let empty_policy = EvictionPolicy::default();
-        let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
+        let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
         Arc::new(Self {
             inner_store,
             existence_cache: EvictingMap::new(eviction_policy, anchor_time),

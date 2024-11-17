@@ -16,6 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use nativelink_config::stores::SizePartitioningSpec;
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -34,13 +35,9 @@ pub struct SizePartitioningStore {
 }
 
 impl SizePartitioningStore {
-    pub fn new(
-        config: &nativelink_config::stores::SizePartitioningStore,
-        lower_store: Store,
-        upper_store: Store,
-    ) -> Arc<Self> {
+    pub fn new(spec: &SizePartitioningSpec, lower_store: Store, upper_store: Store) -> Arc<Self> {
         Arc::new(SizePartitioningStore {
-            partition_size: config.size,
+            partition_size: spec.size,
             lower_store,
             upper_store,
         })
