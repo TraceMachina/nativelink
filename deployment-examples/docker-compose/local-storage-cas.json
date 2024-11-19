@@ -41,19 +41,19 @@
     },
     "services": {
       "cas": {
-        "main": {
+        "": {
           "cas_store": "CAS_MAIN_STORE"
         }
       },
       "ac": {
-        "main": {
+        "": {
           "ac_store": "AC_MAIN_STORE"
         }
       },
       "capabilities": {},
       "bytestream": {
         "cas_stores": {
-          "main": "CAS_MAIN_STORE",
+          "": "CAS_MAIN_STORE",
         }
       }
     }
@@ -80,21 +80,26 @@
         }
       }
     },
+    // Each of the services below is keyed on an instance_name.
+    // By default, an empty string is used, but if a different
+    // instance_name is provided, the instance name must be
+    // specified by the invoking tool (e.g. using
+    // `--remote_instance_name=` for Bazel)
     "services": {
       "cas": {
-        "main": {
+        "": {
           "cas_store": "CAS_MAIN_STORE"
         }
       },
       "ac": {
-        "main": {
+        "": {
           "ac_store": "AC_MAIN_STORE"
         }
       },
       "capabilities": {},
       "bytestream": {
         "cas_stores": {
-          "main": "CAS_MAIN_STORE",
+          "": "CAS_MAIN_STORE",
         }
       },
       "health": {},
