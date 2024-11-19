@@ -24,7 +24,6 @@ something like:
 
 ```sh
 bazel test //... \
-  --remote_instance_name=main \
   --remote_cache=grpc://127.0.0.1:50051 \
   --remote_executor=grpc://127.0.0.1:50052 \
   --remote_default_exec_properties=cpu_count=1
