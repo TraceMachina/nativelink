@@ -15,6 +15,7 @@
 use std::ptr::from_ref;
 use std::sync::Arc;
 
+use nativelink_config::stores::{MemorySpec, RefSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
@@ -29,13 +30,11 @@ const VALID_HASH1: &str = "0123456789abcdef0000000000000000000100000000000001234
 fn setup_stores() -> (Arc<StoreManager>, Store, Store) {
     let store_manager = Arc::new(StoreManager::new());
 
-    let memory_store = Store::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let memory_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     store_manager.add_store("foo", memory_store.clone());
 
     let ref_store = Store::new(RefStore::new(
-        &nativelink_config::stores::RefStore {
+        &RefSpec {
             name: "foo".to_string(),
         },
         Arc::downgrade(&store_manager),
@@ -140,13 +139,11 @@ async fn update_test() -> Result<(), Error> {
 async fn inner_store_test() -> Result<(), Error> {
     let store_manager = Arc::new(StoreManager::new());
 
-    let memory_store = Store::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let memory_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     store_manager.add_store("mem_store", memory_store.clone());
 
     let ref_store_inner = Store::new(RefStore::new(
-        &nativelink_config::stores::RefStore {
+        &RefSpec {
             name: "mem_store".to_string(),
         },
         Arc::downgrade(&store_manager),
@@ -154,7 +151,7 @@ async fn inner_store_test() -> Result<(), Error> {
     store_manager.add_store("ref_store_inner", ref_store_inner.clone());
 
     let ref_store_outer = Store::new(RefStore::new(
-        &nativelink_config::stores::RefStore {
+        &RefSpec {
             name: "ref_store_inner".to_string(),
         },
         Arc::downgrade(&store_manager),

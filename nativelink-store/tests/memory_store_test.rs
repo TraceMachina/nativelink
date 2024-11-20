@@ -17,6 +17,7 @@ use std::pin::Pin;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use memory_stats::memory_stats;
+use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
@@ -39,7 +40,7 @@ const INVALID_HASH: &str = "g111111111111111111111111111111111111111111111111111
 async fn insert_one_item_then_update() -> Result<(), Error> {
     const VALUE1: &str = "13";
     const VALUE2: &str = "23";
-    let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let store = MemoryStore::new(&MemorySpec::default());
 
     // Insert dummy value into store.
     store
@@ -91,7 +92,7 @@ async fn ensure_full_copy_of_bytes_is_made_test() -> Result<(), Error> {
 
     let mut sum_memory_usage_increase_perc: f64 = 0.0;
     for _ in 0..MAX_STATS_ITERATIONS {
-        let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+        let store_owned = MemoryStore::new(&MemorySpec::default());
         let store = Pin::new(&store_owned);
 
         let initial_virtual_mem = memory_stats()
@@ -130,7 +131,7 @@ async fn ensure_full_copy_of_bytes_is_made_test() -> Result<(), Error> {
 #[nativelink_test]
 async fn read_partial() -> Result<(), Error> {
     const VALUE1: &str = "1234";
-    let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let store_owned = MemoryStore::new(&MemorySpec::default());
     let store = Pin::new(&store_owned);
 
     let digest = DigestInfo::try_new(VALID_HASH1, 4).unwrap();
@@ -153,7 +154,7 @@ async fn read_partial() -> Result<(), Error> {
 #[nativelink_test]
 async fn read_zero_size_item_test() -> Result<(), Error> {
     const VALUE: &str = "";
-    let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let store_owned = MemoryStore::new(&MemorySpec::default());
     let store = Pin::new(&store_owned);
 
     // Insert dummy value into store.
@@ -173,7 +174,7 @@ async fn read_zero_size_item_test() -> Result<(), Error> {
 #[nativelink_test]
 async fn errors_with_invalid_inputs() -> Result<(), Error> {
     const VALUE1: &str = "123";
-    let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let store_owned = MemoryStore::new(&MemorySpec::default());
     let store = Pin::new(store_owned.as_ref());
     {
         // .has() tests.
@@ -241,7 +242,7 @@ async fn errors_with_invalid_inputs() -> Result<(), Error> {
 async fn get_part_is_zero_digest() -> Result<(), Error> {
     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
 
-    let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let store = MemoryStore::new(&MemorySpec::default());
     let store_clone = store.clone();
     let (mut writer, mut reader) = make_buf_channel_pair();
 
@@ -269,7 +270,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
     let keys = vec![digest.into()];
     let mut results = vec![None];
 
-    let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let store_owned = MemoryStore::new(&MemorySpec::default());
     let store = Pin::new(&store_owned);
 
     let _ = store
@@ -304,7 +305,7 @@ async fn list_test() -> Result<(), Error> {
     const KEY3: StoreKey = StoreKey::new_str("key3");
     const VALUE: &str = "value1";
 
-    let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let store = MemoryStore::new(&MemorySpec::default());
     store.update_oneshot(KEY1, VALUE.into()).await?;
     store.update_oneshot(KEY2, VALUE.into()).await?;
     store.update_oneshot(KEY3, VALUE.into()).await?;

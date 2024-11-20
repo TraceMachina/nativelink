@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use bincode::config::{FixintEncoding, WithOtherIntEncoding};
 use bincode::{DefaultOptions, Options};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
+use nativelink_config::stores::DedupSpec;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -60,29 +61,29 @@ pub struct DedupStore {
 
 impl DedupStore {
     pub fn new(
-        config: &nativelink_config::stores::DedupStore,
+        spec: &DedupSpec,
         index_store: Store,
         content_store: Store,
     ) -> Result<Arc<Self>, Error> {
-        let min_size = if config.min_size == 0 {
+        let min_size = if spec.min_size == 0 {
             DEFAULT_MIN_SIZE
         } else {
-            u64::from(config.min_size)
+            u64::from(spec.min_size)
         };
-        let normal_size = if config.normal_size == 0 {
+        let normal_size = if spec.normal_size == 0 {
             DEFAULT_NORM_SIZE
         } else {
-            u64::from(config.normal_size)
+            u64::from(spec.normal_size)
         };
-        let max_size = if config.max_size == 0 {
+        let max_size = if spec.max_size == 0 {
             DEFAULT_MAX_SIZE
         } else {
-            u64::from(config.max_size)
+            u64::from(spec.max_size)
         };
-        let max_concurrent_fetch_per_get = if config.max_concurrent_fetch_per_get == 0 {
+        let max_concurrent_fetch_per_get = if spec.max_concurrent_fetch_per_get == 0 {
             DEFAULT_MAX_CONCURRENT_FETCH_PER_GET
         } else {
-            config.max_concurrent_fetch_per_get as usize
+            spec.max_concurrent_fetch_per_get as usize
         };
         Ok(Arc::new(Self {
             index_store,
@@ -302,7 +303,7 @@ impl StoreDriver for DedupStore {
         // 5 requests at a time, and request 3 is stalled, request 1 & 2 can be output and
         // request 4 & 5 can be executing (or finished) while waiting for 3 to finish.
         // Note: We will buffer our data here up to:
-        // `config.max_size * config.max_concurrent_fetch_per_get` per `get_part()` request.
+        // `spec.max_size * spec.max_concurrent_fetch_per_get` per `get_part()` request.
         let mut entries_stream = stream::iter(entries)
             .map(move |index_entry| async move {
                 let data = self

@@ -20,6 +20,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
+use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -57,9 +58,9 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
-    pub fn new(config: &nativelink_config::stores::MemoryStore) -> Arc<Self> {
+    pub fn new(spec: &MemorySpec) -> Arc<Self> {
         let empty_policy = nativelink_config::stores::EvictionPolicy::default();
-        let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
+        let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
         Arc::new(Self {
             evicting_map: EvictingMap::new(eviction_policy, SystemTime::now()),
         })

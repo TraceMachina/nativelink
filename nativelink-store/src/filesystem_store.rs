@@ -26,6 +26,7 @@ use bytes::BytesMut;
 use filetime::{set_file_atime, FileTime};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
+use nativelink_config::stores::FilesystemSpec;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
@@ -535,49 +536,47 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
-    pub async fn new(
-        config: &nativelink_config::stores::FilesystemStore,
-    ) -> Result<Arc<Self>, Error> {
-        Self::new_with_timeout_and_rename_fn(config, sleep, |from, to| std::fs::rename(from, to))
+    pub async fn new(spec: &FilesystemSpec) -> Result<Arc<Self>, Error> {
+        Self::new_with_timeout_and_rename_fn(spec, sleep, |from, to| std::fs::rename(from, to))
             .await
     }
 
     pub async fn new_with_timeout_and_rename_fn(
-        config: &nativelink_config::stores::FilesystemStore,
+        spec: &FilesystemSpec,
         sleep_fn: fn(Duration) -> Sleep,
         rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     ) -> Result<Arc<Self>, Error> {
         let now = SystemTime::now();
 
         let empty_policy = nativelink_config::stores::EvictionPolicy::default();
-        let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
+        let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
         let evicting_map = Arc::new(EvictingMap::new(eviction_policy, now));
 
-        fs::create_dir_all(&config.temp_path)
+        fs::create_dir_all(&spec.temp_path)
             .await
-            .err_tip(|| format!("Failed to temp directory {:?}", &config.temp_path))?;
-        fs::create_dir_all(&config.content_path)
+            .err_tip(|| format!("Failed to temp directory {:?}", &spec.temp_path))?;
+        fs::create_dir_all(&spec.content_path)
             .await
-            .err_tip(|| format!("Failed to content directory {:?}", &config.content_path))?;
+            .err_tip(|| format!("Failed to content directory {:?}", &spec.content_path))?;
 
         let shared_context = Arc::new(SharedContext {
             active_drop_spawns: AtomicU64::new(0),
-            temp_path: config.temp_path.clone(),
-            content_path: config.content_path.clone(),
+            temp_path: spec.temp_path.clone(),
+            content_path: spec.content_path.clone(),
         });
 
-        let block_size = if config.block_size == 0 {
+        let block_size = if spec.block_size == 0 {
             DEFAULT_BLOCK_SIZE
         } else {
-            config.block_size
+            spec.block_size
         };
         add_files_to_cache(evicting_map.as_ref(), &now, &shared_context, block_size).await?;
         prune_temp_path(&shared_context.temp_path).await?;
 
-        let read_buffer_size = if config.read_buffer_size == 0 {
+        let read_buffer_size = if spec.read_buffer_size == 0 {
             DEFAULT_BUFF_SIZE
         } else {
-            config.read_buffer_size as usize
+            spec.read_buffer_size as usize
         };
         Ok(Arc::new_cyclic(|weak_self| Self {
             shared_context,

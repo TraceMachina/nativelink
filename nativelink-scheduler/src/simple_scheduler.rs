@@ -17,6 +17,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::Future;
+use nativelink_config::schedulers::SimpleSpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
@@ -281,12 +282,12 @@ impl SimpleScheduler {
 
 impl SimpleScheduler {
     pub fn new<A: AwaitedActionDb>(
-        scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
+        spec: &SimpleSpec,
         awaited_action_db: A,
         task_change_notify: Arc<Notify>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         Self::new_with_callback(
-            scheduler_cfg,
+            spec,
             awaited_action_db,
             || {
                 // The cost of running `do_try_match()` is very high, but constant
@@ -311,30 +312,29 @@ impl SimpleScheduler {
         I: InstantWrapper,
         NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
     >(
-        scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
+        spec: &SimpleSpec,
         awaited_action_db: A,
         on_matching_engine_run: F,
         task_change_notify: Arc<Notify>,
         now_fn: NowFn,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
-            scheduler_cfg
-                .supported_platform_properties
+            spec.supported_platform_properties
                 .clone()
                 .unwrap_or_default(),
         ));
 
-        let mut worker_timeout_s = scheduler_cfg.worker_timeout_s;
+        let mut worker_timeout_s = spec.worker_timeout_s;
         if worker_timeout_s == 0 {
             worker_timeout_s = DEFAULT_WORKER_TIMEOUT_S;
         }
 
-        let mut client_action_timeout_s = scheduler_cfg.client_action_timeout_s;
+        let mut client_action_timeout_s = spec.client_action_timeout_s;
         if client_action_timeout_s == 0 {
             client_action_timeout_s = DEFAULT_CLIENT_ACTION_TIMEOUT_S;
         }
 
-        let mut max_job_retries = scheduler_cfg.max_job_retries;
+        let mut max_job_retries = spec.max_job_retries;
         if max_job_retries == 0 {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
         }
@@ -351,7 +351,7 @@ impl SimpleScheduler {
         let worker_scheduler = ApiWorkerScheduler::new(
             state_manager.clone(),
             platform_property_manager.clone(),
-            scheduler_cfg.allocation_strategy,
+            spec.allocation_strategy,
             worker_change_notify.clone(),
             worker_timeout_s,
         );

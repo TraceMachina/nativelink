@@ -21,6 +21,7 @@ mod utils {
 }
 
 use futures::join;
+use nativelink_config::stores::MemorySpec;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::ActionResult as ProtoActionResult;
@@ -48,9 +49,7 @@ struct TestContext {
 
 fn make_cache_scheduler() -> Result<TestContext, Error> {
     let mock_scheduler = Arc::new(MockActionScheduler::new());
-    let ac_store = Store::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let ac_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let cache_scheduler = CacheLookupScheduler::new(ac_store.clone(), mock_scheduler.clone())?;
     Ok(TestContext {
         mock_scheduler,

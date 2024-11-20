@@ -21,6 +21,7 @@ use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use futures::{join, FutureExt};
+use nativelink_config::stores::FastSlowSpec;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
@@ -52,11 +53,7 @@ pub struct FastSlowStore {
 }
 
 impl FastSlowStore {
-    pub fn new(
-        _config: &nativelink_config::stores::FastSlowStore,
-        fast_store: Store,
-        slow_store: Store,
-    ) -> Arc<Self> {
+    pub fn new(_spec: &FastSlowSpec, fast_store: Store, slow_store: Store) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| Self {
             fast_store,
             slow_store,

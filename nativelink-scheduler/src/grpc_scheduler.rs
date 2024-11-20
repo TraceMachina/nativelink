@@ -20,6 +20,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::stream::unfold;
 use futures::{StreamExt, TryFutureExt};
+use nativelink_config::schedulers::GrpcSpec;
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
@@ -91,10 +92,10 @@ pub struct GrpcScheduler {
 }
 
 impl GrpcScheduler {
-    pub fn new(config: &nativelink_config::schedulers::GrpcScheduler) -> Result<Self, Error> {
-        let jitter_amt = config.retry.jitter;
+    pub fn new(spec: &GrpcSpec) -> Result<Self, Error> {
+        let jitter_amt = spec.retry.jitter;
         Self::new_with_jitter(
-            config,
+            spec,
             Box::new(move |delay: Duration| {
                 if jitter_amt == 0. {
                     return delay;
@@ -107,23 +108,23 @@ impl GrpcScheduler {
     }
 
     pub fn new_with_jitter(
-        config: &nativelink_config::schedulers::GrpcScheduler,
+        spec: &GrpcSpec,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
-        let endpoint = tls_utils::endpoint(&config.endpoint)?;
+        let endpoint = tls_utils::endpoint(&spec.endpoint)?;
         let jitter_fn = Arc::new(jitter_fn);
         Ok(Self {
             supported_props: Mutex::new(HashMap::new()),
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn.clone(),
-                config.retry.clone(),
+                spec.retry.clone(),
             ),
             connection_manager: ConnectionManager::new(
                 std::iter::once(endpoint),
-                config.connections_per_endpoint,
-                config.max_concurrent_requests,
-                config.retry.clone(),
+                spec.connections_per_endpoint,
+                spec.max_concurrent_requests,
+                spec.retry.clone(),
                 jitter_fn,
             ),
         })
