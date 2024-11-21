@@ -7,7 +7,7 @@ const videoLink =
 const _MockUp =
   "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp";
 const videoMockUp =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_background.mp4";
+  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_introduction.mp4";
 
 export const Hero = component$(() => {
   const videoElementSignal = useSignal<HTMLAudioElement | undefined>();
