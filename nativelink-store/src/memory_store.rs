@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::ops::Bound;
 use std::pin::Pin;
@@ -26,7 +27,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreKeyBorrow, UploadSizeInfo};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -54,7 +55,7 @@ impl LenEntry for BytesWrapper {
 #[derive(MetricsComponent)]
 pub struct MemoryStore {
     #[metric(group = "evicting_map")]
-    evicting_map: EvictingMap<StoreKey<'static>, BytesWrapper, SystemTime>,
+    evicting_map: EvictingMap<StoreKeyBorrow, BytesWrapper, SystemTime>,
 }
 
 impl MemoryStore {
@@ -73,7 +74,7 @@ impl MemoryStore {
     }
 
     pub async fn remove_entry(&self, key: StoreKey<'_>) -> bool {
-        self.evicting_map.remove(&key.into_owned()).await
+        self.evicting_map.remove(&key).await
     }
 }
 
@@ -84,11 +85,12 @@ impl StoreDriver for MemoryStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // TODO(allada): This is a dirty hack to get around the lifetime issues with the
-        // evicting map.
-        let digests: Vec<_> = keys.iter().map(|key| key.borrow().into_owned()).collect();
         self.evicting_map
-            .sizes_for_keys(digests, results, false /* peek */)
+            .sizes_for_keys::<_, StoreKey<'_>, &StoreKey<'_>>(
+                keys.iter(),
+                results,
+                false, /* peek */
+            )
             .await;
         // We need to do a special pass to ensure our zero digest exist.
         keys.iter()
@@ -112,7 +114,7 @@ impl StoreDriver for MemoryStore {
         );
         let iterations = self
             .evicting_map
-            .range(range, move |key, _value| handler(key))
+            .range(range, move |key, _value| handler(key.borrow()))
             .await;
         Ok(iterations)
     }
@@ -136,7 +138,7 @@ impl StoreDriver for MemoryStore {
         };
 
         self.evicting_map
-            .insert(key.borrow().into_owned(), BytesWrapper(final_buffer))
+            .insert(key.into_owned().into(), BytesWrapper(final_buffer))
             .await;
         Ok(())
     }
@@ -162,7 +164,7 @@ impl StoreDriver for MemoryStore {
 
         let value = self
             .evicting_map
-            .get(&key.borrow().into_owned())
+            .get(&key)
             .await
             .err_tip_with_code(|_| (Code::NotFound, format!("Key {key:?} not found")))?;
         let default_len = usize::try_from(value.len())
