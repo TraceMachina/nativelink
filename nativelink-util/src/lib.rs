@@ -32,6 +32,7 @@ pub mod platform_properties;
 pub mod proto_stream_utils;
 pub mod resource_info;
 pub mod retry;
+pub mod shutdown_manager;
 pub mod store_trait;
 pub mod task;
 pub mod tls_utils;

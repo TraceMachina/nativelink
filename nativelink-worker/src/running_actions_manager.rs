@@ -1350,11 +1350,6 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
         hasher: DigestHasherFunc,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 
-    fn complete_actions(
-        &self,
-        complete_msg: Arc<oneshot::Sender<()>>,
-    ) -> impl Future<Output = ()> + Send;
-
     fn kill_all(&self) -> impl Future<Output = ()> + Send;
 
     fn kill_operation(
@@ -1883,17 +1878,6 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         };
         Self::kill_operation(running_action).await;
         Ok(())
-    }
-
-    // Waits for all running actions to complete and signals completion.
-    // Use the Arc<oneshot::Sender<()>> to signal the completion of the actions
-    // Dropping the sender automatically notifies the process to terminate.
-    async fn complete_actions(&self, _complete_msg: Arc<oneshot::Sender<()>>) {
-        let _ = self
-            .action_done_tx
-            .subscribe()
-            .wait_for(|_| self.running_actions.lock().is_empty())
-            .await;
     }
 
     // Note: When the future returns the process should be fully killed and cleaned up.
