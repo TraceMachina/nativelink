@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::{BorrowMut, Cow};
+use std::borrow::{Borrow, BorrowMut, Cow};
 use std::collections::hash_map::DefaultHasher as StdHasher;
 use std::convert::Into;
 use std::hash::{Hash, Hasher};
@@ -142,6 +142,41 @@ pub enum StoreOptimizations {
 
     /// If the store will never serve downloads.
     NoopDownloads,
+}
+
+/// A wrapper struct for [`StoreKey`] to work around
+/// lifetime limitations in `HashMap::get()` as described in
+/// <https://github.com/rust-lang/rust/issues/80389>
+///
+/// As such this is a wrapper type that is stored in the
+/// maps using the workaround as described in
+/// <https://blinsay.com/blog/compound-keys/>
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct StoreKeyBorrow(StoreKey<'static>);
+
+impl From<StoreKey<'static>> for StoreKeyBorrow {
+    fn from(key: StoreKey<'static>) -> Self {
+        Self(key)
+    }
+}
+
+impl From<StoreKeyBorrow> for StoreKey<'static> {
+    fn from(key_borrow: StoreKeyBorrow) -> Self {
+        key_borrow.0
+    }
+}
+
+impl<'a> Borrow<StoreKey<'a>> for StoreKeyBorrow {
+    fn borrow(&self) -> &StoreKey<'a> {
+        &self.0
+    }
+}
+
+impl<'a> Borrow<StoreKey<'a>> for &StoreKeyBorrow {
+    fn borrow(&self) -> &StoreKey<'a> {
+        &self.0
+    }
 }
 
 /// Holds something that can be converted into a key the

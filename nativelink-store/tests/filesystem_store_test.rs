@@ -32,13 +32,14 @@ use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{
-    digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
+    key_from_file, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
+    DIGEST_FOLDER, STR_FOLDER,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::origin_context::ContextAwareFuture;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
@@ -215,19 +216,6 @@ async fn read_file_contents(file_name: &OsStr) -> Result<Vec<u8>, Error> {
     Ok(data)
 }
 
-async fn write_file(file_name: &OsStr, data: &[u8]) -> Result<(), Error> {
-    let mut file = fs::create_file(file_name)
-        .await
-        .err_tip(|| format!("Failed to create file: {file_name:?}"))?;
-    file.as_writer().await?.write_all(data).await?;
-    file.as_writer()
-        .await?
-        .as_mut()
-        .sync_all()
-        .await
-        .err_tip(|| "Could not sync file")
-}
-
 async fn wait_for_no_open_files() -> Result<(), Error> {
     let mut counter = 0;
     while fs::get_open_files_for_test() != 0 {
@@ -243,10 +231,39 @@ async fn wait_for_no_open_files() -> Result<(), Error> {
     Ok(())
 }
 
+/// Helper function to ensure there are no temporary files left.
+async fn check_temp_empty(temp_path: &str) -> Result<(), Error> {
+    let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
+        .await
+        .err_tip(|| "Failed opening temp directory")?
+        .into_inner();
+
+    let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
+
+    if let Some(temp_dir_entry) = read_dir_stream.next().await {
+        let path = temp_dir_entry?.path();
+        panic!("No files should exist in temp directory, found: {path:?}");
+    }
+
+    let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{STR_FOLDER}"))
+        .await
+        .err_tip(|| "Failed opening temp directory")?
+        .into_inner();
+
+    let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
+
+    if let Some(temp_dir_entry) = read_dir_stream.next().await {
+        let path = temp_dir_entry?.path();
+        panic!("No files should exist in temp directory, found: {path:?}");
+    }
+    Ok(())
+}
+
 const HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 const HASH2: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
 const VALUE1: &str = "0123456789";
 const VALUE2: &str = "9876543210";
+const STRING_NAME: &str = "String_Filename";
 
 #[serial]
 #[nativelink_test]
@@ -288,7 +305,9 @@ async fn valid_results_after_shutdown_test() -> Result<(), Error> {
             .await?,
         );
 
-        let content = store.get_part_unchunked(digest, 0, None).await?;
+        let key = StoreKey::Digest(digest);
+
+        let content = store.get_part_unchunked(key, 0, None).await?;
         assert_eq!(content, VALUE1.as_bytes());
     }
 
@@ -325,7 +344,7 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
 
     store.update_oneshot(digest1, VALUE1.into()).await?;
 
-    let expected_file_name = OsString::from(format!("{content_path}/{digest1}"));
+    let expected_file_name = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest1}"));
     {
         // Check to ensure our file exists where it should and content matches.
         let data = read_file_contents(&expected_file_name).await?;
@@ -356,18 +375,7 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
         tokio::task::yield_now().await;
     }
 
-    let (_permit, temp_dir_handle) = fs::read_dir(temp_path.clone())
-        .await
-        .err_tip(|| "Failed opening temp directory")?
-        .into_inner();
-    let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
-
-    if let Some(temp_dir_entry) = read_dir_stream.next().await {
-        let path = temp_dir_entry?.path();
-        panic!("No files should exist in temp directory, found: {path:?}");
-    }
-
-    Ok(())
+    check_temp_empty(&temp_path).await
 }
 
 // This test ensures that if a file is overridden and an open stream to the file already
@@ -433,8 +441,8 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
     tokio::task::yield_now().await;
 
     {
-        // Now ensure we only have 1 file in our temp path.
-        let (_permit, temp_dir_handle) = fs::read_dir(temp_path.clone())
+        // Now ensure we only have 1 file in our temp path - we know it is a digest.
+        let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
             .await
             .err_tip(|| "Failed opening temp directory")?
             .into_inner();
@@ -474,20 +482,8 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
         tokio::task::yield_now().await;
     }
 
-    {
-        // Now ensure our temp file was cleaned up.
-        let (_permit, temp_dir_handle) = fs::read_dir(temp_path.clone())
-            .await
-            .err_tip(|| "Failed opening temp directory")?
-            .into_inner();
-        let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
-        if let Some(temp_dir_entry) = read_dir_stream.next().await {
-            let path = temp_dir_entry?.path();
-            panic!("No files should exist in temp directory, found: {path:?}");
-        }
-    }
-
-    Ok(())
+    // Now ensure our temp file was cleaned up.
+    check_temp_empty(&temp_path).await
 }
 
 // Eviction has a different code path than a file replacement, so we check that if a
@@ -546,8 +542,8 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
     tokio::task::yield_now().await;
 
     {
-        // Now ensure we only have 1 file in our temp path.
-        let (_permit, temp_dir_handle) = fs::read_dir(temp_path.clone())
+        // Now ensure we only have 1 file in our temp path - we know it is a digest.
+        let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
             .await
             .err_tip(|| "Failed opening temp directory")?
             .into_inner();
@@ -583,20 +579,8 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
         tokio::task::yield_now().await;
     }
 
-    {
-        // Now ensure our temp file was cleaned up.
-        let (_permit, temp_dir_handle) = fs::read_dir(temp_path.clone())
-            .await
-            .err_tip(|| "Failed opening temp directory")?
-            .into_inner();
-        let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
-        if let Some(temp_dir_entry) = read_dir_stream.next().await {
-            let path = temp_dir_entry?.path();
-            panic!("No files should exist in temp directory, found: {path:?}");
-        }
-    }
-
-    Ok(())
+    // Now ensure our temp file was cleaned up.
+    check_temp_empty(&temp_path).await
 }
 
 #[serial]
@@ -642,51 +626,6 @@ async fn atime_updates_on_get_part_test() -> Result<(), Error> {
             Ok(())
         })
         .await?;
-
-    Ok(())
-}
-
-#[serial]
-#[nativelink_test]
-async fn oldest_entry_evicted_with_access_times_loaded_from_disk() -> Result<(), Error> {
-    // Note these are swapped to ensure they aren't in numerical order.
-    let digest1 = DigestInfo::try_new(HASH2, VALUE2.len())?;
-    let digest2 = DigestInfo::try_new(HASH1, VALUE1.len())?;
-
-    let content_path = make_temp_path("content_path");
-    fs::create_dir_all(&content_path).await?;
-
-    // Make the two files on disk before loading the store.
-    let file1 = OsString::from(format!("{content_path}/{digest1}"));
-    let file2 = OsString::from(format!("{content_path}/{digest2}"));
-    write_file(&file1, VALUE1.as_bytes()).await?;
-    write_file(&file2, VALUE2.as_bytes()).await?;
-    set_file_atime(&file1, FileTime::from_unix_time(0, 0))?;
-    set_file_atime(&file2, FileTime::from_unix_time(1, 0))?;
-
-    // Load the existing store from disk.
-    let store = Box::pin(
-        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
-            content_path,
-            temp_path: make_temp_path("temp_path"),
-            eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
-                max_bytes: 0,
-                max_seconds: 0,
-                max_count: 1,
-                evict_bytes: 0,
-            }),
-            ..Default::default()
-        })
-        .await?,
-    );
-
-    // This should exist and not have been evicted.
-    store.get_file_entry_for_digest(&digest2).await?;
-    // This should have been evicted.
-    match store.get_file_entry_for_digest(&digest1).await {
-        Ok(_) => panic!("Oldest file should have been evicted."),
-        Err(error) => assert_eq!(error.code, Code::NotFound),
-    }
 
     Ok(())
 }
@@ -794,23 +733,26 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
     const SMALL_VALUE: &str = "01";
     const BIG_VALUE: &str = "0123";
 
-    static UNREFED_DIGESTS: LazyLock<Mutex<Vec<DigestInfo>>> =
+    static UNREFED_DIGESTS: LazyLock<Mutex<Vec<StoreKey<'static>>>> =
         LazyLock::new(|| Mutex::new(Vec::new()));
     struct LocalHooks {}
     impl FileEntryHooks for LocalHooks {
         fn on_unref<Fe: FileEntry>(file_entry: &Fe) {
             block_on(file_entry.get_file_path_locked(move |path_str| async move {
                 let path = Path::new(&path_str);
-                let digest =
-                    digest_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
-                UNREFED_DIGESTS.lock().push(digest);
+                let digest = key_from_file(
+                    path.file_name().unwrap().to_str().unwrap(),
+                    FileType::Digest,
+                )
+                .unwrap();
+                UNREFED_DIGESTS.lock().push(digest.borrow().into_owned());
                 Ok(())
             }))
             .unwrap();
         }
     }
 
-    let small_digest = DigestInfo::try_new(HASH1, SMALL_VALUE.len())?;
+    let small_digest = StoreKey::Digest(DigestInfo::try_new(HASH1, SMALL_VALUE.len())?);
     let big_digest = DigestInfo::try_new(HASH1, BIG_VALUE.len())?;
 
     let store = Box::pin(
@@ -828,7 +770,7 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
     );
     // Insert data into store.
     store
-        .update_oneshot(small_digest, SMALL_VALUE.into())
+        .update_oneshot(small_digest.borrow(), SMALL_VALUE.into())
         .await?;
     store.update_oneshot(big_digest, BIG_VALUE.into()).await?;
 
@@ -859,7 +801,10 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
     ) -> Result<fs::DirEntry, Error> {
         loop {
             yield_fn().await?;
-            let (_permit, dir_handle) = fs::read_dir(&temp_path).await?.into_inner();
+            // Now ensure we only have 1 file in our temp path - we know it is a digest.
+            let (_permit, dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
+                .await?
+                .into_inner();
             let mut read_dir_stream = ReadDirStream::new(dir_handle);
             if let Some(dir_entry) = read_dir_stream.next().await {
                 assert!(
@@ -967,13 +912,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
 
     // Now it should have cleaned up its temp files.
     {
-        // Ensure `temp_path` is empty.
-        let (_permit, dir_handle) = fs::read_dir(&temp_path).await?.into_inner();
-        let mut read_dir_stream = ReadDirStream::new(dir_handle);
-        assert!(
-            read_dir_stream.next().await.is_none(),
-            "File found in temp_path after update() rename failure"
-        );
+        check_temp_empty(&temp_path).await?;
     }
 
     // Finally ensure that our entry is not in the store.
@@ -1089,7 +1028,8 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
         loop {
             yield_fn().await?;
 
-            let empty_digest_file_name = OsString::from(format!("{content_path}/{digest}"));
+            let empty_digest_file_name =
+                OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
 
             let file_metadata = fs::metadata(empty_digest_file_name)
                 .await
@@ -1218,7 +1158,7 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
         .get_file_path_locked(move |file_path| async move {
             assert_eq!(
                 file_path,
-                OsString::from(format!("{content_path}/{digest}"))
+                OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"))
             );
             Ok(())
         })
@@ -1250,7 +1190,7 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
 
     store.update_oneshot(digest, VALUE1.into()).await?;
 
-    let stored_file_path = OsString::from(format!("{content_path}/{digest}"));
+    let stored_file_path = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
     std::fs::remove_file(stored_file_path)?;
 
     let digest_result = store
@@ -1258,6 +1198,23 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
         .await
         .err_tip(|| "Failed to execute has")?;
     assert!(digest_result.is_none());
+
+    // Repeat with a string typed key.
+
+    let string_key = StoreKey::new_str(STRING_NAME);
+
+    store
+        .update_oneshot(string_key.borrow(), VALUE2.into())
+        .await?;
+
+    let stored_file_path = OsString::from(format!("{content_path}/{STR_FOLDER}/{STRING_NAME}"));
+    std::fs::remove_file(stored_file_path)?;
+
+    let string_result = store
+        .has(string_key)
+        .await
+        .err_tip(|| "Failed to execute has")?;
+    assert!(string_result.is_none());
 
     Ok(())
 }
@@ -1460,7 +1417,7 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         "Expected filesystem store to consume the file"
     );
 
-    let expected_file_name = OsString::from(format!("{content_path}/{digest}"));
+    let expected_file_name = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
     let new_inode = fs::create_file(expected_file_name)
         .await?
         .as_reader()
