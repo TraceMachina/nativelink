@@ -4,7 +4,7 @@ module(
     compatibility_level = 0,
 )
 
-bazel_dep(name = "rules_cc", version = "0.0.9")
+bazel_dep(name = "rules_cc", version = "0.0.17")
 bazel_dep(name = "platforms", version = "0.0.10")
 bazel_dep(name = "rules_python", version = "0.36.0")
 
@@ -18,7 +18,7 @@ python.toolchain(
 )
 use_repo(python, python = "python_versions")
 
-bazel_dep(name = "rules_rust", version = "0.51.0")
+bazel_dep(name = "rules_rust", version = "0.54.1")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
@@ -46,7 +46,7 @@ rust.toolchain(
         "2024-07-24/rust-std-nightly-aarch64-apple-darwin.tar.xz": "ea8afa34a2010b7ed371ad260af837cf89d02fb24783ed9cee75685781247fde",
     },
     versions = [
-        "1.81.0",
+        "1.82.0",
         "nightly/2024-07-24",
     ],
 )
@@ -57,7 +57,7 @@ rust_host_tools = use_extension(
 )
 rust_host_tools.host_tools(
     edition = "2021",
-    version = "1.81.0",
+    version = "1.82.0",
 )
 
 use_repo(rust, "rust_toolchains")
