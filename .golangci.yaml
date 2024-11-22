@@ -3,8 +3,6 @@ linters:
   enable-all: true
   disable:
     # Deprecated.
-    - execinquery
-    - gomnd
     - exportloopref
 
     # Allow all packages for now.

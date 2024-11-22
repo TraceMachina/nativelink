@@ -23,7 +23,7 @@
     "setup": "bun install && bun run deno install -Arf jsr:@deno/deployctl@1.12.0",
     "staging": "bun setup && bun run docs && bun run build && bun run deploy",
     "prod": "bun setup && bun run docs && bun run build && bun run deploy --prod",
-    "serve": "deno run -A --allow-net --allow-read --allow-env ./dist/server/entry.mjs"
+    "serve": "deno run --allow-net --allow-read --allow-env ./dist/server/entry.mjs"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.3",
