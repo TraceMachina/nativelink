@@ -24,11 +24,12 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
 use nativelink_util::channel_body_for_tests::ChannelBody;
+use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_worker::local_worker::LocalWorker;
 use nativelink_worker::worker_api_client_wrapper::WorkerApiClientTrait;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc};
 use tonic::Status;
 use tonic::{
     codec::Codec, // Needed for .decoder().
@@ -198,7 +199,7 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
         }),
         Box::new(move |_| Box::pin(async move { /* No sleep */ })),
     );
-    let (shutdown_tx_test, _) = broadcast::channel::<Arc<oneshot::Sender<()>>>(BROADCAST_CAPACITY);
+    let (shutdown_tx_test, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
 
     let drop_guard = spawn!("local_worker_spawn", async move {
         worker.run(shutdown_tx_test.subscribe()).await

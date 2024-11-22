@@ -36,10 +36,11 @@ use nativelink_util::common::fs;
 use nativelink_util::digest_hasher::{DigestHasherFunc, ACTIVE_HASHER_FUNC};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::origin_context::ActiveOriginContext;
+use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
 use tokio::process;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
@@ -168,7 +169,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
     async fn run(
         &mut self,
         update_for_worker_stream: Streaming<UpdateForWorker>,
-        shutdown_rx: &mut broadcast::Receiver<Arc<oneshot::Sender<()>>>,
+        shutdown_rx: &mut broadcast::Receiver<ShutdownGuard>,
     ) -> Result<(), Error> {
         // This big block of logic is designed to help simplify upstream components. Upstream
         // components can write standard futures that return a `Result<(), Error>` and this block
@@ -528,7 +529,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
     #[instrument(skip(self), level = Level::INFO)]
     pub async fn run(
         mut self,
-        mut shutdown_rx: broadcast::Receiver<Arc<oneshot::Sender<()>>>,
+        mut shutdown_rx: broadcast::Receiver<ShutdownGuard>,
     ) -> Result<(), Error> {
         let sleep_fn = self
             .sleep_fn
