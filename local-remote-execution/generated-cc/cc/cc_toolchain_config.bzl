@@ -36,7 +36,7 @@ def _target_os_version(ctx):
     xcode_config = ctx.attr._xcode_config[apple_common.XcodeVersionConfig]
     return xcode_config.minimum_os_for_platform_type(platform_type)
 
-def layering_check_features(compiler):
+def layering_check_features(compiler, extra_flags_per_feature, is_macos):
     if compiler != "clang":
         return []
     return [
@@ -53,10 +53,12 @@ def layering_check_features(compiler):
                     ],
                     flag_groups = [
                         flag_group(
-                            flags = [
+                            # macOS requires -Xclang because of a bug in Apple Clang
+                            flags = (["-Xclang"] if is_macos else []) + [
                                 "-fmodule-name=%{module_name}",
+                            ] + (["-Xclang"] if is_macos else []) + [
                                 "-fmodule-map-file=%{module_map_file}",
-                            ],
+                            ] + extra_flags_per_feature.get("use_module_maps", []),
                         ),
                     ],
                 ),
@@ -86,7 +88,7 @@ def layering_check_features(compiler):
                         ]),
                         flag_group(
                             iterate_over = "dependent_module_map_files",
-                            flags = [
+                            flags = (["-Xclang"] if is_macos else []) + [
                                 "-fmodule-map-file=%{dependent_module_map_files}",
                             ],
                         ),
@@ -95,6 +97,47 @@ def layering_check_features(compiler):
             ],
         ),
     ]
+
+def parse_headers_support(parse_headers_tool_path):
+    if not parse_headers_tool_path:
+        return [], []
+    action_configs = [
+        action_config(
+            action_name = ACTION_NAMES.cpp_header_parsing,
+            tools = [
+                tool(path = parse_headers_tool_path),
+            ],
+            flag_sets = [
+                flag_set(
+                    flag_groups = [
+                        flag_group(
+                            flags = [
+                                # Note: This treats all headers as C++ headers, which may lead to
+                                # parsing failures for C headers that are not valid C++.
+                                # For such headers, use features = ["-parse_headers"] to selectively
+                                # disable parsing.
+                                "-xc++-header",
+                                "-fsyntax-only",
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+            implies = [
+                # Copied from the legacy feature definition in CppActionConfigs.java.
+                "legacy_compile_flags",
+                "user_compile_flags",
+                "sysroot",
+                "unfiltered_compile_flags",
+                "compiler_input_flags",
+                "compiler_output_flags",
+            ],
+        ),
+    ]
+    features = [
+        feature(name = "parse_headers"),
+    ]
+    return action_configs, features
 
 all_compile_actions = [
     ACTION_NAMES.c_compile,
@@ -179,6 +222,8 @@ def _sanitizer_feature(name = "", specific_compile_flags = [], specific_link_fla
     )
 
 def _impl(ctx):
+    is_linux = ctx.attr.target_libc != "macosx"
+
     tool_paths = [
         tool_path(name = name, path = path)
         for name, path in ctx.attr.tool_paths.items()
@@ -206,12 +251,36 @@ def _impl(ctx):
     action_configs.append(llvm_cov_action)
     action_configs.append(objcopy_action)
 
+    validate_static_library = ctx.attr.tool_paths.get("validate_static_library")
+    if validate_static_library:
+        validate_static_library_action = action_config(
+            action_name = ACTION_NAMES.validate_static_library,
+            tools = [
+                tool(
+                    path = validate_static_library,
+                ),
+            ],
+        )
+        action_configs.append(validate_static_library_action)
+
+        symbol_check = feature(
+            name = "symbol_check",
+            implies = [ACTION_NAMES.validate_static_library],
+        )
+    else:
+        symbol_check = None
+
     supports_pic_feature = feature(
         name = "supports_pic",
         enabled = True,
     )
     supports_start_end_lib_feature = feature(
         name = "supports_start_end_lib",
+        enabled = True,
+    )
+
+    gcc_quoting_for_param_files_feature = feature(
+        name = "gcc_quoting_for_param_files",
         enabled = True,
     )
 
@@ -545,69 +614,134 @@ def _impl(ctx):
         provides = ["profile"],
     )
 
-    runtime_library_search_directories_feature = feature(
-        name = "runtime_library_search_directories",
-        flag_sets = [
-            flag_set(
-                actions = all_link_actions + lto_index_actions,
-                flag_groups = [
-                    flag_group(
-                        iterate_over = "runtime_library_search_directories",
-                        flag_groups = [
-                            flag_group(
-                                flags = [
-                                    "-Xlinker",
-                                    "-rpath",
-                                    "-Xlinker",
-                                    "$EXEC_ORIGIN/%{runtime_library_search_directories}",
-                                ],
-                                expand_if_true = "is_cc_test",
-                            ),
-                            flag_group(
-                                flags = [
-                                    "-Xlinker",
-                                    "-rpath",
-                                    "-Xlinker",
-                                    "$ORIGIN/%{runtime_library_search_directories}",
-                                ],
-                                expand_if_false = "is_cc_test",
-                            ),
-                        ],
-                        expand_if_available =
-                            "runtime_library_search_directories",
-                    ),
-                ],
-                with_features = [
-                    with_feature_set(features = ["static_link_cpp_runtimes"]),
-                ],
-            ),
-            flag_set(
-                actions = all_link_actions + lto_index_actions,
-                flag_groups = [
-                    flag_group(
-                        iterate_over = "runtime_library_search_directories",
-                        flag_groups = [
-                            flag_group(
-                                flags = [
-                                    "-Xlinker",
-                                    "-rpath",
-                                    "-Xlinker",
-                                    "$ORIGIN/%{runtime_library_search_directories}",
-                                ],
-                            ),
-                        ],
-                        expand_if_available =
-                            "runtime_library_search_directories",
-                    ),
-                ],
-                with_features = [
-                    with_feature_set(
-                        not_features = ["static_link_cpp_runtimes"],
-                    ),
-                ],
-            ),
-        ],
-    )
+    if is_linux:
+        runtime_library_search_directories_feature = feature(
+            name = "runtime_library_search_directories",
+            flag_sets = [
+                flag_set(
+                    actions = all_link_actions + lto_index_actions,
+                    flag_groups = [
+                        flag_group(
+                            iterate_over = "runtime_library_search_directories",
+                            flag_groups = [
+                                flag_group(
+                                    flags = [
+                                        "-Xlinker",
+                                        "-rpath",
+                                        "-Xlinker",
+                                        "$EXEC_ORIGIN/%{runtime_library_search_directories}",
+                                    ],
+                                    expand_if_true = "is_cc_test",
+                                ),
+                                flag_group(
+                                    flags = [
+                                        "-Xlinker",
+                                        "-rpath",
+                                        "-Xlinker",
+                                        "$ORIGIN/%{runtime_library_search_directories}",
+                                    ],
+                                    expand_if_false = "is_cc_test",
+                                ),
+                            ],
+                            expand_if_available =
+                                "runtime_library_search_directories",
+                        ),
+                    ],
+                    with_features = [
+                        with_feature_set(features = ["static_link_cpp_runtimes"]),
+                    ],
+                ),
+                flag_set(
+                    actions = all_link_actions + lto_index_actions,
+                    flag_groups = [
+                        flag_group(
+                            iterate_over = "runtime_library_search_directories",
+                            flag_groups = [
+                                flag_group(
+                                    flags = [
+                                        "-Xlinker",
+                                        "-rpath",
+                                        "-Xlinker",
+                                        "$ORIGIN/%{runtime_library_search_directories}",
+                                    ],
+                                ),
+                            ],
+                            expand_if_available =
+                                "runtime_library_search_directories",
+                        ),
+                    ],
+                    with_features = [
+                        with_feature_set(
+                            not_features = ["static_link_cpp_runtimes"],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        set_install_name_feature = feature(
+            name = "set_soname",
+            flag_sets = [
+                flag_set(
+                    actions = [
+                        ACTION_NAMES.cpp_link_dynamic_library,
+                        ACTION_NAMES.cpp_link_nodeps_dynamic_library,
+                    ],
+                    flag_groups = [
+                        flag_group(
+                            flags = [
+                                "-Wl,-soname,%{runtime_solib_name}",
+                            ],
+                            expand_if_available = "runtime_solib_name",
+                        ),
+                    ],
+                ),
+            ],
+        )
+    else:
+        runtime_library_search_directories_feature = feature(
+            name = "runtime_library_search_directories",
+            flag_sets = [
+                flag_set(
+                    actions = all_link_actions + lto_index_actions,
+                    flag_groups = [
+                        flag_group(
+                            iterate_over = "runtime_library_search_directories",
+                            flag_groups = [
+                                flag_group(
+                                    flags = [
+                                        "-Xlinker",
+                                        "-rpath",
+                                        "-Xlinker",
+                                        "@loader_path/%{runtime_library_search_directories}",
+                                    ],
+                                ),
+                            ],
+                            expand_if_available = "runtime_library_search_directories",
+                        ),
+                    ],
+                ),
+            ],
+        )
+        set_install_name_feature = feature(
+            name = "set_install_name",
+            enabled = ctx.fragments.cpp.do_not_use_macos_set_install_name,
+            flag_sets = [
+                flag_set(
+                    actions = [
+                        ACTION_NAMES.cpp_link_dynamic_library,
+                        ACTION_NAMES.cpp_link_nodeps_dynamic_library,
+                    ],
+                    flag_groups = [
+                        flag_group(
+                            flags = [
+                                "-Wl,-install_name,@rpath/%{runtime_solib_name}",
+                            ],
+                            expand_if_available = "runtime_solib_name",
+                        ),
+                    ],
+                ),
+            ],
+        )
 
     fission_support_feature = feature(
         name = "fission_support",
@@ -836,11 +970,77 @@ def _impl(ctx):
         ],
     )
 
+    libraries_to_link_common_flag_groups = [
+        flag_group(
+            flags = ["-Wl,-whole-archive"],
+            expand_if_true =
+                "libraries_to_link.is_whole_archive",
+            expand_if_equal = variable_with_value(
+                name = "libraries_to_link.type",
+                value = "static_library",
+            ),
+        ),
+        flag_group(
+            flags = ["%{libraries_to_link.object_files}"],
+            iterate_over = "libraries_to_link.object_files",
+            expand_if_equal = variable_with_value(
+                name = "libraries_to_link.type",
+                value = "object_file_group",
+            ),
+        ),
+        flag_group(
+            flags = ["%{libraries_to_link.name}"],
+            expand_if_equal = variable_with_value(
+                name = "libraries_to_link.type",
+                value = "object_file",
+            ),
+        ),
+        flag_group(
+            flags = ["%{libraries_to_link.name}"],
+            expand_if_equal = variable_with_value(
+                name = "libraries_to_link.type",
+                value = "interface_library",
+            ),
+        ),
+        flag_group(
+            flags = ["%{libraries_to_link.name}"],
+            expand_if_equal = variable_with_value(
+                name = "libraries_to_link.type",
+                value = "static_library",
+            ),
+        ),
+        flag_group(
+            flags = ["-l%{libraries_to_link.name}"],
+            expand_if_equal = variable_with_value(
+                name = "libraries_to_link.type",
+                value = "dynamic_library",
+            ),
+        ),
+        flag_group(
+            flags = ["-l:%{libraries_to_link.name}"],
+            expand_if_equal = variable_with_value(
+                name = "libraries_to_link.type",
+                value = "versioned_dynamic_library",
+            ),
+        ),
+        flag_group(
+            flags = ["-Wl,-no-whole-archive"],
+            expand_if_true = "libraries_to_link.is_whole_archive",
+            expand_if_equal = variable_with_value(
+                name = "libraries_to_link.type",
+                value = "static_library",
+            ),
+        ),
+    ]
+
     libraries_to_link_feature = feature(
         name = "libraries_to_link",
         flag_sets = [
             flag_set(
-                actions = all_link_actions + lto_index_actions,
+                actions = [
+                    ACTION_NAMES.cpp_link_executable,
+                    ACTION_NAMES.cpp_link_dynamic_library,
+                ] + lto_index_actions,
                 flag_groups = [
                     flag_group(
                         iterate_over = "libraries_to_link",
@@ -852,66 +1052,7 @@ def _impl(ctx):
                                     value = "object_file_group",
                                 ),
                             ),
-                            flag_group(
-                                flags = ["-Wl,-whole-archive"],
-                                expand_if_true =
-                                    "libraries_to_link.is_whole_archive",
-                                expand_if_equal = variable_with_value(
-                                    name = "libraries_to_link.type",
-                                    value = "static_library",
-                                ),
-                            ),
-                            flag_group(
-                                flags = ["%{libraries_to_link.object_files}"],
-                                iterate_over = "libraries_to_link.object_files",
-                                expand_if_equal = variable_with_value(
-                                    name = "libraries_to_link.type",
-                                    value = "object_file_group",
-                                ),
-                            ),
-                            flag_group(
-                                flags = ["%{libraries_to_link.name}"],
-                                expand_if_equal = variable_with_value(
-                                    name = "libraries_to_link.type",
-                                    value = "object_file",
-                                ),
-                            ),
-                            flag_group(
-                                flags = ["%{libraries_to_link.name}"],
-                                expand_if_equal = variable_with_value(
-                                    name = "libraries_to_link.type",
-                                    value = "interface_library",
-                                ),
-                            ),
-                            flag_group(
-                                flags = ["%{libraries_to_link.name}"],
-                                expand_if_equal = variable_with_value(
-                                    name = "libraries_to_link.type",
-                                    value = "static_library",
-                                ),
-                            ),
-                            flag_group(
-                                flags = ["-l%{libraries_to_link.name}"],
-                                expand_if_equal = variable_with_value(
-                                    name = "libraries_to_link.type",
-                                    value = "dynamic_library",
-                                ),
-                            ),
-                            flag_group(
-                                flags = ["-l:%{libraries_to_link.name}"],
-                                expand_if_equal = variable_with_value(
-                                    name = "libraries_to_link.type",
-                                    value = "versioned_dynamic_library",
-                                ),
-                            ),
-                            flag_group(
-                                flags = ["-Wl,-no-whole-archive"],
-                                expand_if_true = "libraries_to_link.is_whole_archive",
-                                expand_if_equal = variable_with_value(
-                                    name = "libraries_to_link.type",
-                                    value = "static_library",
-                                ),
-                            ),
+                        ] + libraries_to_link_common_flag_groups + [
                             flag_group(
                                 flags = ["-Wl,--end-lib"],
                                 expand_if_equal = variable_with_value(
@@ -921,6 +1062,22 @@ def _impl(ctx):
                             ),
                         ],
                         expand_if_available = "libraries_to_link",
+                    ),
+                    flag_group(
+                        flags = ["-Wl,@%{thinlto_param_file}"],
+                        expand_if_true = "thinlto_param_file",
+                    ),
+                ],
+            ),
+            # Object file groups may contain symbols that aren't referenced in the same target that
+            # produces the object files and must thus not be wrapped in --start-lib/--end-lib when
+            # linking a nodeps dynamic library.
+            flag_set(
+                actions = [ACTION_NAMES.cpp_link_nodeps_dynamic_library],
+                flag_groups = [
+                    flag_group(
+                        iterate_over = "libraries_to_link",
+                        flag_groups = libraries_to_link_common_flag_groups,
                     ),
                     flag_group(
                         flags = ["-Wl,@%{thinlto_param_file}"],
@@ -996,7 +1153,6 @@ def _impl(ctx):
         ],
     )
 
-    is_linux = ctx.attr.target_libc != "macosx"
     libtool_feature = feature(
         name = "libtool",
         enabled = not is_linux,
@@ -1165,6 +1321,25 @@ def _impl(ctx):
                 with_features = [
                     with_feature_set(
                         features = ["supports_interface_shared_libraries"],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    generate_linkmap_feature = feature(
+        name = "generate_linkmap",
+        flag_sets = [
+            flag_set(
+                actions = [
+                    ACTION_NAMES.cpp_link_executable,
+                ],
+                flag_groups = [
+                    flag_group(
+                        flags = [
+                            "-Wl,-Map=%{output_execpath}.map" if is_linux else "-Wl,-map,%{output_execpath}.map",
+                        ],
+                        expand_if_available = "output_execpath",
                     ),
                 ],
             ),
@@ -1381,6 +1556,7 @@ def _impl(ctx):
             autofdo_feature,
             build_interface_libraries_feature,
             dynamic_library_linker_tool_feature,
+            generate_linkmap_feature,
             shared_flag_feature,
             linkstamps_feature,
             output_execpath_flags_feature,
@@ -1396,6 +1572,7 @@ def _impl(ctx):
             asan_feature,
             tsan_feature,
             ubsan_feature,
+            gcc_quoting_for_param_files_feature,
             static_link_cpp_runtimes_feature,
         ] + (
             [
@@ -1417,7 +1594,8 @@ def _impl(ctx):
             unfiltered_compile_flags_feature,
             treat_warnings_as_errors_feature,
             archive_param_file_feature,
-        ] + layering_check_features(ctx.attr.compiler)
+            set_install_name_feature,
+        ] + layering_check_features(ctx.attr.compiler, ctx.attr.extra_flags_per_feature, is_macos = False)
     else:
         # macOS artifact name patterns differ from the defaults only for dynamic
         # libraries.
@@ -1431,11 +1609,14 @@ def _impl(ctx):
         features = [
             macos_minimum_os_feature,
             macos_default_link_flags_feature,
+            runtime_library_search_directories_feature,
+            set_install_name_feature,
             libtool_feature,
             archiver_flags_feature,
             asan_feature,
             tsan_feature,
             ubsan_feature,
+            gcc_quoting_for_param_files_feature,
             static_link_cpp_runtimes_feature,
         ] + (
             [
@@ -1447,6 +1628,7 @@ def _impl(ctx):
             default_link_flags_feature,
             user_link_flags_feature,
             default_link_libs_feature,
+            external_include_paths_feature,
             fdo_optimize_feature,
             dbg_feature,
             opt_feature,
@@ -1455,7 +1637,17 @@ def _impl(ctx):
             unfiltered_compile_flags_feature,
             treat_warnings_as_errors_feature,
             archive_param_file_feature,
-        ]
+            generate_linkmap_feature,
+        ] + layering_check_features(ctx.attr.compiler, ctx.attr.extra_flags_per_feature, is_macos = True)
+
+    parse_headers_action_configs, parse_headers_features = parse_headers_support(
+        parse_headers_tool_path = ctx.attr.tool_paths.get("parse_headers"),
+    )
+    action_configs += parse_headers_action_configs
+    features += parse_headers_features
+
+    if symbol_check:
+        features.append(symbol_check)
 
     return cc_common.create_cc_toolchain_config_info(
         ctx = ctx,
@@ -1502,11 +1694,12 @@ cc_toolchain_config = rule(
         "coverage_link_flags": attr.string_list(),
         "supports_start_end_lib": attr.bool(),
         "builtin_sysroot": attr.string(),
+        "extra_flags_per_feature": attr.string_list_dict(),
         "_xcode_config": attr.label(default = configuration_field(
             fragment = "apple",
             name = "xcode_config_label",
         )),
     },
-    fragments = ["apple"],
+    fragments = ["apple", "cpp"],
     provides = [CcToolchainConfigInfo],
 )

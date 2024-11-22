@@ -78,7 +78,7 @@
           pkgs.libiconv
         ];
 
-        llvmPackages = pkgs.llvmPackages_18;
+        llvmPackages = pkgs.llvmPackages_19;
 
         customStdenv = pkgs.callPackage ./tools/llvmStdenv.nix {inherit llvmPackages;};
 
@@ -150,7 +150,7 @@
           linkerPath =
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
-            else "${pkgs.llvmPackages_latest.lld}/bin/ld.lld";
+            else "${llvmPackages.lld}/bin/ld.lld";
         in
           {
             inherit src;
@@ -169,7 +169,7 @@
               (
                 if isLinuxBuild
                 then [pkgs.mold]
-                else [pkgs.llvmPackages_latest.lld]
+                else [llvmPackages.lld]
               )
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
                 p.darwin.apple_sdk.frameworks.Security
