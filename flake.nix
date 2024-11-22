@@ -52,7 +52,7 @@
         system,
         ...
       }: let
-        stable-rust-version = "1.81.0";
+        stable-rust-version = "1.82.0";
         nightly-rust-version = "2024-07-24";
 
         # TODO(aaronmondal): Make musl builds work on Darwin.
@@ -78,7 +78,7 @@
           pkgs.libiconv
         ];
 
-        llvmPackages = pkgs.llvmPackages_18;
+        llvmPackages = pkgs.llvmPackages_19;
 
         customStdenv = pkgs.callPackage ./tools/llvmStdenv.nix {inherit llvmPackages;};
 
@@ -150,7 +150,7 @@
           linkerPath =
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
-            else "${pkgs.llvmPackages_latest.lld}/bin/ld.lld";
+            else "${llvmPackages.lld}/bin/ld.lld";
         in
           {
             inherit src;
@@ -169,7 +169,7 @@
               (
                 if isLinuxBuild
                 then [pkgs.mold]
-                else [pkgs.llvmPackages_latest.lld]
+                else [llvmPackages.lld]
               )
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
                 p.darwin.apple_sdk.frameworks.Security
@@ -389,10 +389,19 @@
               ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
             ];
           };
+          rust-overlay-patched = (import self.inputs.nixpkgs {inherit system;}).applyPatches {
+            name = "rust-overlay-patched";
+            src = self.inputs.rust-overlay;
+            patches = [
+              # This dependency has a giant dependency chain and we don't need
+              # it for our usecases.
+              ./tools/rust-overlay_cut_libsecret.diff
+            ];
+          };
         in
           import nixpkgs-patched {
             inherit system;
-            overlays = [(import rust-overlay)];
+            overlays = [(import rust-overlay-patched)];
           };
         apps = {
           default = {

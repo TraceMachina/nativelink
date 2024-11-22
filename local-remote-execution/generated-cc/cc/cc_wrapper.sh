@@ -1,4 +1,4 @@
-#!/nix/store/832dnfv9ffw5744ncjfcn7z9y85450sn-bash/bin/bash
+#!/nix/store/j23ih81xydz8wmf0wfksdbwgicpnl418-bash/bin/bash
 #
 # Copyright 2015 The Bazel Authors. All rights reserved.
 #
@@ -18,8 +18,37 @@
 #
 set -eu
 
+OUTPUT=
+
+function parse_option() {
+    local -r opt="$1"
+    if [[ "${OUTPUT}" = "1" ]]; then
+        OUTPUT=$opt
+    elif [[ "$opt" = "-o" ]]; then
+        # output is coming
+        OUTPUT=1
+    fi
+}
+
+# let parse the option list
+for i in "$@"; do
+    if [[ "$i" = @* && -r "${i:1}" ]]; then
+        while IFS= read -r opt
+        do
+            parse_option "$opt"
+        done < "${i:1}" || exit 1
+    else
+        parse_option "$i"
+    fi
+done
+
 # Set-up the environment
 
 
 # Call the C++ compiler
-/nix/store/pk06lmp6wwn35xmvn9d7fr78qg6k9qxw-customClang/bin/customClang "$@"
+/nix/store/lw8g7lpw6rwjmz6wxp2grzaixlvn02a7-customClang/bin/customClang "$@"
+
+# Generate an empty file if header processing succeeded.
+if [[ "${OUTPUT}" == *.h.processed ]]; then
+  echo -n > "${OUTPUT}"
+fi

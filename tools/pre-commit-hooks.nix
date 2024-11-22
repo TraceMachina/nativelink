@@ -164,6 +164,7 @@ in {
     name = "buildifier lint";
     description = "Lint Starlark";
     entry = "${pkgs.bazel-buildtools}/bin/buildifier -lint=warn";
+    excludes = ["local-remote-execution/generated-cc/cc/cc_toolchain_config.bzl"];
     types = ["bazel"];
   };
 }
