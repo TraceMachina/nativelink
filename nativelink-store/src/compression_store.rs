@@ -515,7 +515,7 @@ impl StoreDriver for CompressionStore {
                         let start_pos = if offset <= uncompressed_data_sz {
                             0
                         } else {
-                            offset - uncompressed_data_sz
+                            offset.saturating_sub(uncompressed_data_sz)
                         } as usize;
                         let end_pos = cmp::min(
                             start_pos + remaining_bytes_to_send as usize,

@@ -282,13 +282,13 @@ impl From<String> for StoreKey<'static> {
     }
 }
 
-impl<'a> From<DigestInfo> for StoreKey<'a> {
+impl From<DigestInfo> for StoreKey<'_> {
     fn from(d: DigestInfo) -> Self {
         StoreKey::Digest(d)
     }
 }
 
-impl<'a> From<&DigestInfo> for StoreKey<'a> {
+impl From<&DigestInfo> for StoreKey<'_> {
     fn from(d: &DigestInfo) -> Self {
         StoreKey::Digest(*d)
     }

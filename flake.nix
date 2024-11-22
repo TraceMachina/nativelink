@@ -52,8 +52,8 @@
         system,
         ...
       }: let
-        stable-rust-version = "1.81.0";
-        nightly-rust-version = "2024-07-24";
+        stable-rust-version = "1.82.0";
+        nightly-rust-version = "2024-11-22";
 
         # TODO(aaronmondal): Make musl builds work on Darwin.
         # See: https://github.com/TraceMachina/nativelink/issues/751

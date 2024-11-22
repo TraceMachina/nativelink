@@ -87,7 +87,7 @@ struct ActiveStreamGuard<'a> {
     bytestream_server: &'a ByteStreamServer,
 }
 
-impl<'a> ActiveStreamGuard<'a> {
+impl ActiveStreamGuard<'_> {
     /// Consumes the guard. The stream will be considered "finished", will
     /// remove it from the active_uploads.
     fn graceful_finish(mut self) {
@@ -99,7 +99,7 @@ impl<'a> ActiveStreamGuard<'a> {
     }
 }
 
-impl<'a> Drop for ActiveStreamGuard<'a> {
+impl Drop for ActiveStreamGuard<'_> {
     fn drop(&mut self) {
         let Some(stream_state) = self.stream_state.take() else {
             return; // If None it means we don't want it put back into an IdleStream.

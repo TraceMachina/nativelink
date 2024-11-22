@@ -587,9 +587,9 @@ impl HealthStatusIndicator for RedisStore {
     }
 }
 
-/// -------------------------------------------------------------------
-/// Below this line are specific to the redis scheduler implementation.
-/// -------------------------------------------------------------------
+// -------------------------------------------------------------------
+// Below this line are specific to the redis scheduler implementation.
+// -------------------------------------------------------------------
 
 /// The maximum number of results to return per cursor.
 const MAX_COUNT_PER_CURSOR: u64 = 256;
@@ -941,19 +941,18 @@ impl SchedulerStore for RedisStore {
 
     fn subscription_manager(&self) -> Result<Arc<RedisSubscriptionManager>, Error> {
         let mut subscription_manager = self.subscription_manager.lock();
-        match &*subscription_manager {
-            Some(subscription_manager) => Ok(subscription_manager.clone()),
-            None => {
-                let Some(pub_sub_channel) = &self.pub_sub_channel else {
-                    return Err(make_input_err!("RedisStore must have a pubsub channel for a Redis Scheduler if using subscriptions"));
-                };
-                let sub = Arc::new(RedisSubscriptionManager::new(
-                    self.subscriber_client.clone(),
-                    pub_sub_channel.clone(),
-                ));
-                *subscription_manager = Some(sub.clone());
-                Ok(sub)
-            }
+        if let Some(subscription_manager) = &*subscription_manager {
+            Ok(subscription_manager.clone())
+        } else {
+            let Some(pub_sub_channel) = &self.pub_sub_channel else {
+                return Err(make_input_err!("RedisStore must have a pubsub channel for a Redis Scheduler if using subscriptions"));
+            };
+            let sub = Arc::new(RedisSubscriptionManager::new(
+                self.subscriber_client.clone(),
+                pub_sub_channel.clone(),
+            ));
+            *subscription_manager = Some(sub.clone());
+            Ok(sub)
         }
     }
 

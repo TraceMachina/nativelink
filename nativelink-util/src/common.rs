@@ -199,7 +199,7 @@ impl<'de> Deserialize<'de> for DigestInfo {
         D: Deserializer<'de>,
     {
         struct DigestInfoVisitor;
-        impl<'a> Visitor<'a> for DigestInfoVisitor {
+        impl Visitor<'_> for DigestInfoVisitor {
             type Value = DigestInfo;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
