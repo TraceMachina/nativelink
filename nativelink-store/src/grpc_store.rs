@@ -290,7 +290,7 @@ impl GrpcStore {
 
     pub async fn write<T, E>(
         &self,
-        stream: WriteRequestStreamWrapper<T, E>,
+        stream: WriteRequestStreamWrapper<T>,
     ) -> Result<Response<WriteResponse>, Error>
     where
         T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,

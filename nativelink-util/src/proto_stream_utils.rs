@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::borrow::Cow;
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -25,12 +26,7 @@ use tonic::{Status, Streaming};
 
 use crate::resource_info::ResourceInfo;
 
-#[derive(Debug)]
-pub struct WriteRequestStreamWrapper<T, E>
-where
-    E: Into<Error>,
-    T: Stream<Item = Result<WriteRequest, E>> + Unpin,
-{
+pub struct WriteRequestStreamWrapper<T> {
     pub resource_info: ResourceInfo<'static>,
     pub bytes_received: usize,
     stream: T,
@@ -38,12 +34,23 @@ where
     write_finished: bool,
 }
 
-impl<T, E> WriteRequestStreamWrapper<T, E>
+impl<T> Debug for WriteRequestStreamWrapper<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteRequestStreamWrapper")
+            .field("resource_info", &self.resource_info)
+            .field("bytes_received", &self.bytes_received)
+            .field("first_msg", &self.first_msg)
+            .field("write_finished", &self.write_finished)
+            .finish()
+    }
+}
+
+impl<T, E> WriteRequestStreamWrapper<T>
 where
-    E: Into<Error>,
     T: Stream<Item = Result<WriteRequest, E>> + Unpin,
+    E: Into<Error>,
 {
-    pub async fn from(mut stream: T) -> Result<WriteRequestStreamWrapper<T, E>, Error> {
+    pub async fn from(mut stream: T) -> Result<WriteRequestStreamWrapper<T>, Error> {
         let first_msg = stream
             .next()
             .await
@@ -77,7 +84,7 @@ where
     }
 }
 
-impl<T, E> Stream for WriteRequestStreamWrapper<T, E>
+impl<T, E> Stream for WriteRequestStreamWrapper<T>
 where
     E: Into<Error>,
     T: Stream<Item = Result<WriteRequest, E>> + Unpin,
@@ -177,7 +184,7 @@ where
 {
     instance_name: String,
     read_stream_error: Option<Error>,
-    read_stream: WriteRequestStreamWrapper<T, E>,
+    read_stream: WriteRequestStreamWrapper<T>,
     // Tonic doesn't appear to report an error until it has taken two messages,
     // therefore we are required to buffer the last two messages.
     cached_messages: [Option<WriteRequest>; 2],
@@ -193,7 +200,7 @@ where
     T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
     E: Into<Error> + 'static,
 {
-    pub fn new(instance_name: String, read_stream: WriteRequestStreamWrapper<T, E>) -> Self {
+    pub fn new(instance_name: String, read_stream: WriteRequestStreamWrapper<T>) -> Self {
         Self {
             instance_name,
             read_stream_error: None,
