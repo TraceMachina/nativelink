@@ -53,6 +53,7 @@ use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::metrics_utils::{set_metrics_enabled_for_this_thread, Counter};
 use nativelink_util::operation_state_manager::ClientStateManager;
 use nativelink_util::origin_context::OriginContext;
+use nativelink_util::shutdown_guard::{Priority, ShutdownGuard};
 use nativelink_util::store_trait::{
     set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
 };
@@ -69,7 +70,7 @@ use tokio::net::TcpListener;
 use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::broadcast;
 use tokio_rustls::rustls::pki_types::{CertificateDer, CertificateRevocationListDer};
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
@@ -166,7 +167,7 @@ impl RootMetricsComponent for ConnectedClientsMetrics {}
 async fn inner_main(
     cfg: CasConfig,
     server_start_timestamp: u64,
-    shutdown_tx: broadcast::Sender<Arc<oneshot::Sender<()>>>,
+    shutdown_tx: broadcast::Sender<ShutdownGuard>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
@@ -1040,9 +1041,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Initiates the shutdown process by broadcasting the shutdown signal via the `oneshot::Sender` to all listeners.
         // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.
         // Once all `oneshot::Sender` instances are dropped, the worker knows it can safely terminate.
-        let (shutdown_tx, _) = broadcast::channel::<Arc<oneshot::Sender<()>>>(BROADCAST_CAPACITY);
+        let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
         let shutdown_tx_clone = shutdown_tx.clone();
-        let (complete_tx, complete_rx) = oneshot::channel::<()>();
+        let mut shutdown_guard = ShutdownGuard::default();
 
         runtime.spawn(async move {
             tokio::signal::ctrl_c()
@@ -1054,15 +1055,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         #[cfg(target_family = "unix")]
         {
-            let complete_tx = Arc::new(complete_tx);
             runtime.spawn(async move {
                 signal(SignalKind::terminate())
                     .expect("Failed to listen to SIGTERM")
                     .recv()
                     .await;
                 event!(Level::WARN, "Process terminated via SIGTERM",);
-                let _ = shutdown_tx_clone.send(complete_tx);
-                let _ = complete_rx.await;
+                let _ = shutdown_tx_clone.send(shutdown_guard.clone());
+                let _ = shutdown_guard.wait_for(Priority::P0).await;
                 event!(Level::WARN, "Successfully shut down nativelink.",);
                 std::process::exit(143);
             });

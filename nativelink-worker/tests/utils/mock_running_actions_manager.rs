@@ -22,8 +22,9 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_util::action_messages::{ActionResult, OperationId};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_worker::running_actions_manager::{Metrics, RunningAction, RunningActionsManager};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 #[derive(Debug)]
 enum RunningActionManagerCalls {
@@ -167,10 +168,7 @@ impl RunningActionsManager for MockRunningActionsManager {
         Ok(())
     }
 
-    fn complete_actions(
-        &self,
-        _complete_msg: Arc<oneshot::Sender<()>>,
-    ) -> impl Future<Output = ()> + Send {
+    fn complete_actions(&self, _complete_msg: ShutdownGuard) -> impl Future<Output = ()> + Send {
         future::ready(())
     }
 
