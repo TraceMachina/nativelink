@@ -52,25 +52,15 @@
         system,
         ...
       }: let
-        stable-rust-version = "1.81.0";
+        stable-rust-version = "1.82.0";
         nightly-rust-version = "2024-07-24";
-
-        # TODO(aaronmondal): Make musl builds work on Darwin.
-        # See: https://github.com/TraceMachina/nativelink/issues/751
-        stable-rust =
-          if pkgs.stdenv.isDarwin
-          then pkgs.rust-bin.stable.${stable-rust-version}
-          else pkgs.pkgsMusl.rust-bin.stable.${stable-rust-version};
-        nightly-rust =
-          if pkgs.stdenv.isDarwin
-          then pkgs.rust-bin.nightly.${nightly-rust-version}
-          else pkgs.pkgsMusl.rust-bin.nightly.${nightly-rust-version};
 
         # TODO(aaronmondal): Tools like rustdoc don't work with the `pkgsMusl`
         # package set because of missing libgcc_s. Fix this upstream and use the
         # `stable-rust` toolchain in the devShell as well.
         # See: https://github.com/oxalica/rust-overlay/issues/161
         stable-rust-native = pkgs.rust-bin.stable.${stable-rust-version};
+        nightly-rust-native = pkgs.rust-bin.nightly.${nightly-rust-version};
 
         maybeDarwinDeps = pkgs.lib.optionals pkgs.stdenv.isDarwin [
           pkgs.darwin.apple_sdk.frameworks.CoreFoundation
@@ -78,7 +68,7 @@
           pkgs.libiconv
         ];
 
-        llvmPackages = pkgs.llvmPackages_18;
+        llvmPackages = pkgs.llvmPackages_19;
 
         customStdenv = pkgs.callPackage ./tools/llvmStdenv.nix {inherit llvmPackages;};
 
@@ -150,7 +140,7 @@
           linkerPath =
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
-            else "${pkgs.llvmPackages_latest.lld}/bin/ld.lld";
+            else "${llvmPackages.lld}/bin/ld.lld";
         in
           {
             inherit src;
@@ -169,7 +159,7 @@
               (
                 if isLinuxBuild
                 then [pkgs.mold]
-                else [pkgs.llvmPackages_latest.lld]
+                else [llvmPackages.lld]
               )
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
                 p.darwin.apple_sdk.frameworks.Security
@@ -242,7 +232,7 @@
           "build-chromium-tests"
           ./deploy/chromium-example/build_chromium_tests.sh;
 
-        docs = pkgs.callPackage ./tools/docs.nix {rust = stable-rust.default;};
+        docs = pkgs.callPackage ./tools/docs.nix {rust = stable-rust-native.default;};
 
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
@@ -389,10 +379,19 @@
               ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
             ];
           };
+          rust-overlay-patched = (import self.inputs.nixpkgs {inherit system;}).applyPatches {
+            name = "rust-overlay-patched";
+            src = self.inputs.rust-overlay;
+            patches = [
+              # This dependency has a giant dependency chain and we don't need
+              # it for our usecases.
+              ./tools/rust-overlay_cut_libsecret.diff
+            ];
+          };
         in
           import nixpkgs-patched {
             inherit system;
-            overlays = [(import rust-overlay)];
+            overlays = [(import rust-overlay-patched)];
           };
         apps = {
           default = {
@@ -459,7 +458,8 @@
         };
         pre-commit.settings = {
           hooks = import ./tools/pre-commit-hooks.nix {
-            inherit pkgs nightly-rust;
+            inherit pkgs;
+            nightly-rust = nightly-rust-native;
           };
         };
         local-remote-execution.settings = {

@@ -1,32 +1,32 @@
 diff --git a/pkgs/development/compilers/llvm/common/default.nix b/pkgs/development/compilers/llvm/common/default.nix
-index 689ea9f7cb7b..9d54f82aee0f 100644
+index 707bb91b875d..d4b4fb2b5427 100644
 --- a/pkgs/development/compilers/llvm/common/default.nix
 +++ b/pkgs/development/compilers/llvm/common/default.nix
-@@ -720,6 +720,7 @@ let
+@@ -780,7 +780,9 @@ let
                "-rtlib=compiler-rt"
                "-Wno-unused-command-line-argument"
                "-B${targetLlvmLibraries.compiler-rt}/lib"
-+              "-stdlib=libc++"] ++ lib.optionals stdenv.targetPlatform.isLinux ["-fuse-ld=mold"
++              "-stdlib=libc++"
              ]
++            ++ lib.optional stdenv.targetPlatform.isLinux "-fuse-ld=mold"
              ++ lib.optional (
                !stdenv.targetPlatform.isWasm && !stdenv.targetPlatform.isFreeBSD
-@@ -728,12 +729,17 @@ let
+             ) "--unwindlib=libunwind"
+@@ -788,11 +790,16 @@ let
                !stdenv.targetPlatform.isWasm
                && !stdenv.targetPlatform.isFreeBSD
                && stdenv.targetPlatform.useLLVM or false
 -            ) "-lunwind"
 +            ) ["-lunwind" "-lc++"]
              ++ lib.optional stdenv.targetPlatform.isWasm "-fno-exceptions";
-           nixSupport.cc-ldflags =
-             lib.optionals (!stdenv.targetPlatform.isWasm && !stdenv.targetPlatform.isFreeBSD)
-               (
--                [ "-L${targetLlvmLibraries.libunwind}/lib" ]
-+                [
-+                  "-L${targetLlvmLibraries.libunwind}/lib"
-+                  "-rpath" "${targetLlvmLibraries.libunwind}/lib"
-+                  "-L${targetLlvmLibraries.libcxx}/lib"
-+                  "-rpath" "${targetLlvmLibraries.libcxx}/lib"
-+                ]
-                 ++ lib.optional (lib.versionAtLeast metadata.release_version "17") "--undefined-version"
-               );
+           nixSupport.cc-ldflags = lib.optionals (
+             !stdenv.targetPlatform.isWasm && !stdenv.targetPlatform.isFreeBSD
+-          ) [ "-L${targetLlvmLibraries.libunwind}/lib" ];
++          ) [
++              "-L${targetLlvmLibraries.libunwind}/lib"
++              "-rpath" "${targetLlvmLibraries.libunwind}/lib"
++              "-L${targetLlvmLibraries.libcxx}/lib"
++              "-rpath" "${targetLlvmLibraries.libcxx}/lib"
++            ];
          }
+       );
