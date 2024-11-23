@@ -116,7 +116,7 @@ impl<'a> DropCounter<'a> {
     }
 }
 
-impl<'a> Drop for DropCounter<'a> {
+impl Drop for DropCounter<'_> {
     #[inline]
     fn drop(&mut self) {
         if !metrics_enabled() {
@@ -132,7 +132,7 @@ pub struct AsyncTimer<'a> {
     counter: &'a AsyncCounterWrapper,
 }
 
-impl<'a> AsyncTimer<'a> {
+impl AsyncTimer<'_> {
     #[inline]
     pub fn measure(self) {
         if !metrics_enabled() {
