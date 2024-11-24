@@ -16,6 +16,9 @@
 // This file is auto-generated. To update it, run:
 // `bazel run nativelink-proto:update_protos`
 
+#![allow(warnings)]
+#![allow(clippy::all)]
+
 pub mod build {
     pub mod bazel {
         pub mod remote {
@@ -36,6 +39,9 @@ pub mod com {
             pub mod nativelink {
                 pub mod remote_execution {
                     include!("com.github.trace_machina.nativelink.remote_execution.pb.rs");
+                }
+                pub mod events {
+                    include!("com.github.trace_machina.nativelink.events.pb.rs");
                 }
             }
         }
@@ -61,4 +67,36 @@ pub mod google {
     pub mod rpc {
         include!("google.rpc.pb.rs");
     }
+}
+pub mod build_event_stream {
+    include!("build_event_stream.pb.rs");
+}
+pub mod command_line {
+    include!("command_line.pb.rs");
+}
+pub mod devtools {
+    pub mod build {
+        pub mod lib {
+            pub mod packages {
+                pub mod metrics {
+                    include!("devtools.build.lib.packages.metrics.pb.rs");
+                }
+            }
+        }
+    }
+}
+pub mod blaze {
+    include!("blaze.pb.rs");
+    pub mod invocation_policy {
+        include!("blaze.invocation_policy.pb.rs");
+    }
+    pub mod strategy_policy {
+        include!("blaze.strategy_policy.pb.rs");
+    }
+}
+pub mod options {
+    include!("options.pb.rs");
+}
+pub mod failure_details {
+    include!("failure_details.pb.rs");
 }

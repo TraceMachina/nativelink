@@ -1,0 +1,194 @@
+// Copyright 2024 The NativeLink Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package com.github.trace_machina.nativelink.events;
+
+import "build/bazel/remote/execution/v2/remote_execution.proto";
+import "google/bytestream/bytestream.proto";
+import "google/longrunning/operations.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "google/rpc/status.proto";
+
+/// Same as build.bazel.remote.execution.v2.BatchUpdateBlobsRequest,
+/// but without the data field, and add a `data_len` field.
+message BatchUpdateBlobsRequestOverride {
+  message Request {
+    build.bazel.remote.execution.v2.Digest digest = 1;
+    reserved 2; // Was data, but we are only tracking the length in `data_len`.
+    build.bazel.remote.execution.v2.Compressor.Value compressor = 3;
+
+    // Override/new field to track the length of the data.
+    uint64 data_len = 15; // Using 15 to stay at 1 byte, but higher than 3.
+  }
+
+  string instance_name = 1;
+  repeated Request requests = 2;
+  build.bazel.remote.execution.v2.DigestFunction.Value digest_function = 5;
+}
+
+/// Same as build.bazel.remote.execution.v2.BatchReadBlobsResponse,
+/// but without the data field, and add a `data_len` field.
+message BatchReadBlobsResponseOverride {
+  message Response {
+    build.bazel.remote.execution.v2.Digest digest = 1;
+    reserved 2; // Was data, but we are only tracking the length in `data_len`.
+    build.bazel.remote.execution.v2.Compressor.Value compressor = 4;
+    google.rpc.Status status = 3;
+
+    // Override/new field to track the length of the data.
+    uint64 data_len = 15; // Using 15 to stay at 1 byte, but higher than 3.
+  }
+  repeated Response responses = 1;
+}
+
+/// Same as google.bytestream.WriteRequest, but without the data field,
+/// and add a `data_len` field.
+message WriteRequestOverride {
+    string resource_name = 1;
+    int64 write_offset = 2;
+    bool finish_write = 3;
+    reserved 10; // Was data, but we are only tracking the length in `data_len`.
+
+    // Override/new field to track the length of the data.
+    uint64 data_len = 15; // Using 15 to stay at 1 byte, but higher than 3.
+}
+
+message GetTreeStreamResponse {
+    oneof response {
+        build.bazel.remote.execution.v2.GetTreeResponse success = 1;
+        google.rpc.Status error = 2;
+    }
+
+    reserved 3; // NextId.
+}
+
+message ReadStreamResponse {
+    oneof response {
+        uint64 success = 1;
+        google.rpc.Status error = 2;
+    }
+
+    reserved 3; // NextId.
+}
+
+message WriteStreamRequest {
+    oneof response {
+        WriteRequestOverride success = 1;
+        google.rpc.Status error = 2;
+    }
+
+    reserved 3; // NextId.
+}
+
+message ExecuteStreamResponse {
+    oneof response {
+        google.longrunning.Operation success = 1;
+        google.rpc.Status error = 2;
+    }
+
+    reserved 3; // NextId.
+}
+
+/// Nativelink event that has occurred.
+message OriginEvent {
+    /// The version of this message.
+    uint32 version = 1;
+
+    /// The event UUIDv6. This is a unique identifier for the event for the
+    /// server that generated the event.
+    /// Note: The timestamp of when the event occurred is encoded in the UUID.
+    string event_id = 2;
+
+    /// [optional] The parent event UUID. This is used to track the
+    /// parent event that generated this event. This is useful for
+    /// tracking the flow of events.
+    string parent_event_id = 3;
+
+    /// If the client is bazel, this is the meatadata that was sent with the
+    /// request. This is useful for tracking the flow of events.
+    build.bazel.remote.execution.v2.RequestMetadata bazel_request_metadata = 4;
+
+    // These are reserved for data that is going to be frequently used.
+    // Fields <=15 save 1 byte in the encoding, so we are reserving all fields
+    // not used <=15 for future fields that will be sent a lot.
+    reserved 6 to 15; // Allowed to be used.
+
+    /// The event that occurred.
+    oneof event {
+        build.bazel.remote.execution.v2.GetCapabilitiesRequest get_capabilities_request = 16;
+        build.bazel.remote.execution.v2.ServerCapabilities get_capabilities_response = 17;
+        // Note: GetCapabilitiesRequest currently cannot error.
+
+        build.bazel.remote.execution.v2.GetActionResultRequest get_action_result_request = 18;
+        build.bazel.remote.execution.v2.ActionResult get_action_result_response = 19;
+        google.rpc.Status get_action_result_error = 20;
+
+        build.bazel.remote.execution.v2.UpdateActionResultRequest update_action_result_request = 21;
+        build.bazel.remote.execution.v2.ActionResult update_action_result_response = 22;
+        google.rpc.Status update_action_result_error = 23;
+
+        build.bazel.remote.execution.v2.FindMissingBlobsRequest find_missing_blobs_request = 24;
+        build.bazel.remote.execution.v2.FindMissingBlobsResponse find_missing_blobs_response = 25;
+        google.rpc.Status find_missing_blobs_error = 26;
+
+        build.bazel.remote.execution.v2.BatchReadBlobsRequest batch_read_blobs_request = 27;
+        BatchReadBlobsResponseOverride batch_read_blobs_response = 28;
+        google.rpc.Status batch_read_blobs_error = 29;
+
+        BatchUpdateBlobsRequestOverride batch_update_blobs_request = 30;
+        build.bazel.remote.execution.v2.BatchUpdateBlobsResponse batch_update_blobs_response = 31;
+        google.rpc.Status batch_update_blobs_error = 32;
+
+        build.bazel.remote.execution.v2.GetTreeRequest get_tree_request = 33;
+        google.protobuf.Empty get_tree_response = 34;
+        google.rpc.Status get_tree_error = 35;
+        GetTreeStreamResponse get_tree_stream_response = 36;
+
+        google.bytestream.ReadRequest read_request = 37;
+        google.protobuf.Empty read_response = 38;
+        google.rpc.Status read_error = 39;
+        ReadStreamResponse read_stream_response = 40;
+
+        google.protobuf.Empty write_request = 41;
+        google.bytestream.WriteResponse write_response = 42;
+        google.rpc.Status write_error = 43;
+        WriteStreamRequest write_stream_request = 44;
+
+        google.bytestream.QueryWriteStatusRequest query_write_status_request = 45;
+        google.bytestream.QueryWriteStatusResponse query_write_status_response = 46;
+        google.rpc.Status query_write_status_error = 47;
+
+        build.bazel.remote.execution.v2.ExecuteRequest execute_request = 48;
+        google.protobuf.Empty execute_response = 49;
+        google.rpc.Status execute_error = 50;
+        ExecuteStreamResponse execute_stream_response = 51;
+
+        build.bazel.remote.execution.v2.WaitExecutionRequest wait_execution_request = 52;
+        google.protobuf.Empty wait_execution_response = 53;
+        google.rpc.Status wait_execute_error = 54;
+        ExecuteStreamResponse wait_execute_stream_response = 55;
+    }
+
+    reserved 56; // NextId.
+}
+
+/// Batch of events that have occurred.
+message OriginEvents {
+    repeated OriginEvent events = 1;
+
+    reserved 2; // NextId.
+}
