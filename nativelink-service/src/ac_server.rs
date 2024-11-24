@@ -30,6 +30,7 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
+use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::{Store, StoreLike};
 use prost::Message;
 use tonic::{Request, Response, Status};
@@ -103,9 +104,18 @@ impl AcServer {
             return grpc_store.get_action_result(Request::new(request)).await;
         }
 
-        Ok(Response::new(
-            get_and_decode_digest::<ActionResult>(&store_info.store, digest.into()).await?,
-        ))
+        let res = get_and_decode_digest::<ActionResult>(&store_info.store, digest.into()).await;
+        match res {
+            Ok(action_result) => Ok(Response::new(action_result)),
+            Err(mut e) => {
+                if e.code == Code::NotFound {
+                    // `get_action_result` is frequent to get NotFound errors, so remove all
+                    // messages to save space.
+                    e.messages.clear();
+                }
+                Err(e)
+            }
+        }
     }
 
     async fn inner_update_action_result(
@@ -171,6 +181,8 @@ impl ActionCache for AcServer {
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
         let request = grpc_request.into_inner();
+        let ctx = OriginEventContext::new(|| &request).await;
+
         let resp = make_ctx_for_hash_func(request.digest_function)
             .err_tip(|| "In AcServer::get_action_result")?
             .wrap_async(
@@ -179,11 +191,12 @@ impl ActionCache for AcServer {
             )
             .await;
 
-        // let resp = self.inner_get_action_result(grpc_request).await;
         if resp.is_err() && resp.as_ref().err().unwrap().code != Code::NotFound {
             event!(Level::ERROR, return = ?resp);
         }
-        return resp.map_err(Into::into);
+        let resp = resp.map_err(Into::into);
+        ctx.emit(|| &resp).await;
+        resp
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -199,13 +212,16 @@ impl ActionCache for AcServer {
         grpc_request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
         let request = grpc_request.into_inner();
-        make_ctx_for_hash_func(request.digest_function)
+        let ctx = OriginEventContext::new(|| &request).await;
+        let resp = make_ctx_for_hash_func(request.digest_function)
             .err_tip(|| "In AcServer::update_action_result")?
             .wrap_async(
                 error_span!("ac_server_update_action_result"),
                 self.inner_update_action_result(request),
             )
             .await
-            .map_err(Into::into)
+            .map_err(Into::into);
+        ctx.emit(|| &resp).await;
+        resp
     }
 }

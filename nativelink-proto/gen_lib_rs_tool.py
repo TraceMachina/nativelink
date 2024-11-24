@@ -37,7 +37,14 @@ _HEADER = """\
 // This file is auto-generated. To update it, run:
 // `bazel run nativelink-proto:update_protos`
 
-#![allow(clippy::default_trait_access, clippy::doc_markdown)]
+#![allow(
+    clippy::default_trait_access,
+    clippy::doc_lazy_continuation,
+    clippy::doc_markdown,
+    clippy::doc_markdown,
+    clippy::large_enum_variant,
+    rustdoc::invalid_html_tags
+)]
 """
 
 

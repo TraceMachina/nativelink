@@ -40,6 +40,7 @@ use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, OperationFilter,
 };
+use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::Store;
 use tonic::{Request, Response, Status};
 use tracing::{error_span, event, instrument, Level};
@@ -198,43 +199,39 @@ impl ExecutionServer {
     fn to_execute_stream(
         nl_client_operation_id: &NativelinkOperationId,
         action_listener: Box<dyn ActionStateResult>,
-    ) -> Response<ExecuteStream> {
+    ) -> impl Stream<Item = Result<Operation, Status>> + Send + 'static {
         let client_operation_id = OperationId::from(nl_client_operation_id.to_string());
-        let receiver_stream = Box::pin(unfold(
-            Some(action_listener),
-            move |maybe_action_listener| {
-                let client_operation_id = client_operation_id.clone();
-                async move {
-                    let mut action_listener = maybe_action_listener?;
-                    match action_listener.changed().await {
-                        Ok(action_update) => {
-                            event!(Level::INFO, ?action_update, "Execute Resp Stream");
-                            // If the action is finished we won't be sending any more updates.
-                            let maybe_action_listener = if action_update.stage.is_finished() {
-                                None
-                            } else {
-                                Some(action_listener)
-                            };
-                            Some((
-                                Ok(action_update.as_operation(client_operation_id)),
-                                maybe_action_listener,
-                            ))
-                        }
-                        Err(err) => {
-                            event!(Level::ERROR, ?err, "Error in action_listener stream");
-                            Some((Err(err.into()), None))
-                        }
+        unfold(Some(action_listener), move |maybe_action_listener| {
+            let client_operation_id = client_operation_id.clone();
+            async move {
+                let mut action_listener = maybe_action_listener?;
+                match action_listener.changed().await {
+                    Ok(action_update) => {
+                        event!(Level::INFO, ?action_update, "Execute Resp Stream");
+                        // If the action is finished we won't be sending any more updates.
+                        let maybe_action_listener = if action_update.stage.is_finished() {
+                            None
+                        } else {
+                            Some(action_listener)
+                        };
+                        Some((
+                            Ok(action_update.as_operation(client_operation_id)),
+                            maybe_action_listener,
+                        ))
+                    }
+                    Err(err) => {
+                        event!(Level::ERROR, ?err, "Error in action_listener stream");
+                        Some((Err(err.into()), None))
                     }
                 }
-            },
-        ));
-        tonic::Response::new(receiver_stream)
+            }
+        })
     }
 
     async fn inner_execute(
         &self,
         request: ExecuteRequest,
-    ) -> Result<Response<ExecuteStream>, Error> {
+    ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + 'static, Error> {
         let instance_name = request.instance_name;
 
         let instance_info = self
@@ -275,7 +272,7 @@ impl ExecutionServer {
             .await
             .err_tip(|| "Failed to schedule task")?;
 
-        Ok(Self::to_execute_stream(
+        Ok(Box::pin(Self::to_execute_stream(
             &NativelinkOperationId::new(
                 instance_name,
                 action_listener
@@ -286,14 +283,14 @@ impl ExecutionServer {
                     .clone(),
             ),
             action_listener,
-        ))
+        )))
     }
 
     async fn inner_wait_execution(
         &self,
-        request: Request<WaitExecutionRequest>,
-    ) -> Result<Response<ExecuteStream>, Status> {
-        let nl_operation_id = NativelinkOperationId::from_name(&request.into_inner().name)
+        request: WaitExecutionRequest,
+    ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + 'static, Status> {
+        let nl_operation_id = NativelinkOperationId::from_name(&request.name)
             .err_tip(|| "Failed to parse operation_id in ExecutionServer::wait_execution")?;
         let Some(instance_info) = self.instance_infos.get(&nl_operation_id.instance_name) else {
             return Err(Status::not_found(format!(
@@ -335,15 +332,20 @@ impl Execution for ExecutionServer {
         grpc_request: Request<ExecuteRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
         let request = grpc_request.into_inner();
-        make_ctx_for_hash_func(request.digest_function)
+        let ctx = OriginEventContext::new(|| &request).await;
+        let resp = make_ctx_for_hash_func(request.digest_function)
             .err_tip(|| "In ExecutionServer::execute")?
             .wrap_async(
                 error_span!("execution_server_execute"),
                 self.inner_execute(request),
             )
             .await
+            .map(|stream| ctx.wrap_stream(stream))
+            .map(Response::new)
             .err_tip(|| "Failed on execute() command")
-            .map_err(Into::into)
+            .map_err(Into::into);
+        ctx.emit(|| &resp).await;
+        resp
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -357,10 +359,14 @@ impl Execution for ExecutionServer {
         &self,
         grpc_request: Request<WaitExecutionRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
+        let request = grpc_request.into_inner();
+        let ctx = OriginEventContext::new(|| &request).await;
         let resp = self
-            .inner_wait_execution(grpc_request)
+            .inner_wait_execution(request)
             .await
             .err_tip(|| "Failed on wait_execution() command")
+            .map(|stream| ctx.wrap_stream(stream))
+            .map(Response::new)
             .map_err(Into::into);
 
         if resp.is_ok() {
