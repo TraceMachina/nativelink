@@ -31,7 +31,7 @@ where
 {
     struct NumericVisitor<T: TryFrom<i64>>(PhantomData<T>);
 
-    impl<'de, T> Visitor<'de> for NumericVisitor<T>
+    impl<T> Visitor<'_> for NumericVisitor<T>
     where
         T: TryFrom<i64>,
         <T as TryFrom<i64>>::Error: fmt::Display,
@@ -176,7 +176,7 @@ where
 {
     struct DataSizeVisitor<T: TryFrom<u128>>(PhantomData<T>);
 
-    impl<'de, T> Visitor<'de> for DataSizeVisitor<T>
+    impl<T> Visitor<'_> for DataSizeVisitor<T>
     where
         T: TryFrom<u128>,
         <T as TryFrom<u128>>::Error: fmt::Display,
@@ -229,7 +229,7 @@ where
 {
     struct DurationVisitor<T: TryFrom<u64>>(PhantomData<T>);
 
-    impl<'de, T> Visitor<'de> for DurationVisitor<T>
+    impl<T> Visitor<'_> for DurationVisitor<T>
     where
         T: TryFrom<u64>,
         <T as TryFrom<u64>>::Error: fmt::Display,

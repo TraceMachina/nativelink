@@ -149,7 +149,7 @@ struct MetricStruct<'a> {
     generics: Generics<'a>,
 }
 
-impl<'a> ToTokens for MetricStruct<'a> {
+impl ToTokens for MetricStruct<'_> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let name = &self.name;
         let impl_generics = &self.generics.impl_generics;
@@ -165,9 +165,10 @@ impl<'a> ToTokens for MetricStruct<'a> {
             } else {
                 quote! { "" }
             };
-            let value = match &field.handler {
-                Some(handler) => quote! { &#handler(&self.#field_name) },
-                None => quote! { &self.#field_name },
+            let value = if let Some(handler) = &field.handler {
+                quote! { &#handler(&self.#field_name) }
+            } else {
+                quote! { &self.#field_name }
             };
             let metric_kind = &field.metric_kind;
             quote! {

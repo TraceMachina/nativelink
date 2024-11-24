@@ -53,7 +53,7 @@
         ...
       }: let
         stable-rust-version = "1.82.0";
-        nightly-rust-version = "2024-07-24";
+        nightly-rust-version = "2024-11-23";
 
         # TODO(aaronmondal): Tools like rustdoc don't work with the `pkgsMusl`
         # package set because of missing libgcc_s. Fix this upstream and use the
