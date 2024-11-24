@@ -397,10 +397,10 @@ impl ByteStreamServer {
         &self,
         store: Store,
         digest: DigestInfo,
-        stream: WriteRequestStreamWrapper<Streaming<WriteRequest>, Status>,
+        stream: WriteRequestStreamWrapper<Streaming<WriteRequest>>,
     ) -> Result<Response<WriteResponse>, Error> {
         async fn process_client_stream(
-            mut stream: WriteRequestStreamWrapper<Streaming<WriteRequest>, Status>,
+            mut stream: WriteRequestStreamWrapper<Streaming<WriteRequest>>,
             tx: &mut DropCloserWriteHalf,
             outer_bytes_received: &Arc<AtomicU64>,
             expected_size: u64,

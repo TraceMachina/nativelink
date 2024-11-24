@@ -30,7 +30,7 @@ use nativelink_config::cas_server::{
     CasConfig, GlobalConfig, HttpCompressionAlgorithm, ListenerConfig, ServerConfig, WorkerConfig,
 };
 use nativelink_config::stores::ConfigDigestHashFunction;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, RootMetricsComponent,
 };
@@ -168,7 +168,7 @@ async fn inner_main(
     cfg: CasConfig,
     server_start_timestamp: u64,
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Error> {
     fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
             HttpCompressionAlgorithm::gzip => Some(CompressionEncoding::Gzip),
@@ -245,7 +245,9 @@ async fn inner_main(
     }));
 
     for (server_cfg, connected_clients_mux) in servers_and_clients {
-        let services = server_cfg.services.ok_or("'services' must be configured")?;
+        let services = server_cfg
+            .services
+            .err_tip(|| "'services' must be configured")?;
 
         // Currently we only support http as our socket type.
         let ListenerConfig::http(http_config) = server_cfg.listener;
@@ -731,7 +733,12 @@ async fn inner_main(
             Ok(Some(TlsAcceptor::from(Arc::new(config))))
         })?;
 
-        let socket_addr = http_config.socket_address.parse::<SocketAddr>()?;
+        let socket_addr = http_config
+            .socket_address
+            .parse::<SocketAddr>()
+            .map_err(|e| {
+                make_input_err!("Invalid address '{}' - {e:?}", http_config.socket_address)
+            })?;
         let tcp_listener = TcpListener::bind(&socket_addr).await?;
         let mut http = auto::Builder::new(TaskExecutor::default());
 
@@ -935,11 +942,10 @@ async fn inner_main(
                     };
 
                     if worker_names.contains(&name) {
-                        Err(Box::new(make_err!(
-                            Code::InvalidArgument,
+                        Err(make_input_err!(
                             "Duplicate worker name '{}' found in config",
                             name
-                        )))?;
+                        ))?;
                     }
                     worker_names.insert(name.clone());
                     worker_metrics.insert(name.clone(), metrics);
@@ -1068,10 +1074,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
 
-        let _ = runtime.block_on(Arc::new(OriginContext::new()).wrap_async(
-            trace_span!("main"),
-            inner_main(cfg, server_start_time, shutdown_tx),
-        ));
+        runtime
+            .block_on(Arc::new(OriginContext::new()).wrap_async(
+                trace_span!("main"),
+                inner_main(cfg, server_start_time, shutdown_tx),
+            ))
+            .err_tip(|| "main() function failed")?;
     }
     Ok(())
 }
