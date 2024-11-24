@@ -16,3 +16,15 @@ pub mod cas_server;
 pub mod schedulers;
 pub mod serde_utils;
 pub mod stores;
+
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NamedConfig<Spec> {
+    pub name: String,
+    #[serde(flatten)]
+    pub spec: Spec,
+}
+
+pub type StoreConfig = NamedConfig<crate::stores::StoreSpec>;
+pub type SchedulerConfig = NamedConfig<crate::schedulers::SchedulerSpec>;
