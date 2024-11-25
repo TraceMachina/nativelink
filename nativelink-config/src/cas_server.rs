@@ -212,6 +212,28 @@ pub struct BepConfig {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct OriginEventsPublisherConfig {
+    /// The store to publish nativelink events to.
+    /// The store name referenced in the `stores` map in the main config.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub store: StoreRefName,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct OriginEventsConfig {
+    /// The publisher configuration for origin events.
+    pub publisher: OriginEventsPublisherConfig,
+
+    /// The maximum number of events to queue before applying back pressure.
+    /// IMPORTANT: Backpressure causes all clients to slow down significantly.
+    /// Zero is default.
+    ///
+    /// Default: 65536
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_event_queue_size: usize,
+}
+
+#[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ServicesConfig {
     /// The Content Addressable Storage (CAS) backend config.
@@ -737,6 +759,11 @@ pub struct CasConfig {
 
     /// Servers to setup for this process.
     pub servers: Vec<ServerConfig>,
+
+    /// Experimental - Origin events configuration. This is the service that will
+    /// collect and publish nativelink events to a store for processing by an
+    /// external service.
+    pub experimental_origin_events: Option<OriginEventsConfig>,
 
     /// Any global configurations that apply to all modules live here.
     pub global: Option<GlobalConfig>,

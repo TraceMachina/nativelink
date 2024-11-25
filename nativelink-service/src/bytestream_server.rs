@@ -42,6 +42,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{
     default_digest_hasher_func, make_ctx_for_hash_func, DigestHasherFunc,
 };
+use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::spawn;
@@ -269,7 +270,7 @@ impl ByteStreamServer {
         store: Store,
         digest: DigestInfo,
         read_request: ReadRequest,
-    ) -> Result<Response<ReadStream>, Error> {
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + Send + 'static, Error> {
         struct ReaderState {
             max_bytes_per_stream: usize,
             rx: DropCloserReadHalf,
@@ -308,7 +309,7 @@ impl ByteStreamServer {
 
         let read_stream_span = error_span!("read_stream");
 
-        Ok(Response::new(Box::pin(unfold(state, move |state| {
+        Ok(Box::pin(unfold(state, move |state| {
             async {
             let mut state = state?; // If None our stream is done.
             let mut response = ReadResponse::default();
@@ -322,7 +323,7 @@ impl ByteStreamServer {
                                 Ok(bytes) => {
                                     if bytes.is_empty() {
                                         // EOF.
-                                        return Some((Ok(response), None));
+                                        return None;
                                     }
                                     if bytes.len() > state.max_bytes_per_stream {
                                         let err = make_err!(Code::Internal, "Returned store size was larger than read size");
@@ -381,7 +382,7 @@ impl ByteStreamServer {
             }
             Some((Ok(response), Some(state)))
         }.instrument(read_stream_span.clone())
-        }))))
+        })))
     }
 
     // We instrument tracing here as well as below because `stream` has a hash on it
@@ -397,10 +398,12 @@ impl ByteStreamServer {
         &self,
         store: Store,
         digest: DigestInfo,
-        stream: WriteRequestStreamWrapper<Streaming<WriteRequest>>,
+        stream: WriteRequestStreamWrapper<impl Stream<Item = Result<WriteRequest, Status>> + Unpin>,
     ) -> Result<Response<WriteResponse>, Error> {
         async fn process_client_stream(
-            mut stream: WriteRequestStreamWrapper<Streaming<WriteRequest>>,
+            mut stream: WriteRequestStreamWrapper<
+                impl Stream<Item = Result<WriteRequest, Status>> + Unpin,
+            >,
             tx: &mut DropCloserWriteHalf,
             outer_bytes_received: &Arc<AtomicU64>,
             expected_size: u64,
@@ -589,6 +592,7 @@ impl ByteStream for ByteStreamServer {
         grpc_request: Request<ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
         let read_request = grpc_request.into_inner();
+        let ctx = OriginEventContext::new(|| &read_request).await;
 
         let resource_info = ResourceInfo::new(&read_request.resource_name, false)?;
         let instance_name = resource_info.instance_name.as_ref();
@@ -603,7 +607,9 @@ impl ByteStream for ByteStreamServer {
         // If we are a GrpcStore we shortcut here, as this is a special store.
         if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
             let stream = grpc_store.read(Request::new(read_request)).await?;
-            return Ok(Response::new(Box::pin(stream)));
+            let resp = Ok(Response::new(ctx.wrap_stream(stream)));
+            ctx.emit(|| &resp).await;
+            return resp;
         }
 
         let digest_function = resource_info.digest_function.as_deref().map_or_else(
@@ -619,11 +625,15 @@ impl ByteStream for ByteStreamServer {
             )
             .await
             .err_tip(|| "In ByteStreamServer::read")
+            .map(|stream| -> Response<Self::ReadStream> {
+                Response::new(Box::pin(ctx.wrap_stream(stream)))
+            })
             .map_err(Into::into);
 
         if resp.is_ok() {
             event!(Level::DEBUG, return = "Ok(<stream>)");
         }
+        ctx.emit(|| &resp).await;
         resp
     }
 
@@ -638,7 +648,9 @@ impl ByteStream for ByteStreamServer {
         &self,
         grpc_request: Request<Streaming<WriteRequest>>,
     ) -> Result<Response<WriteResponse>, Status> {
-        let stream = WriteRequestStreamWrapper::from(grpc_request.into_inner())
+        let request = grpc_request.into_inner();
+        let ctx = OriginEventContext::new(|| &request).await;
+        let stream = WriteRequestStreamWrapper::from(ctx.wrap_stream(request))
             .await
             .err_tip(|| "Could not unwrap first stream message")
             .map_err(Into::<Status>::into)?;
@@ -658,7 +670,9 @@ impl ByteStream for ByteStreamServer {
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
         if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
-            return grpc_store.write(stream).await.map_err(Into::into);
+            let resp = grpc_store.write(stream).await.map_err(Into::into);
+            ctx.emit(|| &resp).await;
+            return resp;
         }
 
         let digest_function = stream
@@ -670,7 +684,7 @@ impl ByteStream for ByteStreamServer {
                 DigestHasherFunc::try_from,
             )?;
 
-        make_ctx_for_hash_func(digest_function)
+        let resp = make_ctx_for_hash_func(digest_function)
             .err_tip(|| "In BytestreamServer::write")?
             .wrap_async(
                 error_span!("bytestream_write"),
@@ -678,7 +692,9 @@ impl ByteStream for ByteStreamServer {
             )
             .await
             .err_tip(|| "In ByteStreamServer::write")
-            .map_err(Into::into)
+            .map_err(Into::into);
+        ctx.emit(|| &resp).await;
+        resp
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -693,9 +709,14 @@ impl ByteStream for ByteStreamServer {
         &self,
         grpc_request: Request<QueryWriteStatusRequest>,
     ) -> Result<Response<QueryWriteStatusResponse>, Status> {
-        self.inner_query_write_status(&grpc_request.into_inner())
+        let request = grpc_request.into_inner();
+        let ctx = OriginEventContext::new(|| &request).await;
+        let resp = self
+            .inner_query_write_status(&request)
             .await
             .err_tip(|| "Failed on query_write_status() command")
-            .map_err(Into::into)
+            .map_err(Into::into);
+        ctx.emit(|| &resp).await;
+        resp
     }
 }

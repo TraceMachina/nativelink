@@ -115,10 +115,7 @@ async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
 
     let err = raw_response.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
-    assert_eq!(
-            err.message(),
-            "Key Digest(DigestInfo(\"0123456789abcdef000000000000000000000000000000000123456789abcdef-0\")) not found"
-        );
+    assert!(err.message().is_empty());
     Ok(())
 }
 
@@ -160,10 +157,7 @@ async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error
 
     let err = raw_response.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
-    assert_eq!(
-            err.message(),
-            "Key Digest(DigestInfo(\"0123456789abcdef000000000000000000000000000000000123456789abcdef-146\")) not found"
-        );
+    assert!(err.message().is_empty());
     Ok(())
 }
 

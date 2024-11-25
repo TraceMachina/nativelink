@@ -18,7 +18,7 @@ use std::pin::Pin;
 
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{CasStoreConfig, InstanceName};
 use nativelink_error::{error_if, make_input_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
@@ -35,6 +35,7 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
+use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::{Store, StoreLike};
 use tonic::{Request, Response, Status};
 use tracing::{error_span, event, instrument, Level};
@@ -209,7 +210,7 @@ impl CasServer {
     async fn inner_get_tree(
         &self,
         request: GetTreeRequest,
-    ) -> Result<Response<GetTreeStream>, Error> {
+    ) -> Result<impl Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static, Error> {
         let instance_name = &request.instance_name;
 
         let store = self
@@ -226,7 +227,7 @@ impl CasServer {
                 .get_tree(Request::new(request))
                 .await?
                 .into_inner();
-            return Ok(Response::new(Box::pin(stream)));
+            return Ok(stream.left_stream());
         }
         let root_digest: DigestInfo = request
             .root_digest
@@ -290,12 +291,13 @@ impl CasServer {
             String::new()
         };
 
-        Ok(Response::new(Box::pin(futures::stream::once(async {
+        Ok(futures::stream::once(async {
             Ok(GetTreeResponse {
                 directories,
                 next_page_token,
             })
-        }))))
+        })
+        .right_stream())
     }
 }
 
@@ -316,7 +318,8 @@ impl ContentAddressableStorage for CasServer {
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
         let request = grpc_request.into_inner();
-        make_ctx_for_hash_func(request.digest_function)
+        let ctx = OriginEventContext::new(|| &request).await;
+        let resp = make_ctx_for_hash_func(request.digest_function)
             .err_tip(|| "In CasServer::find_missing_blobs")?
             .wrap_async(
                 error_span!("cas_server_find_missing_blobs"),
@@ -324,7 +327,9 @@ impl ContentAddressableStorage for CasServer {
             )
             .await
             .err_tip(|| "Failed on find_missing_blobs() command")
-            .map_err(Into::into)
+            .map_err(Into::into);
+        ctx.emit(|| &resp).await;
+        resp
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -340,7 +345,8 @@ impl ContentAddressableStorage for CasServer {
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
         let request = grpc_request.into_inner();
-        make_ctx_for_hash_func(request.digest_function)
+        let ctx = OriginEventContext::new(|| &request).await;
+        let resp = make_ctx_for_hash_func(request.digest_function)
             .err_tip(|| "In CasServer::batch_update_blobs")?
             .wrap_async(
                 error_span!("cas_server_batch_update_blobs"),
@@ -348,7 +354,9 @@ impl ContentAddressableStorage for CasServer {
             )
             .await
             .err_tip(|| "Failed on batch_update_blobs() command")
-            .map_err(Into::into)
+            .map_err(Into::into);
+        ctx.emit(|| &resp).await;
+        resp
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -364,7 +372,8 @@ impl ContentAddressableStorage for CasServer {
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
         let request = grpc_request.into_inner();
-        make_ctx_for_hash_func(request.digest_function)
+        let ctx = OriginEventContext::new(|| &request).await;
+        let resp = make_ctx_for_hash_func(request.digest_function)
             .err_tip(|| "In CasServer::batch_read_blobs")?
             .wrap_async(
                 error_span!("cas_server_batch_read_blobs"),
@@ -372,7 +381,9 @@ impl ContentAddressableStorage for CasServer {
             )
             .await
             .err_tip(|| "Failed on batch_read_blobs() command")
-            .map_err(Into::into)
+            .map_err(Into::into);
+        ctx.emit(|| &resp).await;
+        resp
     }
 
     #[allow(clippy::blocks_in_conditions)]
@@ -387,6 +398,7 @@ impl ContentAddressableStorage for CasServer {
         grpc_request: Request<GetTreeRequest>,
     ) -> Result<Response<Self::GetTreeStream>, Status> {
         let request = grpc_request.into_inner();
+        let ctx = OriginEventContext::new(|| &request).await;
         let resp = make_ctx_for_hash_func(request.digest_function)
             .err_tip(|| "In CasServer::get_tree")?
             .wrap_async(
@@ -395,10 +407,14 @@ impl ContentAddressableStorage for CasServer {
             )
             .await
             .err_tip(|| "Failed on get_tree() command")
+            .map(|stream| -> Response<Self::GetTreeStream> {
+                Response::new(ctx.wrap_stream(stream))
+            })
             .map_err(Into::into);
         if resp.is_ok() {
             event!(Level::DEBUG, return = "Ok(<stream>)");
         }
+        ctx.emit(|| &resp).await;
         resp
     }
 }

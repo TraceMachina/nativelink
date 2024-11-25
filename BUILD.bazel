@@ -27,7 +27,7 @@ rust_binary(
         "@crates//:axum",
         "@crates//:clap",
         "@crates//:futures",
-        "@crates//:hyper-1.4.1",
+        "@crates//:hyper-1.5.1",
         "@crates//:hyper-util",
         "@crates//:mimalloc",
         "@crates//:opentelemetry",

@@ -11,11 +11,20 @@ PROTO_NAMES = [
     "build.bazel.remote.execution.v2",
     "build.bazel.semver",
     "com.github.trace_machina.nativelink.remote_execution",
+    "com.github.trace_machina.nativelink.events",
     "google.api",
     "google.bytestream",
     "google.devtools.build.v1",
     "google.longrunning",
     "google.rpc",
+    "build_event_stream",
+    "command_line",
+    "devtools.build.lib.packages.metrics",
+    "blaze",
+    "options",
+    "failure_details",
+    "blaze.invocation_policy",
+    "blaze.strategy_policy",
 ]
 
 rust_binary(
@@ -69,6 +78,7 @@ genrule(
     srcs = [
         "build/bazel/remote/execution/v2/remote_execution.proto",
         "build/bazel/semver/semver.proto",
+        "com/github/trace_machina/nativelink/remote_execution/events.proto",
         "com/github/trace_machina/nativelink/remote_execution/worker_api.proto",
         "google/api/annotations.proto",
         "google/api/client.proto",
@@ -86,6 +96,14 @@ genrule(
         "google/protobuf/timestamp.proto",
         "google/protobuf/wrappers.proto",
         "google/rpc/status.proto",
+        "src/main/java/com/google/devtools/build/lib/buildeventstream/proto/build_event_stream.proto",
+        "src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto",
+        "src/main/protobuf/command_line.proto",
+        "src/main/protobuf/action_cache.proto",
+        "src/main/protobuf/option_filters.proto",
+        "src/main/protobuf/failure_details.proto",
+        "src/main/protobuf/invocation_policy.proto",
+        "src/main/protobuf/strategy_policy.proto",
     ],
     outs = ["{}.pb.rs".format(name) for name in PROTO_NAMES],
     cmd = select({
