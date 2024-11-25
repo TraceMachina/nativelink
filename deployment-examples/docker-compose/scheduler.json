@@ -3,7 +3,7 @@
     "GRPC_LOCAL_STORE": {
       // Note: This file is used to test GRPC store.
       "grpc": {
-        "instance_name": "main",
+        "instance_name": "",
         "endpoints": [
           {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
         ],
@@ -13,7 +13,7 @@
     "GRPC_LOCAL_AC_STORE": {
       // Note: This file is used to test GRPC store.
       "grpc": {
-        "instance_name": "main",
+        "instance_name": "",
         "endpoints": [
           {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
         ],
@@ -38,20 +38,25 @@
         "socket_address": "0.0.0.0:50052",
       }
     },
+    // Each of the services below is keyed on an instance_name.
+    // By default, an empty string is used, but if a different
+    // instance_name is provided, the instance name must be
+    // specified by the invoking tool (e.g. using
+    // `--remote_instance_name=` for Bazel)
     "services": {
       "ac": {
-        "main": {
+        "": {
           "ac_store": "GRPC_LOCAL_AC_STORE"
         }
       },
       "execution": {
-        "main": {
+        "": {
           "cas_store": "GRPC_LOCAL_STORE",
           "scheduler": "MAIN_SCHEDULER",
         }
       },
       "capabilities": {
-        "main": {
+        "": {
           "remote_execution": {
             "scheduler": "MAIN_SCHEDULER",
           }
