@@ -78,7 +78,17 @@
       }
     }
   }],
-  "servers": [],
+  "servers": [{
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50061",
+      }
+    },
+    "services": {
+      // TODO(aaronmondal): This is actually served on 4317.
+      "experimental_otlp": {},
+    }
+  }],
   "global": {
     "max_open_files": 524288
   }

@@ -89,6 +89,8 @@
         "scheduler": "MAIN_SCHEDULER",
       },
       "health": {},
+      // TODO(aaronmondal): This is actually served on 4317.
+      "experimental_otlp": {}
     }
   }]
 }

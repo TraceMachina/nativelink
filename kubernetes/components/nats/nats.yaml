@@ -1,0 +1,63 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nats-system
+  labels:
+    toolkit.fluxcd.io/tenant: sre-team
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: nats
+  namespace: nats-system
+spec:
+  interval: 24h
+  url: https://nats-io.github.io/k8s/helm/charts/
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: nats
+  namespace: nats-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: nats
+      version: "1.x"
+      sourceRef:
+        kind: HelmRepository
+        name: nats
+        namespace: nats-system
+      interval: 12h
+  values:
+    config:
+      jetstream:
+        enabled: true
+        fileStore:
+          pvc:
+            size: 10Gi
+      # Enable Prometheus metrics
+      merge:
+        server_name: "nats-jetstream"
+        debug: false
+        trace: false
+        jetstream:
+          max_memory_store: "<< 1GB >>"
+          max_file_store: "<< 10GB >>"
+
+    promExporter:
+      enabled: true
+
+    container:
+      env:
+        GOMEMLIMIT: 1GiB
+      merge:
+        resources:
+          requests:
+            cpu: "500m"
+            memory: 1Gi
+          limits:
+            cpu: "1"
+            memory: 1Gi

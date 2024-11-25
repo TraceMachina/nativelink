@@ -3,6 +3,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nativelink-worker
+  labels:
+    app: nativelink-scheduler
+    app.kubernetes.io/part-of: nativelink
 spec:
   replicas: 3
   selector:
@@ -12,6 +15,7 @@ spec:
     metadata:
       labels:
         app: nativelink-worker
+        app.kubernetes.io/part-of: nativelink
     spec:
       initContainers:
         - name: nativelink-worker-init

@@ -181,6 +181,17 @@ pub struct PrometheusConfig {
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+pub struct OtlpConfig {
+    /// Grpc endpoint. This is a fully qualified URL as in "http
+    /// TODO(aaronmondal): Should default to https.
+    ///
+    /// Default: http://localhost:4317
+    #[serde(default)]
+    pub endpoint: String,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AdminConfig {
     /// Path to register the admin API. If path is "/admin", and your
     /// domain is "example.com", you can reach the endpoint with:
@@ -256,6 +267,9 @@ pub struct ServicesConfig {
     /// Experimental - Prometheus metrics configuration. Metrics are gathered
     /// as a singleton but may be served on multiple endpoints.
     pub experimental_prometheus: Option<PrometheusConfig>,
+
+    /// Experimental - Enable the OpenTelemetry Protocol endpoint.
+    pub experimental_otlp: Option<OtlpConfig>,
 
     /// This is the service for any administrative tasks.
     /// It provides a REST API endpoint for administrative purposes.

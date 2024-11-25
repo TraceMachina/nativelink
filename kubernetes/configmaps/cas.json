@@ -79,7 +79,9 @@
     "services": {
       "experimental_prometheus": {
         "path": "/metrics"
-      }
+      },
+      // TODO(aaronmondal): This is actually served on 4317.
+      "experimental_otlp": {}
     }
   },
   {

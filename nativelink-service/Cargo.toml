@@ -10,6 +10,8 @@ nativelink-config = { path = "../nativelink-config" }
 nativelink-util = { path = "../nativelink-util" }
 nativelink-store = { path = "../nativelink-store" }
 nativelink-scheduler = { path = "../nativelink-scheduler" }
+nativelink-metric = { path = "../nativelink-metric" }
+nativelink-metric-collector = { path = "../nativelink-metric-collector" }
 axum = { version = "0.7.7", default-features = false }
 bytes = { version = "1.7.2", default-features = false }
 futures = { version = "0.3.30", default-features = false }
@@ -24,7 +26,12 @@ tokio-stream = { version = "0.1.16", features = ["fs"], default-features = false
 tonic = { version = "0.12.3", features = ["transport", "tls"], default-features = false }
 tower = { version = "0.5.1", default-features = false }
 tracing = { version = "0.1.40", default-features = false }
+tracing-subscriber = { version = "0.3.18", default-features = false }
 uuid = { version = "1.10.0", default-features = false, features = ["v4", "serde"] }
+
+opentelemetry-otlp = "0.17.0"
+opentelemetry_sdk = { version = "0.24.1", features = ["metrics", "rt-tokio"], default-features = false }
+opentelemetry = { version = "0.24.0", default-features = false }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

@@ -3,6 +3,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nativelink-cas
+  labels:
+    app: nativelink-cas
+    app.kubernetes.io/part-of: nativelink
 spec:
   replicas: 1
   selector:
@@ -12,6 +15,7 @@ spec:
     metadata:
       labels:
         app: nativelink-cas
+        app.kubernetes.io/part-of: nativelink
     spec:
       containers:
         - name: nativelink-cas
