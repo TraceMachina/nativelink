@@ -3,9 +3,11 @@ Astro
 Bazel
 Cloudflare
 ELB
+FFI
 GPUs
 Goma
 [Hh]ermeticity
+JDK
 Kustomization
 LLD
 LLVM
@@ -24,7 +26,9 @@ TraceMachina
 [Tt]oolchain
 Qwik
 Verilog
+Zstandard
 alex
+[Ee]xecution
 autoscaling
 blazingly
 bundler
