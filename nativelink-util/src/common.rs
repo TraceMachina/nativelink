@@ -15,7 +15,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
-use std::hash::Hash;
+use std::hash::{BuildHasher, Hash};
 use std::io::{Cursor, Write};
 use std::ops::{Deref, DerefMut};
 
@@ -434,7 +434,7 @@ pub trait HashMapExt<K: std::cmp::Eq + std::hash::Hash, T> {
         F: (std::ops::Fn(T) -> Result<U, Error>) + Sized;
 }
 
-impl<K: std::cmp::Eq + std::hash::Hash, T> HashMapExt<K, T> for HashMap<K, T> {
+impl<K: std::cmp::Eq + std::hash::Hash, T, S: BuildHasher> HashMapExt<K, T> for HashMap<K, T, S> {
     fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U>, Error>
     where
         Self: Sized,
