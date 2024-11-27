@@ -66,7 +66,6 @@ where
                     Ok(data) => data,
                     Err(err) => return Some((Err(err), None)),
                 };
-                continue;
             }
         },
     ))

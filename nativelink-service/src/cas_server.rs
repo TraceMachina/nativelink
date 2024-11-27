@@ -138,7 +138,7 @@ impl CasServer {
                     .err_tip(|| "Error writing to store");
                 Ok::<_, Error>(batch_update_blobs_response::Response {
                     digest: Some(digest),
-                    status: Some(result.map_or_else(Into::into, |_| GrpcStatus::default())),
+                    status: Some(result.map_or_else(Into::into, |()| GrpcStatus::default())),
                 })
             })
             .collect();

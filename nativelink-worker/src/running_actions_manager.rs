@@ -148,7 +148,7 @@ pub fn download_to_directory<'a>(
             futures.push(
                 cas_store
                     .populate_fast_store(digest.into())
-                    .and_then(move |_| async move {
+                    .and_then(move |()| async move {
                         let file_entry = filesystem_store
                             .get_file_entry_for_digest(&digest)
                             .await
@@ -680,7 +680,7 @@ impl RunningActionImpl {
             });
             let filesystem_store_pin =
                 Pin::new(self.running_actions_manager.filesystem_store.as_ref());
-            let (command, _) = try_join(command_fut, async {
+            let (command, ()) = try_join(command_fut, async {
                 fs::create_dir(&self.work_directory)
                     .await
                     .err_tip(|| format!("Error creating work directory {}", self.work_directory))?;
@@ -911,7 +911,7 @@ impl RunningActionImpl {
         let mut sleep_fut = (self.running_actions_manager.callbacks.sleep_fn)(self.timeout).fuse();
         loop {
             tokio::select! {
-                _ = &mut sleep_fut => {
+                () = &mut sleep_fut => {
                     self.running_actions_manager.metrics.task_timeouts.inc();
                     killed_action = true;
                     if let Err(err) = child_process_guard.start_kill() {
@@ -1206,7 +1206,7 @@ impl RunningActionImpl {
         });
         drop(output_path_futures);
         let (stdout_digest, stderr_digest) = match upload_result {
-            Ok((stdout_digest, stderr_digest, _)) => (stdout_digest, stderr_digest),
+            Ok((stdout_digest, stderr_digest, ())) => (stdout_digest, stderr_digest),
             Err(e) => return Err(e).err_tip(|| "Error while uploading results"),
         };
 
@@ -1761,7 +1761,7 @@ impl RunningActionsManagerImpl {
             format!("Expected action id '{operation_id:?}' to exist in RunningActionsManagerImpl")
         });
         // No need to copy anything, we just are telling the receivers an event happened.
-        self.action_done_tx.send_modify(|_| {});
+        self.action_done_tx.send_modify(|()| {});
         result.map(|_| ())
     }
 
@@ -1890,7 +1890,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         let _ = self
             .action_done_tx
             .subscribe()
-            .wait_for(|_| self.running_actions.lock().is_empty())
+            .wait_for(|()| self.running_actions.lock().is_empty())
             .await;
     }
 
@@ -1917,7 +1917,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         let _ = self
             .action_done_tx
             .subscribe()
-            .wait_for(|_| self.running_actions.lock().is_empty())
+            .wait_for(|()| self.running_actions.lock().is_empty())
             .await;
     }
 

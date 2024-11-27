@@ -2691,7 +2691,7 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
                 })
         });
 
-    let (results, _) = tokio::join!(execute_results_fut, async move {
+    let (results, ()) = tokio::join!(execute_results_fut, async move {
         tokio::task::yield_now().await;
         let tx = TIMEOUT_ONESHOT.lock().unwrap().0.take().unwrap();
         tx.send(()).expect("Could not send timeout signal");
