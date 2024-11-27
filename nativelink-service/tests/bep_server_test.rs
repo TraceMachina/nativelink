@@ -297,7 +297,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
         // Send off the requests and validate the responses.
         for (sequence_number, request) in requests.iter().enumerate().map(|(i, req)| {
             // Sequence numbers are 1-indexed, while `.enumerate()` indexes from 0.
-            (i as i64 + 1, req)
+            (i.try_into().unwrap_or(i64::MAX).saturating_add(1), req)
         }) {
             let encoded_request = encode_stream_proto(request)?;
             request_tx.send(Frame::data(encoded_request)).await?;

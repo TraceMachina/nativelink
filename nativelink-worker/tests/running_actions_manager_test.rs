@@ -1708,7 +1708,7 @@ exit 0
             }],
         }),
         timeout: Some(prost_types::Duration {
-            seconds: TASK_TIMEOUT.as_secs() as i64,
+            seconds: TASK_TIMEOUT.as_secs().try_into().unwrap_or(i64::MAX),
             nanos: 0,
         }),
         ..Default::default()
@@ -2340,7 +2340,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
             command_digest: Some(command_digest.into()),
             input_root_digest: Some(input_root_digest.into()),
             timeout: Some(prost_types::Duration {
-                seconds: TASK_TIMEOUT.as_secs() as i64,
+                seconds: TASK_TIMEOUT.as_secs().try_into().unwrap_or(i64::MAX),
                 nanos: 0,
             }),
             ..Default::default()
@@ -2420,7 +2420,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
             command_digest: Some(command_digest.into()),
             input_root_digest: Some(input_root_digest.into()),
             timeout: Some(prost_types::Duration {
-                seconds: TASK_TIMEOUT.as_secs() as i64,
+                seconds: TASK_TIMEOUT.as_secs().try_into().unwrap_or(i64::MAX),
                 nanos: 0,
             }),
             ..Default::default()
@@ -2500,7 +2500,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
             command_digest: Some(command_digest.into()),
             input_root_digest: Some(input_root_digest.into()),
             timeout: Some(prost_types::Duration {
-                seconds: TASK_TIMEOUT.as_secs() as i64,
+                seconds: TASK_TIMEOUT.as_secs().try_into().unwrap_or(i64::MAX),
                 nanos: 0,
             }),
             ..Default::default()

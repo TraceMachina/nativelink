@@ -508,7 +508,7 @@ impl ByteStreamServer {
         active_stream_guard.graceful_finish();
 
         Ok(Response::new(WriteResponse {
-            committed_size: expected_size as i64,
+            committed_size: expected_size.try_into().unwrap_or(i64::MAX),
         }))
     }
 
@@ -547,7 +547,10 @@ impl ByteStreamServer {
             let active_uploads = self.active_uploads.lock();
             if let Some((received_bytes, _maybe_idle_stream)) = active_uploads.get(uuid.as_ref()) {
                 return Ok(Response::new(QueryWriteStatusResponse {
-                    committed_size: received_bytes.load(Ordering::Acquire) as i64,
+                    committed_size: received_bytes
+                        .load(Ordering::Acquire)
+                        .try_into()
+                        .unwrap_or(i64::MAX),
                     // If we are in the active_uploads map, but the value is None,
                     // it means the stream is not complete.
                     complete: false,
@@ -567,7 +570,7 @@ impl ByteStreamServer {
             }));
         };
         Ok(Response::new(QueryWriteStatusResponse {
-            committed_size: item_size as i64,
+            committed_size: item_size.try_into().unwrap_or(i64::MAX),
             complete: true,
         }))
     }

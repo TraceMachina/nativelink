@@ -200,7 +200,9 @@ async fn one_item_update_test() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    let size_bytes = get_encoded_proto_size(&action_result)? as i64;
+    let size_bytes = get_encoded_proto_size(&action_result)?
+        .try_into()
+        .unwrap_or(i64::MAX);
 
     let raw_response = update_action_result(
         &ac_server,
