@@ -212,7 +212,7 @@ impl MetricsComponent for ActionUniqueQualifier {
 }
 
 impl ActionUniqueQualifier {
-    /// Get the instance_name of the action.
+    /// Get the `instance_name` of the action.
     pub const fn instance_name(&self) -> &String {
         match self {
             Self::Cachable(action) | Self::Uncachable(action) => &action.instance_name,
@@ -305,7 +305,7 @@ pub struct ActionInfo {
     /// When this action was created.
     #[metric(help = "When this action was created.")]
     pub insert_timestamp: SystemTime,
-    /// Info used to uniquely identify this ActionInfo and if it is cachable.
+    /// Info used to uniquely identify this `ActionInfo` and if it is cachable.
     /// This is primarily used to join actions/operations together using this key.
     #[metric(help = "Info used to uniquely identify this ActionInfo and if it is cachable.")]
     pub unique_qualifier: ActionUniqueQualifier,

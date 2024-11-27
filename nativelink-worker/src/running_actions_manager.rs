@@ -99,7 +99,7 @@ enum SideChannelFailureReason {
 }
 
 /// This represents the json data that can be passed from the running process
-/// to the parent via the SideChannelFile. See:
+/// to the parent via the `SideChannelFile`. See:
 /// `config::EnvironmentSource::sidechannelfile` for more details.
 /// Note: Any fields added here must be added to the documentation.
 #[derive(Debug, Deserialize, Default)]
@@ -1377,7 +1377,7 @@ pub struct Callbacks {
 }
 
 /// The set of additional information for executing an action over and above
-/// those given in the ActionInfo passed to the worker.  This allows
+/// those given in the `ActionInfo` passed to the worker.  This allows
 /// modification of the action for execution on this particular worker.  This
 /// may be used to run the action with a particular set of additional
 /// environment variables, or perhaps configure it to execute within a
@@ -1385,12 +1385,12 @@ pub struct Callbacks {
 #[derive(Default)]
 pub struct ExecutionConfiguration {
     /// If set, will be executed instead of the first argument passed in the
-    /// ActionInfo with all of the arguments in the ActionInfo passed as
+    /// `ActionInfo` with all of the arguments in the `ActionInfo` passed as
     /// arguments to this command.
     pub entrypoint: Option<String>,
     /// The only environment variables that will be specified when the command
-    /// executes other than those in the ActionInfo.  On Windows, SystemRoot
-    /// and PATH are also assigned (see inner_execute).
+    /// executes other than those in the `ActionInfo`.  On Windows, `SystemRoot`
+    /// and PATH are also assigned (see `inner_execute`).
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
 }
 
@@ -1465,8 +1465,8 @@ impl UploadActionResults {
         }
     }
 
-    /// Formats the message field in ExecuteResponse from the success_message_template or
-    /// failure_message_template config templates.
+    /// Formats the message field in `ExecuteResponse` from the `success_message_template`
+    /// or `failure_message_template` config templates.
     fn format_execute_response_message(
         mut template_str: Template,
         action_digest_info: DigestInfo,

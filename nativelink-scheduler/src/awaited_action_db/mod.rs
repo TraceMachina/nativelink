@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 mod awaited_action;
 
-/// A simple enum to represent the state of an AwaitedAction.
+/// A simple enum to represent the state of an `AwaitedAction`.
 #[derive(Debug, Clone, Copy)]
 pub enum SortedAwaitedActionState {
     CacheCheck,
@@ -54,7 +54,7 @@ impl TryFrom<ActionStage> for SortedAwaitedActionState {
     }
 }
 
-/// A struct pointing to an AwaitedAction that can be sorted.
+/// A struct pointing to an `AwaitedAction` that can be sorted.
 #[derive(Debug, Clone, Serialize, Deserialize, MetricsComponent)]
 pub struct SortedAwaitedAction {
     #[metric(help = "The sort key of the AwaitedAction")]
@@ -127,39 +127,39 @@ impl TryFrom<&[u8]> for SortedAwaitedAction {
     }
 }
 
-/// Subscriber that can be used to monitor when AwaitedActions change.
+/// Subscriber that can be used to monitor when `AwaitedActions` change.
 pub trait AwaitedActionSubscriber: Send + Sync + Sized + 'static {
-    /// Wait for AwaitedAction to change.
+    /// Wait for `AwaitedAction` to change.
     fn changed(&mut self) -> impl Future<Output = Result<AwaitedAction, Error>> + Send;
 
     /// Get the current awaited action.
     fn borrow(&self) -> impl Future<Output = Result<AwaitedAction, Error>> + Send;
 }
 
-/// A trait that defines the interface for an AwaitedActionDb.
+/// A trait that defines the interface for an `AwaitedActionDb`.
 pub trait AwaitedActionDb: Send + Sync + MetricsComponent + Unpin + 'static {
     type Subscriber: AwaitedActionSubscriber;
 
-    /// Get the AwaitedAction by the client operation id.
+    /// Get the `AwaitedAction` by the client operation id.
     fn get_awaited_action_by_id(
         &self,
         client_operation_id: &OperationId,
     ) -> impl Future<Output = Result<Option<Self::Subscriber>, Error>> + Send;
 
-    /// Get all AwaitedActions. This call should be avoided as much as possible.
+    /// Get all `AwaitedActions`. This call should be avoided as much as possible.
     fn get_all_awaited_actions(
         &self,
     ) -> impl Future<
         Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error>,
     > + Send;
 
-    /// Get the AwaitedAction by the operation id.
+    /// Get the `AwaitedAction` by the operation id.
     fn get_by_operation_id(
         &self,
         operation_id: &OperationId,
     ) -> impl Future<Output = Result<Option<Self::Subscriber>, Error>> + Send;
 
-    /// Get a range of AwaitedActions of a specific state in sorted order.
+    /// Get a range of `AwaitedActions` of a specific state in sorted order.
     fn get_range_of_actions(
         &self,
         state: SortedAwaitedActionState,
@@ -170,13 +170,13 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + Unpin + 'static {
         Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error>,
     > + Send;
 
-    /// Process a change changed AwaitedAction and notify any listeners.
+    /// Process a change changed `AwaitedAction` and notify any listeners.
     fn update_awaited_action(
         &self,
         new_awaited_action: AwaitedAction,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 
-    /// Add (or join) an action to the AwaitedActionDb and subscribe
+    /// Add (or join) an action to the `AwaitedActionDb` and subscribe
     /// to changes.
     fn add_action(
         &self,

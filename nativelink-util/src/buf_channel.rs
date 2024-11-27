@@ -201,7 +201,7 @@ pub struct DropCloserReadHalf {
     /// any of the data was received if possible (eg: something failed and
     /// we want to retry).
     recent_data: Vec<Bytes>,
-    /// Amount of data to keep in the recent_data buffer before clearing it
+    /// Amount of data to keep in the `recent_data` buffer before clearing it
     /// and no longer populating it.
     max_recent_data_size: u64,
 }
@@ -265,15 +265,15 @@ impl DropCloserReadHalf {
         self.recent_data.push(chunk.clone());
     }
 
-    /// Sets the maximum size of the recent_data buffer. If the number of bytes
-    /// received exceeds this size, the recent_data buffer will be cleared and
+    /// Sets the maximum size of the `recent_data` buffer. If the number of bytes
+    /// received exceeds this size, the `recent_data` buffer will be cleared and
     /// no longer populated.
     pub fn set_max_recent_data_size(&mut self, size: u64) {
         self.max_recent_data_size = size;
     }
 
     /// Attempts to reset the stream to before any data was received. This will
-    /// only work if the number of bytes received is less than max_recent_data_size.
+    /// only work if the number of bytes received is less than `max_recent_data_size`.
     ///
     /// On error the state of the stream is undefined and the caller should not
     /// attempt to use the stream again.

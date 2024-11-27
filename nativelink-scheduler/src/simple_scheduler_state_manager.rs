@@ -42,7 +42,7 @@ use super::awaited_action_db::{
 /// can fail before giving up.
 const MAX_UPDATE_RETRIES: usize = 5;
 
-/// Simple struct that implements the ActionStateResult trait and always returns an error.
+/// Simple struct that implements the `ActionStateResult` trait and always returns an error.
 struct ErrorActionStateResult(Error);
 
 #[async_trait]
@@ -236,7 +236,7 @@ where
     }
 }
 
-/// SimpleSchedulerStateManager is responsible for maintaining the state of the scheduler.
+/// `SimpleSchedulerStateManager` is responsible for maintaining the state of the scheduler.
 /// Scheduler state includes the actions that are queued, active, and recently completed.
 /// It also includes the workers that are available to execute actions based on allocation
 /// strategy.

@@ -19,7 +19,7 @@ use fred::interfaces::RediSearchInterface;
 use fred::types::{FromRedis, RedisMap, RedisValue};
 use futures::Stream;
 
-/// Calls FT_AGGREGATE in redis. Fred does not properly support this command
+/// Calls `FT_AGGREGATE` in redis. Fred does not properly support this command
 /// so we have to manually handle it.
 pub async fn ft_aggregate<C, I, Q>(
     client: C,

@@ -36,7 +36,7 @@ pub struct ConnectionManager {
     worker_tx: mpsc::Sender<oneshot::Sender<Connection>>,
 }
 
-/// The index into ConnectionManagerWorker::endpoints.
+/// The index into `ConnectionManagerWorker::endpoints`.
 type EndpointIndex = usize;
 /// The identifier for a given connection to a given Endpoint, used to identify
 /// when a particular connection has failed or becomes available.
@@ -44,7 +44,7 @@ type ConnectionIndex = usize;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct ChannelIdentifier {
-    /// The index into ConnectionManagerWorker::endpoints that established this
+    /// The index into `ConnectionManagerWorker::endpoints` that established this
     /// Channel.
     endpoint_index: EndpointIndex,
     /// A unique identifier for this particular connection to the Endpoint.
@@ -52,7 +52,7 @@ struct ChannelIdentifier {
 }
 
 /// The requests that can be made from a Connection to the
-/// ConnectionManagerWorker such as informing it that it's been dropped or that
+/// `ConnectionManagerWorker` such as informing it that it's been dropped or that
 /// an error occurred.
 enum ConnectionRequest {
     /// Notify that a Connection was dropped, if it was dropped while the
@@ -69,7 +69,7 @@ enum ConnectionRequest {
 }
 
 /// The result of a Future that connects to a given Endpoint.  This is a tuple
-/// of the index into the ConnectionManagerWorker::endpoints that this
+/// of the index into the `ConnectionManagerWorker::endpoints` that this
 /// connection is for, the iteration of the connection and the result of the
 /// connection itself.
 type IndexedChannel = Result<EstablishedChannel, (ChannelIdentifier, Error)>;
@@ -157,7 +157,7 @@ impl ConnectionManager {
         Self { worker_tx }
     }
 
-    /// Get a Connection that can be used as a tonic::Channel, except it
+    /// Get a Connection that can be used as a `tonic::Channel`, except it
     /// performs some additional counting to reconnect on error and restrict
     /// the number of concurrent connections.
     pub async fn connection(&self) -> Result<Connection, Error> {
@@ -386,16 +386,16 @@ impl ConnectionManagerWorker {
 /// re-connecting the underlying channel on error.  It depends on users
 /// reporting all errors.
 /// NOTE: This should never be cloneable because its lifetime is linked to the
-///       ConnectionManagerWorker::available_connections.
+///       `ConnectionManagerWorker::available_connections`.
 pub struct Connection {
-    /// Communication with ConnectionManagerWorker to inform about transport
+    /// Communication with `ConnectionManagerWorker` to inform about transport
     /// errors and when the Connection is dropped.
     connection_tx: mpsc::UnboundedSender<ConnectionRequest>,
     /// If set, the Channel that will be returned to the worker when connection
     /// completes (success or failure) or when the Connection is dropped if that
     /// happens before connection completes.
     pending_channel: Option<Channel>,
-    /// The identifier to send to connection_tx.
+    /// The identifier to send to `connection_tx`.
     channel: EstablishedChannel,
 }
 
@@ -414,19 +414,19 @@ impl Drop for Connection {
     }
 }
 
-/// A wrapper around the channel::ResponseFuture that forwards errors to the
-/// connection_tx.
+/// A wrapper around the `channel::ResponseFuture` that forwards errors to the
+/// `connection_tx`.
 pub struct ResponseFuture {
     /// The wrapped future that actually does the work.
     inner: channel::ResponseFuture,
-    /// Communication with ConnectionManagerWorker to inform about transport
+    /// Communication with `ConnectionManagerWorker` to inform about transport
     /// errors.
     connection_tx: mpsc::UnboundedSender<ConnectionRequest>,
-    /// The identifier to send to connection_tx on a transport error.
+    /// The identifier to send to `connection_tx` on a transport error.
     identifier: ChannelIdentifier,
 }
 
-/// This is mostly copied from tonic::transport::channel except it wraps it
+/// This is mostly copied from `tonic::transport::channel` except it wraps it
 /// to allow messaging about connection success and failure.
 impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>> for Connection {
     type Response = tonic::codegen::http::Response<tonic::body::BoxBody>;
@@ -475,7 +475,7 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>
     }
 }
 
-/// This is mostly copied from tonic::transport::channel except it wraps it
+/// This is mostly copied from `tonic::transport::channel` except it wraps it
 /// to allow messaging about connection failure.
 impl Future for ResponseFuture {
     type Output =

@@ -147,7 +147,7 @@ pub struct FirstStream {
     /// returned as the first result from the stream.  Subsequent reads from the
     /// stream will use the encapsulated stream.
     first_response: Option<Option<ReadResponse>>,
-    /// The stream to get responses from when first_response is None.
+    /// The stream to get responses from when `first_response` is None.
     stream: Streaming<ReadResponse>,
 }
 
@@ -175,7 +175,7 @@ impl Stream for FirstStream {
 }
 
 /// This structure wraps all of the information required to perform a write
-/// request on the GrpcStore.  It stores the last message retrieved which allows
+/// request on the `GrpcStore`.  It stores the last message retrieved which allows
 /// the write to resume since the UUID allows upload resume at the server.
 pub struct WriteState<T, E>
 where
@@ -246,7 +246,7 @@ where
     }
 }
 
-/// A wrapper around WriteState to allow it to be reclaimed from the underlying
+/// A wrapper around `WriteState` to allow it to be reclaimed from the underlying
 /// write call in the case of failure.
 pub struct WriteStateWrapper<T, E>
 where

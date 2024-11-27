@@ -140,7 +140,7 @@ struct Generics<'a> {
     where_clause: Option<&'a WhereClause>,
 }
 
-/// Holds metadata about the struct that is having MetricsComponent
+/// Holds metadata about the struct that is having `MetricsComponent`
 /// implemented.
 #[derive(Debug)]
 struct MetricStruct<'a> {

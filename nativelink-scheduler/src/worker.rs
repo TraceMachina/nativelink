@@ -31,7 +31,7 @@ pub type WorkerTimestamp = u64;
 
 /// Represents the action info and the platform properties of the action.
 /// These platform properties have the type of the properties as well as
-/// the value of the properties, unlike ActionInfo, which only has the
+/// the value of the properties, unlike `ActionInfo`, which only has the
 /// string value of the properties.
 #[derive(Clone, Debug, MetricsComponent)]
 pub struct ActionInfoWithProps {
