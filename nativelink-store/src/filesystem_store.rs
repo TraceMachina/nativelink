@@ -73,6 +73,11 @@ enum PathType {
     Custom(OsString),
 }
 
+/// [`EncodedFilePath`] stores the path to the file
+/// inclusing the context, path type and key to the file.
+/// The whole [`StoreKey`] is stored as opposed to solely
+/// the [`DigestInfo`] so that it is more usable for things
+/// such as BEP -see Issue #1108
 pub struct EncodedFilePath {
     shared_context: Arc<SharedContext>,
     path_type: PathType,
@@ -128,6 +133,16 @@ impl Drop for EncodedFilePath {
     }
 }
 
+/// This creates the file path from the [`StoreKey`]. If
+/// it is a string, the string, prefixed with [`STR_PREFIX`]
+/// for backwards compatibility, is stored.
+///
+/// If it is a [`DigestInfo`], it is prefixed by [`DIGEST_PREFIX`]
+/// followed by the string representation of a digest - the hash in hex,
+/// a hyphen then the size in bytes
+///
+/// Previously, only the string representation of the [`DigestInfo`] was
+/// used with no prefix
 #[inline]
 fn to_full_path_from_key(folder: &str, key: &StoreKey<'_>) -> OsString {
     // appropriately prefix file name
