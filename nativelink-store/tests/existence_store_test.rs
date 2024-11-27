@@ -34,7 +34,7 @@ async fn simple_exist_cache_test() -> Result<(), Error> {
     const VALUE: &str = "123";
     let spec = ExistenceCacheSpec {
         backend: StoreSpec::noop(NoopSpec::default()), // Note: Not used.
-        eviction_policy: Default::default(),
+        eviction_policy: Option::default(),
     };
     let inner_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let store = ExistenceCacheStore::new(&spec, inner_store.clone());
@@ -72,7 +72,7 @@ async fn update_flags_existance_cache_test() -> Result<(), Error> {
     const VALUE: &str = "123";
     let spec = ExistenceCacheSpec {
         backend: StoreSpec::noop(NoopSpec::default()),
-        eviction_policy: Default::default(),
+        eviction_policy: Option::default(),
     };
     let inner_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let store = ExistenceCacheStore::new(&spec, inner_store.clone());
@@ -95,7 +95,7 @@ async fn get_part_caches_if_exact_size_set() -> Result<(), Error> {
     const VALUE: &str = "123";
     let spec = ExistenceCacheSpec {
         backend: StoreSpec::noop(NoopSpec::default()),
-        eviction_policy: Default::default(),
+        eviction_policy: Option::default(),
     };
     let inner_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();

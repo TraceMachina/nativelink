@@ -40,6 +40,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     HistoricalExecuteResponse, StartExecute,
 };
+use nativelink_proto::google::rpc::Status;
 use nativelink_store::ac_utils::{get_and_decode_digest, serialize_and_upload_message};
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
@@ -2119,7 +2120,7 @@ async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn std::e
             action_digest: Some(action_digest.into()),
             execute_response: Some(ExecuteResponse {
                 result: Some(action_result.into()),
-                status: Some(Default::default()),
+                status: Some(Status::default()),
                 ..Default::default()
             }),
         },
@@ -3272,7 +3273,7 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
     let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
         RunningActionsManagerArgs {
             root_action_directory,
-            execution_configuration: Default::default(),
+            execution_configuration: ExecutionConfiguration::default(),
             cas_store: cas_store.clone(),
             ac_store: Some(Store::new(ac_store.clone())),
             historical_store: Store::new(cas_store.clone()),

@@ -707,10 +707,10 @@ pub struct ActionResult {
 impl Default for ActionResult {
     fn default() -> Self {
         ActionResult {
-            output_files: Default::default(),
-            output_folders: Default::default(),
-            output_directory_symlinks: Default::default(),
-            output_file_symlinks: Default::default(),
+            output_files: Vec::default(),
+            output_folders: Vec::default(),
+            output_directory_symlinks: Vec::default(),
+            output_file_symlinks: Vec::default(),
             exit_code: INTERNAL_ERROR_EXIT_CODE,
             stdout_digest: DigestInfo::new([0u8; 32], 0),
             stderr_digest: DigestInfo::new([0u8; 32], 0),
@@ -726,7 +726,7 @@ impl Default for ActionResult {
                 output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
                 output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
             },
-            server_logs: Default::default(),
+            server_logs: HashMap::default(),
             error: None,
             message: String::new(),
         }
@@ -974,7 +974,7 @@ impl TryFrom<ProtoActionResult> for ActionResult {
                 .execution_metadata
                 .err_tip(|| "Expected execution_metadata to be set on ExecuteResponse msg")?
                 .try_into()?,
-            server_logs: Default::default(),
+            server_logs: HashMap::default(),
             error: None,
             message: String::new(),
         })
