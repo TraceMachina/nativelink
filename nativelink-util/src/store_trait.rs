@@ -163,6 +163,15 @@ impl<'a> From<StoreKeyBorrow<'a>> for StoreKey<'a> {
     }
 }
 
+impl<'a, 'b> Borrow<StoreKey<'a>> for StoreKeyBorrow<'b>
+where
+    'b: 'a,
+{
+    fn borrow(&self) -> &StoreKey<'a> {
+        &self.0
+    }
+}
+
 impl<'a, 'b> Borrow<StoreKeyBorrow<'a>> for StoreKey<'b>
 where
     'b: 'a,

@@ -771,13 +771,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
-        // existence_cache. We need to convert the digests to owned values to be able to
-        // insert them into the cache. In theory it should be able to elide this conversion
-        // but it seems to be a bit tricky to get right.
-        let keys: Vec<StoreKey<'static>> = keys.iter().map(|v| v.borrow().into_owned()).collect();
+        let keys: Vec<StoreKeyBorrow<'_>> = keys.iter().map(|v| v.borrow().into()).collect();
         self.evicting_map
-            .sizes_for_keys::<&Vec<StoreKey<'_>>, StoreKey<'static>, &StoreKey<'_>>(
+            .sizes_for_keys::<&Vec<StoreKeyBorrow<'_>>, StoreKeyBorrow<'_>, &StoreKeyBorrow<'_>>(
                 &keys, results, false, /* peek */
             )
             .await;
@@ -785,6 +781,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // If our results failed and the result was a zero file, we need to
         // create the file by spec.
         for (key, result) in keys.iter().zip(results.iter_mut()) {
+            let key: &StoreKey<'_> = std::borrow::Borrow::borrow(key);
             if result.is_some() || !is_zero_digest(key.borrow()) {
                 continue;
             }
