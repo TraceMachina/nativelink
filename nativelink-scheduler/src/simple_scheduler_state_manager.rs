@@ -176,7 +176,7 @@ where
                         .err_tip(|| "In MatchingEngineActionStateResult::changed")
                         .map(|v| v.state().clone());
                 }
-                _ = (self.now_fn)().sleep(self.no_event_action_timeout) => {
+                () = (self.now_fn)().sleep(self.no_event_action_timeout) => {
                     // Timeout happened, do additional checks below.
                 }
             }

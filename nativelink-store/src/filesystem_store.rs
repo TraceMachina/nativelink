@@ -878,7 +878,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 let sleep_fn = (self.sleep_fn)(fs::idle_file_descriptor_timeout());
                 tokio::pin!(sleep_fn);
                 tokio::select! {
-                    _ = & mut (sleep_fn) => {
+                    () = & mut (sleep_fn) => {
                         resumeable_temp_file
                             .close_file()
                             .await

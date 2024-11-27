@@ -196,7 +196,7 @@ where
                     result?;
                     break;
                 }
-                _ = sleep_fut => {
+                () = sleep_fut => {
                     // If we haven't received any updates for a while, we should
                     // let the database know that we are still listening to prevent
                     // the action from being dropped.

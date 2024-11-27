@@ -186,7 +186,7 @@ impl CacheLookupScheduler {
                 let inflight_cache_checks = self.inflight_cache_checks.clone();
                 (
                     action_listener_rx,
-                    guard((), move |_| {
+                    guard((), move |()| {
                         inflight_cache_checks.lock().remove(&unique_key);
                     }),
                 )

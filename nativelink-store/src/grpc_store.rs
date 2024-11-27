@@ -527,7 +527,7 @@ impl StoreDriver for GrpcStore {
                     Ok::<_, Error>(())
                 })
                 .collect::<FuturesUnordered<_>>()
-                .try_for_each(|_| future::ready(Ok(())))
+                .try_for_each(|()| future::ready(Ok(())))
                 .await
                 .err_tip(|| "Getting upstream action cache entry")?;
             return Ok(());

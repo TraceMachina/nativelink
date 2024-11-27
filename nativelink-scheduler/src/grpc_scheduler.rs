@@ -170,7 +170,7 @@ impl GrpcScheduler {
             background_spawn!("grpc_scheduler_stream_state", async move {
                 loop {
                     select!(
-                        _ = tx.closed() => {
+                        () = tx.closed() => {
                             event!(
                                 Level::INFO,
                                 "Client disconnected in GrpcScheduler"
