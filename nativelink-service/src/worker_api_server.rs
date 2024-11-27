@@ -93,7 +93,7 @@ impl WorkerApiServer {
         )
     }
 
-    /// Same as new(), but you can pass a custom `now_fn`, that returns a Duration since UNIX_EPOCH
+    /// Same as `new()`, but you can pass a custom `now_fn`, that returns a Duration since `UNIX_EPOCH`
     /// representing the current time. Used mostly in  unit tests.
     pub fn new_with_now_fn(
         config: &WorkerApiConfig,

@@ -149,7 +149,7 @@ impl<'a> ResourceInfo<'a> {
         Ok(output)
     }
 
-    /// Returns a new ResourceInfo with all fields owned.
+    /// Returns a new `ResourceInfo` with all fields owned.
     pub fn to_owned(&self) -> ResourceInfo<'static> {
         ResourceInfo {
             instance_name: Cow::Owned(self.instance_name.to_string()),

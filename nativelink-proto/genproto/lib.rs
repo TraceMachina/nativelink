@@ -16,7 +16,7 @@
 // This file is auto-generated. To update it, run:
 // `bazel run nativelink-proto:update_protos`
 
-#![allow(clippy::default_trait_access)]
+#![allow(clippy::default_trait_access, clippy::doc_markdown)]
 
 pub mod build {
     pub mod bazel {

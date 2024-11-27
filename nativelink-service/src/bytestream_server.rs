@@ -89,7 +89,7 @@ struct ActiveStreamGuard<'a> {
 
 impl ActiveStreamGuard<'_> {
     /// Consumes the guard. The stream will be considered "finished", will
-    /// remove it from the active_uploads.
+    /// remove it from the `active_uploads`.
     fn graceful_finish(mut self) {
         let stream_state = self.stream_state.take().unwrap();
         self.bytestream_server

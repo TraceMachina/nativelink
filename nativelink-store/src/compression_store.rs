@@ -114,7 +114,7 @@ pub const CHUNK_FRAME_TYPE: u8 = 0;
 /// Number representing the footer.
 pub const FOOTER_FRAME_TYPE: u8 = 1;
 
-/// This is a partial mirror of nativelink_config::stores::Lz4Config.
+/// This is a partial mirror of `nativelink_config::stores::Lz4Config`.
 /// We cannot use that natively here because it could cause our
 /// serialized format to change if we added more configs.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Default, Copy, Clone)]
@@ -143,8 +143,8 @@ pub struct Footer {
     pub version: u8,
 }
 
-/// lz4_flex::block::get_maximum_output_size() way over estimates, so we use the
-/// one provided here: https://github.com/torvalds/linux/blob/master/include/linux/lz4.h#L61
+/// `lz4_flex::block::get_maximum_output_size()` way over estimates, so we use the
+/// one provided here: <https://github.com/torvalds/linux/blob/master/include/linux/lz4.h#L61>
 /// Local testing shows this gives quite accurate worst case given random input.
 fn lz4_compress_bound(input_size: u64) -> u64 {
     input_size + (input_size / 255) + 16
@@ -207,7 +207,7 @@ impl UploadState {
 }
 
 /// This store will compress data before sending it on to the inner store.
-/// Note: Currently using get_part() and trying to read part of the data will
+/// Note: Currently using `get_part()` and trying to read part of the data will
 /// result in the entire contents being read from the inner store but will
 /// only send the contents requested.
 #[derive(MetricsComponent)]

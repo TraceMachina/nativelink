@@ -605,7 +605,7 @@ const INDEX_TTL_S: u64 = 60 * 60 * 24; // 24 hours.
 /// String of the `FT.CREATE` command used to create the index template. It is done this
 /// way so we can use it in both const (compile time) functions and runtime functions.
 /// This is a macro because we need to use it in multiple places that sometimes require the
-/// data as different data types (specifically for rust's format_args! macro).
+/// data as different data types (specifically for rust's `format_args!` macro).
 macro_rules! get_create_index_template {
     () => {
         "FT.CREATE {} ON HASH PREFIX 1 {} NOOFFSETS NOHL NOFIELDS NOFREQS SCHEMA {} TAG CASESENSITIVE SORTABLE"
