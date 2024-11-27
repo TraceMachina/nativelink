@@ -1068,7 +1068,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await;
                 event!(Level::WARN, "Process terminated via SIGTERM",);
                 let _ = shutdown_tx_clone.send(shutdown_guard.clone());
-                let _ = shutdown_guard.wait_for(Priority::P0).await;
+                let () = shutdown_guard.wait_for(Priority::P0).await;
                 event!(Level::WARN, "Successfully shut down nativelink.",);
                 std::process::exit(143);
             });

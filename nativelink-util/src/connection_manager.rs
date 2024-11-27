@@ -312,7 +312,7 @@ impl ConnectionManagerWorker {
     fn handle_worker(&mut self, tx: oneshot::Sender<Connection>) {
         if let Some(channel) = (self.available_connections > 0)
             .then_some(())
-            .and_then(|_| self.available_channels.pop_front())
+            .and_then(|()| self.available_channels.pop_front())
         {
             self.provide_channel(channel, tx);
         } else {
@@ -437,7 +437,7 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>
         let result = self.channel.channel.poll_ready(cx);
         if let Poll::Ready(result) = &result {
             match result {
-                Ok(_) => {
+                Ok(()) => {
                     if let Some(pending_channel) = self.pending_channel.take() {
                         let _ = self.connection_tx.send(ConnectionRequest::Connected(
                             EstablishedChannel {
