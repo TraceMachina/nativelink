@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::Ordering;
+use std::cmp::{Eq, Ordering};
 use std::collections::HashMap;
 use std::fmt;
-use std::hash::Hash;
+use std::hash::{BuildHasher, Hash};
 use std::io::{Cursor, Write};
 use std::ops::{Deref, DerefMut};
 
@@ -427,14 +427,14 @@ impl<T> VecExt<T> for Vec<T> {
 // Simple utility trait that makes it easier to apply `.try_map` to HashMap.
 // This will convert one HashMap into another keeping the key the same, but
 // different value type.
-pub trait HashMapExt<K: std::cmp::Eq + std::hash::Hash, T> {
+pub trait HashMapExt<K: Eq + Hash, T> {
     fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U>, Error>
     where
         Self: Sized,
         F: (std::ops::Fn(T) -> Result<U, Error>) + Sized;
 }
 
-impl<K: std::cmp::Eq + std::hash::Hash, T> HashMapExt<K, T> for HashMap<K, T> {
+impl<K: Eq + Hash, T, S: BuildHasher> HashMapExt<K, T> for HashMap<K, T, S> {
     fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U>, Error>
     where
         Self: Sized,

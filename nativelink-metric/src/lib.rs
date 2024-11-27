@@ -14,6 +14,7 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -143,7 +144,7 @@ impl<T: MetricsComponent + ?Sized> MetricsComponent for Arc<T> {
     }
 }
 
-impl<T: MetricsComponent> MetricsComponent for HashSet<T> {
+impl<T: MetricsComponent, S: BuildHasher> MetricsComponent for HashSet<T, S> {
     fn publish(
         &self,
         kind: MetricKind,
@@ -177,7 +178,7 @@ impl<T: MetricsComponent> MetricsComponent for HashSet<T> {
     }
 }
 
-impl<U: ToString, T: MetricsComponent> MetricsComponent for HashMap<U, T> {
+impl<U: ToString, T: MetricsComponent, S: BuildHasher> MetricsComponent for HashMap<U, T, S> {
     fn publish(
         &self,
         kind: MetricKind,
