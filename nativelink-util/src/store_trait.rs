@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::{BorrowMut, Cow};
+use std::borrow::{Borrow, BorrowMut, Cow};
 use std::collections::hash_map::DefaultHasher as StdHasher;
 use std::convert::Into;
 use std::hash::{Hash, Hasher};
@@ -142,6 +142,44 @@ pub enum StoreOptimizations {
 
     /// If the store will never serve downloads.
     NoopDownloads,
+}
+
+/// A wrapper struct for [`StoreKey`] to work around
+/// lifetime limitations in `HashMap::get()` as described in
+/// <https://github.com/rust-lang/rust/issues/80389>
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct StoreKeyBorrow<'a>(StoreKey<'a>);
+
+impl<'a> From<StoreKey<'a>> for StoreKeyBorrow<'a> {
+    fn from(key: StoreKey<'a>) -> Self {
+        Self(key)
+    }
+}
+
+impl<'a> From<StoreKeyBorrow<'a>> for StoreKey<'a> {
+    fn from(key_borrow: StoreKeyBorrow<'a>) -> Self {
+        key_borrow.0
+    }
+}
+
+impl<'a, 'b> Borrow<StoreKeyBorrow<'a>> for StoreKey<'b>
+where
+    'b: 'a,
+{
+    fn borrow(&self) -> &StoreKeyBorrow<'a> {
+        // we are converting a reference to a StoreKey with lifetime <'b<
+        // to a reference to a StoreKeyBorrow <'a> where b the original
+        // at least outlives 'a. This is similar to the trick in https://blinsay.com/blog/compound-keys/
+        // however the wrapper struct and the struct inside the hashmap
+        // are reversed.
+        //
+        // As such we cast through pointers to convert from one to the other: this is sound
+        // as we use #[repr(transparent)] to ensure the same in memory layout
+        let ptr = self as *const StoreKey<'b>;
+        let ptr = ptr.cast::<StoreKeyBorrow<'a>>();
+        unsafe { ptr.as_ref().unwrap() }
+    }
 }
 
 /// Holds something that can be converted into a key the

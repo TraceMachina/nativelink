@@ -35,7 +35,9 @@ use nativelink_util::buf_channel::{
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
+};
 use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::time::{sleep, timeout, Sleep};
@@ -629,7 +631,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
         self.evicting_map
-            .get(&digest.into())
+            .get::<StoreKey<'static>>(&digest.into())
             .await
             .ok_or_else(|| make_err!(Code::NotFound, "{} not found in filesystem store", digest))
     }
@@ -773,9 +775,11 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // existence_cache. We need to convert the digests to owned values to be able to
         // insert them into the cache. In theory it should be able to elide this conversion
         // but it seems to be a bit tricky to get right.
-        let keys: Vec<_> = keys.iter().map(|v| v.borrow().into_owned()).collect();
+        let keys: Vec<StoreKey<'static>> = keys.iter().map(|v| v.borrow().into_owned()).collect();
         self.evicting_map
-            .sizes_for_keys(&keys, results, false /* peek */)
+            .sizes_for_keys::<&Vec<StoreKey<'_>>, StoreKey<'static>, &StoreKey<'_>>(
+                &keys, results, false, /* peek */
+            )
             .await;
         // We need to do a special pass to ensure our zero files exist.
         // If our results failed and the result was a zero file, we need to
@@ -882,17 +886,14 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             return Ok(());
         }
 
-        let entry = self
-            .evicting_map
-            .get(&key.borrow().into_owned())
-            .await
-            .ok_or_else(|| {
-                make_err!(
-                    Code::NotFound,
-                    "{} not found in filesystem store here",
-                    key.as_str()
-                )
-            })?;
+        let key_borrow: StoreKeyBorrow<'_> = key.borrow().into();
+        let entry = self.evicting_map.get(&key_borrow).await.ok_or_else(|| {
+            make_err!(
+                Code::NotFound,
+                "{} not found in filesystem store here",
+                key.as_str()
+            )
+        })?;
         let read_limit = length.unwrap_or(u64::MAX);
         let mut resumeable_temp_file = entry.read_file_part(offset, read_limit).await?;
 
