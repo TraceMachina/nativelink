@@ -147,7 +147,7 @@ impl CacheLookupScheduler {
         Ok(Self {
             ac_store,
             action_scheduler,
-            inflight_cache_checks: Default::default(),
+            inflight_cache_checks: Arc::default(),
         })
     }
 

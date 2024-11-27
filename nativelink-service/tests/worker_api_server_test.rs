@@ -18,6 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex as AsyncMutex;
 use async_trait::async_trait;
+use bytes::Bytes;
 use nativelink_config::cas_server::WorkerApiConfig;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{Error, ResultExt};
@@ -428,7 +429,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
                 path: "some path1".to_string(),
                 digest: Some(DigestInfo::new([8u8; 32], 124).into()),
                 is_executable: true,
-                contents: Default::default(), // We don't implement this.
+                contents: Bytes::default(), // We don't implement this.
                 node_properties: None,
             }],
             output_file_symlinks: vec![OutputSymlink {
@@ -446,11 +447,11 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
                 tree_digest: Some(DigestInfo::new([12u8; 32], 124).into()),
                 is_topologically_sorted: false,
             }],
-            output_directory_symlinks: Default::default(), // Bazel deprecated this.
+            output_directory_symlinks: Vec::default(), // Bazel deprecated this.
             exit_code: 5,
-            stdout_raw: Default::default(), // We don't implement this.
+            stdout_raw: Bytes::default(), // We don't implement this.
             stdout_digest: Some(DigestInfo::new([10u8; 32], 124).into()),
-            stderr_raw: Default::default(), // We don't implement this.
+            stderr_raw: Bytes::default(), // We don't implement this.
             stderr_digest: Some(DigestInfo::new([11u8; 32], 124).into()),
             execution_metadata: Some(ExecutedActionMetadata {
                 worker: test_context.worker_id.to_string(),
@@ -474,7 +475,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
         status: Some(ProtoStatus {
             code: 9,
             message: "foo".to_string(),
-            details: Default::default(),
+            details: Vec::default(),
         }),
         server_logs,
         message: "TODO(blaise.bruer) We should put a reference something like bb_browser"
