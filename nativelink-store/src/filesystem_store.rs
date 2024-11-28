@@ -771,17 +771,17 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        let keys: Vec<StoreKeyBorrow<'_>> = keys.iter().map(|v| v.borrow().into()).collect();
         self.evicting_map
-            .sizes_for_keys::<&Vec<StoreKeyBorrow<'_>>, StoreKeyBorrow<'_>, &StoreKeyBorrow<'_>>(
-                &keys, results, false, /* peek */
+            .sizes_for_keys::<_, StoreKeyBorrow<'_>, &StoreKey<'_>>(
+                keys.iter(),
+                results,
+                false, /* peek */
             )
             .await;
         // We need to do a special pass to ensure our zero files exist.
         // If our results failed and the result was a zero file, we need to
         // create the file by spec.
         for (key, result) in keys.iter().zip(results.iter_mut()) {
-            let key: &StoreKey<'_> = std::borrow::Borrow::borrow(key);
             if result.is_some() || !is_zero_digest(key.borrow()) {
                 continue;
             }
@@ -883,8 +883,8 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             return Ok(());
         }
 
-        let key_borrow: StoreKeyBorrow<'_> = key.borrow().into();
-        let entry = self.evicting_map.get(&key_borrow).await.ok_or_else(|| {
+        let key_borrow: &StoreKeyBorrow<'_> = std::borrow::Borrow::borrow(&key);
+        let entry = self.evicting_map.get(key_borrow).await.ok_or_else(|| {
             make_err!(
                 Code::NotFound,
                 "{} not found in filesystem store here",

@@ -163,15 +163,6 @@ impl<'a> From<StoreKeyBorrow<'a>> for StoreKey<'a> {
     }
 }
 
-impl<'a, 'b> Borrow<StoreKey<'a>> for StoreKeyBorrow<'b>
-where
-    'b: 'a,
-{
-    fn borrow(&self) -> &StoreKey<'a> {
-        &self.0
-    }
-}
-
 impl<'a, 'b> Borrow<StoreKeyBorrow<'a>> for StoreKey<'b>
 where
     'b: 'a,
@@ -188,6 +179,19 @@ where
         let ptr = self as *const StoreKey<'b>;
         let ptr = ptr.cast::<StoreKeyBorrow<'a>>();
         unsafe { ptr.as_ref().unwrap() }
+    }
+}
+
+impl<'a, 'b> Borrow<StoreKeyBorrow<'a>> for &StoreKey<'b>
+where
+    'b: 'a,
+{
+    fn borrow(&self) -> &StoreKeyBorrow<'a> {
+        // similar to the auto impl impl<T> Borrow<T> for &T
+        // but instead impl impl<U> Borrow<T> for &T
+        // for our new type key wrapper U
+        let y = *self;
+        std::borrow::Borrow::borrow(y)
     }
 }
 

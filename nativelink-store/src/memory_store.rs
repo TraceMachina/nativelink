@@ -84,10 +84,11 @@ impl StoreDriver for MemoryStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        let digests: Vec<StoreKeyBorrow<'_>> = keys.iter().map(|key| key.borrow().into()).collect();
         self.evicting_map
-            .sizes_for_keys::<Vec<StoreKeyBorrow<'_>>, StoreKeyBorrow<'_>, StoreKeyBorrow<'_>>(
-                digests, results, false, /* peek */
+            .sizes_for_keys::<_, StoreKeyBorrow<'_>, &StoreKey<'_>>(
+                keys.iter(),
+                results,
+                false, /* peek */
             )
             .await;
         // We need to do a special pass to ensure our zero digest exist.
