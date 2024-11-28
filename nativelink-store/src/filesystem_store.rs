@@ -631,14 +631,14 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         self.evicting_map
             .get(&digest.into())
             .await
-            .ok_or_else(|| make_err!(Code::NotFound, "{} not found in filesystem store", digest))
+            .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store"))
     }
 
     async fn update_file<'a>(
         self: Pin<&'a Self>,
         mut entry: Fe,
         mut resumeable_temp_file: fs::ResumeableFileSlot,
-        final_digest: StoreKey<'static>,
+        final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
         let mut data_size = 0;
@@ -683,10 +683,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         drop(resumeable_temp_file);
 
         *entry.data_size_mut() = data_size;
-        self.emplace_file(final_digest, Arc::new(entry)).await
+        self.emplace_file(final_key, Arc::new(entry)).await
     }
 
-    async fn emplace_file(&self, key: StoreKey<'_>, entry: Arc<Fe>) -> Result<(), Error> {
+    async fn emplace_file(&self, key: StoreKey<'static>, entry: Arc<Fe>) -> Result<(), Error> {
         // This sequence of events is quite ticky to understand due to the amount of triggers that
         // happen, async'ness of it and the locking. So here is a breakdown of what happens:
         // 1. Here will hold a write lock on any file operations of this FileEntry.
@@ -706,9 +706,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         //    contents until we relese the lock.
         let evicting_map = self.evicting_map.clone();
         let rename_fn = self.rename_fn;
-
-        // we need to extend the lifetime into 'static, for background spawn
-        let key = key.borrow().into_owned();
 
         // We need to guarantee that this will get to the end even if the parent future is dropped.
         // See: https://github.com/TraceMachina/nativelink/issues/495
@@ -748,13 +745,14 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 drop(encoded_file_path);
                 // It is possible that the item in our map is no longer the item we inserted,
                 // So, we need to conditionally remove it only if the pointers are the same.
+
                 evicting_map
                     .remove_if(&key, |map_entry| Arc::<Fe>::ptr_eq(map_entry, &entry))
                     .await;
                 return Err(err);
             }
             encoded_file_path.path_type = PathType::Content;
-            encoded_file_path.key = key.borrow().into_owned();
+            encoded_file_path.key = key;
             Ok(())
         })
         .await
@@ -816,7 +814,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         )
         .await?;
 
-        self.update_file(entry, temp_file, key.borrow().into_owned(), reader)
+        self.update_file(entry, temp_file, key.into_owned(), reader)
             .await
             .err_tip(|| format!("While processing with temp file {temp_full_path:?}"))
     }
@@ -859,7 +857,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // We are done with the file, if we hold a reference to the file here, it could
         // result in a deadlock if `emplace_file()` also needs file descriptors.
         drop(file);
-        self.emplace_file(key, Arc::new(entry))
+        self.emplace_file(key.into_owned(), Arc::new(entry))
             .await
             .err_tip(|| "Could not move file into store in upload_file_to_store, maybe dest is on different volume?")?;
         return Ok(None);
