@@ -176,9 +176,14 @@ where
         //
         // As such we cast through pointers to convert from one to the other: this is sound
         // as we use #[repr(transparent)] to ensure the same in memory layout
-        let ptr = self as *const StoreKey<'b>;
-        let ptr = ptr.cast::<StoreKeyBorrow<'a>>();
-        unsafe { ptr.as_ref().unwrap() }
+
+        // turn a reference to `StoreKey<'b>` into a pointer to `StoreKeyBorrow<'a>`
+        let ptr = (std::ptr::from_ref::<StoreKey<'b>>(self)).cast::<StoreKeyBorrow<'a>>();
+        // turn this pointer back into a reference
+        // we know this pointer is non null as it is just derived from a reference above
+        // and that it is a valid StoreKeyBorrow<'a>, as it has the same layout and as its
+        // lifetime is shorter than the pointer it derives from (it is safe to shorten covariant lifetimes)
+        unsafe { &*ptr }
     }
 }
 
