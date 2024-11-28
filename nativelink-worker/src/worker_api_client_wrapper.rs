@@ -23,7 +23,7 @@ use tonic::transport::Channel;
 use tonic::{Response, Status};
 
 /// This is used in order to allow unit tests to intercept these calls. This should always match
-/// the API of WorkerApiClient defined in the worker_api.proto file.
+/// the API of `WorkerApiClient` defined in the `worker_api.proto` file.
 pub trait WorkerApiClientTrait: Clone + Sync + Send + Sized + Unpin {
     fn connect_worker(
         &mut self,

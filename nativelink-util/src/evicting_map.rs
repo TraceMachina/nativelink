@@ -68,7 +68,7 @@ pub trait LenEntry: 'static {
     /// which if you are deleting items you may not want to do.
     /// It is undefined behavior to have `unref()` called more than once.
     /// During the execution of `unref()` no items can be added or removed to/from
-    /// the EvictionMap globally (including inside `unref()`).
+    /// the `EvictionMap` globally (including inside `unref()`).
     #[inline]
     fn unref(&self) -> impl Future<Output = ()> + Send {
         std::future::ready(())
@@ -402,7 +402,7 @@ where
         results.into_iter().next()
     }
 
-    /// Same as insert(), but optimized for multiple inserts.
+    /// Same as `insert()`, but optimized for multiple inserts.
     /// Returns the replaced items if any.
     pub async fn insert_many(&self, inserts: impl IntoIterator<Item = (K, T)>) -> Vec<T> {
         let mut inserts = inserts.into_iter().peekable();
@@ -461,8 +461,8 @@ where
         false
     }
 
-    /// Same as remove(), but allows for a conditional to be applied to the entry before removal
-    /// in an atomic fashion.
+    /// Same as `remove()`, but allows for a conditional to be applied to the
+    /// entry before removal in an atomic fashion.
     pub async fn remove_if<Q, F: FnOnce(&T) -> bool>(&self, key: &Q, cond: F) -> bool
     where
         K: Borrow<Q>,

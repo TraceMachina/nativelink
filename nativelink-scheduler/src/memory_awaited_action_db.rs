@@ -45,11 +45,11 @@ const MAX_ACTION_EVENTS_RX_PER_CYCLE: usize = 1024;
 const CLIENT_KEEPALIVE_DURATION: Duration = Duration::from_secs(10);
 
 /// Represents a client that is currently listening to an action.
-/// When the client is dropped, it will send the [`AwaitedAction`] to the
+/// When the client is dropped, it will send the `AwaitedAction` to the
 /// `event_tx` if there are other cleanups needed.
 #[derive(Debug)]
 struct ClientAwaitedAction {
-    /// The OperationId that the client is listening to.
+    /// The `OperationId` that the client is listening to.
     operation_id: OperationId,
 
     /// The sender to notify of this struct being dropped.
@@ -78,8 +78,8 @@ impl Drop for ClientAwaitedAction {
     }
 }
 
-/// Trait to be able to use the EvictingMap with [`ClientAwaitedAction`].
-/// Note: We only use EvictingMap for a time based eviction, which is
+/// Trait to be able to use the `EvictingMap` with `ClientAwaitedAction`.
+/// Note: We only use `EvictingMap` for a time based eviction, which is
 /// why the implementation has fixed default values in it.
 impl LenEntry for ClientAwaitedAction {
     #[inline]
@@ -93,12 +93,12 @@ impl LenEntry for ClientAwaitedAction {
     }
 }
 
-/// Actions the AwaitedActionsDb needs to process.
+/// Actions the `AwaitedActionsDb` needs to process.
 #[derive(Debug)]
 pub(crate) enum ActionEvent {
     /// A client has sent a keep alive message.
     ClientKeepAlive(OperationId),
-    /// A client has dropped and pointed to OperationId.
+    /// A client has dropped and pointed to `OperationId`.
     ClientDroppedOperation(OperationId),
 }
 
@@ -115,7 +115,7 @@ struct ClientInfo<I: InstantWrapper, NowFn: Fn() -> I> {
     event_tx: mpsc::UnboundedSender<ActionEvent>,
 }
 
-/// Subscriber that clients can be used to monitor when AwaitedActions change.
+/// Subscriber that clients can be used to monitor when `AwaitedActions` change.
 pub struct MemoryAwaitedActionSubscriber<I: InstantWrapper, NowFn: Fn() -> I> {
     /// The receiver to listen for changes.
     awaited_action_rx: watch::Receiver<AwaitedAction>,

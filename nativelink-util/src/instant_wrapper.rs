@@ -55,7 +55,7 @@ pub fn default_instant_wrapper() -> impl InstantWrapper {
     SystemTime::now()
 }
 
-/// Our mocked out instant that we can pass to our EvictionMap.
+/// Our mocked out instant that we can pass to our `EvictionMap`.
 pub struct MockInstantWrapped(MockInstant);
 
 impl Default for MockInstantWrapped {

@@ -41,7 +41,7 @@ use tonic::{Request, Response};
 use tracing::{event, Level};
 
 /// Actions that are having their cache checked or failed cache lookup and are
-/// being forwarded upstream.  Missing the skip_cache_check actions which are
+/// being forwarded upstream.  Missing the `skip_cache_check` actions which are
 /// forwarded directly.
 type CheckActions = HashMap<
     ActionUniqueKey,
@@ -54,14 +54,14 @@ type CheckActions = HashMap<
 #[derive(MetricsComponent)]
 pub struct CacheLookupScheduler {
     /// A reference to the AC to find existing actions in.
-    /// To prevent unintended issues, this store should probably be a CompletenessCheckingStore.
+    /// To prevent unintended issues, this store should probably be a `CompletenessCheckingStore`.
     #[metric(group = "ac_store")]
     ac_store: Store,
     /// The "real" scheduler to use to perform actions if they were not found
     /// in the action cache.
     #[metric(group = "action_scheduler")]
     action_scheduler: Arc<dyn ClientStateManager>,
-    /// Actions that are currently performing a CacheCheck.
+    /// Actions that are currently performing a `CacheCheck`.
     inflight_cache_checks: Arc<Mutex<CheckActions>>,
 }
 
@@ -90,7 +90,7 @@ async fn get_action_from_store(
     }
 }
 
-/// Future for when ActionStateResults are known.
+/// Future for when `ActionStateResults` are known.
 type ActionStateResultOneshot = oneshot::Receiver<Result<Box<dyn ActionStateResult>, Error>>;
 
 fn subscribe_to_existing_action(

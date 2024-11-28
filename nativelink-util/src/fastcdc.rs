@@ -19,7 +19,7 @@ impl State {
     }
 }
 
-/// This algorithm will take an input stream and build frames based on FastCDC algorithm.
+/// This algorithm will take an input stream and build frames based on `FastCDC` algorithm.
 /// see: <https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf>
 ///
 /// In layman's terms this means we can take an input of unknown size and composition
@@ -149,7 +149,7 @@ impl Decoder for FastCDC {
 
 impl Clone for FastCDC {
     /// Clone configuration but with new state. This is useful where you can create
-    /// a base FastCDC object then clone it when you want to process a new stream.
+    /// a base `FastCDC` object then clone it when you want to process a new stream.
     fn clone(&self) -> Self {
         Self {
             min_size: self.min_size,

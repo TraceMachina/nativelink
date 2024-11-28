@@ -399,7 +399,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
         self.as_store_driver_pin().has_many(digests)
     }
 
-    /// The implementation of the above has and has_many functions.  See their
+    /// The implementation of the above has and `has_many` functions.  See their
     /// documentation for details.
     #[inline]
     fn has_with_results<'a>(
@@ -812,10 +812,10 @@ pub trait SchedulerStore: Send + Sync + 'static {
 
     /// Updates or inserts an entry into the underlying store.
     /// Metadata about the key is attached to the compile-time type.
-    /// If StoreKeyProvider::Versioned is TrueValue, the data will not
+    /// If `StoreKeyProvider::Versioned` is `TrueValue`, the data will not
     /// be updated if the current version in the database does not match
     /// the version in the passed in data.
-    /// No guarantees are made about when Version is FalseValue.
+    /// No guarantees are made about when `Version` is `FalseValue`.
     /// Indexes are guaranteed to be updated atomically with the data.
     fn update_data<T>(&self, data: T) -> impl Future<Output = Result<Option<u64>, Error>> + Send
     where
@@ -838,7 +838,7 @@ pub trait SchedulerStore: Send + Sync + 'static {
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send;
 
     /// Returns data for the provided key with the given version if
-    /// StoreKeyProvider::Versioned is TrueValue.
+    /// `StoreKeyProvider::Versioned` is `TrueValue`.
     fn get_and_decode<K>(
         &self,
         key: K,

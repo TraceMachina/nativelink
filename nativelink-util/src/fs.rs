@@ -24,7 +24,7 @@ use std::time::Duration;
 use bytes::BytesMut;
 use futures::Future;
 use nativelink_error::{make_err, Code, Error, ResultExt};
-/// We wrap all tokio::fs items in our own wrapper so we can limit the number of outstanding
+/// We wrap all `tokio::fs` items in our own wrapper so we can limit the number of outstanding
 /// open files at any given time. This will greatly reduce the chance we'll hit open file limit
 /// issues.
 pub use tokio::fs::DirEntry;
@@ -49,7 +49,7 @@ enum MaybeFileSlot {
     Closed((StreamPosition, BytesRemaining)),
 }
 
-/// A wrapper around a generic FileSlot. This gives us the ability to
+/// A wrapper around a generic `FileSlot`. This gives us the ability to
 /// close a file and then resume it later. Specifically useful for cases
 /// piping data from one location to another and one side is slow at
 /// reading or writing the data, we can have a timeout, close the file
