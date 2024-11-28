@@ -2,40 +2,41 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: nativelink-cas
+  name: nativelink
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: nativelink-cas
+      app: nativelink
   template:
     metadata:
       labels:
-        app: nativelink-cas
+        app: nativelink
     spec:
       containers:
-        - name: nativelink-cas
+        - name: nativelink
           # This image will be edited by kustomize.
           image: nativelink
           env:
             - name: RUST_LOG
               value: info
           ports:
+            - containerPort: 9090
             - containerPort: 50051
+            - containerPort: 50052
             - containerPort: 50061
-            - containerPort: 50071
           volumeMounts:
-            - name: cas-config
-              mountPath: /cas.json
-              subPath: cas.json
+            - name: nativelink-config
+              mountPath: /nativelink-config.json
+              subPath: nativelink-config.json
             - name: tls-volume
               mountPath: /root
               readOnly: true
-          args: ["/cas.json"]
+          args: ["/nativelink-config.json"]
       volumes:
-        - name: cas-config
+        - name: nativelink-config
           configMap:
-            name: cas
+            name: nativelink-config
         - name: tls-volume
           secret:
             secretName: tls-secret
@@ -43,20 +44,24 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: nativelink-cas
+  name: nativelink
 spec:
   selector:
-    app: nativelink-cas
+    app: nativelink
   ports:
-    - name: http
+    - name: metrics
+      protocol: TCP
+      port: 9090
+      targetPort: 9090
+    - name: grpc
       protocol: TCP
       port: 50051
       targetPort: 50051
-    - name: metrics
+    - name: grpcs
+      protocol: TCP
+      port: 50052
+      targetPort: 50052
+    - name: worker-api
       protocol: TCP
       port: 50061
       targetPort: 50061
-    - name: https
-      protocol: TCP
-      port: 50071
-      targetPort: 50071

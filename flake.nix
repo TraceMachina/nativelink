@@ -513,6 +513,7 @@
               pkgs.fluxcd
               pkgs.go
               pkgs.kustomize
+              pkgs.kubectx
 
               ## Web
               pkgs.bun # got patched to the newest version (v.1.1.25)

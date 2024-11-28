@@ -185,15 +185,10 @@ jobs:
             --timeout=15m \
             nativelink"
 
-      - name: Wait for CAS
+      - name: Wait for NativeLink
         run: >
           nix develop --impure --command
-          bash -c "kubectl rollout status deploy/nativelink-cas"
-
-      - name: Wait for scheduler
-        run: >
-          nix develop --impure --command
-          bash -c "kubectl rollout status deploy/nativelink-scheduler"
+          bash -c "kubectl rollout status deploy/nativelink"
 
       - name: Wait for worker
         run: >
@@ -203,8 +198,7 @@ jobs:
       - name: Get gateway IPs
         id: gateway-ips
         run: |
-          echo "cache_ip=$(kubectl get gtw cache-gateway -o=jsonpath='{.status.addresses[0].value}')" >> "$GITHUB_ENV"
-          echo "scheduler_ip=$(kubectl get gtw scheduler-gateway -o=jsonpath='{.status.addresses[0].value}')" >> "$GITHUB_ENV"
+          echo "nativelink_ip=$(kubectl get gtw nativelink-gateway -o=jsonpath='{.status.addresses[0].value}')" >> "$GITHUB_ENV"
 
       - name: Print cluster state
         run: |
@@ -213,10 +207,8 @@ jobs:
           kubectl get svc -A
           kubectl get deployments -A
           kubectl describe gtw
-          echo "cas"
-          kubectl logs -l app=nativelink-cas
-          echo "scheduler"
-          kubectl logs -l app=nativelink-scheduler
+          echo "nativelink"
+          kubectl logs -l app=nativelink
           echo "worker"
           kubectl logs -l app=nativelink-worker
 
@@ -224,8 +216,7 @@ jobs:
         run: >
           nix develop --impure --command
           bash -c "bazel run \
-            --remote_instance_name=main \
-            --remote_cache=grpc://$cache_ip \
-            --remote_executor=grpc://$scheduler_ip \
+            --remote_cache=grpc://$nativelink_ip \
+            --remote_executor=grpc://$nativelink_ip \
             --verbose_failures \
             @local-remote-execution//examples:hello_lre"

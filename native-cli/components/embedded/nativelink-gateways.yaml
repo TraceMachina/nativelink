@@ -4,22 +4,11 @@
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: Gateway
 metadata:
-  name: cache-gateway
+  name: nativelink-gateway
 spec:
   gatewayClassName: cilium
   listeners:
-    - name: cache-gateway
-      protocol: HTTP
-      port: 80
----
-apiVersion: gateway.networking.k8s.io/v1beta1
-kind: Gateway
-metadata:
-  name: scheduler-gateway
-spec:
-  gatewayClassName: cilium
-  listeners:
-    - name: scheduler-gateway
+    - name: nativelink-gateway
       protocol: HTTP
       port: 80
 ---

@@ -17,7 +17,6 @@
   defaultConfig = [
     "--remote_cache=${config.endpoint}"
     "--remote_header=x-nativelink-api-key=${config.api-key}"
-    "--remote_instance_name=main"
     "--remote_header=x-nativelink-project=nativelink-ci"
     "--nogenerate_json_trace_profile"
     "--remote_upload_local_results=false"

@@ -89,22 +89,20 @@ via your local docker network. You can pass the Gateway addresses to Bazel
 invocations to make builds run against the cluster:
 
 ```bash
-CACHE=$(kubectl get gtw cache-gateway -o=jsonpath='{.status.addresses[0].value}')
-SCHEDULER=$(kubectl get gtw scheduler-gateway -o=jsonpath='{.status.addresses[0].value}')
+NATIVELINK=$(kubectl get gtw nativelink-gateway -o=jsonpath='{.status.addresses[0].value}')
 
-echo "Cache IP: $CACHE"
-echo "Scheduler IP: $SCHEDULER"
+echo "NativeLink IP: $NATIVELINK"
 
 bazel build \
-    --remote_cache=grpc://$CACHE \
-    --remote_executor=grpc://$SCHEDULER \
+    --remote_cache=grpc://$NATIVELINK \
+    --remote_executor=grpc://$NATIVELINK \
     //local-remote-execution/examples:hello_lre
 ```
 
 :::caution
 While the Dashboard ports are static, the NativeLink endpoints aren't (yet).
-If you shut down the cluster and reboot it, the `$CACHE` and `$SCHEDULER` IP
-addresses will change.
+If you shut down the cluster and reboot it, the `$NATIVELINK` IP addresses will
+change.
 :::
 
 :::tip
@@ -114,7 +112,7 @@ resolve environment variables:
 ```bash
 # .bazelrc.user
 build --remote_cache=grpc://172.20.255.4
-build --remote_executor=grpc://172.20.255.5
+build --remote_executor=grpc://172.20.255.4
 ```
 
 ```bash
