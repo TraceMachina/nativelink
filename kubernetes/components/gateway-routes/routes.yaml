@@ -2,25 +2,12 @@
 apiVersion: gateway.networking.k8s.io/v1alpha2
 kind: GRPCRoute
 metadata:
-  name: cache-route
+  name: nativelink-route
 spec:
   parentRefs:
-    - name: cache-gateway
-      sectionName: cache-gateway
+    - name: nativelink-gateway
+      sectionName: nativelink-gateway
   rules:
     - backendRefs:
-        - name: nativelink-cas
+        - name: nativelink
           port: 50051
----
-apiVersion: gateway.networking.k8s.io/v1alpha2
-kind: GRPCRoute
-metadata:
-  name: scheduler-route
-spec:
-  parentRefs:
-    - name: scheduler-gateway
-      sectionName: scheduler-gateway
-  rules:
-    - backendRefs:
-        - name: nativelink-scheduler
-          port: 50052

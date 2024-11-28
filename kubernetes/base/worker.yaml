@@ -28,10 +28,8 @@ spec:
           env:
             - name: RUST_LOG
               value: info
-            - name: CAS_ENDPOINT
-              value: nativelink-cas
-            - name: SCHEDULER_ENDPOINT
-              value: nativelink-scheduler
+            - name: NATIVELINK_ENDPOINT
+              value: nativelink
           volumeMounts:
             - name: worker-config
               mountPath: /worker.json

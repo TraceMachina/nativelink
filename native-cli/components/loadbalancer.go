@@ -156,8 +156,7 @@ func gatewayAdded(
 			len(gateway.Status.Addresses) > 0 &&
 			!addedGateways[gateway.Name] {
 			gatewayIP := gateway.Status.Addresses[0].Value
-			http2 := gateway.Name == "cache-gateway" ||
-				gateway.Name == "scheduler-gateway"
+			http2 := gateway.Name == "nativelink-gateway"
 			gatewayInfo := InternalGateway{
 				Name:  gateway.Name,
 				IP:    gatewayIP,
@@ -305,12 +304,11 @@ func (component *Loadbalancer) Install(
 		ctx.Context(),
 		gatewayClientset,
 		map[string]bool{
-			"scheduler-gateway": false,
-			"cache-gateway":     false,
-			"el-gateway":        false,
-			"hubble-gateway":    false,
-			"tkn-gateway":       false,
-			"capacitor-gateway": false,
+			"nativelink-gateway": false,
+			"el-gateway":         false,
+			"hubble-gateway":     false,
+			"tkn-gateway":        false,
+			"capacitor-gateway":  false,
 		},
 	), component.Gateways)
 	if err != nil {
