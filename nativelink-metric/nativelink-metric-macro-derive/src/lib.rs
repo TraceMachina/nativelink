@@ -135,8 +135,8 @@ impl<'a> MetricFieldMetaData<'a> {
 /// to create the `MetricsComponent` impl.
 #[derive(Debug)]
 struct Generics<'a> {
-    impl_generics: ImplGenerics<'a>,
-    ty_generics: TypeGenerics<'a>,
+    impl_: ImplGenerics<'a>,
+    ty: TypeGenerics<'a>,
     where_clause: Option<&'a WhereClause>,
 }
 
@@ -152,8 +152,8 @@ struct MetricStruct<'a> {
 impl ToTokens for MetricStruct<'_> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let name = &self.name;
-        let impl_generics = &self.generics.impl_generics;
-        let ty_generics = &self.generics.ty_generics;
+        let impl_generics = &self.generics.impl_;
+        let ty_generics = &self.generics.ty;
         let where_clause = &self.generics.where_clause;
 
         let metric_fields = self.metric_fields.iter().map(|field| {
@@ -221,13 +221,13 @@ pub fn metrics_component_derive(input: TokenStream) -> TokenStream {
         }
     }
 
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let (impl_, ty, where_clause) = input.generics.split_for_impl();
     let metrics_struct = MetricStruct {
         name: &input.ident,
         metric_fields,
         generics: Generics {
-            impl_generics,
-            ty_generics,
+            impl_,
+            ty,
             where_clause,
         },
     };
