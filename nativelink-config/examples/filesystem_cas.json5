@@ -16,7 +16,7 @@
             "temp_path": "/tmp/nativelink/data/tmp_path-cas",
             "eviction_policy": {
               // 2gb.
-              "max_bytes": 2000000000,
+              "max_bytes": 2000000000
             }
           }
         }
@@ -50,7 +50,7 @@
                       "memory": {
                         "eviction_policy": {
                           // 10mb.
-                          "max_bytes": 10000000,
+                          "max_bytes": 10000000
                         }
                       }
                     },
@@ -60,7 +60,7 @@
                         "temp_path": "/tmp/nativelink/data/tmp_path-index",
                         "eviction_policy": {
                           // 500mb.
-                          "max_bytes": 500000000,
+                          "max_bytes": 500000000
                         }
                       }
                     }
@@ -85,7 +85,7 @@
         "temp_path": "/tmp/nativelink/data/tmp_path-ac",
         "eviction_policy": {
           // 500mb.
-          "max_bytes": 500000000,
+          "max_bytes": 500000000
         }
       }
     }
@@ -108,7 +108,7 @@
           "cpu_arch": "exact",
           "cpu_model": "exact",
           "kernel_version": "exact",
-          "docker_image": "priority",
+          "docker_image": "priority"
         }
       }
     }
@@ -133,19 +133,19 @@
       "execution": {
         "main": {
           "cas_store": "CAS_MAIN_STORE",
-          "scheduler": "MAIN_SCHEDULER",
+          "scheduler": "MAIN_SCHEDULER"
         }
       },
       "capabilities": {
         "main": {
           "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
+            "scheduler": "MAIN_SCHEDULER"
           }
         }
       },
       "bytestream": {
         "cas_stores": {
-          "main": "CAS_MAIN_STORE",
+          "main": "CAS_MAIN_STORE"
         }
       }
     }
@@ -161,9 +161,9 @@
       // In other words, this service is a backend api. The ones above
       // are a frontend api.
       "worker_api": {
-        "scheduler": "MAIN_SCHEDULER",
+        "scheduler": "MAIN_SCHEDULER"
       },
-      "health": {},
+      "health": {}
     }
   }]
 }
