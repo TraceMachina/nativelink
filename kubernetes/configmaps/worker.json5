@@ -33,7 +33,7 @@
         },
         "slow": {
           "ref_store": {
-            "name": "GRPC_LOCAL_STORE",
+            "name": "GRPC_LOCAL_STORE"
           }
         }
       }
@@ -42,25 +42,25 @@
   "workers": [{
     "local": {
       "worker_api_endpoint": {
-        "uri": "grpc://${NATIVELINK_ENDPOINT:-127.0.0.1}:50061",
+        "uri": "grpc://${NATIVELINK_ENDPOINT:-127.0.0.1}:50061"
       },
       "cas_fast_slow_store": "WORKER_FAST_SLOW_STORE",
       "upload_action_result": {
-        "ac_store": "GRPC_LOCAL_AC_STORE",
+        "ac_store": "GRPC_LOCAL_AC_STORE"
       },
       "work_directory": "~/.cache/nativelink/work",
       "platform_properties": {
         "cpu_count": {
-          "query_cmd": "nproc",
+          "query_cmd": "nproc"
         },
         "memory_kb": {
-          "values": ["500000"],
+          "values": ["500000"]
         },
         "network_kbps": {
-          "values": ["100000"],
+          "values": ["100000"]
         },
         "cpu_arch": {
-          "values": ["x86_64"],
+          "values": ["x86_64"]
         },
         "OSFamily": {
           "values": ["Linux"]

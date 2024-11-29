@@ -27,12 +27,12 @@ spec:
             - containerPort: 50061
           volumeMounts:
             - name: nativelink-config
-              mountPath: /nativelink-config.json
-              subPath: nativelink-config.json
+              mountPath: /nativelink-config.json5
+              subPath: nativelink-config.json5
             - name: tls-volume
               mountPath: /root
               readOnly: true
-          args: ["/nativelink-config.json"]
+          args: ["/nativelink-config.json5"]
       volumes:
         - name: nativelink-config
           configMap:

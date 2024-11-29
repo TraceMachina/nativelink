@@ -12,7 +12,7 @@
                     "temp_path": "/tmp/nativelink/data/tmp_path-index",
                     "eviction_policy": {
                       // 500mb.
-                      "max_bytes": 500000000,
+                      "max_bytes": 500000000
                     }
                   }
                 },
@@ -24,7 +24,7 @@
                     "retry": {
                       "max_retries": 6,
                       "delay": 0.3,
-                      "jitter": 0.5,
+                      "jitter": 0.5
                     },
                     "additional_max_concurrent_requests": 10
                   }
@@ -44,7 +44,7 @@
                         "temp_path": "/tmp/nativelink/data/tmp_path-content",
                         "eviction_policy": {
                           // 2gb.
-                          "max_bytes": 2000000000,
+                          "max_bytes": 2000000000
                         }
                       }
                     },
@@ -56,7 +56,7 @@
                         "retry": {
                           "max_retries": 6,
                           "delay": 0.3,
-                          "jitter": 0.5,
+                          "jitter": 0.5
                         },
                         "additional_max_concurrent_requests": 10
                       }
@@ -77,7 +77,7 @@
           "memory": {
             "eviction_policy": {
               // 100mb.
-              "max_bytes": 100000000,
+              "max_bytes": 100000000
             }
           },
           "filesystem": {
@@ -85,7 +85,7 @@
             "temp_path": "/tmp/nativelink/data/tmp_path-ac",
             "eviction_policy": {
               // 500mb.
-              "max_bytes": 500000000,
+              "max_bytes": 500000000
             }
           }
         },
@@ -97,7 +97,7 @@
             "retry": {
               "max_retries": 6,
               "delay": 0.3,
-              "jitter": 0.5,
+              "jitter": 0.5
             },
             "additional_max_concurrent_requests": 10
           }
@@ -123,7 +123,7 @@
           "cpu_arch": "exact",
           "cpu_model": "exact",
           "kernel_version": "exact",
-          "docker_image": "priority",
+          "docker_image": "priority"
         }
       }
     }
@@ -148,22 +148,22 @@
       "execution": {
         "main": {
           "cas_store": "CAS_MAIN_STORE",
-          "scheduler": "MAIN_SCHEDULER",
+          "scheduler": "MAIN_SCHEDULER"
         }
       },
       "capabilities": {
         "main": {
           "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
+            "scheduler": "MAIN_SCHEDULER"
           }
         }
       },
       "bytestream": {
         "cas_stores": {
-          "main": "CAS_MAIN_STORE",
+          "main": "CAS_MAIN_STORE"
         }
       },
-      "health": {},
+      "health": {}
     }
   }]
 }

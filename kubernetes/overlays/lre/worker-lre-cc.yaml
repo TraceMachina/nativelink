@@ -39,7 +39,7 @@ spec:
             - name: entrypoint
               mountPath: /entrypoint
           command: ["/entrypoint/entrypoint.sh"]
-          args: ["/shared/nativelink", "/worker.json"]
+          args: ["/shared/nativelink", "/worker.jsonc"]
       volumes:
         - name: entrypoint
           emptyDir: {}
