@@ -15,7 +15,7 @@
                 "content_path": "~/.cache/nativelink/content_path-cas",
                 "temp_path": "~/.cache/nativelink/tmp_path-cas",
                 "eviction_policy": {
-                  "max_bytes": "10Gb",
+                  "max_bytes": "10Gb"
                 }
               }
             }
@@ -30,7 +30,7 @@
             "content_path": "~/.cache/nativelink/content_path-ac",
             "temp_path": "~/.cache/nativelink/tmp_path-ac",
             "eviction_policy": {
-              "max_bytes": "500Mb",
+              "max_bytes": "500Mb"
             }
           }
         },
@@ -63,7 +63,7 @@
           "cpu_model": "priority",
           "kernel_version": "priority",
           "OSFamily": "priority",
-          "container-image": "priority",
+          "container-image": "priority"
         }
       }
     }
@@ -101,20 +101,20 @@
       "capabilities": {
         "": {
           "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
+            "scheduler": "MAIN_SCHEDULER"
           }
         }
       },
       "execution": {
         "": {
           "cas_store": "CAS_MAIN_STORE",
-          "scheduler": "MAIN_SCHEDULER",
+          "scheduler": "MAIN_SCHEDULER"
         }
       },
       "bytestream": {
         "cas_stores": {
-          "": "CAS_MAIN_STORE",
-        },
+          "": "CAS_MAIN_STORE"
+        }
       }
     }
   },
@@ -142,27 +142,27 @@
       "capabilities": {
         "": {
           "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
+            "scheduler": "MAIN_SCHEDULER"
           }
         }
       },
       "execution": {
         "": {
           "cas_store": "CAS_MAIN_STORE",
-          "scheduler": "MAIN_SCHEDULER",
+          "scheduler": "MAIN_SCHEDULER"
         }
       },
       "bytestream": {
         "cas_stores": {
-          "": "CAS_MAIN_STORE",
-        },
+          "": "CAS_MAIN_STORE"
+        }
       }
     }
   },
   {
     "listener": {
       "http": {
-        "socket_address": "0.0.0.0:50061",
+        "socket_address": "0.0.0.0:50061"
       }
     },
     "services": {
@@ -171,9 +171,9 @@
       // In other words, this service is a backend api. The ones above
       // are a frontend api.
       "worker_api": {
-        "scheduler": "MAIN_SCHEDULER",
+        "scheduler": "MAIN_SCHEDULER"
       },
-      "health": {},
+      "health": {}
     }
   }]
 }

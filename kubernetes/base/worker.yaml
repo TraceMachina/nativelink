@@ -32,12 +32,12 @@ spec:
               value: nativelink
           volumeMounts:
             - name: worker-config
-              mountPath: /worker.json
-              subPath: worker.json
+              mountPath: /worker.jsonc
+              subPath: worker.jsonc
             - name: shared
               mountPath: /shared
           command: ["/shared/nativelink"]
-          args: ["/worker.json"]
+          args: ["/worker.jsonc"]
       volumes:
         - name: shared
           emptyDir: {}
