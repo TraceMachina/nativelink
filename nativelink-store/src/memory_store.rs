@@ -55,7 +55,7 @@ impl LenEntry for BytesWrapper {
 #[derive(MetricsComponent)]
 pub struct MemoryStore {
     #[metric(group = "evicting_map")]
-    evicting_map: EvictingMap<StoreKeyBorrow<'static>, BytesWrapper, SystemTime>,
+    evicting_map: EvictingMap<StoreKeyBorrow, BytesWrapper, SystemTime>,
 }
 
 impl MemoryStore {

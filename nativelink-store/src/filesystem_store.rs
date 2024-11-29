@@ -440,13 +440,13 @@ pub fn key_from_filename(mut file_name: &str) -> Result<StoreKey<'_>, Error> {
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
 async fn add_files_to_cache<Fe: FileEntry>(
-    evicting_map: &EvictingMap<StoreKeyBorrow<'static>, Arc<Fe>, SystemTime>,
+    evicting_map: &EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>,
     anchor_time: &SystemTime,
     shared_context: &Arc<SharedContext>,
     block_size: u64,
 ) -> Result<(), Error> {
     async fn process_entry<Fe: FileEntry>(
-        evicting_map: &EvictingMap<StoreKeyBorrow<'static>, Arc<Fe>, SystemTime>,
+        evicting_map: &EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>,
         file_name: &str,
         atime: SystemTime,
         data_size: u64,
@@ -561,7 +561,7 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
     shared_context: Arc<SharedContext>,
     #[metric(group = "evicting_map")]
-    evicting_map: Arc<EvictingMap<StoreKeyBorrow<'static>, Arc<Fe>, SystemTime>>,
+    evicting_map: Arc<EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>>,
     #[metric(help = "Block size of the configured filesystem")]
     block_size: u64,
     #[metric(help = "Size of the configured read buffer size")]
