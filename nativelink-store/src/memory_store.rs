@@ -74,7 +74,7 @@ impl MemoryStore {
     }
 
     pub async fn remove_entry(&self, key: StoreKey<'_>) -> bool {
-        self.evicting_map.remove(&key.into_owned()).await
+        self.evicting_map.remove(&key).await
     }
 }
 
@@ -138,7 +138,7 @@ impl StoreDriver for MemoryStore {
         };
 
         self.evicting_map
-            .insert(key.borrow().into_owned().into(), BytesWrapper(final_buffer))
+            .insert(key.into_owned().into(), BytesWrapper(final_buffer))
             .await;
         Ok(())
     }
@@ -164,7 +164,7 @@ impl StoreDriver for MemoryStore {
 
         let value = self
             .evicting_map
-            .get(&key.borrow().into_owned())
+            .get(&key)
             .await
             .err_tip_with_code(|_| (Code::NotFound, format!("Key {key:?} not found")))?;
         let default_len = usize::try_from(value.len())
