@@ -151,41 +151,29 @@ pub enum StoreOptimizations {
 /// As such this is a wrapper type that is stored in the
 /// maps using the workaround as described in
 /// <https://blinsay.com/blog/compound-keys/>
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub struct StoreKeyBorrow<'a>(StoreKey<'a>);
+pub struct StoreKeyBorrow(StoreKey<'static>);
 
-impl Clone for StoreKeyBorrow<'static> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<'a> From<StoreKey<'a>> for StoreKeyBorrow<'a> {
-    fn from(key: StoreKey<'a>) -> Self {
+impl From<StoreKey<'static>> for StoreKeyBorrow {
+    fn from(key: StoreKey<'static>) -> Self {
         Self(key)
     }
 }
 
-impl<'a> From<StoreKeyBorrow<'a>> for StoreKey<'a> {
-    fn from(key_borrow: StoreKeyBorrow<'a>) -> Self {
+impl From<StoreKeyBorrow> for StoreKey<'static> {
+    fn from(key_borrow: StoreKeyBorrow) -> Self {
         key_borrow.0
     }
 }
 
-impl<'a, 'b> Borrow<StoreKey<'a>> for StoreKeyBorrow<'b>
-where
-    'b: 'a,
-{
+impl<'a> Borrow<StoreKey<'a>> for StoreKeyBorrow {
     fn borrow(&self) -> &StoreKey<'a> {
         &self.0
     }
 }
 
-impl<'a, 'b> Borrow<StoreKey<'a>> for &StoreKeyBorrow<'b>
-where
-    'b: 'a,
-{
+impl<'a> Borrow<StoreKey<'a>> for &StoreKeyBorrow {
     fn borrow(&self) -> &StoreKey<'a> {
         &self.0
     }
