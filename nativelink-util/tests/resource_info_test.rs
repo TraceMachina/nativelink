@@ -165,7 +165,7 @@ async fn read_instance_name_compressed_blobs_compressor_hash_size_optional_metad
     assert_eq!(resource_info.instance_name, "instance_name");
     assert_eq!(resource_info.uuid, None);
     assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(
@@ -184,7 +184,7 @@ async fn read_instance_name_compressed_blobs_compressor_hash_size_test(
     assert_eq!(resource_info.instance_name, "instance_name");
     assert_eq!(resource_info.uuid, None);
     assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(resource_info.optional_metadata, None);
@@ -200,7 +200,7 @@ async fn read_instance_name_blobs_hash_size_optional_metadata_test(
     assert_eq!(resource_info.instance_name, "instance_name");
     assert_eq!(resource_info.uuid, None);
     assert_eq!(resource_info.compressor, None);
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(
@@ -218,7 +218,7 @@ async fn read_instance_name_blobs_hash_size_test() -> Result<(), Box<dyn std::er
     assert_eq!(resource_info.instance_name, "instance_name");
     assert_eq!(resource_info.uuid, None);
     assert_eq!(resource_info.compressor, None);
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(resource_info.optional_metadata, None);
@@ -234,7 +234,7 @@ async fn read_compressed_blobs_compressor_hash_size_optional_metadata_test(
     assert_eq!(resource_info.instance_name, "");
     assert_eq!(resource_info.uuid, None);
     assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(
@@ -253,7 +253,7 @@ async fn read_compressed_blobs_compressor_hash_size_test() -> Result<(), Box<dyn
     assert_eq!(resource_info.instance_name, "");
     assert_eq!(resource_info.uuid, None);
     assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(resource_info.optional_metadata, None);
@@ -268,7 +268,7 @@ async fn read_blobs_hash_size_optional_metadata_test() -> Result<(), Box<dyn std
     assert_eq!(resource_info.instance_name, "");
     assert_eq!(resource_info.uuid, None);
     assert_eq!(resource_info.compressor, None);
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(
@@ -286,7 +286,7 @@ async fn read_blobs_hash_size_test() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(resource_info.instance_name, "");
     assert_eq!(resource_info.uuid, None);
     assert_eq!(resource_info.compressor, None);
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(resource_info.optional_metadata, None);
@@ -301,7 +301,7 @@ async fn read_instance_name_can_have_slashes_test() -> Result<(), Box<dyn std::e
     assert_eq!(resource_info.instance_name, "my/instance/name");
     assert_eq!(resource_info.uuid, None);
     assert_eq!(resource_info.compressor, None);
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(resource_info.optional_metadata, None);
@@ -316,7 +316,7 @@ async fn read_instance_name_can_be_blobs_test() -> Result<(), Box<dyn std::error
     assert_eq!(resource_info.instance_name, "blobs");
     assert_eq!(resource_info.uuid, None);
     assert_eq!(resource_info.compressor, None);
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(resource_info.optional_metadata, None);
@@ -505,7 +505,7 @@ async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_hash_size_
     assert_eq!(resource_info.instance_name, "instance_name");
     assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
     assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(
@@ -524,7 +524,7 @@ async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_hash_size_
     assert_eq!(resource_info.instance_name, "instance_name");
     assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
     assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(resource_info.optional_metadata, None);
@@ -540,7 +540,7 @@ async fn write_instance_name_uploads_uuid_blobs_hash_size_optional_metadata_test
     assert_eq!(resource_info.instance_name, "instance_name");
     assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
     assert_eq!(resource_info.compressor, None);
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(
@@ -559,7 +559,7 @@ async fn write_instance_name_uploads_uuid_blobs_hash_size_test(
     assert_eq!(resource_info.instance_name, "instance_name");
     assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
     assert_eq!(resource_info.compressor, None);
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(resource_info.optional_metadata, None);
@@ -575,7 +575,7 @@ async fn write_uploads_uuid_compressed_blobs_compressor_hash_size_optional_metad
     assert_eq!(resource_info.instance_name, "");
     assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
     assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(
@@ -594,7 +594,7 @@ async fn write_uploads_uuid_compressed_blobs_compressor_hash_size_test(
     assert_eq!(resource_info.instance_name, "");
     assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
     assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(resource_info.optional_metadata, None);
@@ -617,7 +617,7 @@ async fn write_uploads_uuid_blobs_hash_size_optional_metadata_test(
     assert_eq!(resource_info.instance_name, "");
     assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
     assert_eq!(resource_info.compressor, None);
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(
@@ -635,7 +635,7 @@ async fn write_uploads_uuid_blobs_hash_size_test() -> Result<(), Box<dyn std::er
     assert_eq!(resource_info.instance_name, "");
     assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
     assert_eq!(resource_info.compressor, None);
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(resource_info.optional_metadata, None);
@@ -650,7 +650,7 @@ async fn write_instance_name_can_have_slashes_test() -> Result<(), Box<dyn std::
     assert_eq!(resource_info.instance_name, "my/instance/name");
     assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
     assert_eq!(resource_info.compressor, None);
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(resource_info.optional_metadata, None);
@@ -665,7 +665,7 @@ async fn write_instance_name_can_be_blobs_test() -> Result<(), Box<dyn std::erro
     assert_eq!(resource_info.instance_name, "blobs");
     assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
     assert_eq!(resource_info.compressor, None);
-    assert_eq!(resource_info.digest_function, None);
+    assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("sha256")));
     assert_eq!(resource_info.hash, "hash");
     assert_eq!(resource_info.expected_size, 12345);
     assert_eq!(resource_info.optional_metadata, None);
