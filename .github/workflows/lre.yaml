@@ -171,13 +171,6 @@ jobs:
               -l tekton.dev/pipeline=rebuild-nativelink
           EOF
 
-      - name: Wait for Configmaps
-        run: >
-          nix develop --impure --command
-          bash -c "flux reconcile kustomization -n default \
-            --timeout=15m \
-            nativelink-configmaps"
-
       - name: Wait for NativeLink Kustomization
         run: >
           nix develop --impure --command
