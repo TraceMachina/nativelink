@@ -63,7 +63,8 @@
           "cpu_model": "priority",
           "kernel_version": "priority",
           "OSFamily": "priority",
-          "container-image": "priority"
+          "container-image": "priority",
+          "lre-rs": "priority"
         }
       }
     }
