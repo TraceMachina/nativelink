@@ -4,6 +4,16 @@
   pkgs,
   ...
 }: let
+  nixExecToRustExec = nixSystem:
+    {
+      "aarch64-darwin" = "aarch64-apple-darwin";
+      "aarch64-linux" = "aarch64-unknown-linux-gnu";
+      "x86_64-darwin" = "x86_64-apple-darwin";
+      "x86_64-linux" = "x86_64-unknown-linux-gnu";
+    }
+    .${nixSystem}
+    or (throw "Unsupported Nix exec platform: ${nixSystem}");
+
   # These flags cause a Bazel build to use LRE toolchains regardless of whether
   # the build is running in local or remote configuration.
   #
@@ -21,22 +31,66 @@
   #   '';
   # };
   # ```
-  defaultConfig = [
-    # TODO(aaronmondal): Remove after resolution of:
-    # https://github.com/bazelbuild/bazel/issues/19714#issuecomment-1745604978
-    "--action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1"
+  defaultConfig =
+    [
+      # Global configuration.
 
-    # TODO(aaronmondal): Remove after resolution of:
-    # https://github.com/bazelbuild/bazel/issues/7254
-    "--define=EXECUTOR=remote"
+      # TODO(aaronmondal): Remove after resolution of:
+      #                    https://github.com/bazelbuild/bazel/issues/7254
+      "--define=EXECUTOR=remote"
+    ]
+    # C++.
+    # TODO(aaronmondal): At the moment lre-cc only supports x86_64-linux.
+    #                    Extend this to more nix systems.
+    # See: https://github.com/bazelbuild/bazel/issues/19714#issuecomment-1745604978
+    ++ lib.optionals pkgs.stdenv.isLinux [
+      "--action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1"
 
-    # Set up the default toolchains.
-    # TODO(aaronmondal): Implement a mechanism that autogenerates these values
-    #                    and generalizes to extensions of the lre-cc base
-    #                    toolchain (such as CUDA extensions).
-    "--extra_execution_platforms=@local-remote-execution//generated-cc/config:platform"
-    "--extra_toolchains=@local-remote-execution//generated-cc/config:cc-toolchain"
-  ];
+      # TODO(aaronmondal): Reimplement rbe-configs-gen for C++ so that we can
+      #                    support more execution and target platforms here.
+
+      # Explicitly duplicate the host as an execution platform. This way local
+      # execution is treated the same as remote execution.
+      "--extra_execution_platforms=@local-remote-execution//generated-cc/config:platform"
+      # The C++ toolchain running on the execution platform.
+      "--extra_toolchains=@local-remote-execution//generated-cc/config:cc-toolchain"
+
+      # TODO(aaronmondal): Support different target platforms in lre-cc and add
+      #                    `--platforms` settings here.
+    ]
+    # Rust.
+    ++ [
+      # Explicitly duplicate the host as an execution platform. This way local
+      # execution is treated the same as remote execution.
+      #
+      # When using remote executors that differ from the host this needs to be
+      # manually extended via the `--extra_execution_platforms` flag.
+      "--extra_execution_platforms=@local-remote-execution//lre-rs/platforms:${nixExecToRustExec pkgs.system}"
+
+      # The rust toolchains executing on the execution platform. We default to the
+      # platforms corresponding to the host. When using remote executors that
+      # differ from the platform corresponding to the host this should be extended
+      # via manual `--extra_toolchains` arguments.
+      "--extra_toolchains=@local-remote-execution//lre-rs:rust-${pkgs.system}"
+      "--extra_toolchains=@local-remote-execution//lre-rs:rustfmt-${pkgs.system}"
+    ]
+    # Defaults for rust target platforms. This is a convenience setting that may
+    # be overridden by manual `--platforms` arguments.
+    #
+    # TODO(aaronmondal): At the moment these platforms are "rust-specific".
+    #                    Generalize this to all languages.
+    ++ lib.optionals (pkgs.system == "aarch64-darwin") [
+      "--platforms=@local-remote-execution//lre-rs/platforms:aarch64-apple-darwin"
+    ]
+    ++ lib.optionals (pkgs.system == "aarch64-linux") [
+      "--platforms=@local-remote-execution//lre-rs/platforms:aarch64-unknown-linux-musl"
+    ]
+    ++ lib.optionals (pkgs.system == "x86_64-darwin") [
+      "--platforms=@local-remote-execution//lre-rs/platforms:x86_64-apple-darwin"
+    ]
+    ++ lib.optionals (pkgs.system == "x86_64-linux") [
+      "--platforms=@local-remote-execution//lre-rs/platforms:x86_64-unknown-linux-musl"
+    ];
 
   maybeEnv =
     if config.Env == []

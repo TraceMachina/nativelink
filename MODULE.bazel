@@ -6,7 +6,7 @@ module(
 
 bazel_dep(name = "rules_cc", version = "0.0.17")
 bazel_dep(name = "platforms", version = "0.0.10")
-bazel_dep(name = "rules_python", version = "0.36.0")
+bazel_dep(name = "rules_python", version = "0.40.0")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(
@@ -19,30 +19,21 @@ python.toolchain(
 use_repo(python, python = "python_versions")
 
 bazel_dep(name = "rules_rust", version = "0.54.1")
+archive_override(
+    module_name = "rules_rust",
+    integrity = "sha256-r09Wyq5QqZpov845sUG1Cd1oVIyCBLmKt6HK/JTVuwI=",
+    patch_strip = 1,
+    patches = ["//tools:rules_rust-musl-platforms.diff"],
+    urls = [
+        "https://github.com/bazelbuild/rules_rust/releases/download/0.54.1/rules_rust-v0.54.1.tar.gz",
+    ],
+)
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
-    rust_analyzer_version = "nightly/2024-11-23",
-    rustfmt_version = "nightly/2024-11-23",
-    sha256s = {
-        "2024-11-23/cargo-nightly-x86_64-apple-darwin.tar.xz": "1b0fca7da21cbbc00faef55999a2f034980abcb7da898ccdcdc12ffa18af0eef",
-        "2024-11-23/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "54e155e906ca24449dcb3e8da9ef3896a4d025b28593285b5580bcb69f6bdb73",
-        "2024-11-23/clippy-nightly-x86_64-apple-darwin.tar.xz": "0a39d1139eb51f158861c782a884cc23ce44fe83fcb295534daf0a0f556a9e0c",
-        "2024-11-23/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "b401ac1362c89a08107906fd46ce11490040eefa498d5e263e513762776e0852",
-        "2024-11-23/llvm-tools-nightly-x86_64-apple-darwin.tar.xz": "2d07d5a6f5b3f947e5a3ae3261f4551b007d34de5c113681d0784a8f5d9cd0e0",
-        "2024-11-23/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "d9b308aa7b7e76fe0fecb1ee593854690709c8b6d0e362a1479b0b0629de9191",
-        "2024-11-23/rust-std-nightly-x86_64-apple-darwin.tar.xz": "7d7f1a9759b28fd39929d2d7bcee99bc01b6c330f29f1acf261d307b1338c466",
-        "2024-11-23/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "502a5e7b6716add6bc9928ff841b3778bae55b07cc80dc401c57acb726b65566",
-        "2024-11-23/rustc-nightly-x86_64-apple-darwin.tar.xz": "3339efb0a1c4f8f25baea1a764d8bed4bfda5c17272107ae48081165caaced4c",
-        "2024-11-23/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "1ac699e3942648cf3844ff3c8f03acb66ac01b221679a62619c9ed48ad4321a2",
-        "2024-11-23/rustfmt-nightly-x86_64-apple-darwin.tar.xz": "e67b50b801b14c2f06dd10544e66a0e76374b716bfb92f6f4b7055b4d4023ec7",
-        "2024-11-23/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "ac2a8fff891473220d36c9e62afc2dc0d5aebaefbb8489584bd2446a37d6fd7b",
-    },
-    versions = [
-        "1.82.0",
-        "nightly/2024-11-23",
-    ],
+    # Rust toolchains supplied by LRE.
+    versions = [],
 )
 
 rust_host_tools = use_extension(
@@ -64,11 +55,13 @@ crate.from_cargo(
     supported_platform_triples = [
         "aarch64-apple-darwin",
         "aarch64-unknown-linux-gnu",
+        "aarch64-unknown-linux-musl",
         "arm-unknown-linux-gnueabi",
         "armv7-unknown-linux-gnueabi",
         "x86_64-apple-darwin",
         "x86_64-pc-windows-msvc",
         "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
     ],
 )
 use_repo(crate, "crates")
@@ -79,8 +72,8 @@ rust_analyzer = use_extension(
 )
 rust_analyzer.rust_analyzer_dependencies()
 
-bazel_dep(name = "protobuf", version = "27.5", repo_name = "com_google_protobuf")
-bazel_dep(name = "toolchains_protoc", version = "0.3.3")
+bazel_dep(name = "protobuf", version = "29.0", repo_name = "com_google_protobuf")
+bazel_dep(name = "toolchains_protoc", version = "0.3.4")
 
 protoc = use_extension("@toolchains_protoc//protoc:extensions.bzl", "protoc")
 protoc.toolchain(

@@ -52,20 +52,53 @@
         system,
         ...
       }: let
+        # C and C++ toolchain configuration. The basis of all toolchains.
+        llvmPackages = pkgs.llvmPackages_19;
+
+        # Rust toolchain configuration.
         stable-rust-version = "1.82.0";
         nightly-rust-version = "2024-11-23";
 
-        llvmPackages = pkgs.llvmPackages_19;
+        # This map translates execution platforms to sensible targets that can
+        # be built on such a platform. For instance, an x86_64-linux execution
+        # platform can target aarch64-linux and musl targets, but not darwin.
+        #
+        # On the Bazel side each key maps to a dedicated toolchain capture the
+        # cross-compile capabilities on the different exec platforms.
+        nixSystemToRustTargets = {
+          "aarch64-darwin" = [
+            "aarch64-apple-darwin"
+            "aarch64-unknown-linux-gnu"
+            "aarch64-unknown-linux-musl"
+            "x86_64-apple-darwin"
+            "x86_64-unknown-linux-gnu"
+            "x86_64-unknown-linux-musl"
+          ];
+          "aarch64-linux" = [
+            "aarch64-unknown-linux-gnu"
+            "aarch64-unknown-linux-musl"
+            "x86_64-unknown-linux-gnu"
+            "x86_64-unknown-linux-musl"
+          ];
+          "x86_64-darwin" = [
+            "aarch64-apple-darwin"
+            "aarch64-unknown-linux-gnu"
+            "aarch64-unknown-linux-musl"
+            "x86_64-apple-darwin"
+            "x86_64-unknown-linux-gnu"
+            "x86_64-unknown-linux-musl"
+          ];
+          "x86_64-linux" = [
+            "aarch64-unknown-linux-gnu"
+            "aarch64-unknown-linux-musl"
+            "x86_64-unknown-linux-gnu"
+            "x86_64-unknown-linux-musl"
+          ];
+        };
 
-        nixSystemToRustTriple = nixSystem:
-          {
-            "x86_64-linux" = "x86_64-unknown-linux-musl";
-            "aarch64-linux" = "aarch64-unknown-linux-musl";
-            "x86_64-darwin" = "x86_64-apple-darwin";
-            "aarch64-darwin" = "aarch64-apple-darwin";
-          }
-          .${nixSystem}
-          or (throw "Unsupported Nix system: ${nixSystem}");
+        nixExecToRustTargets = nixSystem:
+          nixSystemToRustTargets.${nixSystem}
+          or (throw "Unsupported Nix exec platform: ${nixSystem}");
 
         # Calling `pkgs.pkgsCross` changes the host and target platform to the
         # cross-target but leaves the build platform the same as pkgs.
@@ -80,23 +113,32 @@
         #
         # For optimal cache reuse of different crosscompilation toolchains we
         # take our rust toolchain from the host's `pkgs` and remap the rust
-        # target to the target platform of the `pkgsCross` target. This lets us
-        # reuse the same executables (for instance rustc) to build artifacts for
-        # different target platforms.
+        # target to sensible `pkgsCross` targets. This lets us reuse the same
+        # executables (for instance rustc) to build artifacts for different
+        # target platforms.
         stableRustFor = p:
           p.rust-bin.stable.${stable-rust-version}.default.override {
-            targets = [
-              "${nixSystemToRustTriple p.stdenv.targetPlatform.system}"
-            ];
+            targets = nixExecToRustTargets p.stdenv.targetPlatform.system;
           };
 
         nightlyRustFor = p:
           p.rust-bin.nightly.${nightly-rust-version}.default.override {
             extensions = ["llvm-tools"];
-            targets = [
-              "${nixSystemToRustTriple p.stdenv.targetPlatform.system}"
-            ];
+            targets = nixExecToRustTargets p.stdenv.targetPlatform.system;
           };
+
+        # This convenience method maps a nix system to the Rust target triple
+        # that we'd want to target by default. This is only used for Nix builds
+        # and doesn't have a Bazel equivalent.
+        nixSystemToRustTriple = nixSystem:
+          {
+            "x86_64-linux" = "x86_64-unknown-linux-musl";
+            "aarch64-linux" = "aarch64-unknown-linux-musl";
+            "x86_64-darwin" = "x86_64-apple-darwin";
+            "aarch64-darwin" = "aarch64-apple-darwin";
+          }
+          .${nixSystem}
+          or (throw "Unsupported Nix host platform: ${nixSystem}");
 
         craneLibFor = p: (crane.mkLib p).overrideToolchain stableRustFor;
         nightlyCraneLibFor = p: (crane.mkLib p).overrideToolchain nightlyRustFor;
@@ -248,6 +290,9 @@
           inherit (pkgs.lre) stdenv;
         };
         createWorker = pkgs.callPackage ./tools/create-worker.nix {inherit buildImage self;};
+        gen-lre-rs = pkgs.callPackage ./tools/lre-rs.nix {
+          inherit nixSystemToRustTargets;
+        };
         buck2-toolchain = let
           buck2-nightly-rust-version = "2024-04-28";
           buck2-nightly-rust = pkgs.rust-bin.nightly.${buck2-nightly-rust-version};
@@ -288,6 +333,14 @@
         lre-cc = pkgs.callPackage ./local-remote-execution/lre-cc.nix {
           inherit buildImage;
         };
+        lre-rs = pkgs.callPackage ./local-remote-execution/lre-rs.nix {
+          inherit buildImage lre-cc;
+          rust-toolchains = [
+            (stableRustFor pkgs)
+            (nightlyRustFor pkgs)
+          ];
+        };
+
         toolchain-drake = buildImage {
           name = "toolchain-drake";
           # imageDigest and sha256 are generated by toolchain-drake.sh for non-reproducible builds.
@@ -365,6 +418,7 @@
             inherit
               local-image-test
               lre-cc
+              lre-rs
               native-cli
               nativelink
               nativelinkCoverageForHost
@@ -376,6 +430,10 @@
               nativelink-x86_64-linux
               publish-ghcr
               ;
+
+            stable-rust = stableRustFor pkgs;
+            nightly-rust = nightlyRustFor pkgs;
+
             default = nativelink;
 
             rbe-autogen-lre-cc = rbe-autogen lre-cc;
@@ -383,6 +441,7 @@
             lre-java = pkgs.callPackage ./local-remote-execution/lre-java.nix {inherit buildImage;};
             rbe-autogen-lre-java = rbe-autogen lre-java;
             nativelink-worker-lre-java = createWorker lre-java;
+            nativelink-worker-lre-rs = createWorker lre-rs;
             nativelink-worker-siso-chromium = createWorker siso-chromium;
             nativelink-worker-toolchain-drake = createWorker toolchain-drake;
             nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
@@ -422,9 +481,12 @@
         local-remote-execution.settings = {
           Env =
             if pkgs.stdenv.isDarwin
-            then [] # Doesn't support Darwin yet.
-            else lre-cc.meta.Env;
-          prefix = "linux";
+            then lre-rs.meta.Env # C++ doesn't support Darwin yet.
+            else (lre-cc.meta.Env ++ lre-rs.meta.Env);
+          prefix =
+            if pkgs.stdenv.isDarwin
+            then "macos"
+            else "linux";
         };
         nixos.settings = {
           path = with pkgs; [
@@ -451,6 +513,7 @@
               # Rust
               (stableRustFor pkgs)
               bazel
+              gen-lre-rs
 
               ## Infrastructure
               pkgs.awscli2
