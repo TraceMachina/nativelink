@@ -54,10 +54,8 @@
           "cpu_model": "exact",
           "kernel_version": "exact",
           "OSFamily": "priority",
-          "container-image": "priority"
-          // Example of how to set which docker images are available and set
-          // them in the platform properties.
-          // "docker_image": "priority",
+          "container-image": "priority",
+          "lre-rs": "priority"
         }
       }
     }
@@ -90,12 +88,10 @@
         },
         "container-image": {
           "values": [""]
+        },
+        "lre-rs": {
+          "values": [""]
         }
-        // Example of how to set which docker images are available and set
-        // them in the platform properties.
-        // "docker_image": {
-        //   "query_cmd": "docker images --format {{.Repository}}:{{.Tag}}",
-        // }
       }
     }
   }],

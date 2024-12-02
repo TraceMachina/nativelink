@@ -10,7 +10,7 @@
     "build": "bun fix && astro build",
     "docs": "bun run build.docs && bun run generate.docs",
     "generate.docs": "bun run utils/md_to_mdx_aot.ts",
-    "build.docs": "cd ../.. && unset TMPDIR TMP; bazel build nativelink-config:docs_json && cd web/platform && bun run utils/metaphase_aot.ts",
+    "build.docs": "cd ../.. && unset TMPDIR TMP; bazel build --@local-remote-execution//rust:channel=nightly nativelink-config:docs_json && cd web/platform && bun run utils/metaphase_aot.ts",
     "check": "biome ci . && astro check",
     "check.format": "biome format .",
     "check.lint": "biome check .",
