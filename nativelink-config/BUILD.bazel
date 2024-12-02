@@ -57,6 +57,10 @@ rust_doc(
         "--output-format=json",
         "-Zunstable-options",
     ],
+    target_compatible_with = select({
+        "@local-remote-execution//rust:nightly": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
 )
 
 rust_doc_test(
