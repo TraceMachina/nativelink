@@ -376,7 +376,6 @@
             src = self.inputs.nixpkgs;
             patches = [
               ./tools/nixpkgs_link_libunwind_and_libcxx.diff
-              ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
             ];
           };
           rust-overlay-patched = (import self.inputs.nixpkgs {inherit system;}).applyPatches {
@@ -391,7 +390,10 @@
         in
           import nixpkgs-patched {
             inherit system;
-            overlays = [(import rust-overlay-patched)];
+            overlays = [
+              (import ./tools/nixpkgs-disable-ratehammering-pulumi-tests.nix)
+              (import rust-overlay-patched)
+            ];
           };
         apps = {
           default = {
