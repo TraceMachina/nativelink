@@ -73,6 +73,11 @@
             // `local-remote-execution/generated-cc/config/BUILD`.
             "${NATIVELINK_WORKER_PLATFORM:-undefined_platform}"
           ]
+        },
+        "lre-rs": {
+          "values": [
+            "${NATIVELINK_WORKER_LRE_RS:-undefined}"
+          ]
         }
       }
     }

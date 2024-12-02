@@ -1,0 +1,13 @@
+constraint_setting(name = "libc")
+
+constraint_value(
+    name = "glibc",
+    constraint_setting = ":libc",
+    visibility = ["//visibility:public"],
+)
+
+constraint_value(
+    name = "musl",
+    constraint_setting = ":libc",
+    visibility = ["//visibility:public"],
+)
