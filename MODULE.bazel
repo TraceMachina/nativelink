@@ -6,7 +6,7 @@ module(
 
 bazel_dep(name = "rules_cc", version = "0.0.17")
 bazel_dep(name = "platforms", version = "0.0.10")
-bazel_dep(name = "rules_python", version = "0.36.0")
+bazel_dep(name = "rules_python", version = "0.40.0")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(
@@ -19,10 +19,50 @@ python.toolchain(
 use_repo(python, python = "python_versions")
 
 bazel_dep(name = "rules_rust", version = "0.54.1")
+archive_override(
+    module_name = "rules_rust",
+    integrity = "sha256-r09Wyq5QqZpov845sUG1Cd1oVIyCBLmKt6HK/JTVuwI=",
+    patch_strip = 1,
+    patches = ["//tools:rules_rust-musl-platforms.diff"],
+    urls = [
+        "https://github.com/bazelbuild/rules_rust/releases/download/0.54.1/rules_rust-v0.54.1.tar.gz",
+    ],
+)
 
+crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//:Cargo.lock",
+    manifests = ["//:Cargo.toml"],
+    supported_platform_triples = [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "aarch64-unknown-linux-musl",
+        "arm-unknown-linux-gnueabi",
+        "armv7-unknown-linux-gnueabi",
+        "x86_64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+    ],
+)
+use_repo(crate, "crates")
+
+# NativeLink uses Local Remote Execution for Rust by default which automatically
+# handles Rust toolchain configuration via Nix.
+#
+# If you build outside of Nix you'll have to register these toolchains
+# explicitly by passing `--extra_toolchains=@rust_toolchains//:all` to your
+# Bazel invocation.
+#
+# WARNING: This configuration exists entirely as a convenience option and
+#          migration and is not a supported way of building production
+#          grade nativelink executables. It may be removed at any point in time.
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
+
+    # These should always follow the versions from LRE.
     rust_analyzer_version = "nightly/2024-11-23",
     rustfmt_version = "nightly/2024-11-23",
     sha256s = {
@@ -44,43 +84,10 @@ rust.toolchain(
         "nightly/2024-11-23",
     ],
 )
-
-rust_host_tools = use_extension(
-    "@rules_rust//rust:extension.bzl",
-    "rust_host_tools",
-)
-rust_host_tools.host_tools(
-    edition = "2021",
-    version = "1.82.0",
-)
-
 use_repo(rust, "rust_toolchains")
 
-crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
-crate.from_cargo(
-    name = "crates",
-    cargo_lockfile = "//:Cargo.lock",
-    manifests = ["//:Cargo.toml"],
-    supported_platform_triples = [
-        "aarch64-apple-darwin",
-        "aarch64-unknown-linux-gnu",
-        "arm-unknown-linux-gnueabi",
-        "armv7-unknown-linux-gnueabi",
-        "x86_64-apple-darwin",
-        "x86_64-pc-windows-msvc",
-        "x86_64-unknown-linux-gnu",
-    ],
-)
-use_repo(crate, "crates")
-
-rust_analyzer = use_extension(
-    "@rules_rust//tools/rust_analyzer:extension.bzl",
-    "rust_analyzer_dependencies",
-)
-rust_analyzer.rust_analyzer_dependencies()
-
-bazel_dep(name = "protobuf", version = "27.5", repo_name = "com_google_protobuf")
-bazel_dep(name = "toolchains_protoc", version = "0.3.3")
+bazel_dep(name = "protobuf", version = "29.0", repo_name = "com_google_protobuf")
+bazel_dep(name = "toolchains_protoc", version = "0.3.4")
 
 protoc = use_extension("@toolchains_protoc//protoc:extensions.bzl", "protoc")
 protoc.toolchain(

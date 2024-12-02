@@ -1,0 +1,40 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nativelink-worker-lre-rs
+spec:
+  replicas: 1
+  template:
+    spec:
+      initContainers:
+        - name: setup-entrypoint
+          image: nixpkgs/nix-flakes:latest
+          command: ["/bin/sh", "-c"]
+          # The kind setup mounts the nativelink repository into the kind nodes
+          # at `/mnt/src_root`. This ensures that the tags between the worker
+          # configs and bazel toolchains match when this setup is run in CI.
+          args:
+            - |
+              git config --global --add safe.directory "*"
+              NATIVELINK_WORKER_LRE_RS=$(nix eval /mnt/src_root#nativelink-worker-lre-rs.imageTag --raw) &&
+              printf '#!/bin/sh\nexport NATIVELINK_WORKER_LRE_RS=%s\nexec "$@"' "$NATIVELINK_WORKER_LRE_RS" > /entrypoint/entrypoint.sh &&
+              chmod +x /entrypoint/entrypoint.sh
+          volumeMounts:
+            - name: entrypoint
+              mountPath: /entrypoint
+            - name: mnt
+              mountPath: /mnt
+      containers:
+        - name: nativelink-worker
+          volumeMounts:
+            - name: entrypoint
+              mountPath: /entrypoint
+          command: ["/entrypoint/entrypoint.sh"]
+          args: ["/shared/nativelink", "/worker.json5"]
+      volumes:
+        - name: entrypoint
+          emptyDir: {}
+        - name: mnt
+          hostPath:
+            path: /mnt
