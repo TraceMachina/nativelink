@@ -57,12 +57,6 @@
 
         llvmPackages = pkgs.llvmPackages_19;
 
-        customStdenv = pkgs.callPackage ./tools/llvmStdenv.nix {inherit llvmPackages;};
-
-        # TODO(aaronmondal): This doesn't work with rules_rust yet.
-        # Tracked in https://github.com/TraceMachina/nativelink/issues/477.
-        customClang = pkgs.callPackage ./tools/customClang.nix {stdenv = customStdenv;};
-
         nixSystemToRustTriple = nixSystem:
           {
             "x86_64-linux" = "x86_64-unknown-linux-musl";
@@ -251,7 +245,7 @@
 
         rbe-autogen = pkgs.callPackage ./local-remote-execution/rbe-autogen.nix {
           inherit buildImage;
-          stdenv = customStdenv;
+          inherit (pkgs.lre) stdenv;
         };
         createWorker = pkgs.callPackage ./tools/create-worker.nix {inherit buildImage self;};
         buck2-toolchain = let
@@ -292,8 +286,7 @@
           };
         };
         lre-cc = pkgs.callPackage ./local-remote-execution/lre-cc.nix {
-          inherit customClang buildImage;
-          stdenv = customStdenv;
+          inherit buildImage;
         };
         toolchain-drake = buildImage {
           name = "toolchain-drake";
@@ -348,23 +341,15 @@
 
         nativelinkCoverageForHost = nativelinkCoverageFor pkgs;
       in rec {
-        _module.args.pkgs = let
-          nixpkgs-patched = (import self.inputs.nixpkgs {inherit system;}).applyPatches {
-            name = "nixpkgs-patched";
-            src = self.inputs.nixpkgs;
-            patches = [
-              ./tools/nixpkgs_link_libunwind_and_libcxx.diff
-            ];
-          };
-        in
-          import nixpkgs-patched {
-            inherit system;
-            overlays = [
-              (import ./tools/nixpkgs-disable-ratehammering-pulumi-tests.nix)
-              (import rust-overlay)
-              (import ./tools/rust-overlay-cut-libsecret.nix)
-            ];
-          };
+        _module.args.pkgs = import self.inputs.nixpkgs {
+          inherit system;
+          overlays = [
+            self.overlays.lre
+            (import ./tools/nixpkgs-disable-ratehammering-pulumi-tests.nix)
+            (import rust-overlay)
+            (import ./tools/rust-overlay-cut-libsecret.nix)
+          ];
+        };
         apps = {
           default = {
             type = "app";
@@ -446,7 +431,7 @@
             "/run/current-system/sw/bin"
             "${binutils.bintools}/bin"
             "${uutils-coreutils-noprefix}/bin"
-            "${customClang}/bin"
+            "${pkgs.lre.clang}/bin"
             "${git}/bin"
             "${python3}/bin"
           ];
@@ -497,7 +482,7 @@
               # Additional tools from within our development environment.
               local-image-test
               generate-toolchains
-              customClang
+              pkgs.lre.clang
               native-cli
               docs
               build-chromium-tests
@@ -559,6 +544,9 @@
         darwin = ./tools/darwin/flake-module.nix;
         local-remote-execution = ./local-remote-execution/flake-module.nix;
         nixos = ./tools/nixos/flake-module.nix;
+      };
+      overlays = {
+        lre = import ./local-remote-execution/overlays/default.nix;
       };
     };
 }
