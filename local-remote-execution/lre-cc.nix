@@ -1,7 +1,6 @@
 {
   buildImage,
-  customClang,
-  stdenv,
+  lre,
   lib,
   coreutils,
   findutils,
@@ -15,15 +14,15 @@
     # binary identical toolchains during local and remote execution.
     ("PATH="
       + (lib.strings.concatStringsSep ":" [
-        "${stdenv.cc.bintools}/bin"
-        "${customClang}/bin"
-        "${stdenv}/bin"
+        "${lre.stdenv.cc.bintools}/bin"
+        "${lre.clang}/bin"
+        "${lre.stdenv}/bin"
         "${coreutils}/bin"
         "${findutils}/bin"
         "${gnutar}/bin"
       ]))
 
-    "CC=${customClang}/bin/customClang"
+    "CC=${lre.clang}/bin/customClang"
   ];
 in
   buildImage {
