@@ -55,19 +55,6 @@
         stable-rust-version = "1.82.0";
         nightly-rust-version = "2024-11-23";
 
-        # TODO(aaronmondal): Tools like rustdoc don't work with the `pkgsMusl`
-        # package set because of missing libgcc_s. Fix this upstream and use the
-        # `stable-rust` toolchain in the devShell as well.
-        # See: https://github.com/oxalica/rust-overlay/issues/161
-        stable-rust-native = pkgs.rust-bin.stable.${stable-rust-version};
-        nightly-rust-native = pkgs.rust-bin.nightly.${nightly-rust-version};
-
-        maybeDarwinDeps = pkgs.lib.optionals pkgs.stdenv.isDarwin [
-          pkgs.darwin.apple_sdk.frameworks.CoreFoundation
-          pkgs.darwin.apple_sdk.frameworks.Security
-          pkgs.libiconv
-        ];
-
         llvmPackages = pkgs.llvmPackages_19;
 
         customStdenv = pkgs.callPackage ./tools/llvmStdenv.nix {inherit llvmPackages;};
@@ -141,6 +128,8 @@
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
             else "${llvmPackages.lld}/bin/ld.lld";
+
+          linkerEnvVar = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER";
         in
           {
             inherit src;
@@ -167,21 +156,10 @@
               ];
             CARGO_BUILD_TARGET = targetArch;
           }
-          // (
-            if isLinuxTarget
-            then
-              {
-                CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
-              }
-              // (
-                if linkerPath != null
-                then {
-                  "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER" = linkerPath;
-                }
-                else {}
-              )
-            else {}
-          );
+          // (pkgs.lib.optionalAttrs isLinuxTarget {
+            CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+            ${linkerEnvVar} = linkerPath;
+          });
 
         # Additional target for external dependencies to simplify caching.
         cargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
@@ -232,7 +210,7 @@
           "build-chromium-tests"
           ./deploy/chromium-example/build_chromium_tests.sh;
 
-        docs = pkgs.callPackage ./tools/docs.nix {rust = stable-rust-native.default;};
+        docs = pkgs.callPackage ./tools/docs.nix {rust = stableRustFor pkgs;};
 
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
@@ -459,7 +437,7 @@
         pre-commit.settings = {
           hooks = import ./tools/pre-commit-hooks.nix {
             inherit pkgs;
-            nightly-rust = nightly-rust-native;
+            nightly-rust = pkgs.rust-bin.nightly.${nightly-rust-version};
           };
         };
         local-remote-execution.settings = {
@@ -492,7 +470,7 @@
               pkgs.pre-commit
 
               # Rust
-              stable-rust-native.default
+              (stableRustFor pkgs)
               bazel
 
               ## Infrastructure
@@ -515,8 +493,8 @@
               pkgs.kustomize
               pkgs.kubectx
 
-              ## Web
-              pkgs.bun # got patched to the newest version (v.1.1.25)
+              # Web
+              pkgs.bun
               pkgs.lychee
               pkgs.nodejs_22 # For pagefind search
               pkgs.playwright-driver
@@ -530,7 +508,11 @@
               docs
               build-chromium-tests
             ]
-            ++ maybeDarwinDeps
+            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.darwin.apple_sdk.frameworks.CoreFoundation
+              pkgs.darwin.apple_sdk.frameworks.Security
+              pkgs.libiconv
+            ]
             ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [
               # Old darwin systems are incompatible with deno.
               pkgs.deno
