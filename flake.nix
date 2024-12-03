@@ -356,21 +356,13 @@
               ./tools/nixpkgs_link_libunwind_and_libcxx.diff
             ];
           };
-          rust-overlay-patched = (import self.inputs.nixpkgs {inherit system;}).applyPatches {
-            name = "rust-overlay-patched";
-            src = self.inputs.rust-overlay;
-            patches = [
-              # This dependency has a giant dependency chain and we don't need
-              # it for our usecases.
-              ./tools/rust-overlay_cut_libsecret.diff
-            ];
-          };
         in
           import nixpkgs-patched {
             inherit system;
             overlays = [
               (import ./tools/nixpkgs-disable-ratehammering-pulumi-tests.nix)
-              (import rust-overlay-patched)
+              (import rust-overlay)
+              (import ./tools/rust-overlay-cut-libsecret.nix)
             ];
           };
         apps = {
