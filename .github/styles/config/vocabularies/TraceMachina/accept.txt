@@ -1,3 +1,4 @@
+Ansys
 AMI
 Astro
 Bazel
@@ -8,12 +9,16 @@ Goma
 [Hh]ermeticity
 Kustomization
 LLD
+LLM
 LLVM
 Machina
+[Mm]etamaterials
 [Mm]onorepo
+Nvidia
 NVMe
 hello@nativelink.com
 NativeLink
+[Nn]anophotonic
 OCI
 OSSF
 Reclient
@@ -23,6 +28,7 @@ Tokio
 TraceMachina
 [Tt]oolchain
 Qwik
+Verilator
 Verilog
 alex
 autoscaling
@@ -57,6 +63,7 @@ Deno
 shipstorm
 hermiticity
 performant
+transformative
 unscalable
 Warewulf
 Apptainer
