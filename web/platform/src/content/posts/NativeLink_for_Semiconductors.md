@@ -1,6 +1,6 @@
 ---
 title: "NativeLink for Semiconductors"
-tags: ["news", "blog"]
+tags: ["news", "blog-posts"]
 image: https://www.gstatic.com/webp/gallery/4.sm.webp
 slug: semiconductors
 pubDate: 2024-12-04

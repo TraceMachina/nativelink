@@ -8,6 +8,7 @@ import { BackgroundVideo } from "@qwik/components/video";
 const allPosts = await getCollection("posts");
 const announcements = allPosts.filter(post => post.data.tags?.includes('announcements'));
 const caseStudies = allPosts.filter(post => post.data.tags?.includes('case-studies'));
+const blogPosts = allPosts.filter(post => post.data.tags?.includes('blog-posts'));
 
 const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
 ---
@@ -20,6 +21,27 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
       <div class="absolute inset-0 w-full h-full bg-gradient-to-b from-transparent via-black/50 to-black"></div>
 
       <LinearGradient text="Resources" class="z-10 text-thin text-5xl self-start pl-8 md:pl-48 py-8"/>
+    </div>
+
+    <LinearGradient text="Blog Posts" class="text-thin text-4xl self-start pl-8 md:pl-48 py-8"/>
+
+    <div id="Card" class="relative w-screen px-8 md:px-0 md:w-9/12 flex gap-4 snap-x snap-mandatory overflow-x-auto pb-16 mb-6 ">
+      {blogPosts
+        .sort((a, b) => new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime())
+        .map((post) => (
+          <a
+            href={"/resources/blog/" + post.slug}
+            class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-white snap-center"
+          >
+            {post.data.image && (
+              <img src={post.data.image} alt={post.data.title || "Blog post image"} class="w-full h-48 object-cover rounded-t-xl" />
+            )}
+            <div class="w-full h-full flex flex-col justify-between items-start p-6">
+              <LinearGradient text={post.data.title} class="text-lg w-full" />
+              <span class="text-lg">Read More</span>
+            </div>
+          </a>
+        ))}
     </div>
 
     <LinearGradient text="Announcements" class="text-thin text-4xl self-start pl-8 md:pl-48 py-8"/>
