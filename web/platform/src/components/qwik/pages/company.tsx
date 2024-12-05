@@ -6,11 +6,6 @@ import { BackgroundVideo } from "../components/video";
 
 const team = [
   {
-    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/andrew_shipley.webp",
-    name: "Andrew Shipley",
-    title: "Director of Operations",
-  },
-  {
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/aaron_mondal.webp",
     name: "Aaron Mondal",
     title: "Software Engineer",
@@ -29,11 +24,6 @@ const team = [
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/tyrone_greenfield.webp",
     name: "Tyrone Greenfield",
     title: "Chief of Staff",
-  },
-  {
-    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/adam_singer.webp",
-    name: "Adam Singer",
-    title: "Software Engineer",
   },
   {
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/blake_hatch.webp",
