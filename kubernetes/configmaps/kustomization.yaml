@@ -5,13 +5,13 @@ kind: Kustomization
 configMapGenerator:
   - name: nativelink-config
     files:
-      - nativelink-config.json
+      - nativelink-config.json5
     options:
       annotations:
         kustomize.toolkit.fluxcd.io/substitute: disabled
   - name: worker
     files:
-      - worker.json
+      - worker.json5
     options:
       annotations:
         kustomize.toolkit.fluxcd.io/substitute: disabled
