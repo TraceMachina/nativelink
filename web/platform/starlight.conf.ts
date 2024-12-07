@@ -114,15 +114,15 @@ export const starlightConfig = {
       items: [
         {
           label: "On-Prem Overview",
-          link: `${docsRoot}/deployment-examples/on-prem-overview`,
+          link: `${docsRoot}/examples/on-prem-overview`,
         },
         {
           label: "Kubernetes",
-          link: `${docsRoot}/deployment-examples/kubernetes`,
+          link: `${docsRoot}/examples/kubernetes`,
         },
         {
           label: "Chromium",
-          link: `${docsRoot}/deployment-examples/chromium`,
+          link: `${docsRoot}/examples/chromium`,
         },
       ],
     },

@@ -19,7 +19,7 @@ services:
     image: trace_machina/nativelink:latest
     build:
       context: ../..
-      dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      dockerfile: ./examples/docker-compose/Dockerfile
       network: host
       args:
         - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
@@ -38,7 +38,7 @@ services:
     image: trace_machina/nativelink:latest
     build:
       context: ../..
-      dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      dockerfile: ./examples/docker-compose/Dockerfile
       network: host
       args:
         - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
@@ -57,7 +57,7 @@ services:
     image: trace_machina/nativelink:latest
     build:
       context: ../..
-      dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      dockerfile: ./examples/docker-compose/Dockerfile
       network: host
       args:
         - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}

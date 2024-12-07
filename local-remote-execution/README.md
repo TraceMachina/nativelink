@@ -192,7 +192,7 @@ Let's use NativeLink's Kubernetes example to verify that the setup worked.
 ## 🚢 Testing with local K8s
 
 Start the cluster and set up NativeLink in an LRE configuration. For details on
-this refer to the [Kubernetes example](https://github.com/tracemachina/nativelink/tree/main/deployment-examples/kubernetes):
+this refer to the [Kubernetes example](https://github.com/tracemachina/nativelink/tree/main/examples/kubernetes):
 
 > [!TIP]
 > NativeLink's `native` CLI tool is self-contained and can be imported into
@@ -243,8 +243,8 @@ kind: Kustomization
 bases:
 
 resources:
-  - https://github.com/TraceMachina/nativelink//deployment-examples/kubernetes/base
-  - https://raw.githubusercontent.com/TraceMachina/nativelink/main/deployment-examples/kubernetes/worker-lre-cc.yaml
+  - https://github.com/TraceMachina/nativelink//examples/kubernetes/base
+  - https://raw.githubusercontent.com/TraceMachina/nativelink/main/examples/kubernetes/worker-lre-cc.yaml
 EOF
 
 

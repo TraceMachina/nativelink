@@ -32,7 +32,7 @@ bazel test //... \
 ## Instances
 
 All instances use the same Docker image, `trace_machina/nativelink:latest`,
-built from the `Dockerfile` located at `./deployment-examples/docker-compose/Dockerfile`.
+built from the `Dockerfile` located at `./examples/docker-compose/Dockerfile`.
 
 ### CAS
 
@@ -45,7 +45,7 @@ NativeLink system. It's configured in the `docker-compose.yml` file under the
     image: trace_machina/nativelink:latest
     build:
       context: ../..
-      dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      dockerfile: ./examples/docker-compose/Dockerfile
       network: host
       args:
         - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
@@ -78,7 +78,7 @@ the `docker-compose.yml` file under the nativelink_scheduler service.
     image: trace_machina/nativelink:latest
     build:
       context: ../..
-      dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      dockerfile: ./examples/docker-compose/Dockerfile
       network: host
       args:
         - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
@@ -104,7 +104,7 @@ Worker instances are responsible for executing tasks. They're configured in the
     image: trace_machina/nativelink:latest
     build:
       context: ../..
-      dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      dockerfile: ./examples/docker-compose/Dockerfile
       network: host
       args:
         - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
