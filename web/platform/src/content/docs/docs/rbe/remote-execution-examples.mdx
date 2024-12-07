@@ -1,0 +1,344 @@
+---
+title: Classic remote execution examples
+description: Guidance on testing remote execution capabilities.
+---
+
+Debugging remote builds can be tricky. These examples provide builds that you
+can use to test the remote execution capabilities of your worker image.
+
+:::caution
+Most builds don't work out of the box when running under remote execution,
+including some builds in these examples.
+
+None of these builds are "recommended" targets. Some invocations might have bugs
+and raise build errors. Use these tests purely to get a better picture of what
+does and doesn't work with your remote execution setup.
+:::
+
+## Getting the test sources
+
+All examples are in a single Bazel module at [`nativelink/toolchain-examples`](https://github.com/TraceMachina/tree/main/toolchain-examples).
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+<Tabs syncKey="tooling">
+  <TabItem label="Nix">
+    If you haven't set up Nix yet, consider consulting the [local development setup guide](https://www.nativelink.com/docs/contribute/guidelines#local-development-setup)
+    guide. Then move to the `toolchain-examples` directory:
+
+    ```bash
+    git clone https://github.com/TraceMachina/nativelink
+    cd nativelink/toolchain-examples
+
+    # If you haven't set up `direnv`, remember to activate the Nix flake
+    # manually via `nix develop`.
+    ```
+  </TabItem>
+  <TabItem label="Bazelisk">
+    If you running outside of Nix, install [bazelisk](https://github.com/bazelbuild/bazelisk/tree/master). Then move to the `toolchain-examples` directory:
+
+    ```bash
+    git clone https://github.com/TraceMachina/nativelink
+    cd nativelink/toolchain-examples
+    ```
+  </TabItem>
+</Tabs>
+
+
+:::caution
+At the moment all examples assume that your host is an `x86_64-linux` system.
+:::
+
+## Preparing the remote execution infrastructure
+
+<Tabs syncKey="deployment">
+  <TabItem label="Kubernetes">
+    Port-forward your NativeLink cas/scheduler service to `localhost:50051`:
+
+    ```bash
+    kubectl port-forward svc/YOURSERVICE 50051
+    ```
+  </TabItem>
+  <TabItem label="Docker">
+    Likely the most straightforward way to test a remote execution image is by
+    creating a custom "test image" that you debug locally. If you have an
+    existing Dockerfile, here is what you need to adjust to test remote
+    execution against a locally running worker:
+
+    ```dockerfile
+    # INSERT YOUR EXISTING DOCKERFILE CONTENTS HERE.
+
+    # ...
+
+    # Append something similar to the section below. We assume that you've built
+    # nativelink at a recent commit via
+    # `nix build github:Tracemachina/nativelink`.
+    #
+    # Then copy the executable and the `nativelink-config.json` from the
+    # `toolchain-examples` directory into the image and set the entrypoint to
+    # nativelink with that config.
+
+    COPY nativelink /usr/bin/nativelink
+    COPY nativelink-config.json /etc/nativelink-config.json
+
+    RUN chmod +x /usr/bin/nativelink
+
+    ENTRYPOINT ["/usr/bin/nativelink"]
+    CMD ["/etc/nativelink-config.json"]
+    ```
+
+    Then build your image and push it to your localhost:
+
+    ```bash
+    docker build . \
+        -t rbetests:local
+    ```
+
+    You can now run the remote execution image locally and run builds against
+    it:
+
+    ```bash
+    docker run \
+        -e RUST_LOG=info \
+        -p 50051:50051 \
+        rbetests:local
+    ```
+
+    :::caution
+    Don't use the image you created here as worker for your cloud deployments.
+    Your worker should **not** bundle the nativelink executable. Instead, the
+    cloud deployments will automatically inject nativelink with an appropriate
+    config into your worker pods.
+    :::
+  </TabItem>
+</Tabs>
+
+All future invocations may now use the `--remote_cache=grpc://localhost:50051`
+and `--remote_executor=grpc://localhost:50051` flags to send builds to the
+running container.
+
+## Available toolchain configurations
+
+This Bazel module comes with some commonly used toolchains that you can enable
+via `--config` flags. See the `.bazelrc` file in the `toolchain-examples`
+directory for details. Here are your options:
+
+| Config | Hermetic | Size | Description |
+| - | - | - | - |
+| `zig-cc` | yes | ~100Mb | Hermetic, but slow. The intended use for this toolchain are projects that need a baseline C++ toolchain, but aren't "real" C++ projects, such as Go projects with a limited number of C FFIs. |
+| `llvm` | no | ~1.5Gb | Not hermetic, but fast and standardized. This toolchain tends to be safe to use for C++ projects as long as you don't require full hermeticity. Your remote execution image needs to bundle `glibc <= 2.34` for this toolchain to work. |
+| `java` | yes | ? | This sets the JDK to use a remote JDK. Use this one for Java. |
+
+### Notes on how to register your toolchains
+
+:::danger
+Some toolchains come with a "register_toolchains" function. **DON'T USE IT IN
+YOUR `MODULE.bazel` FILE**.
+:::
+
+Toolchains tend to be complex dependencies and you'll almost always have bugs in
+your toolchain that are build-breaking for some users. If you register your
+toolchain in your `MODULE.bazel` it'll turn such bugs into hard errors that
+might require deep incisions into your toolchain configuration to fix them.
+
+Instead, register platforms and toolchains in your `.bazelrc` file. This way you
+give your users the option to opt out of your default toolchain and provide
+their own. For instance:
+
+```bash
+build:sometoolchain --platforms @sometoolchain//TODO
+build:sometoolchain --extra_toolchains @sometoolchain//TODO
+```
+
+Now `--config=sometoolchain` is your happy path, but you keep the ability to
+omit the flag so that if your happy path doesn't work you still have the ability
+to build with "unsupported" toolchains.
+
+All examples below require some sort of `--config` flag to work with remote
+execution.
+
+## Minimal example targets
+
+Examples to test whether your worker can function at all.
+
+:::important
+Since the toolchains used here tend to focus on ease of use rather than
+performance, expect build times of several minutes even for a small "Hello
+World" program.
+
+Keep in mind that some remote toolchains first fetch tools to the executor. This
+can take several minutes and might look like a slow compile action.
+:::
+
+:::caution
+Depending on your store setup, you might need to add one of
+`--digest_function=blake3` or `--digest_function=sha256` to your Bazel
+invocation. Failing to do so might cause errors about mismatching or
+nonexistent artifact hashes.
+:::
+
+### C and C++
+
+<Tabs syncKey="toolchain">
+  <TabItem label="zig-cc">
+    ```bash
+    bazel build //cpp \
+        --config=zig-cc \
+        --remote_cache=grpc://localhost:50051 \
+        --remote_executor=grpc://localhost:50051
+    ```
+  </TabItem>
+  <TabItem label="llvm">
+    ```bash
+    bazel build //cpp \
+        --config=llvm \
+        --remote_cache=grpc://localhost:50051 \
+        --remote_executor=grpc://localhost:50051
+    ```
+  </TabItem>
+</Tabs>
+
+### Python
+
+:::caution
+The default `rules_python` bootstrap process requires a preinstalled Python on
+the worker. Minimal worker images or images with Python in unexpected locations
+won't work if the bootstrap process can't find this preinstalled Python.
+
+To work around this, it's paramount that you use the
+`--@rules_python//python/config_settings:bootstrap_impl=script` flag either in
+your `.bazelrc` or on the command line. This overrides the bootstrap process
+with a script that simulates a Python installation.
+
+Failing to do so will cause your build to raise a bunch of errors and tests to
+fail with confusing (but technically correct) "file not found" errors.
+:::
+
+```bash
+bazel test //python \
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50051
+```
+
+### Go
+
+```bash
+bazel test //go \
+    --config=zig-cc \
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50051
+```
+
+### Rust
+
+:::caution
+This one *shouldn't* work as `rules_rust` doesn't support remote execution.
+If this build passes there is a high chance that you have an hermeticity issue
+in your worker image.
+:::
+
+```bash
+bazel test //rust \
+    --config=zig-cc \
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50051
+
+# Should raise and error like this if your toolchain is correctly hermetic:
+#
+# error: the self-contained linker was requested, but it wasn't found in the
+# target's sysroot, or in rustc's sysroot
+```
+
+### Java
+
+:::tip
+Note the use of `--config=java` to ensure use of a RemoteJDK.
+:::
+
+```bash
+bazel test //java:HelloWorld \
+    --config=java \
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50051
+```
+
+### All at once
+
+```bash
+bazel test //... \
+    --config=java \
+    --config=zig-cc \
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50051 \
+    --keep_going
+```
+
+## Larger builds
+
+These builds can help fine-tune larger deployments.
+
+:::tip
+Before building one of these larger projects, consider verifying the toolchain
+for the respective language via the minimal examples above.
+:::
+
+### Curl (C)
+
+```bash
+bazel build @curl//... \
+    --config=zig-cc \
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50051
+```
+
+### Zstandard (C)
+
+```bash
+bazel build @zstd//... \
+    --config=zig-cc \
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50051
+```
+
+### Abseil-cpp (C++)
+
+:::note
+Expect a bunch of errors like `No repository visible as
+'@com_github_google_benchmark'` as abseil doesn't fully declare its
+dependencies. Use `--keep_going` here.
+:::
+
+```bash
+bazel test @abseil-cpp//... \
+    --config=zig-cc \
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50051 \
+    --keep_going
+```
+
+### Abseil-py (Python)
+
+:::note
+The `@abseil-py//absl/flags:tests/flags_test` fails on remote executors due to
+potential permission restrictions.
+:::
+
+```bash
+bazel test @abseil-py//... \
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50051
+```
+
+### CIRCL (Go)
+
+:::note
+Not all tests will build, so you need `--keep_going`.
+:::
+
+```bash
+bazel test @circl//... \
+    --config=zig-cc \
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50051 \
+    --keep_going
+```
