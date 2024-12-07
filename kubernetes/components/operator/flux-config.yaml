@@ -70,24 +70,6 @@ spec:
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: nativelink-configmaps
-  namespace: default
-spec:
-  interval: 2m
-  path: "./kubernetes/configmaps"
-  prune: true
-  force: true
-  retryInterval: 20s
-  targetNamespace: default
-  wait: true
-  sourceRef:
-    kind: GitRepository
-    name: nativelink
-    namespace: default
----
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
   name: nativelink
   namespace: default
 spec:
@@ -107,7 +89,6 @@ spec:
       - kind: ConfigMap
         name: nativelink-image-tags
   dependsOn:
-    - name: nativelink-configmaps
     - name: nativelink-tekton-resources
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1

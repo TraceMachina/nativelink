@@ -72,7 +72,9 @@ jobs:
       - name: Run Bazel tests
         run: |
           if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
-            bazel test //... --verbose_failures
+            bazel test //... \
+              --extra_toolchains=@rust_toolchains//:all \
+              --verbose_failures
           elif [ "$RUNNER_OS" == "Windows" ]; then
             bazel \
               --output_user_root=${{ steps.bazel-cache.outputs.mountpoint }} \
