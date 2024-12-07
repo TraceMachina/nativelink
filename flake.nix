@@ -454,6 +454,7 @@
 
               ## Infrastructure
               pkgs.awscli2
+              pkgs.google-cloud-sdk
               pkgs.skopeo
               pkgs.dive
               pkgs.cosign
