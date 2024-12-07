@@ -157,6 +157,10 @@ jobs:
             until pr=$(kubectl get pipelinerun -o name | \
                        grep rebuild-nativelink-run-); do
               echo "Waiting for pipeline to be created..."
+              flux logs -A
+              flux get all -A
+              kubectl events -A
+              kubectl logs deploy/el-nativelink-rebuild
               sleep 1
             done
 
