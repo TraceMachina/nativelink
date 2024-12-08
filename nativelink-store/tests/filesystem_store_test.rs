@@ -32,13 +32,13 @@ use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{
-    digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
+    key_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore, DIGEST_PREFIX,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::origin_context::ContextAwareFuture;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
@@ -288,7 +288,9 @@ async fn valid_results_after_shutdown_test() -> Result<(), Error> {
             .await?,
         );
 
-        let content = store.get_part_unchunked(digest, 0, None).await?;
+        let key = StoreKey::Digest(digest);
+
+        let content = store.get_part_unchunked(key, 0, None).await?;
         assert_eq!(content, VALUE1.as_bytes());
     }
 
@@ -325,7 +327,7 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
 
     store.update_oneshot(digest1, VALUE1.into()).await?;
 
-    let expected_file_name = OsString::from(format!("{content_path}/{digest1}"));
+    let expected_file_name = OsString::from(format!("{content_path}/{DIGEST_PREFIX}{digest1}"));
     {
         // Check to ensure our file exists where it should and content matches.
         let data = read_file_contents(&expected_file_name).await?;
@@ -657,8 +659,8 @@ async fn oldest_entry_evicted_with_access_times_loaded_from_disk() -> Result<(),
     fs::create_dir_all(&content_path).await?;
 
     // Make the two files on disk before loading the store.
-    let file1 = OsString::from(format!("{content_path}/{digest1}"));
-    let file2 = OsString::from(format!("{content_path}/{digest2}"));
+    let file1 = OsString::from(format!("{content_path}/{DIGEST_PREFIX}{digest1}"));
+    let file2 = OsString::from(format!("{content_path}/{DIGEST_PREFIX}{digest2}"));
     write_file(&file1, VALUE1.as_bytes()).await?;
     write_file(&file2, VALUE2.as_bytes()).await?;
     set_file_atime(&file1, FileTime::from_unix_time(0, 0))?;
@@ -794,7 +796,7 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
     const SMALL_VALUE: &str = "01";
     const BIG_VALUE: &str = "0123";
 
-    static UNREFED_DIGESTS: LazyLock<Mutex<Vec<DigestInfo>>> =
+    static UNREFED_DIGESTS: LazyLock<Mutex<Vec<StoreKey<'static>>>> =
         LazyLock::new(|| Mutex::new(Vec::new()));
     struct LocalHooks {}
     impl FileEntryHooks for LocalHooks {
@@ -802,15 +804,15 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
             block_on(file_entry.get_file_path_locked(move |path_str| async move {
                 let path = Path::new(&path_str);
                 let digest =
-                    digest_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
-                UNREFED_DIGESTS.lock().push(digest);
+                    key_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
+                UNREFED_DIGESTS.lock().push(digest.clone());
                 Ok(())
             }))
             .unwrap();
         }
     }
 
-    let small_digest = DigestInfo::try_new(HASH1, SMALL_VALUE.len())?;
+    let small_digest = StoreKey::Digest(DigestInfo::try_new(HASH1, SMALL_VALUE.len())?);
     let big_digest = DigestInfo::try_new(HASH1, BIG_VALUE.len())?;
 
     let store = Box::pin(
@@ -828,7 +830,7 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
     );
     // Insert data into store.
     store
-        .update_oneshot(small_digest, SMALL_VALUE.into())
+        .update_oneshot(small_digest.clone(), SMALL_VALUE.into())
         .await?;
     store.update_oneshot(big_digest, BIG_VALUE.into()).await?;
 
@@ -1089,7 +1091,8 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
         loop {
             yield_fn().await?;
 
-            let empty_digest_file_name = OsString::from(format!("{content_path}/{digest}"));
+            let empty_digest_file_name =
+                OsString::from(format!("{content_path}/{DIGEST_PREFIX}{digest}"));
 
             let file_metadata = fs::metadata(empty_digest_file_name)
                 .await
@@ -1218,7 +1221,7 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
         .get_file_path_locked(move |file_path| async move {
             assert_eq!(
                 file_path,
-                OsString::from(format!("{content_path}/{digest}"))
+                OsString::from(format!("{content_path}/{DIGEST_PREFIX}{digest}"))
             );
             Ok(())
         })
@@ -1250,7 +1253,7 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
 
     store.update_oneshot(digest, VALUE1.into()).await?;
 
-    let stored_file_path = OsString::from(format!("{content_path}/{digest}"));
+    let stored_file_path = OsString::from(format!("{content_path}/{DIGEST_PREFIX}{digest}"));
     std::fs::remove_file(stored_file_path)?;
 
     let digest_result = store
@@ -1460,7 +1463,7 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         "Expected filesystem store to consume the file"
     );
 
-    let expected_file_name = OsString::from(format!("{content_path}/{digest}"));
+    let expected_file_name = OsString::from(format!("{content_path}/{DIGEST_PREFIX}{digest}"));
     let new_inode = fs::create_file(expected_file_name)
         .await?
         .as_reader()
