@@ -53,6 +53,12 @@ spec:
             image.
           - "github:<user>/<repo>?ref=pull/<PR_NUMBER>/head#<PACKAGE>" to use
             an image from a pull request of a repository on GitHub.
+    - name: configMapName
+      description: |
+        The name of the ConfigMap that we write the image tag to.
+
+        Other parts of the cluster may refer to this configmap to get the
+        pre-evaluated tag of the image.
   resourcetemplates:
     - apiVersion: tekton.dev/v1beta1
       kind: PipelineRun
@@ -76,6 +82,8 @@ spec:
         params:
           - name: flakeOutput
             value: "$(tt.params.flakeOutput)"
+          - name: configMapName
+            value: "$(tt.params.configMapName)"
           - name: registry
             value: "kind-registry:5000"
           - name: destTLSverify
@@ -91,6 +99,8 @@ spec:
   params:
     - name: flakeOutput
       value: "$(body.metadata.flakeOutput)"
+    - name: configMapName
+      value: "$(body.metadata.configMapName)"
 ---
 apiVersion: v1
 kind: ServiceAccount
