@@ -14,12 +14,13 @@ spec:
   params:
     - name: imageName
     - name: imageTag
+    - name: configMapName
   steps:
     - name: update-configmap
       image: bitnami/kubectl
       env:
         - name: CM_NAME
-          value: "nativelink-image-tags"
+          value: "$(params.configMapName)"
       script: |
         #!/bin/bash
         set -e

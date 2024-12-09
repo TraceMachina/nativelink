@@ -26,6 +26,13 @@ spec:
             image.
           - "github:<user>/<repo>?ref=pull/<PR_NUMBER>/head#<PACKAGE>" to use
             an image from a pull request of a repository on GitHub.
+    - name: configMapName
+      type: string
+      description: |
+        The name of the ConfigMap that we write the image tag to.
+
+        Other parts of the cluster may refer to this configmap to get the
+        pre-evaluated tag of the image.
     - name: registry
       type: string
       description: |
@@ -172,6 +179,8 @@ spec:
           value: "$(tasks.get-image-info.results.imageName)"
         - name: imageTag
           value: "$(tasks.get-image-info.results.imageTag)"
+        - name: configMapName
+          value: "$(params.configMapName)"
       runAfter:
         - copy-verified-prebuilt-image
         - copy-nix-built-image
