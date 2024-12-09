@@ -1,0 +1,17 @@
+---
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Alert
+metadata:
+  name: nativelink-alert
+  namespace: default
+spec:
+  eventSeverity: info
+  eventSources:
+    - kind: GitRepository
+      name: '*'
+      namespace: default
+  providerRef:
+    name: nativelink-webhook
+  eventMetadata:
+    flakeOutput: ${PLACEHOLDER_FLAKE_OUTPUT}
+    configMapName: ${PLACEHOLDER_CONFIG_MAP_NAME}

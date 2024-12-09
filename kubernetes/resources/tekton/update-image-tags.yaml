@@ -1,0 +1,39 @@
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: update-image-tags
+  labels:
+    app.kubernetes.io/versions: "0.1"
+spec:
+  description: >
+    Update or add image tags in a ConfigMap.
+
+    Note: This task requires running under a ServiceAccount that has permissions
+    to "get", "patch" and "create" configmaps.
+  params:
+    - name: imageName
+    - name: imageTag
+    - name: configMapName
+  steps:
+    - name: update-configmap
+      image: bitnami/kubectl
+      env:
+        - name: CM_NAME
+          value: "$(params.configMapName)"
+      script: |
+        #!/bin/bash
+        set -e
+
+        # Transform the key to a format that flux accepts. The transformation
+        # here looks like `nativelink-worker` -> `NATIVELINK_WORKER_TAG`.
+        TRANSFORMED_KEY=$(echo "$(params.imageName)" | tr '[:lower:]' '[:upper:]' | tr '-' '_')_TAG
+
+        # Check if the ConfigMap exists
+        if kubectl get configmap $CM_NAME &>/dev/null; then
+          # ConfigMap exists, update it
+          kubectl patch configmap $CM_NAME --type=json -p='[{"op": "add", "path": "/data/'$TRANSFORMED_KEY'", "value": "$(params.imageTag)"}]'
+        else
+          # ConfigMap doesn't exist, create it
+          kubectl create configmap $CM_NAME --from-literal=$TRANSFORMED_KEY=$(params.imageTag)
+        fi

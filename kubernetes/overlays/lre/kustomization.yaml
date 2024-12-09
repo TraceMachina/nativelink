@@ -1,26 +1,31 @@
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+
 resources:
-- ../../base
+  - ../../nativelink
+  - ../../workers/resources/lre-cc
 
-components:
-- ../../components/gateway-routes
-- ../../components/insecure-certs
 
-patches:
-- path: worker-lre-cc.yaml
-  target:
-    kind: Deployment
-    name: nativelink-worker
-
-images:
-  - name: nativelink
-    newName: localhost:5001/nativelink
-    newTag: ${NATIVELINK_TAG}
-  - name: nativelink-worker-init
-    newName: localhost:5001/nativelink-worker-init
-    newTag: ${NATIVELINK_WORKER_INIT_TAG}
-  - name: nativelink-worker
-    newName: localhost:5001/nativelink-worker-lre-cc
-    newTag: ${NATIVELINK_WORKER_LRE_CC_TAG}
+# resources:
+# - ../../base
+# - ../../workers/lre-cc
+# - ../../workers/lre-rs
+#
+# components:
+# - ../../components/gateway-routes
+# - ../../components/insecure-certs
+#
+# images:
+#   - name: nativelink
+#     newName: localhost:5001/nativelink
+#     newTag: ${NATIVELINK_TAG}
+#   - name: nativelink-worker-init
+#     newName: localhost:5001/nativelink-worker-init
+#     newTag: ${NATIVELINK_WORKER_INIT_TAG}
+#   - name: nativelink-worker-lre-cc
+#     newName: localhost:5001/nativelink-worker-lre-cc
+#     newTag: ${NATIVELINK_WORKER_LRE_CC_TAG}
+#   - name: nativelink-worker-lre-rs
+#     newName: localhost:5001/nativelink-worker-lre-rs
+#     newTag: ${NATIVELINK_WORKER_LRE_RS_TAG}
