@@ -2,7 +2,7 @@
   bash,
   bazel_7,
   buildEnv,
-  buildImage,
+  nix2container,
   cacert,
   coreutils,
   findutils,
@@ -96,7 +96,7 @@
   };
 in
   image:
-    buildImage {
+    nix2container.buildImage {
       name = "autogen-${image.imageName}";
       fromImage = image;
       maxLayers = 20;

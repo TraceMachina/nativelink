@@ -193,9 +193,7 @@
 
         nativelink-is-executable-test = pkgs.callPackage ./tools/nativelink-is-executable-test.nix {inherit nativelink;};
 
-        rbe-configs-gen = pkgs.callPackage ./local-remote-execution/rbe-configs-gen.nix {};
-
-        generate-toolchains = pkgs.callPackage ./tools/generate-toolchains.nix {inherit rbe-configs-gen;};
+        generate-toolchains = pkgs.callPackage ./tools/generate-toolchains.nix {};
 
         native-cli = pkgs.callPackage ./native-cli/default.nix {};
 
@@ -243,10 +241,6 @@
 
         nativelink-worker-init = pkgs.callPackage ./tools/nativelink-worker-init.nix {inherit buildImage self nativelink-image;};
 
-        rbe-autogen = pkgs.callPackage ./local-remote-execution/rbe-autogen.nix {
-          inherit buildImage;
-          inherit (pkgs.lre) stdenv;
-        };
         createWorker = pkgs.callPackage ./tools/create-worker.nix {inherit buildImage self;};
         buck2-toolchain = let
           buck2-nightly-rust-version = "2024-04-28";
@@ -284,9 +278,6 @@
             arch = "amd64";
             os = "linux";
           };
-        };
-        lre-cc = pkgs.callPackage ./local-remote-execution/lre-cc.nix {
-          inherit buildImage;
         };
         toolchain-drake = buildImage {
           name = "toolchain-drake";
@@ -364,7 +355,6 @@
           rec {
             inherit
               local-image-test
-              lre-cc
               native-cli
               nativelink
               nativelinkCoverageForHost
@@ -378,10 +368,9 @@
               ;
             default = nativelink;
 
-            rbe-autogen-lre-cc = rbe-autogen lre-cc;
-            nativelink-worker-lre-cc = createWorker lre-cc;
+            nativelink-worker-lre-cc = createWorker pkgs.lre.lre-cc.image;
             lre-java = pkgs.callPackage ./local-remote-execution/lre-java.nix {inherit buildImage;};
-            rbe-autogen-lre-java = rbe-autogen lre-java;
+            rbe-autogen-lre-java = pkgs.rbe-autogen lre-java;
             nativelink-worker-lre-java = createWorker lre-java;
             nativelink-worker-siso-chromium = createWorker siso-chromium;
             nativelink-worker-toolchain-drake = createWorker toolchain-drake;
@@ -420,7 +409,7 @@
           };
         };
         local-remote-execution.settings = {
-          Env =
+          Env = with pkgs.lre;
             if pkgs.stdenv.isDarwin
             then [] # Doesn't support Darwin yet.
             else lre-cc.meta.Env;
@@ -483,6 +472,7 @@
               # Additional tools from within our development environment.
               local-image-test
               generate-toolchains
+              pkgs.lre.lre-cc.lre-cc-configs-gen
               pkgs.lre.clang
               native-cli
               docs
@@ -547,7 +537,7 @@
         nixos = ./tools/nixos/flake-module.nix;
       };
       overlays = {
-        lre = import ./local-remote-execution/overlays/default.nix;
+        lre = import ./local-remote-execution/overlays/default.nix {inherit nix2container;};
       };
     };
 }
