@@ -1,0 +1,22 @@
+{
+  "name": "nativelink-bridge",
+  "version": "0.5.3",
+  "module": "index.ts",
+  "type": "module",
+  "dependencies": {
+    "drizzle-orm": "^0.36.0",
+    "postgres": "^3.4.5",
+    "protobufjs": "^7.4.0",
+    "redis": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.8",
+    "drizzle-kit": "^0.27.1"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "trustedDependencies": [
+    "protobufjs"
+  ]
+}
