@@ -36,6 +36,24 @@ Now, start the development cluster:
 native up
 ```
 
+Once the infra is ready, trigger the pipelines that build the images:
+
+```bash
+cat > dummy-repo.yaml << EOF
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: dummy-repository
+  namespace: default
+spec:
+  interval: 2m
+  url: https://github.com/TraceMachina/nativelink
+  ref:
+    branch: main
+EOF
+kubectl apply -f dummy-repo.yaml
+```
+
 :::tip
 The `native up` command uses Pulumi under the hood. You can view and delete
 the stack with `pulumi stack` and `pulumi destroy`. If you're queried for a
