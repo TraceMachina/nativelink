@@ -45,4 +45,12 @@
       }
     );
   };
+
+  config = {
+    perSystem = {pkgs, ...}: {
+      packages = {
+        rbe-autogen-lre-cc = pkgs.rbe-autogen pkgs.lre.lre-cc.image;
+      };
+    };
+  };
 }
