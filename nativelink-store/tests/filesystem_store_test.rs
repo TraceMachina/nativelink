@@ -33,6 +33,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{
     key_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore, DIGEST_PREFIX,
+    STR_PREFIX,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{fs, DigestInfo};
@@ -247,6 +248,7 @@ const HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789a
 const HASH2: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
 const VALUE1: &str = "0123456789";
 const VALUE2: &str = "9876543210";
+const STRING_NAME: &str = "String_Filename";
 
 #[serial]
 #[nativelink_test]
@@ -1261,6 +1263,23 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
         .await
         .err_tip(|| "Failed to execute has")?;
     assert!(digest_result.is_none());
+
+    // repeat with a string typed key
+
+    let string_key = StoreKey::new_str(STRING_NAME);
+
+    store
+        .update_oneshot(string_key.borrow(), VALUE2.into())
+        .await?;
+
+    let stored_file_path = OsString::from(format!("{content_path}/{STR_PREFIX}{STRING_NAME}"));
+    std::fs::remove_file(stored_file_path)?;
+
+    let string_result = store
+        .has(string_key)
+        .await
+        .err_tip(|| "Failed to execute has")?;
+    assert!(string_result.is_none());
 
     Ok(())
 }
