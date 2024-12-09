@@ -48,7 +48,7 @@ in {
       ++ [
         # Integration testfiles not intended for production.
         "deployment-examples/docker-compose/example-do-not-use-in-prod-key.pem"
-        "kubernetes/components/insecure-certs/example-do-not-use-in-prod-key.pem"
+        "kubernetes/resources/insecure-certs/example-do-not-use-in-prod-key.pem"
       ];
     enable = true;
     name = "detect-private-key";
