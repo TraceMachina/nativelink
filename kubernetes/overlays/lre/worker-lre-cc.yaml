@@ -25,7 +25,7 @@ spec:
           args:
             - |
               git config --global --add safe.directory "*"
-              NATIVELINK_WORKER_PLATFORM=docker://lre-cc:$(nix eval /mnt/src_root#lre-cc.imageTag --raw) &&
+              NATIVELINK_WORKER_PLATFORM=docker://lre-cc:$(nix eval /mnt/src_root#nativelink-worker-lre-cc.imageTag --raw) &&
               printf '#!/bin/sh\nexport NATIVELINK_WORKER_PLATFORM=%s\nexec "$@"' "$NATIVELINK_WORKER_PLATFORM" > /entrypoint/entrypoint.sh &&
               chmod +x /entrypoint/entrypoint.sh
           volumeMounts:
