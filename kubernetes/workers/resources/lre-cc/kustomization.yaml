@@ -1,0 +1,60 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+nameSuffix: -lre-cc
+
+resources:
+  - ../../../resources/alert-kustomization
+
+components:
+  - ../../../components/kustomization
+
+replacements:
+  - source:
+      kind: Kustomization
+      name: nativelink
+      fieldPath: metadata.name
+    targets:
+      - select:
+          kind: Kustomization
+          name: nativelink-alert
+        fieldPaths:
+          - spec.postBuild.substitute.PLACEHOLDER_CONFIG_MAP_NAME
+      - select:
+          kind: Kustomization
+          name: nativelink
+        fieldPaths:
+          - spec.postBuild.substituteFrom.0.name
+
+patches:
+- patch: |-
+    - op: replace
+      path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
+      value: github:TraceMachina/nativelink#nativelink-worker-lre-cc
+    - op: add
+      path: /spec/nameSuffix
+      value: -lre-cc
+  target:
+    kind: Kustomization
+    name: nativelink-alert
+- patch: |-
+    - op: replace
+      path: /spec/path
+      value: ./kubernetes/workers/lre-cc
+    - op: add
+      path: /spec/postBuild/substituteFrom/1
+      value:
+        kind: ConfigMap
+        name: nativelink-worker-init
+    - op: add
+      path: /spec/images
+      value:
+      - name: nativelink-worker-init
+        newName: localhost:5001/nativelink-worker-init
+        newTag: ${NATIVELINK_WORKER_INIT_TAG}
+      - name: nativelink-worker-lre-cc
+        newName: localhost:5001/nativelink-worker-lre-cc
+        newTag: ${NATIVELINK_WORKER_LRE_CC_TAG}
+  target:
+    kind: Kustomization
+    name: nativelink

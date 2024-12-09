@@ -1,0 +1,11 @@
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: nativelink
+  namespace: default
+spec:
+  interval: 2m
+  url: https://github.com/TraceMachina/nativelink
+  ref:
+    branch: main
