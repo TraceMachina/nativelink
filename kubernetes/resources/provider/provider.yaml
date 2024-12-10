@@ -1,0 +1,9 @@
+---
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Provider
+metadata:
+  name: nativelink-webhook
+  namespace: default
+spec:
+  type: generic
+  address: http://el-nativelink-rebuild.default.svc.cluster.local:8080

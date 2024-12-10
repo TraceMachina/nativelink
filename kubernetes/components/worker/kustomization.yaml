@@ -1,0 +1,18 @@
+---
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+- worker.yaml
+
+configMapGenerator:
+  - name: worker
+    files:
+      - worker.json5
+    options:
+      annotations:
+        kustomize.toolkit.fluxcd.io/substitute: disabled
+
+images:
+  - name: nativelink-worker-init
+  - name: nativelink-worker

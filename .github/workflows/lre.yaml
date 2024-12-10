@@ -96,16 +96,9 @@ jobs:
           nix develop --impure --command bash -c 'cat > kustomization.yaml << EOF
           apiVersion: kustomize.config.k8s.io/v1beta1
           kind: Kustomization
-          components:
-          - kubernetes/components/operator
+          resources:
+          - deploy/kubernetes-example
           patches:
-          - patch: |-
-              - op: replace
-                path: /spec/path
-                value: ./kubernetes/overlays/lre
-            target:
-              kind: Kustomization
-              name: nativelink
           - patch: |-
               - op: replace
                 path: /spec/url
@@ -119,27 +112,6 @@ jobs:
             target:
               kind: GitRepository
               name: nativelink
-          - patch: |-
-              - op: replace
-                path: /spec/eventMetadata/flakeOutput
-                value: ./src_root#image
-            target:
-              kind: Alert
-              name: nativelink-image-alert
-          - patch: |-
-              - op: replace
-                path: /spec/eventMetadata/flakeOutput
-                value: ./src_root#nativelink-worker-init
-            target:
-              kind: Alert
-              name: nativelink-worker-init-alert
-          - patch: |-
-              - op: replace
-                path: /spec/eventMetadata/flakeOutput
-                value: ./src_root#nativelink-worker-lre-cc
-            target:
-              kind: Alert
-              name: nativelink-worker-alert
           EOF
           kubectl apply -k . &&
           rm kustomization.yaml'
@@ -150,6 +122,36 @@ jobs:
           bash -c "flux reconcile kustomization -n default \
             --timeout=15m \
             nativelink-tekton-resources"
+
+      - name: Wait for alerts
+        run: >
+          nix develop --impure --command
+          bash -c "flux reconcile kustomization -n default \
+            --timeout=15m \
+            nativelink-alert-core && \
+          flux reconcile kustomization -n default \
+            --timeout=15m \
+            nativelink-alert-worker-init && \
+          flux reconcile kustomization -n default \
+            --timeout=15m \
+            nativelink-alert-lre-cc"
+
+      - name: Trigger pipelines
+        run: |
+          nix develop --impure --command bash -c 'cat > dummy-repo.yaml << EOF
+          apiVersion: source.toolkit.fluxcd.io/v1
+          kind: GitRepository
+          metadata:
+            name: dummy-repository
+            namespace: default
+          spec:
+            interval: 2m
+            url: https://github.com/TraceMachina/nativelink
+            ref:
+              branch: main
+          EOF
+          kubectl apply -f dummy-repo.yaml &&
+          rm dummy-repo.yaml'
 
       - name: Wait for Tekton pipelines
         run: >
@@ -171,19 +173,19 @@ jobs:
               -l tekton.dev/pipeline=rebuild-nativelink
           EOF
 
-      - name: Wait for Configmaps
-        run: >
-          nix develop --impure --command
-          bash -c "flux reconcile kustomization -n default \
-            --timeout=15m \
-            nativelink-configmaps"
-
       - name: Wait for NativeLink Kustomization
         run: >
           nix develop --impure --command
           bash -c "flux reconcile kustomization -n default \
             --timeout=15m \
-            nativelink"
+            nativelink-core"
+
+      - name: Wait for Worker Kustomization
+        run: >
+          nix develop --impure --command
+          bash -c "flux reconcile kustomization -n default \
+            --timeout=15m \
+            nativelink-lre-cc"
 
       - name: Wait for NativeLink
         run: >
@@ -193,7 +195,7 @@ jobs:
       - name: Wait for worker
         run: >
           nix develop --impure --command
-          bash -c "kubectl rollout status deploy/nativelink-worker"
+          bash -c "kubectl rollout status deploy/nativelink-worker-lre-cc"
 
       - name: Get gateway IPs
         id: gateway-ips
