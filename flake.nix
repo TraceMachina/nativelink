@@ -239,6 +239,8 @@
             };
           };
 
+        nativelink-bridge = pkgs.callPackage ./web/bridge/image.nix {inherit buildImage pullImage pkgs;};
+
         nativelink-worker-init = pkgs.callPackage ./tools/nativelink-worker-init.nix {inherit buildImage self nativelink-image;};
 
         createWorker = pkgs.callPackage ./tools/create-worker.nix {inherit buildImage self;};
@@ -365,6 +367,7 @@
               nativelink-worker-init
               nativelink-x86_64-linux
               publish-ghcr
+              nativelink-bridge
               ;
             default = nativelink;
 
