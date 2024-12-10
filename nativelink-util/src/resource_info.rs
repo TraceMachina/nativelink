@@ -105,6 +105,20 @@ impl<'a> ResourceInfo<'a> {
             &mut end_bytes_processed,
         )
         .err_tip(|| format!("{ERROR_MSG} in {resource_name}"))?;
+        // Default digest_function to sha256 if not set
+        if output.digest_function.is_none() {
+            output.digest_function = Some(Cow::Borrowed("sha256"));
+        }
+
+        if let Some(digest_function) = &output.digest_function {
+            if !DIGEST_FUNCTIONS.contains(&digest_function.as_ref()) {
+                return Err(make_input_err!(
+                    "Unsupported digest_function: {}",
+                    digest_function
+                ));
+            }
+        }
+
         error_if!(
             end_state != State::OptionalMetadata,
             "Expected the final state to be OptionalMetadata. Got: {end_state:?} for {resource_name} is_upload: {is_upload}"
@@ -206,6 +220,10 @@ enum State {
     OptionalMetadata,
 }
 
+pub fn is_supported_digest_function(digest_function: &str) -> bool {
+    DIGEST_FUNCTIONS.contains(&digest_function)
+}
+
 // Iterate backwards looking for "(compressed-)blobs", once found, move forward
 // populating the output struct. This recursive function utilises the stack to
 // temporarily hold the reference to the previous item reducing the need for
@@ -251,6 +269,10 @@ fn recursive_parse<'a>(
                     output.digest_function = Some(Cow::Borrowed(part));
                     *bytes_processed += part.len() + SLASH_SIZE;
                     return Ok(state);
+                }
+                if output.digest_function.is_none() {
+                    // Default to "sha256" when no digest function is provided.
+                    output.digest_function = Some(Cow::Borrowed("sha256"));
                 }
                 continue;
             }
