@@ -275,15 +275,15 @@ bazel build \
     --remote_instance_name=main \
     --remote_cache=grpc://$CACHE:50051 \
     --remote_executor=grpc://$SCHEDULER:50052 \
-    //local-remote-execution/examples:hello_lre
+    //local-remote-execution/examples:lre-cc
 ```
 
 The target builds remotely:
 
 ```bash
 INFO: Found 1 target...
-Target //local-remote-execution/examples:hello_lre up-to-date:
-  bazel-bin/local-remote-execution/examples/hello_lre
+Target //local-remote-execution/examples:lre-cc up-to-date:
+  bazel-bin/local-remote-execution/examples/lre-cc
 INFO: Elapsed time: 3.004s, Critical Path: 2.23s
 INFO: 11 processes: 9 internal, <<<2 remote>>>.
 INFO: Build completed successfully, 11 total actions
@@ -304,16 +304,16 @@ bazel build \
     --config=lre \
     --remote_instance_name=main \
     --remote_cache=grpc://$CACHE:50051 \
-    //local-remote-execution/examples:hello_lre
+    //local-remote-execution/examples:lre-cc
 ```
 
 You'll get a cache hit on the target despite using a local build:
 
 ```bash
-INFO: Analyzed target //local-remote-execution/examples:hello_lre (91 packages loaded, 1059 targets configured).
+INFO: Analyzed target //local-remote-execution/examples:lre-cc (91 packages loaded, 1059 targets configured).
 INFO: Found 1 target...
-Target //local-remote-execution/examples:hello_lre up-to-date:
-  bazel-bin/local-remote-execution/examples/hello_lre
+Target //local-remote-execution/examples:lre-cc up-to-date:
+  bazel-bin/local-remote-execution/examples/lre-cc
 INFO: Elapsed time: 0.767s, Critical Path: 0.18s
 INFO: 11 processes: <<<2 remote cache hit>>>, 9 internal.
 INFO: Build completed successfully, 11 total actions

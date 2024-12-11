@@ -2,7 +2,12 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-- ../kubernetes-example
+- ../../kubernetes/resources/flux
+- ../../kubernetes/resources/nativelink-core
+- ../../kubernetes/resources/gateway-routes
+- ../../kubernetes/workers/resources/worker-init
+- ../../kubernetes/workers/resources/lre-cc
+- ../../kubernetes/workers/resources/lre-rs
 
 # Modify this value to change the repository containing the deployment files.
 #
@@ -52,3 +57,10 @@ patches:
   target:
     kind: Kustomization
     name: nativelink-alert-lre-cc
+- patch: |-
+    - op: replace
+      path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
+      value: ./src_root#nativelink-worker-lre-rs
+  target:
+    kind: Kustomization
+    name: nativelink-alert-lre-rs

@@ -159,6 +159,7 @@ jobs:
         docker run --rm --net=host -w /root/nativelink -v $PWD:/root/nativelink trace_machina/nativelink:builder sh -c ' \
           bazel clean && \
           bazel test //... \
+          --extra_toolchains=@rust_toolchains//:all \
           --remote_cache=grpc://127.0.0.1:50051 \
           --remote_executor=grpc://127.0.0.1:50052 \
           --remote_default_exec_properties=cpu_count=1 \
@@ -166,6 +167,7 @@ jobs:
         docker run --rm --net=host -w /root/nativelink -v $PWD:/root/nativelink trace_machina/nativelink:builder sh -c ' \
           bazel clean && \
           bazel test //... \
+          --extra_toolchains=@rust_toolchains//:all \
           --remote_cache=grpc://127.0.0.1:50051 \
           --remote_executor=grpc://127.0.0.1:50052 \
           --remote_default_exec_properties=cpu_count=1 \
@@ -195,6 +197,7 @@ jobs:
         build-args: |
           OPT_LEVEL=fastbuild
           OS_VERSION=${{ matrix.os_version }}
+          ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
         load: true # This brings the build into `docker images` from buildx.
         tags: trace_machina/nativelink:latest
 

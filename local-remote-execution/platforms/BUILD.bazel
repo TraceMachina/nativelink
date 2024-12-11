@@ -1,0 +1,91 @@
+# Copyright 2024 The NativeLink Authors. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# These platforms correspond to nix systems.
+
+# The exec_properties correspond to kubernetes properties that help RBE systems
+# to determine on which nodes in a cluster the platform could realistically be
+# deployed to. For instance, you'll likely always need to match the CPU and
+# you'll always want to run mac platforms on mac nodes. However, you can deploy
+# linux containers onto mac systems as long as the cpu architecture matches, so
+# we don't constrain "kubernetes.io/os" for the linux platforms.
+
+# If these defaults don't work for you you can unset exec_properties by
+# overriding them with empty strings in child platforms.
+# See: https://bazel.build/versions/7.4.0/reference/be/platforms-and-toolchains
+
+# The sensible values for "kubernetes.io/arch" and "kubernetes.io/os" correspond
+# to those of GOOS and GOARCH.
+# See: https://gist.github.com/asukakenji/f15ba7e588ac42795f421b48b8aede63.
+
+# TODO(aaronmondal): Reevaluate this implementation once Bazel 8 is released
+#                    which adds support for platform-specific flags.
+
+platform(
+    name = "aarch64-darwin",
+    constraint_values = [
+        "@bazel_tools//tools/cpp:clang",
+        "@local-remote-execution//nix-system:aarch64-darwin",
+        "@platforms//cpu:aarch64",
+        "@platforms//os:macos",
+    ],
+    exec_properties = {
+        "kubernetes.io/arch": "arm64",
+        "kubernetes.io/os": "darwin",
+    },
+    visibility = ["//visibility:public"],
+)
+
+platform(
+    name = "aarch64-linux",
+    constraint_values = [
+        "@bazel_tools//tools/cpp:clang",
+        "@local-remote-execution//nix-system:aarch64-linux",
+        "@platforms//cpu:aarch64",
+        "@platforms//os:linux",
+    ],
+    exec_properties = {
+        "kubernetes.io/arch": "arm64",
+    },
+    visibility = ["//visibility:public"],
+)
+
+platform(
+    name = "x86_64-darwin",
+    constraint_values = [
+        "@bazel_tools//tools/cpp:clang",
+        "@local-remote-execution//nix-system:x86_64-darwin",
+        "@platforms//cpu:x86_64",
+        "@platforms//os:macos",
+    ],
+    exec_properties = {
+        "kubernetes.io/arch": "amd64",
+        "kubernetes.io/os": "darwin",
+    },
+    visibility = ["//visibility:public"],
+)
+
+platform(
+    name = "x86_64-linux",
+    constraint_values = [
+        "@bazel_tools//tools/cpp:clang",
+        "@local-remote-execution//nix-system:x86_64-linux",
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    exec_properties = {
+        "kubernetes.io/arch": "amd64",
+    },
+    visibility = ["//visibility:public"],
+)
