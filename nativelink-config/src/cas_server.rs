@@ -209,6 +209,52 @@ pub struct BepConfig {
     /// The store name referenced in the `stores` map in the main config.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub store: StoreRefName,
+
+    /// The config related to identifying the client.
+    /// The value of this header will be used to identify the caller and
+    /// will be added to the `BuildEvent::identity` field of the message.
+    /// Default: {see `IdentityHeaderSpec`}
+    #[serde(default)]
+    pub experimental_identity_header: IdentityHeaderSpec,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct IdentityHeaderSpec {
+    /// The name of the header to look for the identity in.
+    /// Default: "x-identity"
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub header_name: Option<String>,
+
+    /// If the header is required to be set or fail the request.
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct OriginEventsPublisherSpec {
+    /// The store to publish nativelink events to.
+    /// The store name referenced in the `stores` map in the main config.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub store: StoreRefName,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct OriginEventsSpec {
+    /// The publisher configuration for origin events.
+    pub publisher: OriginEventsPublisherSpec,
+
+    /// The maximum number of events to queue before applying back pressure.
+    /// IMPORTANT: Backpressure causes all clients to slow down significantly.
+    /// Zero is default.
+    ///
+    /// Default: 65536 (zero defaults to this)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_event_queue_size: usize,
+
+    /// The config related to identifying the client.
+    /// Default: {see `IdentityHeaderSpec`}
+    #[serde(default)]
+    pub identity_header: IdentityHeaderSpec,
 }
 
 #[derive(Deserialize, Debug)]
@@ -737,6 +783,11 @@ pub struct CasConfig {
 
     /// Servers to setup for this process.
     pub servers: Vec<ServerConfig>,
+
+    /// Experimental - Origin events configuration. This is the service that will
+    /// collect and publish nativelink events to a store for processing by an
+    /// external service.
+    pub experimental_origin_events: Option<OriginEventsSpec>,
 
     /// Any global configurations that apply to all modules live here.
     pub global: Option<GlobalConfig>,
