@@ -209,13 +209,6 @@ pub struct BepConfig {
     /// The store name referenced in the `stores` map in the main config.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub store: StoreRefName,
-
-    /// The config related to identifying the client.
-    /// The value of this header will be used to identify the caller and
-    /// will be added to the `BuildEvent::identity` field of the message.
-    /// Default: {see `IdentityHeaderSpec`}
-    #[serde(default)]
-    pub experimental_identity_header: IdentityHeaderSpec,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -250,11 +243,6 @@ pub struct OriginEventsSpec {
     /// Default: 65536 (zero defaults to this)
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_event_queue_size: usize,
-
-    /// The config related to identifying the client.
-    /// Default: {see `IdentityHeaderSpec`}
-    #[serde(default)]
-    pub identity_header: IdentityHeaderSpec,
 }
 
 #[derive(Deserialize, Debug)]
@@ -452,6 +440,11 @@ pub struct ServerConfig {
 
     /// Services to attach to server.
     pub services: Option<ServicesConfig>,
+
+    /// The config related to identifying the client.
+    /// Default: {see `IdentityHeaderSpec`}
+    #[serde(default)]
+    pub experimental_identity_header: IdentityHeaderSpec,
 }
 
 #[allow(non_camel_case_types)]
