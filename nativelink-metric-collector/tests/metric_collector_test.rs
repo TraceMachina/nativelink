@@ -179,7 +179,7 @@ fn test_prometheus_exporter() {
 nativelink_custom_handler_num_counter 6
 nativelink_foo_custom_handler_num_counter 4
 nativelink_pub_u64 1
-target_info{service_name="unknown_service",telemetry_sdk_language="rust",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="0.24.1"} 1
+target_info{service_name="unknown_service",telemetry_sdk_language="rust",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="0.27.1"} 1
 "#.trim()).lines().map(|v| v.unwrap()).collect();
 
     // We need to sort because the output order is non-deterministic.

@@ -14,9 +14,10 @@
 
 use std::collections::VecDeque;
 
-use fred::error::{RedisError, RedisErrorKind};
+use fred::error::{Error as RedisError, ErrorKind as RedisErrorKind};
 use fred::interfaces::RediSearchInterface;
-use fred::types::{FromRedis, RedisMap, RedisValue};
+use fred::types::redisearch::FtAggregateOptions;
+use fred::types::{FromValue, Map as RedisMap, Value as RedisValue};
 use futures::Stream;
 
 /// Calls `FT_AGGREGATE` in redis. Fred does not properly support this command
@@ -25,7 +26,7 @@ pub async fn ft_aggregate<C, I, Q>(
     client: C,
     index: I,
     query: Q,
-    options: fred::types::FtAggregateOptions,
+    options: FtAggregateOptions,
 ) -> Result<impl Stream<Item = Result<RedisMap, RedisError>> + Send, RedisError>
 where
     C: RediSearchInterface,
@@ -78,7 +79,7 @@ struct RedisCursorData {
     data: VecDeque<RedisMap>,
 }
 
-impl FromRedis for RedisCursorData {
+impl FromValue for RedisCursorData {
     fn from_value(value: RedisValue) -> Result<Self, RedisError> {
         if !value.is_array() {
             return Err(RedisError::new(RedisErrorKind::Protocol, "Expected array"));
