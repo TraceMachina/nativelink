@@ -117,7 +117,7 @@ async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>
     let sequence_number = request.clone().build_event.unwrap().sequence_number;
 
     let store_key = StoreKey::Str(Cow::Owned(format!(
-        "BepEvent:{}:{}:{}",
+        "BepEvent:le:{}:{}:{}",
         stream_id.clone().build_id,
         stream_id.clone().invocation_id,
         sequence_number
@@ -287,7 +287,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
                 .iter()
                 .map(|request| {
                     StoreKey::Str(Cow::Owned(format!(
-                        "BepEvent:{}:{}:{}",
+                        "BepEvent:be:{}:{}:{}",
                         stream_id.build_id,
                         stream_id.invocation_id,
                         request
