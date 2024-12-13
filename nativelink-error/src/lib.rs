@@ -219,17 +219,17 @@ impl From<Code> for Error {
     }
 }
 
-impl From<fred::error::RedisError> for Error {
-    fn from(error: fred::error::RedisError) -> Self {
-        use fred::error::RedisErrorKind::{
+impl From<fred::error::Error> for Error {
+    fn from(error: fred::error::Error) -> Self {
+        use fred::error::ErrorKind::{
             Auth, Backpressure, Canceled, Cluster, Config, InvalidArgument, InvalidCommand,
-            NotFound, Parse, Protocol, Sentinel, Timeout, Tls, Unknown, Url, IO,
+            NotFound, Parse, Protocol, Routing, Sentinel, Timeout, Tls, Unknown, Url, IO,
         };
 
         // Conversions here are based on https://grpc.github.io/grpc/core/md_doc_statuscodes.html.
         let code = match error.kind() {
             Config | InvalidCommand | InvalidArgument | Url => Code::InvalidArgument,
-            IO | Protocol | Tls | Cluster | Parse | Sentinel => Code::Internal,
+            IO | Protocol | Tls | Cluster | Parse | Sentinel | Routing => Code::Internal,
             Auth => Code::PermissionDenied,
             Canceled => Code::Aborted,
             Unknown => Code::Unknown,

@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authorsr All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,10 +21,11 @@ use std::time::{Duration, SystemTime};
 use bytes::Bytes;
 use fred::bytes_utils::string::Str;
 use fred::clients::SubscriberClient;
-use fred::error::{RedisError, RedisErrorKind};
+use fred::error::{Error as RedisError, ErrorKind as RedisErrorKind};
 use fred::mocks::{MockCommand, Mocks};
-use fred::prelude::{Builder, RedisPool};
-use fred::types::{PerformanceConfig, RedisConfig, RedisValue};
+use fred::prelude::{Builder, Pool as RedisPool};
+use fred::types::config::{Config as RedisConfig, PerformanceConfig};
+use fred::types::Value as RedisValue;
 use mock_instant::global::SystemTime as MockSystemTime;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
