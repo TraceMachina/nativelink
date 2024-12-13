@@ -251,6 +251,30 @@ async fn inner_main(
         schedulers: action_schedulers.clone(),
     }));
 
+    let maybe_origin_event_tx = cfg
+        .experimental_origin_events
+        .as_ref()
+        .map(|origin_events_cfg| {
+            let mut max_queued_events = origin_events_cfg.max_event_queue_size;
+            if max_queued_events == 0 {
+                max_queued_events = DEFAULT_MAX_QUEUE_EVENTS;
+            }
+            let (tx, rx) = mpsc::channel(max_queued_events);
+            let store_name = origin_events_cfg.publisher.store.as_str();
+            let store = store_manager.get_store(store_name).err_tip(|| {
+                format!("Could not get store {store_name} for origin event publisher")
+            })?;
+
+            root_futures.push(Box::pin(
+                OriginEventPublisher::new(store, rx, shutdown_tx.clone())
+                    .run()
+                    .map(Ok),
+            ));
+
+            Ok::<_, Error>(tx)
+        })
+        .transpose()?;
+
     for (server_cfg, connected_clients_mux) in servers_and_clients {
         let services = server_cfg
             .services
@@ -457,37 +481,12 @@ async fn inner_main(
 
         let health_registry = health_registry_builder.lock().await.build();
 
-        let mut svc = Router::new();
-        let maybe_middleware_layer = cfg
-            .experimental_origin_events
-            .as_ref()
-            .map(|origin_events_cfg| {
-                let mut max_queued_events = origin_events_cfg.max_event_queue_size;
-                if max_queued_events == 0 {
-                    max_queued_events = DEFAULT_MAX_QUEUE_EVENTS;
-                }
-                let (tx, rx) = mpsc::channel(max_queued_events);
-                let store_name = origin_events_cfg.publisher.store.as_str();
-                let store = store_manager.get_store(store_name).err_tip(|| {
-                    format!("Could not get store {store_name} for origin event publisher")
-                })?;
-
-                root_futures.push(Box::pin(
-                    OriginEventPublisher::new(store, rx, shutdown_tx.clone())
-                        .run()
-                        .map(Ok),
-                ));
-
-                Ok::<_, Error>((tx, origin_events_cfg))
-            })
-            .transpose()?
-            .map(|(tx, cfg)| OriginEventMiddlewareLayer::new(tx, cfg.identity_header.clone()));
-        let tonic_axum_rounter = tonic_services.into_service().into_axum_router();
-        svc = if let Some(middleware) = maybe_middleware_layer {
-            svc.merge(tonic_axum_rounter.layer(middleware))
-        } else {
-            svc.merge(tonic_axum_rounter)
-        };
+        let mut svc = Router::new().merge(tonic_services.into_service().into_axum_router().layer(
+            OriginEventMiddlewareLayer::new(
+                maybe_origin_event_tx.clone(),
+                server_cfg.experimental_identity_header.clone(),
+            ),
+        ));
 
         if let Some(health_cfg) = services.health {
             let path = if health_cfg.path.is_empty() {

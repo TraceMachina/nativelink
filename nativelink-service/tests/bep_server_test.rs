@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use hyper::body::Frame;
-use nativelink_config::cas_server::{BepConfig, IdentityHeaderSpec};
+use nativelink_config::cas_server::BepConfig;
 use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
@@ -69,7 +69,6 @@ fn make_bep_server(store_manager: &StoreManager) -> Result<BepServer, Error> {
     BepServer::new(
         &BepConfig {
             store: BEP_STORE_NAME.to_string(),
-            experimental_identity_header: IdentityHeaderSpec::default(),
         },
         store_manager,
     )

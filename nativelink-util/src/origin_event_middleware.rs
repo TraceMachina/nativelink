@@ -28,7 +28,7 @@ use tower::layer::Layer;
 use tower::Service;
 use tracing::trace_span;
 
-use crate::origin_context::OriginContext;
+use crate::origin_context::{ActiveOriginContext, ORIGIN_IDENTITY};
 use crate::origin_event::{OriginEventCollector, ORIGIN_EVENT_COLLECTOR};
 
 /// Default identity header name.
@@ -45,17 +45,17 @@ pub struct OriginRequestMetadata {
 
 #[derive(Clone)]
 pub struct OriginEventMiddlewareLayer {
-    origin_event_tx: mpsc::Sender<OriginEvent>,
+    maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     idenity_header_config: Arc<IdentityHeaderSpec>,
 }
 
 impl OriginEventMiddlewareLayer {
     pub fn new(
-        origin_event_tx: mpsc::Sender<OriginEvent>,
+        maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
         idenity_header_config: IdentityHeaderSpec,
     ) -> Self {
         Self {
-            origin_event_tx,
+            maybe_origin_event_tx,
             idenity_header_config: Arc::new(idenity_header_config),
         }
     }
@@ -67,7 +67,7 @@ impl<S> Layer<S> for OriginEventMiddlewareLayer {
     fn layer(&self, service: S) -> Self::Service {
         OriginEventMiddleware {
             inner: service,
-            origin_event_tx: self.origin_event_tx.clone(),
+            maybe_origin_event_tx: self.maybe_origin_event_tx.clone(),
             idenity_header_config: self.idenity_header_config.clone(),
         }
     }
@@ -76,7 +76,7 @@ impl<S> Layer<S> for OriginEventMiddlewareLayer {
 #[derive(Clone)]
 pub struct OriginEventMiddleware<S> {
     inner: S,
-    origin_event_tx: mpsc::Sender<OriginEvent>,
+    maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     idenity_header_config: Arc<IdentityHeaderSpec>,
 }
 
@@ -101,7 +101,8 @@ where
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
 
-        let (identity, bazel_metadata) = {
+        let mut context = ActiveOriginContext::fork().unwrap_or_default();
+        let identity = {
             let identity_header = self
                 .idenity_header_config
                 .header_name
@@ -124,24 +125,24 @@ where
                         .unwrap())
                 });
             }
-
+            context.set_value(&ORIGIN_IDENTITY, Arc::new(identity.clone()));
+            identity
+        };
+        if let Some(origin_event_tx) = &self.maybe_origin_event_tx {
             let bazel_metadata = req
                 .headers()
                 .get("build.bazel.remote.execution.v2.requestmetadata-bin")
                 .and_then(|header| BASE64_STANDARD_NO_PAD.decode(header.as_bytes()).ok())
                 .and_then(|data| RequestMetadata::decode(data.as_slice()).ok());
-            (identity, bazel_metadata)
-        };
-
-        let mut context = OriginContext::new();
-        context.set_value(
-            &ORIGIN_EVENT_COLLECTOR,
-            Arc::new(OriginEventCollector::new(
-                self.origin_event_tx.clone(),
-                identity,
-                bazel_metadata,
-            )),
-        );
+            context.set_value(
+                &ORIGIN_EVENT_COLLECTOR,
+                Arc::new(OriginEventCollector::new(
+                    origin_event_tx.clone(),
+                    identity,
+                    bazel_metadata,
+                )),
+            );
+        }
 
         Box::pin(async move {
             Arc::new(context)

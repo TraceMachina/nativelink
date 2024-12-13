@@ -52,6 +52,10 @@ macro_rules! make_symbol {
     };
 }
 
+// Symbol that represents the identity of the origin of a request.
+// See: IdentityHeaderSpec for details.
+make_symbol!(ORIGIN_IDENTITY, String);
+
 pub struct NLSymbol<T: Send + Sync + 'static> {
     pub name: &'static str,
     pub _phantom: std::marker::PhantomData<T>,

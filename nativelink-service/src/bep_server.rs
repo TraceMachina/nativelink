@@ -18,7 +18,6 @@ use std::pin::Pin;
 use bytes::BytesMut;
 use futures::stream::unfold;
 use futures::Stream;
-use nativelink_config::cas_server::IdentityHeaderSpec;
 use nativelink_error::{Error, ResultExt};
 use nativelink_proto::com::github::trace_machina::nativelink::events::{bep_event, BepEvent};
 use nativelink_proto::google::devtools::build::v1::publish_build_event_server::{
@@ -29,9 +28,9 @@ use nativelink_proto::google::devtools::build::v1::{
     PublishLifecycleEventRequest,
 };
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::origin_context::{ActiveOriginContext, ORIGIN_IDENTITY};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike};
 use prost::Message;
-use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Result, Status, Streaming};
 use tracing::{instrument, Level};
 
@@ -39,15 +38,15 @@ use tracing::{instrument, Level};
 /// there is a breaking change in the BEP event format.
 const BEP_EVENT_VERSION: u32 = 0;
 
-/// Default identity header name.
-/// Note: If this is changed, the default value in the [`IdentityHeaderSpec`]
-// TODO(allada) This has a mirror in origin_event_middleware.rs.
-// We should consolidate these.
-const DEFAULT_IDENTITY_HEADER: &str = "x-identity";
+fn get_identity() -> Result<Option<String>, Status> {
+    ActiveOriginContext::get()
+        .map_or(Ok(None), |ctx| ctx.get_value(&ORIGIN_IDENTITY))
+        .err_tip(|| "In BepServer")
+        .map_or_else(|e| Err(e.into()), |v| Ok(v.map(|v| v.as_ref().clone())))
+}
 
 pub struct BepServer {
     store: Store,
-    identity_header: IdentityHeaderSpec,
 }
 
 impl BepServer {
@@ -59,39 +58,11 @@ impl BepServer {
             .get_store(&config.store)
             .err_tip(|| format!("Expected store {} to exist in store manager", &config.store))?;
 
-        let mut identity_header = config.experimental_identity_header.clone();
-        if identity_header.header_name.is_none() {
-            identity_header.header_name = Some(DEFAULT_IDENTITY_HEADER.to_string());
-        }
-
-        Ok(Self {
-            store,
-            identity_header,
-        })
+        Ok(Self { store })
     }
 
     pub fn into_service(self) -> PublishBuildEventServer<BepServer> {
         PublishBuildEventServer::new(self)
-    }
-
-    fn get_identity(&self, request_metadata: &MetadataMap) -> Result<Option<String>, Status> {
-        let header_name = self
-            .identity_header
-            .header_name
-            .as_deref()
-            .unwrap_or(DEFAULT_IDENTITY_HEADER);
-        if header_name.is_empty() {
-            return Ok(None);
-        }
-        let identity = request_metadata
-            .get(header_name)
-            .and_then(|header| header.to_str().ok().map(str::to_string));
-        if identity.is_none() && self.identity_header.required {
-            return Err(Status::unauthenticated(format!(
-                "'{header_name}' header is required"
-            )));
-        }
-        Ok(identity)
     }
 
     async fn inner_publish_lifecycle_event(
@@ -243,8 +214,7 @@ impl PublishBuildEvent for BepServer {
         &self,
         grpc_request: Request<PublishLifecycleEventRequest>,
     ) -> Result<Response<()>, Status> {
-        let identity = self.get_identity(grpc_request.metadata())?;
-        self.inner_publish_lifecycle_event(grpc_request.into_inner(), identity)
+        self.inner_publish_lifecycle_event(grpc_request.into_inner(), get_identity()?)
             .await
             .map_err(Error::into)
     }
@@ -260,8 +230,7 @@ impl PublishBuildEvent for BepServer {
         &self,
         grpc_request: Request<Streaming<PublishBuildToolEventStreamRequest>>,
     ) -> Result<Response<Self::PublishBuildToolEventStreamStream>, Status> {
-        let identity = self.get_identity(grpc_request.metadata())?;
-        self.inner_publish_build_tool_event_stream(grpc_request.into_inner(), identity)
+        self.inner_publish_build_tool_event_stream(grpc_request.into_inner(), get_identity()?)
             .await
             .map_err(Error::into)
     }
