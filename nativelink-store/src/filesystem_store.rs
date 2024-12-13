@@ -35,7 +35,9 @@ use nativelink_util::buf_channel::{
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
+};
 use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::time::{sleep, timeout, Sleep};
@@ -48,6 +50,15 @@ use crate::cas_utils::is_zero_digest;
 const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
 // Default block size of all major filesystems is 4KB
 const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024;
+
+pub const STR_FOLDER: &str = "s";
+pub const DIGEST_FOLDER: &str = "d";
+
+#[derive(Clone, Copy, Debug)]
+pub enum FileType {
+    Digest,
+    String,
+}
 
 #[derive(Debug, MetricsComponent)]
 pub struct SharedContext {
@@ -70,22 +81,21 @@ enum PathType {
     Custom(OsString),
 }
 
-// Note: We don't store the full path of the file because it would cause
-// a lot of needless memeory bloat. There's a high chance we'll end up with a
-// lot of small files, so to prevent storing duplicate data, we store an Arc
-// to the path of the directory where the file is stored and the packed digest.
-// Resulting in usize + sizeof(DigestInfo).
-type FileNameDigest = DigestInfo;
+/// [`EncodedFilePath`] stores the path to the file
+/// including the context, path type and key to the file.
+/// The whole [`StoreKey`] is stored as opposed to solely
+/// the [`DigestInfo`] so that it is more usable for things
+/// such as BEP -see Issue #1108
 pub struct EncodedFilePath {
     shared_context: Arc<SharedContext>,
     path_type: PathType,
-    digest: FileNameDigest,
+    key: StoreKey<'static>,
 }
 
 impl EncodedFilePath {
     #[inline]
     fn get_file_path(&self) -> Cow<'_, OsStr> {
-        get_file_path_raw(&self.path_type, self.shared_context.as_ref(), &self.digest)
+        get_file_path_raw(&self.path_type, self.shared_context.as_ref(), &self.key)
     }
 }
 
@@ -93,14 +103,14 @@ impl EncodedFilePath {
 fn get_file_path_raw<'a>(
     path_type: &'a PathType,
     shared_context: &SharedContext,
-    digest: &DigestInfo,
+    key: &StoreKey<'a>,
 ) -> Cow<'a, OsStr> {
     let folder = match path_type {
         PathType::Content => &shared_context.content_path,
         PathType::Temp => &shared_context.temp_path,
         PathType::Custom(path) => return Cow::Borrowed(path),
     };
-    Cow::Owned(to_full_path_from_digest(folder, digest))
+    Cow::Owned(to_full_path_from_key(folder, key))
 }
 
 impl Drop for EncodedFilePath {
@@ -131,9 +141,23 @@ impl Drop for EncodedFilePath {
     }
 }
 
+/// This creates the file path from the [`StoreKey`]. If
+/// it is a string, the string, prefixed with [`STR_PREFIX`]
+/// for backwards compatibility, is stored.
+///
+/// If it is a [`DigestInfo`], it is prefixed by [`DIGEST_PREFIX`]
+/// followed by the string representation of a digest - the hash in hex,
+/// a hyphen then the size in bytes
+///
+/// Previously, only the string representation of the [`DigestInfo`] was
+/// used with no prefix
 #[inline]
-fn to_full_path_from_digest(folder: &str, digest: &DigestInfo) -> OsString {
-    format!("{folder}/{digest}").into()
+fn to_full_path_from_key(folder: &str, key: &StoreKey<'_>) -> OsString {
+    match key {
+        StoreKey::Str(str) => format!("{folder}/{STR_FOLDER}/{str}"),
+        StoreKey::Digest(digest_info) => format!("{folder}/{DIGEST_FOLDER}/{digest_info}"),
+    }
+    .into()
 }
 
 pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
@@ -300,7 +324,7 @@ impl Debug for FileEntryImpl {
     }
 }
 
-fn make_temp_digest(digest: &mut DigestInfo) {
+fn make_temp_digest(mut digest: DigestInfo) -> DigestInfo {
     static DELETE_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut hash = *digest.packed_hash();
     hash[24..].clone_from_slice(
@@ -309,6 +333,11 @@ fn make_temp_digest(digest: &mut DigestInfo) {
             .to_le_bytes(),
     );
     digest.set_packed_hash(*hash);
+    digest
+}
+
+fn make_temp_key(key: &StoreKey) -> StoreKey<'static> {
+    StoreKey::Digest(make_temp_digest(key.borrow().into_digest()))
 }
 
 impl LenEntry for FileEntryImpl {
@@ -362,16 +391,15 @@ impl LenEntry for FileEntryImpl {
                 return;
             }
             let from_path = encoded_file_path.get_file_path();
-            let mut new_digest = encoded_file_path.digest;
-            make_temp_digest(&mut new_digest);
+            let new_key = make_temp_key(&encoded_file_path.key);
 
             let to_path =
-                to_full_path_from_digest(&encoded_file_path.shared_context.temp_path, &new_digest);
+                to_full_path_from_key(&encoded_file_path.shared_context.temp_path, &new_key);
 
             if let Err(err) = fs::rename(&from_path, &to_path).await {
                 event!(
                     Level::WARN,
-                    digest = ?encoded_file_path.digest,
+                    key = ?encoded_file_path.key,
                     ?from_path,
                     ?to_path,
                     ?err,
@@ -380,23 +408,30 @@ impl LenEntry for FileEntryImpl {
             } else {
                 event!(
                     Level::INFO,
-                    digest = ?encoded_file_path.digest,
+                    key = ?encoded_file_path.key,
                     ?from_path,
                     ?to_path,
                     "Renamed file",
                 );
                 encoded_file_path.path_type = PathType::Temp;
-                encoded_file_path.digest = new_digest;
+                encoded_file_path.key = new_key;
             }
         }
     }
 }
 
 #[inline]
-pub fn digest_from_filename(file_name: &str) -> Result<DigestInfo, Error> {
+fn digest_from_filename(file_name: &str) -> Result<DigestInfo, Error> {
     let (hash, size) = file_name.split_once('-').err_tip(|| "")?;
     let size = size.parse::<i64>()?;
     DigestInfo::try_new(hash, size)
+}
+
+pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_>, Error> {
+    match file_type {
+        FileType::String => Ok(StoreKey::new_str(file_name)),
+        FileType::Digest => digest_from_filename(file_name).map(StoreKey::Digest),
+    }
 }
 
 /// The number of files to read the metadata for at the same time when running
@@ -404,21 +439,24 @@ pub fn digest_from_filename(file_name: &str) -> Result<DigestInfo, Error> {
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
 async fn add_files_to_cache<Fe: FileEntry>(
-    evicting_map: &EvictingMap<DigestInfo, Arc<Fe>, SystemTime>,
+    evicting_map: &EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>,
     anchor_time: &SystemTime,
     shared_context: &Arc<SharedContext>,
     block_size: u64,
+    rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
 ) -> Result<(), Error> {
+    #[expect(clippy::too_many_arguments)]
     async fn process_entry<Fe: FileEntry>(
-        evicting_map: &EvictingMap<DigestInfo, Arc<Fe>, SystemTime>,
+        evicting_map: &EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>,
         file_name: &str,
+        file_type: FileType,
         atime: SystemTime,
         data_size: u64,
         block_size: u64,
         anchor_time: &SystemTime,
         shared_context: &Arc<SharedContext>,
     ) -> Result<(), Error> {
-        let digest = digest_from_filename(file_name)?;
+        let key = key_from_file(file_name, file_type)?;
 
         let file_entry = Fe::create(
             data_size,
@@ -426,7 +464,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
             RwLock::new(EncodedFilePath {
                 shared_context: shared_context.clone(),
                 path_type: PathType::Content,
-                digest,
+                key: key.borrow().into_owned(),
             }),
         );
         let time_since_anchor = anchor_time
@@ -434,7 +472,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
             .map_err(|_| make_input_err!("File access time newer than now"))?;
         evicting_map
             .insert_with_time(
-                digest,
+                key.into_owned().into(),
                 Arc::new(file_entry),
                 time_since_anchor.as_secs() as i32,
             )
@@ -442,8 +480,21 @@ async fn add_files_to_cache<Fe: FileEntry>(
         Ok(())
     }
 
-    let mut file_infos: Vec<(String, SystemTime, u64)> = {
-        let (_permit, dir_handle) = fs::read_dir(format!("{}/", shared_context.content_path))
+    async fn read_files(
+        folder: Option<&str>,
+        shared_context: &SharedContext,
+    ) -> Result<Vec<(String, SystemTime, u64, bool)>, Error> {
+        // Note: In Dec 2024 this is for backwards compatibility with the old
+        // way files were stored on disk. Previously all files were in a single
+        // folder regardless of the StoreKey type. This allows old versions of
+        // nativelink file layout to be upgraded at startup time.
+        // This logic can be removed once more time has passed.
+        let read_dir = if let Some(folder) = folder {
+            format!("{}/{folder}/", shared_context.content_path)
+        } else {
+            format!("{}/", shared_context.content_path)
+        };
+        let (_permit, dir_handle) = fs::read_dir(read_dir)
             .await
             .err_tip(|| "Failed opening content directory for iterating in filesystem store")?
             .into_inner();
@@ -457,6 +508,9 @@ async fn add_files_to_cache<Fe: FileEntry>(
                     .metadata()
                     .await
                     .err_tip(|| "Failed to get metadata in filesystem store")?;
+                // We need to filter out folders - we do not want to try to cache the s and d folders.
+                let is_file =
+                    metadata.is_file() || !(file_name == STR_FOLDER || file_name == DIGEST_FOLDER);
                 let atime = match metadata.accessed() {
                     Ok(atime) => atime,
                     Err(err) => {
@@ -470,53 +524,136 @@ async fn add_files_to_cache<Fe: FileEntry>(
                         );
                     }
                 };
-                Result::<(String, SystemTime, u64), Error>::Ok((file_name, atime, metadata.len()))
+                Result::<(String, SystemTime, u64, bool), Error>::Ok((
+                    file_name,
+                    atime,
+                    metadata.len(),
+                    is_file,
+                ))
             })
             .buffer_unordered(SIMULTANEOUS_METADATA_READS)
             .try_collect()
-            .await?
-    };
-
-    file_infos.sort_by(|a, b| a.1.cmp(&b.1));
-    for (file_name, atime, data_size) in file_infos {
-        let result = process_entry(
-            evicting_map,
-            &file_name,
-            atime,
-            data_size,
-            block_size,
-            anchor_time,
-            shared_context,
-        )
-        .await;
-        if let Err(err) = result {
-            event!(
-                Level::WARN,
-                ?file_name,
-                ?err,
-                "Failed to add file to eviction cache",
-            );
-            // Ignore result.
-            let _ =
-                fs::remove_file(format!("{}/{}", &shared_context.content_path, &file_name)).await;
-        }
+            .await
     }
+
+    /// Note: In Dec 2024 this is for backwards compatibility with the old
+    /// way files were stored on disk. Previously all files were in a single
+    /// folder regardless of the [`StoreKey`] type. This moves files from the old cache
+    /// location to the new cache location, under [`DIGEST_FOLDER`].
+    async fn move_old_cache(
+        shared_context: &Arc<SharedContext>,
+        rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
+    ) -> Result<(), Error> {
+        let file_infos = read_files(None, shared_context).await?;
+
+        let from_path = shared_context.content_path.to_string();
+
+        let to_path = format!("{}/{DIGEST_FOLDER}", shared_context.content_path);
+
+        for (file_name, _, _, _) in file_infos.into_iter().filter(|x| x.3) {
+            let from_file: OsString = format!("{from_path}/{file_name}").into();
+            let to_file: OsString = format!("{to_path}/{file_name}").into();
+
+            if let Err(err) = rename_fn(&from_file, &to_file) {
+                event!(
+                    Level::WARN,
+                    ?from_file,
+                    ?to_file,
+                    ?err,
+                    "Failed to rename file",
+                );
+            } else {
+                event!(Level::INFO, ?from_file, ?to_file, "Renamed file",);
+            }
+        }
+        Ok(())
+    }
+
+    async fn add_files_to_cache<Fe: FileEntry>(
+        evicting_map: &EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>,
+        anchor_time: &SystemTime,
+        shared_context: &Arc<SharedContext>,
+        block_size: u64,
+        folder: &str,
+    ) -> Result<(), Error> {
+        let file_infos = read_files(Some(folder), shared_context).await?;
+        let file_type = match folder {
+            STR_FOLDER => FileType::String,
+            DIGEST_FOLDER => FileType::Digest,
+            _ => panic!("Invalid folder type"),
+        };
+
+        let path_root = format!("{}/{folder}", shared_context.content_path);
+
+        for (file_name, atime, data_size, _) in file_infos.into_iter().filter(|x| x.3) {
+            let result = process_entry(
+                evicting_map,
+                &file_name,
+                file_type,
+                atime,
+                data_size,
+                block_size,
+                anchor_time,
+                shared_context,
+            )
+            .await;
+            if let Err(err) = result {
+                event!(
+                    Level::WARN,
+                    ?file_name,
+                    ?err,
+                    "Failed to add file to eviction cache",
+                );
+                // Ignore result.
+                let _ = fs::remove_file(format!("{path_root}/{file_name}")).await;
+            }
+        }
+        Ok(())
+    }
+
+    move_old_cache(shared_context, rename_fn).await?;
+
+    add_files_to_cache(
+        evicting_map,
+        anchor_time,
+        shared_context,
+        block_size,
+        DIGEST_FOLDER,
+    )
+    .await?;
+
+    add_files_to_cache(
+        evicting_map,
+        anchor_time,
+        shared_context,
+        block_size,
+        STR_FOLDER,
+    )
+    .await?;
     Ok(())
 }
 
 async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
-    let (_permit, dir_handle) = fs::read_dir(temp_path)
-        .await
-        .err_tip(|| "Failed opening temp directory to prune partial downloads in filesystem store")?
-        .into_inner();
+    async fn prune_temp_inner(temp_path: &str, subpath: &str) -> Result<(), Error> {
+        let (_permit, dir_handle) = fs::read_dir(format!("{temp_path}/{subpath}"))
+            .await
+            .err_tip(|| {
+                "Failed opening temp directory to prune partial downloads in filesystem store"
+            })?
+            .into_inner();
 
-    let mut read_dir_stream = ReadDirStream::new(dir_handle);
-    while let Some(dir_entry) = read_dir_stream.next().await {
-        let path = dir_entry?.path();
-        if let Err(err) = fs::remove_file(&path).await {
-            event!(Level::WARN, ?path, ?err, "Failed to delete file",);
+        let mut read_dir_stream = ReadDirStream::new(dir_handle);
+        while let Some(dir_entry) = read_dir_stream.next().await {
+            let path = dir_entry?.path();
+            if let Err(err) = fs::remove_file(&path).await {
+                event!(Level::WARN, ?path, ?err, "Failed to delete file",);
+            }
         }
+        Ok(())
     }
+
+    prune_temp_inner(temp_path, STR_FOLDER).await?;
+    prune_temp_inner(temp_path, DIGEST_FOLDER).await?;
     Ok(())
 }
 
@@ -525,7 +662,7 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
     shared_context: Arc<SharedContext>,
     #[metric(group = "evicting_map")]
-    evicting_map: Arc<EvictingMap<DigestInfo, Arc<Fe>, SystemTime>>,
+    evicting_map: Arc<EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>>,
     #[metric(help = "Block size of the configured filesystem")]
     block_size: u64,
     #[metric(help = "Size of the configured read buffer size")]
@@ -546,18 +683,25 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         sleep_fn: fn(Duration) -> Sleep,
         rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     ) -> Result<Arc<Self>, Error> {
+        async fn create_subdirs(path: &str) -> Result<(), Error> {
+            fs::create_dir_all(format!("{path}/{STR_FOLDER}"))
+                .await
+                .err_tip(|| format!("Failed to create directory {path}/{STR_FOLDER}"))?;
+            fs::create_dir_all(format!("{path}/{DIGEST_FOLDER}"))
+                .await
+                .err_tip(|| format!("Failed to create directory {path}/{DIGEST_FOLDER}"))
+        }
+
         let now = SystemTime::now();
 
         let empty_policy = nativelink_config::stores::EvictionPolicy::default();
         let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
         let evicting_map = Arc::new(EvictingMap::new(eviction_policy, now));
 
-        fs::create_dir_all(&spec.temp_path)
-            .await
-            .err_tip(|| format!("Failed to temp directory {:?}", &spec.temp_path))?;
-        fs::create_dir_all(&spec.content_path)
-            .await
-            .err_tip(|| format!("Failed to content directory {:?}", &spec.content_path))?;
+        // Create temp and content directories and the s and d subdirectories.
+
+        create_subdirs(&spec.temp_path).await?;
+        create_subdirs(&spec.content_path).await?;
 
         let shared_context = Arc::new(SharedContext {
             active_drop_spawns: AtomicU64::new(0),
@@ -570,7 +714,14 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         } else {
             spec.block_size
         };
-        add_files_to_cache(evicting_map.as_ref(), &now, &shared_context, block_size).await?;
+        add_files_to_cache(
+            evicting_map.as_ref(),
+            &now,
+            &shared_context,
+            block_size,
+            rename_fn,
+        )
+        .await?;
         prune_temp_path(&shared_context.temp_path).await?;
 
         let read_buffer_size = if spec.read_buffer_size == 0 {
@@ -595,7 +746,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
         self.evicting_map
-            .get(digest)
+            .get::<StoreKey<'static>>(&digest.into())
             .await
             .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store"))
     }
@@ -604,7 +755,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         self: Pin<&'a Self>,
         mut entry: Fe,
         mut resumeable_temp_file: fs::ResumeableFileSlot,
-        final_digest: DigestInfo,
+        final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
         let mut data_size = 0;
@@ -649,10 +800,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         drop(resumeable_temp_file);
 
         *entry.data_size_mut() = data_size;
-        self.emplace_file(final_digest, Arc::new(entry)).await
+        self.emplace_file(final_key, Arc::new(entry)).await
     }
 
-    async fn emplace_file(&self, digest: DigestInfo, entry: Arc<Fe>) -> Result<(), Error> {
+    async fn emplace_file(&self, key: StoreKey<'static>, entry: Arc<Fe>) -> Result<(), Error> {
         // This sequence of events is quite ticky to understand due to the amount of triggers that
         // happen, async'ness of it and the locking. So here is a breakdown of what happens:
         // 1. Here will hold a write lock on any file operations of this FileEntry.
@@ -680,10 +831,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             let final_path = get_file_path_raw(
                 &PathType::Content,
                 encoded_file_path.shared_context.as_ref(),
-                &digest,
+                &key,
             );
 
-            evicting_map.insert(digest, entry.clone()).await;
+            evicting_map
+                .insert(key.borrow().into_owned().into(), entry.clone())
+                .await;
 
             let from_path = encoded_file_path.get_file_path();
             // Internally tokio spawns fs commands onto a blocking thread anyways.
@@ -709,13 +862,14 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 drop(encoded_file_path);
                 // It is possible that the item in our map is no longer the item we inserted,
                 // So, we need to conditionally remove it only if the pointers are the same.
+
                 evicting_map
-                    .remove_if(&digest, |map_entry| Arc::<Fe>::ptr_eq(map_entry, &entry))
+                    .remove_if(&key, |map_entry| Arc::<Fe>::ptr_eq(map_entry, &entry))
                     .await;
                 return Err(err);
             }
             encoded_file_path.path_type = PathType::Content;
-            encoded_file_path.digest = digest;
+            encoded_file_path.key = key;
             Ok(())
         })
         .await
@@ -730,26 +884,25 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
-        // existence_cache. We need to convert the digests to owned values to be able to
-        // insert them into the cache. In theory it should be able to elide this conversion
-        // but it seems to be a bit tricky to get right.
-        let keys: Vec<_> = keys.iter().map(|v| v.borrow().into_digest()).collect();
         self.evicting_map
-            .sizes_for_keys(&keys, results, false /* peek */)
+            .sizes_for_keys::<_, StoreKey<'_>, &StoreKey<'_>>(
+                keys.iter(),
+                results,
+                false, /* peek */
+            )
             .await;
         // We need to do a special pass to ensure our zero files exist.
         // If our results failed and the result was a zero file, we need to
         // create the file by spec.
-        for (digest, result) in keys.iter().zip(results.iter_mut()) {
-            if result.is_some() || !is_zero_digest(digest) {
+        for (key, result) in keys.iter().zip(results.iter_mut()) {
+            if result.is_some() || !is_zero_digest(key.borrow()) {
                 continue;
             }
             let (mut tx, rx) = make_buf_channel_pair();
             let send_eof_result = tx.send_eof();
-            self.update(digest.into(), rx, UploadSizeInfo::ExactSize(0))
+            self.update(key.borrow(), rx, UploadSizeInfo::ExactSize(0))
                 .await
-                .err_tip(|| format!("Failed to create zero file for key {digest}"))
+                .err_tip(|| format!("Failed to create zero file for key {}", key.as_str()))
                 .merge(
                     send_eof_result
                         .err_tip(|| "Failed to send zero file EOF in filesystem store has"),
@@ -766,21 +919,18 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let digest = key.into_digest();
-        let mut temp_digest = digest;
-        make_temp_digest(&mut temp_digest);
-
+        let temp_key = make_temp_key(&key);
         let (entry, temp_file, temp_full_path) = Fe::make_and_open_file(
             self.block_size,
             EncodedFilePath {
                 shared_context: self.shared_context.clone(),
                 path_type: PathType::Temp,
-                digest: temp_digest,
+                key: temp_key,
             },
         )
         .await?;
 
-        self.update_file(entry, temp_file, digest, reader)
+        self.update_file(entry, temp_file, key.into_owned(), reader)
             .await
             .err_tip(|| format!("While processing with temp file {temp_full_path:?}"))
     }
@@ -795,7 +945,6 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         mut file: fs::ResumeableFileSlot,
         upload_size: UploadSizeInfo,
     ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
-        let digest = key.into_digest();
         let path = file.get_path().as_os_str().to_os_string();
         let file_size = match upload_size {
             UploadSizeInfo::ExactSize(size) => size,
@@ -818,13 +967,13 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             RwLock::new(EncodedFilePath {
                 shared_context: self.shared_context.clone(),
                 path_type: PathType::Custom(path),
-                digest,
+                key: key.borrow().into_owned(),
             }),
         );
         // We are done with the file, if we hold a reference to the file here, it could
         // result in a deadlock if `emplace_file()` also needs file descriptors.
         drop(file);
-        self.emplace_file(digest, Arc::new(entry))
+        self.emplace_file(key.into_owned(), Arc::new(entry))
             .await
             .err_tip(|| "Could not move file into store in upload_file_to_store, maybe dest is on different volume?")?;
         return Ok(None);
@@ -837,9 +986,8 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        let digest = key.into_digest();
-        if is_zero_digest(digest) {
-            self.has(digest.into())
+        if is_zero_digest(key.borrow()) {
+            self.has(key.borrow())
                 .await
                 .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
             writer
@@ -848,10 +996,13 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             return Ok(());
         }
 
-        let entry =
-            self.evicting_map.get(&digest).await.ok_or_else(|| {
-                make_err!(Code::NotFound, "{digest} not found in filesystem store")
-            })?;
+        let entry = self.evicting_map.get(&key).await.ok_or_else(|| {
+            make_err!(
+                Code::NotFound,
+                "{} not found in filesystem store here",
+                key.as_str()
+            )
+        })?;
         let read_limit = length.unwrap_or(u64::MAX);
         let mut resumeable_temp_file = entry.read_file_part(offset, read_limit).await?;
 
