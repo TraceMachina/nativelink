@@ -85,6 +85,16 @@ export const starlightConfig = {
       ],
     },
     {
+      label: "Testing Remote Execution",
+      collapsed: true,
+      items: [
+        {
+          label: "Classic RBE Examples",
+          link: `${docsRoot}/rbe/remote-execution-examples`,
+        },
+      ],
+    },
+    {
       // Corresponds to https://diataxis.fr/how-to-guides/. Guides don't
       // need to be "complete". They should provide practical guidance for
       // real-world use-cases.

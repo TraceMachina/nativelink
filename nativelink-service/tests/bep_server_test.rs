@@ -21,6 +21,7 @@ use nativelink_config::cas_server::BepConfig;
 use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
+use nativelink_proto::com::github::trace_machina::nativelink::events::{bep_event, BepEvent};
 use nativelink_proto::google::devtools::build::v1::build_event::console_output::Output;
 use nativelink_proto::google::devtools::build::v1::build_event::{
     BuildEnqueued, BuildFinished, ConsoleOutput, Event, InvocationAttemptFinished,
@@ -116,7 +117,7 @@ async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>
     let sequence_number = request.clone().build_event.unwrap().sequence_number;
 
     let store_key = StoreKey::Str(Cow::Owned(format!(
-        "LifecycleEvent:{}:{}:{}",
+        "BepEvent:{}:{}:{}",
         stream_id.clone().build_id,
         stream_id.clone().invocation_id,
         sequence_number
@@ -139,10 +140,17 @@ async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>
         .await
         .err_tip(|| "While receiving bytes from reader")?;
 
-    let decoded_request = PublishLifecycleEventRequest::decode(bytes)
-        .err_tip(|| "While decoding request from bytes")?;
+    let decoded_request =
+        BepEvent::decode(bytes).err_tip(|| "While decoding request from bytes")?;
 
-    assert_eq!(request, decoded_request);
+    assert_eq!(
+        BepEvent {
+            version: 0,
+            identity: String::new(),
+            event: Some(bep_event::Event::LifecycleEvent(request.clone())),
+        },
+        decoded_request,
+    );
 
     Ok(())
 }
@@ -279,7 +287,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
                 .iter()
                 .map(|request| {
                     StoreKey::Str(Cow::Owned(format!(
-                        "BuildToolEventStream:{}:{}:{}",
+                        "BepEvent:{}:{}:{}",
                         stream_id.build_id,
                         stream_id.invocation_id,
                         request
@@ -331,9 +339,16 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
                 .await?;
             let encoded_request = reader.recv().await?;
 
-            let decoded_request = PublishBuildToolEventStreamRequest::decode(encoded_request)?;
+            let decoded_request = BepEvent::decode(encoded_request)?;
 
-            assert_eq!(*request, decoded_request);
+            assert_eq!(
+                BepEvent {
+                    version: 0,
+                    identity: String::new(),
+                    event: Some(bep_event::Event::BuildToolEvent(request.clone())),
+                },
+                decoded_request
+            );
         }
 
         Ok(())

@@ -1,0 +1,146 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: configmap-updater
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: configmap-updater
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: configmap-updater-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: configmap-updater
+    namespace: default
+roleRef:
+  kind: Role
+  name: configmap-updater
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: nativelink-rebuild-tt
+spec:
+  params:
+    - name: flakeOutput
+      description: |
+        The output of a Nix Flake. This output must refer to an image built with
+        nix2container.
+
+        See:
+          - https://nixos.wiki/wiki/Flakes for more in formation on the Flake
+            URL schema.
+          - https://github.com/nlewo/nix2container for more information on the
+            required builder for the flake outputs.
+
+        Examples:
+          - "/mnt/src_root#someoutput" for a flake output in the `output-src`
+            directory.
+          - "github:TraceMachina/nativelink#image" for the latest nativelink
+            image.
+          - "github:<user>/<repo>?ref=pull/<PR_NUMBER>/head#<PACKAGE>" to use
+            an image from a pull request of a repository on GitHub.
+    - name: configMapName
+      description: |
+        The name of the ConfigMap that we write the image tag to.
+
+        Other parts of the cluster may refer to this configmap to get the
+        pre-evaluated tag of the image.
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1beta1
+      kind: PipelineRun
+      metadata:
+        generateName: rebuild-nativelink-run-
+      spec:
+        taskRunSpecs:
+          - pipelineTaskName: update-image-tags
+            taskServiceAccountName: configmap-updater
+        pipelineRef:
+          name: rebuild-nativelink
+        workspaces:
+          - name: optional-src
+            persistentVolumeClaim:
+              claimName: local-sources-pvc
+          - name: nix-store
+            persistentVolumeClaim:
+              claimName: nix-store-pvc
+          - name: images-url
+            emptyDir: {}
+        params:
+          - name: flakeOutput
+            value: "$(tt.params.flakeOutput)"
+          - name: configMapName
+            value: "$(tt.params.configMapName)"
+          - name: registry
+            value: "kind-registry:5000"
+          - name: destTLSverify
+            value: "false"
+          - name: enableNixSandbox
+            value: "false"
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  name: nativelink-rebuild-tb
+spec:
+  params:
+    - name: flakeOutput
+      value: "$(body.metadata.flakeOutput)"
+    - name: configMapName
+      value: "$(body.metadata.configMapName)"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tekton-robot
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: triggers-eventlistener-binding
+subjects:
+  - kind: ServiceAccount
+    name: tekton-robot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tekton-triggers-eventlistener-roles
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: triggers-eventlistener-clusterbinding
+subjects:
+  - kind: ServiceAccount
+    name: tekton-robot
+    namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tekton-triggers-eventlistener-clusterroles
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  name: nativelink-rebuild
+spec:
+  serviceAccountName: tekton-robot
+  triggers:
+    - name: nativelink-rebuild-trigger
+      bindings:
+        - ref: nativelink-rebuild-tb
+      template:
+        ref: nativelink-rebuild-tt

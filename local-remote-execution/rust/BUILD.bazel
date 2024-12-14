@@ -1,0 +1,254 @@
+# Copyright 2024 The NativeLink Authors. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+load(
+    "@rules_rust//rust:toolchain.bzl",
+    "rust_toolchain",
+    "rustfmt_toolchain",
+)
+
+string_flag(
+    name = "channel",
+    build_setting_default = "stable",
+    values = [
+        "stable",
+        "nightly",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "stable",
+    flag_values = {":channel": "stable"},
+)
+
+config_setting(
+    name = "nightly",
+    flag_values = {":channel": "nightly"},
+)
+
+string_flag(
+    name = "rustfmt-channel",
+    # It's a common use case (and matching with rules_rust's default behavior)
+    # to use nightly rustfmt with a stable rust toolchain, so we default to
+    # nightly here.
+    build_setting_default = "nightly",
+    values = [
+        "stable",
+        "nightly",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "rustfmt-stable",
+    flag_values = {":rustfmt-channel": "stable"},
+)
+
+config_setting(
+    name = "rustfmt-nightly",
+    flag_values = {":rustfmt-channel": "nightly"},
+)
+
+[
+    rust_toolchain(
+        name = "rust-{}-{}_impl".format(channel, nix_system),
+        allocator_library = select({
+            "@local-remote-execution//libc:musl": None,
+            "//conditions:default": "@rules_rust//ffi/cc/allocator_library",
+        }),
+        binary_ext = "",
+        cargo = "@lre-rs-{}-{}//:cargo".format(channel, nix_system),
+        cargo_clippy = "@lre-rs-{}-{}//:cargo-clippy".format(channel, nix_system),
+        clippy_driver = "@lre-rs-{}-{}//:clippy-driver".format(channel, nix_system),
+
+        # Currently the same as rules_rust's default:
+        # https://bazelbuild.github.io/rules_rust/flatten.html#rust_toolchain-debug_info
+        # This may change at any time.
+        debug_info = {
+            "dbg": "2",
+            "fastbuild": "0",
+            "opt": "0",
+        },
+        default_edition = "2021",
+        dylib_ext = select({
+            "@platforms//os:linux": ".so",
+            "@platforms//os:macos": ".dylib",
+            "//conditions:default": "@platforms//:incompatible",
+        }),
+        env = {},
+        exec_triple = {
+            "x86_64-linux": "x86_64-unknown-linux-gnu",
+            "aarch64-linux": "aarch64-unknown-linux-gnu",
+            "x86_64-darwin": "x86_64-apple-darwin",
+            "aarch64-darwin": "aarch64-apple-darwin",
+        }[nix_system],
+
+        # TODO(aaronmondal): Make these easily configurable.
+        extra_exec_rustc_flags = [],
+        extra_rustc_flags = [],
+        extra_rustc_flags_for_crate_types = {},
+        global_allocator_library = select({
+            "@local-remote-execution//libc:musl": None,
+            "//conditions:default": "@rules_rust//ffi/cc/global_allocator_library",
+        }),
+
+        # TODO(aaronmondal): Implement these.
+        # llvm_cov,
+        # llvm_profdata,
+        # llvm_tools,
+
+        # Currently the same as rules_rust's default:
+        # https://bazelbuild.github.io/rules_rust/flatten.html#rust_toolchain-opt_level
+        # This may change at any time.
+        opt_level = {
+            "dbg": "0",
+            "fastbuild": "0",
+            "opt": "3",
+        },
+        per_crate_rustc_flags = [],
+        rust_doc = "@lre-rs-{}-{}//:rustdoc".format(channel, nix_system),
+        rust_std = "@lre-rs-{}-{}//:rust_std".format(channel, nix_system),
+        rustc = "@lre-rs-{}-{}//:rustc".format(channel, nix_system),
+        rustc_lib = "@lre-rs-{}-{}//:rustc_lib".format(channel, nix_system),
+        rustfmt = None,  # Rustfmt actions use the rustfmt-toolchain.
+        staticlib_ext = ".a",
+        stdlib_linkflags = select(
+            {
+                "@local-remote-execution//libc:glibc": [
+                    "-fuse-ld=mold",
+                    "-lpthread",
+                    "-ldl",
+                ],
+                "@local-remote-execution//libc:musl": [
+                    "-fuse-ld=mold",
+                ],
+                "@platforms//os:macos": [],
+            },
+            no_match_error = "Linking for unset libc on linux isn't implemented yet.",
+        ),
+
+        # Currently the same as rules_rust's default:
+        # https://bazelbuild.github.io/rules_rust/flatten.html#rust_toolchain-strip_level
+        # This may change at any time.
+        strip_level = {
+            "dbg": "none",
+            "fastbuild": "none",
+            "opt": "debuginfo",
+        },
+        target_json = "",
+        target_triple = select(
+            {
+                "@local-remote-execution//rust/triple:aarch64-unknown-linux-gnu": "aarch64-unknown-linux-gnu",
+                "@local-remote-execution//rust/triple:aarch64-unknown-linux-musl": "aarch64-unknown-linux-musl",
+                "@local-remote-execution//rust/triple:x86_64-unknown-linux-gnu": "x86_64-unknown-linux-gnu",
+                "@local-remote-execution//rust/triple:x86_64-unknown-linux-musl": "x86_64-unknown-linux-musl",
+            } | ({
+                "@local-remote-execution//rust/triple:x86_64-apple-darwin": "x86_64-apple-darwin",
+                "@local-remote-execution//rust/triple:aarch64-apple-darwin": "aarch64-apple-darwin",
+            } if nix_system in [
+                "aarch64-darwin",
+                "x86_64-darwin",
+            ] else {}),
+            no_match_error = "Incompatible target triple supplied to lre-rs-toolchain running on {}.".format(nix_system),
+        ),
+    )
+    for channel in [
+        "stable",
+        "nightly",
+    ]
+    for nix_system in [
+        "x86_64-linux",
+        "aarch64-linux",
+        "x86_64-darwin",
+        "aarch64-darwin",
+    ]
+]
+
+[
+    toolchain(
+        name = "rust-{}-{}".format(arch, os),
+        exec_compatible_with = [
+            "@platforms//os:{}".format(os if os == "linux" else "macos"),
+            "@platforms//cpu:{}".format(arch),
+            "@bazel_tools//tools/cpp:clang",
+        ],
+        target_compatible_with =
+            # Linux toolchains can only target other linux systems.
+            # Darwin toolchains can target everything.
+            ["@platforms//os:linux"] if os == "linux" else [],
+        toolchain = select({
+            ":stable": ":rust-stable-{}-{}_impl".format(arch, os),
+            ":nightly": ":rust-nightly-{}-{}_impl".format(arch, os),
+        }),
+        toolchain_type = "@rules_rust//rust:toolchain_type",
+    )
+    for arch in [
+        "aarch64",
+        "x86_64",
+    ]
+    for os in [
+        "linux",
+        "darwin",
+    ]
+]
+
+[
+    rustfmt_toolchain(
+        name = "rustfmt-{}-{}_impl".format(channel, nix_system),
+        rustc = "@lre-rs-{}-{}//:rustc".format(channel, nix_system),
+        rustc_lib = "@lre-rs-{}-{}//:rustc_lib".format(channel, nix_system),
+        rustfmt = "@lre-rs-{}-{}//:rustfmt".format(channel, nix_system),
+    )
+    for nix_system in [
+        "x86_64-linux",
+        "aarch64-linux",
+        "x86_64-darwin",
+        "aarch64-darwin",
+    ]
+    for channel in [
+        "stable",
+        "nightly",
+    ]
+]
+
+# Limit rustfmt to exec == target until we find a good reason to do otherwise.
+[
+    toolchain(
+        name = "rustfmt-{}-{}".format(arch, os),
+        exec_compatible_with = [
+            "@platforms//os:{}".format(os if os == "linux" else "macos"),
+            "@platforms//cpu:{}".format(arch),
+            "@bazel_tools//tools/cpp:clang",
+        ],
+        target_compatible_with = [
+            "@platforms//os:{}".format(os if os == "linux" else "macos"),
+            "@platforms//cpu:{}".format(arch),
+        ],
+        toolchain = select({
+            ":rustfmt-stable": ":rustfmt-stable-{}-{}_impl".format(arch, os),
+            ":rustfmt-nightly": ":rustfmt-nightly-{}-{}_impl".format(arch, os),
+        }),
+        toolchain_type = "@rules_rust//rust/rustfmt:toolchain_type",
+    )
+    for arch in [
+        "aarch64",
+        "x86_64",
+    ]
+    for os in [
+        "darwin",
+        "linux",
+    ]
+]

@@ -47,29 +47,29 @@ nativelink-worker = { path = "nativelink-worker" }
 nativelink-metric = { path = "nativelink-metric" }
 nativelink-metric-collector = { path = "nativelink-metric-collector" }
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
-axum = { version = "0.7.7", default-features = false }
-clap = { version = "4.5.18", features = ["derive"] }
-futures = { version = "0.3.30", default-features = false }
-hyper = "1.4.1"
-hyper-util = "0.1.9"
+axum = { version = "0.7.9", default-features = false }
+clap = { version = "4.5.23", features = ["derive"] }
+futures = { version = "0.3.31", default-features = false }
+hyper = "1.5.1"
+hyper-util = "0.1.10"
 mimalloc = "0.1.43"
 parking_lot = "0.12.3"
 rustls-pemfile = { version = "2.2.0", default-features = false }
 scopeguard = { version = "1.2.0", default-features = false }
 serde_json5 = "0.1.0"
-tokio = { version = "1.40.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
-tokio-rustls = { version = "0.26.0", default-features = false, features = [
+tokio = { version = "1.42.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
+tokio-rustls = { version = "0.26.1", default-features = false, features = [
   "ring",
 ] }
 tonic = { version = "0.12.3", features = ["transport", "tls"], default-features = false }
-tower = { version = "0.5.1", default-features = false }
-tracing = { version = "0.1.40", default-features = false }
-opentelemetry_sdk = { version = "0.24.1", default-features = false }
-tracing-subscriber = { version = "0.3.18", default-features = false }
-opentelemetry = { version = "0.24.0", default-features = false }
+tower = { version = "0.5.2", default-features = false }
+tracing = { version = "0.1.41", default-features = false }
+opentelemetry_sdk = { version = "0.27.1", default-features = false }
+tracing-subscriber = { version = "0.3.19", default-features = false }
+opentelemetry = { version = "0.27.1", default-features = false }
 prometheus = { version = "0.13.4", default-features = false }
-opentelemetry-prometheus = "0.17.0"
-serde_json = "1.0.128"
+opentelemetry-prometheus = "0.27.0"
+serde_json = "1.0.133"
 
 [workspace.cargo-features-manager.keep]
 async-lock = ["std"]

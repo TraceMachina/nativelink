@@ -21,6 +21,7 @@ use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
 use futures::future::{try_join_all, BoxFuture, Either, OptionFuture, TryFutureExt};
+use futures::FutureExt;
 use hyper::{Response, StatusCode};
 use hyper_util::rt::tokio::TokioIo;
 use hyper_util::server::conn::auto;
@@ -52,7 +53,9 @@ use nativelink_util::digest_hasher::{set_default_digest_hasher_func, DigestHashe
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::metrics_utils::{set_metrics_enabled_for_this_thread, Counter};
 use nativelink_util::operation_state_manager::ClientStateManager;
-use nativelink_util::origin_context::OriginContext;
+use nativelink_util::origin_context::{ActiveOriginContext, OriginContext};
+use nativelink_util::origin_event_middleware::OriginEventMiddlewareLayer;
+use nativelink_util::origin_event_publisher::OriginEventPublisher;
 use nativelink_util::shutdown_guard::{Priority, ShutdownGuard};
 use nativelink_util::store_trait::{
     set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
@@ -70,7 +73,7 @@ use tokio::net::TcpListener;
 use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tokio_rustls::rustls::pki_types::{CertificateDer, CertificateRevocationListDer};
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
@@ -94,6 +97,10 @@ const DEFAULT_HEALTH_STATUS_CHECK_PATH: &str = "/status";
 
 /// Name of environment variable to disable metrics.
 const METRICS_DISABLE_ENV: &str = "NATIVELINK_DISABLE_METRICS";
+
+// Note: This must be kept in sync with the documentation in
+// `OriginEventsConfig::max_event_queue_size`.
+const DEFAULT_MAX_QUEUE_EVENTS: usize = 65536;
 
 /// Broadcast Channel Capacity
 /// Note: The actual capacity may be greater than the provided capacity.
@@ -243,6 +250,30 @@ async fn inner_main(
         workers: HashMap::new(), // Will be filled in later.
         schedulers: action_schedulers.clone(),
     }));
+
+    let maybe_origin_event_tx = cfg
+        .experimental_origin_events
+        .as_ref()
+        .map(|origin_events_cfg| {
+            let mut max_queued_events = origin_events_cfg.max_event_queue_size;
+            if max_queued_events == 0 {
+                max_queued_events = DEFAULT_MAX_QUEUE_EVENTS;
+            }
+            let (tx, rx) = mpsc::channel(max_queued_events);
+            let store_name = origin_events_cfg.publisher.store.as_str();
+            let store = store_manager.get_store(store_name).err_tip(|| {
+                format!("Could not get store {store_name} for origin event publisher")
+            })?;
+
+            root_futures.push(Box::pin(
+                OriginEventPublisher::new(store, rx, shutdown_tx.clone())
+                    .run()
+                    .map(Ok),
+            ));
+
+            Ok::<_, Error>(tx)
+        })
+        .transpose()?;
 
     for (server_cfg, connected_clients_mux) in servers_and_clients {
         let services = server_cfg
@@ -450,10 +481,12 @@ async fn inner_main(
 
         let health_registry = health_registry_builder.lock().await.build();
 
-        let mut svc = Router::new()
-            .merge(tonic_services.into_service().into_axum_router())
-            // This is the default service that executes if no other endpoint matches.
-            .fallback((StatusCode::NOT_FOUND, "Not Found"));
+        let mut svc = Router::new().merge(tonic_services.into_service().into_axum_router().layer(
+            OriginEventMiddlewareLayer::new(
+                maybe_origin_event_tx.clone(),
+                server_cfg.experimental_identity_header.clone(),
+            ),
+        ));
 
         if let Some(health_cfg) = services.health {
             let path = if health_cfg.path.is_empty() {
@@ -481,9 +514,9 @@ async fn inner_main(
             svc = svc.route_service(
                 path,
                 axum::routing::get(move |request: hyper::Request<axum::body::Body>| {
-                    Arc::new(OriginContext::new()).wrap_async(
-                        trace_span!("prometheus_ctx"),
-                        async move {
+                    ActiveOriginContext::get()
+                        .expect("OriginContext should be set here")
+                        .wrap_async(trace_span!("prometheus_ctx"), async move {
                             // We spawn on a thread that can block to give more freedom to our metrics
                             // collection. This allows it to call functions like `tokio::block_in_place`
                             // if it needs to wait on a future.
@@ -591,8 +624,7 @@ async fn inner_main(
                             .await
                             .unwrap_or_else(|e| Ok(error_to_response(e)))
                             .unwrap_or_else(error_to_response)
-                        },
-                    )
+                        })
                 }),
             );
         }
@@ -651,6 +683,10 @@ async fn inner_main(
                 ),
             );
         }
+
+        svc = svc
+            // This is the default service that executes if no other endpoint matches.
+            .fallback((StatusCode::NOT_FOUND, "Not Found"));
 
         // Configure our TLS acceptor if we have TLS configured.
         let maybe_tls_acceptor = http_config.tls.map_or(Ok(None), |tls_config| {

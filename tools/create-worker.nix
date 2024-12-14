@@ -3,6 +3,7 @@
   buildEnv,
   buildImage,
   coreutils,
+  gnused,
   lib,
   runCommand,
   runtimeShell,
@@ -85,7 +86,7 @@ in
         mkEnvSymlink
         (buildEnv {
           name = "${image.imageName}-buildEnv";
-          paths = [coreutils bash];
+          paths = [coreutils bash gnused];
           pathsToLink = ["/bin"];
         })
       ];

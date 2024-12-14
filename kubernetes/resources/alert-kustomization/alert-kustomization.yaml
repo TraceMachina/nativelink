@@ -1,0 +1,24 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: nativelink-alert
+  namespace: default
+spec:
+  interval: 2m
+  path: ./kubernetes/components/alerts
+  prune: true
+  force: true
+  retryInterval: 20s
+  targetNamespace: default
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: nativelink
+    namespace: default
+  postBuild:
+    substitute:
+      PLACEHOLDER_FLAKE_OUTPUT: SET_BY_FLUX
+      PLACEHOLDER_CONFIG_MAP_NAME: SET_BY_FLUX
+  dependsOn:
+    - name: provider

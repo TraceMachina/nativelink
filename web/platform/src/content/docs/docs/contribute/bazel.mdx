@@ -10,7 +10,10 @@ If you're using the Nix flake you're all set.
 
 If you're running outside of nix, install [bazelisk](https://github.com/bazelbuild/bazelisk/tree/master)
 manually and make sure you have a recent functional C++ toolchain with LLD as
-linker.
+linker. On Unix you'll also have to add
+`--extra_toolchains=@rust_toolchains//:all` to all of your Bazel invocations to
+allow the use of non-hermetic Rust toolchains. Windows is non-hermetic by
+default.
 
 ## Build
 
@@ -23,13 +26,19 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
   <TabItem label="Unix">
     ```sh
     bazel run nativelink -- \
-        $(pwd)/nativelink-config/examples/basic_cas.json
+        $(pwd)/nativelink-config/examples/basic_cas.json5
+    ```
+  </TabItem>
+  <TabItem label="Unix without Nix">
+    ```sh
+    bazel run --extra_toolchains=@rust_toolchains//:all nativelink -- \
+        $(pwd)/nativelink-config/examples/basic_cas.json5
     ```
   </TabItem>
   <TabItem label="Windows">
     ```sh
     bazel run --config=windows nativelink -- \
-        $(pwd)/nativelink-config/examples/basic_cas.json
+        $(pwd)/nativelink-config/examples/basic_cas.json5
     ```
   </TabItem>
 </Tabs>
@@ -40,13 +49,19 @@ For optimized builds:
   <TabItem label="Unix">
     ```sh
     bazel run -c opt nativelink -- \
-        $(pwd)/nativelink-config/examples/basic_cas.json
+        $(pwd)/nativelink-config/examples/basic_cas.json5
+    ```
+  </TabItem>
+  <TabItem label="Unix without Nix">
+    ```sh
+    bazel run -c opt --extra_toolchains=@rust_toolchains//:all nativelink -- \
+        $(pwd)/nativelink-config/examples/basic_cas.json5
     ```
   </TabItem>
   <TabItem label="Windows">
     ```sh
     bazel run --config=windows -c opt nativelink -- \
-        $(pwd)/nativelink-config/examples/basic_cas.json
+        $(pwd)/nativelink-config/examples/basic_cas.json5
     ```
   </TabItem>
 </Tabs>
@@ -73,6 +88,11 @@ To run tests with Bazel:
   <TabItem label="Unix">
     ```sh
     bazel test //... --verbose_failures
+    ```
+  </TabItem>
+  <TabItem label="Unix without Nix">
+    ```sh
+    bazel test --extra_toolchains=@rust_toolchains//:all //... --verbose_failures
     ```
   </TabItem>
   <TabItem label="Windows">

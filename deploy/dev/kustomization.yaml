@@ -1,33 +1,28 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-components:
-- ../../kubernetes/components/operator
+resources:
+- ../../kubernetes/resources/flux
+- ../../kubernetes/resources/nativelink-core
+- ../../kubernetes/resources/gateway-routes
+- ../../kubernetes/workers/resources/worker-init
+- ../../kubernetes/workers/resources/lre-cc
+- ../../kubernetes/workers/resources/lre-rs
 
-# Change this value to deploy custom overlays.
-patches:
-- patch: |-
-    - op: replace
-      path: /spec/path
-      value: ./kubernetes/overlays/lre
-  target:
-    kind: Kustomization
-    name: nativelink
-
-# Modify this value to change the URL of the repository with deployment files.
+# Modify this value to change the repository containing the deployment files.
 #
 # This is usually only necessary if you change deployment YAML files or
 # NativeLink config files. If you only intend to change the Rust sources you can
 # leave this as is and need to ensure that the Alerts below are patched to build
 # your local sources.
+patches:
 - patch: |-
     - op: replace
       path: /spec/url
       value: https://github.com/TraceMachina/nativelink
-# Optionally, change the tracked branch.
-#   - op: replace
-#     path: /spec/ref/branch
-#     value: somecustombranch
+    - op: replace
+      path: /spec/ref/branch
+      value: main
   target:
     kind: GitRepository
     name: nativelink
@@ -43,22 +38,29 @@ patches:
 # outputs from a Pull request.
 - patch: |-
     - op: replace
-      path: /spec/eventMetadata/flakeOutput
+      path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
       value: ./src_root#image
   target:
-    kind: Alert
-    name: nativelink-image-alert
+    kind: Kustomization
+    name: nativelink-alert-core
 - patch: |-
     - op: replace
-      path: /spec/eventMetadata/flakeOutput
+      path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
       value: ./src_root#nativelink-worker-init
   target:
-    kind: Alert
-    name: nativelink-worker-init-alert
+    kind: Kustomization
+    name: nativelink-alert-worker-init
 - patch: |-
     - op: replace
-      path: /spec/eventMetadata/flakeOutput
+      path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
       value: ./src_root#nativelink-worker-lre-cc
   target:
-    kind: Alert
-    name: nativelink-worker-alert
+    kind: Kustomization
+    name: nativelink-alert-lre-cc
+- patch: |-
+    - op: replace
+      path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
+      value: ./src_root#nativelink-worker-lre-rs
+  target:
+    kind: Kustomization
+    name: nativelink-alert-lre-rs

@@ -1,12 +1,25 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
 
-# This example matches the config of the lre platform
 cc_binary(
-    name = "hello_lre",
+    name = "lre-cc",
     srcs = ["hello.cpp"],
     copts = ["--verbose"],
-    target_compatible_with = [
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
+    target_compatible_with = select({
+        "@local-remote-execution//nix-system:x86_64-linux": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+)
+
+rust_binary(
+    name = "lre-rs",
+    srcs = ["hello.rs"],
+    rustc_flags = [
+        "--print",
+        "link-args",
     ],
+    target_compatible_with = select({
+        "@local-remote-execution//nix-system:any": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
 )

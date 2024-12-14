@@ -32,7 +32,7 @@ services:
       RUST_LOG: ${RUST_LOG:-warn}
     ports: [ "50051:50051/tcp", "127.0.0.1:50061:50061", "50071:50071/tcp", ]
     command: |
-      nativelink /root/local-storage-cas.json
+      nativelink /root/local-storage-cas.json5
 
   nativelink_scheduler:
     image: trace_machina/nativelink:latest
@@ -51,7 +51,7 @@ services:
       CAS_ENDPOINT: nativelink_local_cas
     ports: [ "50052:50052/tcp" ]
     command: |
-      nativelink /root/scheduler.json
+      nativelink /root/scheduler.json5
 
   nativelink_executor:
     image: trace_machina/nativelink:latest
@@ -71,4 +71,4 @@ services:
       CAS_ENDPOINT: nativelink_local_cas
       SCHEDULER_ENDPOINT: nativelink_scheduler
     command: |
-      nativelink /root/worker.json
+      nativelink /root/worker.json5

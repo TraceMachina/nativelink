@@ -15,26 +15,26 @@ nativelink-metric = { path = "../nativelink-metric" }
 nativelink-store = { path = "../nativelink-store" }
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 async-trait = "0.1.83"
-bytes = { version = "1.7.2", default-features = false }
-prost = { version = "0.13.3", default-features = false }
-uuid = { version = "1.10.0", default-features = false, features = ["v4", "serde"] }
-futures = { version = "0.3.30", default-features = false }
-lru = { version = "0.12.4", default-features = false }
+bytes = { version = "1.9.0", default-features = false }
+prost = { version = "0.13.4", default-features = false }
+uuid = { version = "1.11.0", default-features = false, features = ["v4", "serde"] }
+futures = { version = "0.3.31", default-features = false }
+lru = { version = "0.12.5", default-features = false }
 mock_instant = "0.5.1"
 parking_lot = "0.12.3"
 rand = { version = "0.8.5", default-features = false }
 scopeguard = { version = "1.2.0", default-features = false }
-tokio = { version = "1.40.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
-tokio-stream = { version = "0.1.16", features = ["fs"], default-features = false }
+tokio = { version = "1.42.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
+tokio-stream = { version = "0.1.17", features = ["fs"], default-features = false }
 tonic = { version = "0.12.3", features = ["transport", "tls"], default-features = false }
-tracing = { version = "0.1.40", default-features = false }
-serde = { version = "1.0.210", features = ["rc"] }
-serde_json = "1.0.128"
+tracing = { version = "0.1.41", default-features = false }
+serde = { version = "1.0.216", features = ["rc"] }
+serde_json = "1.0.133"
 static_assertions = "1.1.0"
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 pretty_assertions = { version = "1.4.1", features = ["std"] }
-fred = { version = "9.2.1", default-features = false, features = [
+fred = { version = "10.0.1", default-features = false, features = [
   "mocks",
 ] }

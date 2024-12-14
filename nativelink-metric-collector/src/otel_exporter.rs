@@ -64,7 +64,7 @@ fn process_primitive(prefix: &mut String, meter: &Meter, primitive: &CollectedMe
             let counter = meter
                 .u64_counter(prefix.clone())
                 .with_description(primitive.help.clone())
-                .init();
+                .build();
             counter.add(*value, &[]);
         }
         Some(CollectedMetricPrimitiveValue::String(_value)) => {

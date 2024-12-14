@@ -72,12 +72,12 @@ for how to build the images yourself.
 
 ```bash
 curl -O \
-    https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json
+    https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5
 
 # See https://github.com/TraceMachina/nativelink/pkgs/container/nativelink
 # to find the latest tag
 docker run \
-    -v $(pwd)/basic_cas.json:/config \
+    -v $(pwd)/basic_cas.json5:/config \
     -p 50051:50051 \
     ghcr.io/tracemachina/nativelink:v0.5.3 \
     config
@@ -88,13 +88,13 @@ docker run \
 ```powershell
 # Download the configuration file
 Invoke-WebRequest `
-    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json" `
-    -OutFile "basic_cas.json"
+    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5" `
+    -OutFile "basic_cas.json5"
 
 # Run the Docker container
 # Note: Adjust the path if the script is not run from the directory containing basic_cas.json
 docker run `
-    -v ${PWD}/basic_cas.json:/config `
+    -v ${PWD}/basic_cas.json5:/config `
     -p 50051:50051 `
     ghcr.io/tracemachina/nativelink:v0.5.3 `
     config
@@ -116,9 +116,9 @@ it via the [next-gen nix installer](https://github.com/NixOS/experimental-nix-in
 
 ```bash
 curl -O \
-    https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json
+    https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5
 
-nix run github:TraceMachina/nativelink ./basic_cas.json
+nix run github:TraceMachina/nativelink ./basic_cas.json5
 ```
 
 See the [contribution docs](https://nativelink.com/docs/contribute/nix) for further information.

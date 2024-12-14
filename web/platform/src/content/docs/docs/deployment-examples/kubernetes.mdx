@@ -50,6 +50,24 @@ kubectl apply -k \
     https://github.com/TraceMachina/nativelink//deploy/kubernetes-example
 ```
 
+Once the infra is ready, trigger the pipelines that build the images:
+
+```bash
+cat > dummy-repo.yaml << EOF
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: dummy-repository
+  namespace: default
+spec:
+  interval: 2m
+  url: https://github.com/TraceMachina/nativelink
+  ref:
+    branch: main
+EOF
+kubectl apply -f dummy-repo.yaml
+```
+
 :::danger
 This example is built for demo purposes only. It's not a secure production-grade
 setup and will only work in the local development cluster created with
@@ -96,7 +114,7 @@ echo "NativeLink IP: $NATIVELINK"
 bazel build \
     --remote_cache=grpc://$NATIVELINK \
     --remote_executor=grpc://$NATIVELINK \
-    //local-remote-execution/examples:hello_lre
+    //local-remote-execution/examples:lre-cc
 ```
 
 :::caution
@@ -134,7 +152,7 @@ cache and run the build again:
 bazel clean && bazel build \
     --remote_cache=grpc://$CACHE \
     --remote_executor=grpc://$SCHEDULER \
-    //local-remote-execution/examples:hello_lre
+    //local-remote-execution/examples:lre-cc
 ```
 
 The build now shows cache hits instead of remote actions:
@@ -158,7 +176,7 @@ you'll use remote caching without remote execution:
 ```bash
 bazel clean && bazel build \
     --remote_cache=grpc://$CACHE \
-    //local-remote-execution/examples:hello_lre
+    //local-remote-execution/examples:lre-cc
 ```
 
 You'll get remote cache hits as if your local machine was a `nativelink-worker`:

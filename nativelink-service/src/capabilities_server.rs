@@ -30,6 +30,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_proto::build::bazel::semver::SemVer;
 use nativelink_util::digest_hasher::default_digest_hasher_func;
 use nativelink_util::operation_state_manager::ClientStateManager;
+use nativelink_util::origin_event::OriginEventContext;
 use tonic::{Request, Response, Status};
 use tracing::{event, instrument, Level};
 
@@ -102,7 +103,10 @@ impl Capabilities for CapabilitiesServer {
         &self,
         grpc_request: Request<GetCapabilitiesRequest>,
     ) -> Result<Response<ServerCapabilities>, Status> {
-        let instance_name = grpc_request.into_inner().instance_name;
+        let request = grpc_request.into_inner();
+        let ctx = OriginEventContext::new(|| &request).await;
+
+        let instance_name = request.instance_name;
         let maybe_supported_node_properties = self
             .supported_node_properties_for_instance
             .get(&instance_name);
@@ -153,6 +157,7 @@ impl Capabilities for CapabilitiesServer {
                 prerelease: String::new(),
             }),
         };
+        ctx.emit(|| &resp).await;
         Ok(Response::new(resp))
     }
 }

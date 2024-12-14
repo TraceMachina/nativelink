@@ -24,10 +24,22 @@ something like:
 
 ```sh
 bazel test //... \
+  --extra_toolchains=@rust_toolchains//:all \
   --remote_cache=grpc://127.0.0.1:50051 \
   --remote_executor=grpc://127.0.0.1:50052 \
   --remote_default_exec_properties=cpu_count=1
 ```
+
+> [!NOTE]
+> The `nativelink` repository doesn't register any toolchains by default. The
+> remote execution container in this example is currently a classic non-LRE
+> container, so you'll have to add `--extra_toolchains=@rust_toolchains//:all`
+> to the invocation to register `rules_rust`'s default toolchains. If you run
+> this example against another `rules_rust` project you'll likely have these
+> toolchains already registered in your `.bazelrc` or `MODULE.bazel` and can
+> omit the flag.
+>
+> See: https://www.nativelink.com/docs/contribute/bazel
 
 ## Instances
 
