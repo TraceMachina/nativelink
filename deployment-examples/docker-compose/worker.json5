@@ -59,6 +59,9 @@
         },
         "container-image": {
           "values": [""]
+        },
+        "lre-rs": {
+          "values": [""]
         }
       }
     }

@@ -14,3 +14,4 @@ bazel-nativelink
 toolchain-examples
 local-remote-execution/generated-cc
 local-remote-execution/generated-java
+local-remote-execution/rust

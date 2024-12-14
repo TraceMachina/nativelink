@@ -114,7 +114,7 @@ echo "NativeLink IP: $NATIVELINK"
 bazel build \
     --remote_cache=grpc://$NATIVELINK \
     --remote_executor=grpc://$NATIVELINK \
-    //local-remote-execution/examples:hello_lre
+    //local-remote-execution/examples:lre-cc
 ```
 
 :::caution
@@ -152,7 +152,7 @@ cache and run the build again:
 bazel clean && bazel build \
     --remote_cache=grpc://$CACHE \
     --remote_executor=grpc://$SCHEDULER \
-    //local-remote-execution/examples:hello_lre
+    //local-remote-execution/examples:lre-cc
 ```
 
 The build now shows cache hits instead of remote actions:
@@ -176,7 +176,7 @@ you'll use remote caching without remote execution:
 ```bash
 bazel clean && bazel build \
     --remote_cache=grpc://$CACHE \
-    //local-remote-execution/examples:hello_lre
+    //local-remote-execution/examples:lre-cc
 ```
 
 You'll get remote cache hits as if your local machine was a `nativelink-worker`:

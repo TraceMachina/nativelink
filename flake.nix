@@ -52,54 +52,8 @@
         system,
         ...
       }: let
-        stable-rust-version = "1.82.0";
-        nightly-rust-version = "2024-11-23";
-
-        llvmPackages = pkgs.llvmPackages_19;
-
-        nixSystemToRustTriple = nixSystem:
-          {
-            "x86_64-linux" = "x86_64-unknown-linux-musl";
-            "aarch64-linux" = "aarch64-unknown-linux-musl";
-            "x86_64-darwin" = "x86_64-apple-darwin";
-            "aarch64-darwin" = "aarch64-apple-darwin";
-          }
-          .${nixSystem}
-          or (throw "Unsupported Nix system: ${nixSystem}");
-
-        # Calling `pkgs.pkgsCross` changes the host and target platform to the
-        # cross-target but leaves the build platform the same as pkgs.
-        #
-        # For instance, calling `pkgs.pkgsCross.aarch64-multiplatform` on an
-        # `x86_64-linux` host sets `host==target==aarch64-linux` but leaves the
-        # build platform at `x86_64-linux`.
-        #
-        # On aarch64-darwin the same `pkgs.pkgsCross.aarch64-multiplatform`
-        # again sets `host==target==aarch64-linux` but now with a build platform
-        # of `aarch64-darwin`.
-        #
-        # For optimal cache reuse of different crosscompilation toolchains we
-        # take our rust toolchain from the host's `pkgs` and remap the rust
-        # target to the target platform of the `pkgsCross` target. This lets us
-        # reuse the same executables (for instance rustc) to build artifacts for
-        # different target platforms.
-        stableRustFor = p:
-          p.rust-bin.stable.${stable-rust-version}.default.override {
-            targets = [
-              "${nixSystemToRustTriple p.stdenv.targetPlatform.system}"
-            ];
-          };
-
-        nightlyRustFor = p:
-          p.rust-bin.nightly.${nightly-rust-version}.default.override {
-            extensions = ["llvm-tools"];
-            targets = [
-              "${nixSystemToRustTriple p.stdenv.targetPlatform.system}"
-            ];
-          };
-
-        craneLibFor = p: (crane.mkLib p).overrideToolchain stableRustFor;
-        nightlyCraneLibFor = p: (crane.mkLib p).overrideToolchain nightlyRustFor;
+        craneLibFor = p: (crane.mkLib p).overrideToolchain pkgs.lre.stableRustFor;
+        nightlyCraneLibFor = p: (crane.mkLib p).overrideToolchain pkgs.lre.nightlyRustFor;
 
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
@@ -110,18 +64,32 @@
 
         # Warning: The different usages of `p` and `pkgs` are intentional as we
         # use crosscompilers and crosslinkers whose packagesets collapse with
-        # the host's packageset. If you change this, take care that you don't
+        # the host's packageset. If you change this take care that you don't
         # accidentally explode the global closure size.
         commonArgsFor = p: let
           isLinuxBuild = p.stdenv.buildPlatform.isLinux;
           isLinuxTarget = p.stdenv.targetPlatform.isLinux;
-          targetArch = nixSystemToRustTriple p.stdenv.targetPlatform.system;
+          # Map the nix system to the Rust target triple that we'd want to target
+          # by default.
+          targetArch =
+            (
+              nixSystem:
+                {
+                  "x86_64-linux" = "x86_64-unknown-linux-musl";
+                  "aarch64-linux" = "aarch64-unknown-linux-musl";
+                  "x86_64-darwin" = "x86_64-apple-darwin";
+                  "aarch64-darwin" = "aarch64-apple-darwin";
+                }
+                .${nixSystem}
+                or (throw "Unsupported Nix host platform: ${nixSystem}")
+            )
+            p.stdenv.targetPlatform.system;
 
           # Full path to the linker for CARGO_TARGET_XXX_LINKER
           linkerPath =
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
-            else "${llvmPackages.lld}/bin/ld.lld";
+            else "${pkgs.llvmPackages_19.lld}/bin/ld.lld";
 
           linkerEnvVar = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER";
         in
@@ -142,7 +110,7 @@
               (
                 if isLinuxBuild
                 then [pkgs.mold]
-                else [llvmPackages.lld]
+                else [pkgs.llvmPackages_19.lld]
               )
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
                 p.darwin.apple_sdk.frameworks.Security
@@ -202,7 +170,7 @@
           "build-chromium-tests"
           ./deploy/chromium-example/build_chromium_tests.sh;
 
-        docs = pkgs.callPackage ./tools/docs.nix {rust = stableRustFor pkgs;};
+        docs = pkgs.callPackage ./tools/docs.nix {rust = pkgs.lre.stable-rust;};
 
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
@@ -366,12 +334,14 @@
               nativelink-x86_64-linux
               publish-ghcr
               ;
+
             default = nativelink;
 
             nativelink-worker-lre-cc = createWorker pkgs.lre.lre-cc.image;
             lre-java = pkgs.callPackage ./local-remote-execution/lre-java.nix {inherit buildImage;};
             rbe-autogen-lre-java = pkgs.rbe-autogen lre-java;
             nativelink-worker-lre-java = createWorker lre-java;
+            nativelink-worker-lre-rs = createWorker pkgs.lre.lre-rs.image;
             nativelink-worker-siso-chromium = createWorker siso-chromium;
             nativelink-worker-toolchain-drake = createWorker toolchain-drake;
             nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
@@ -405,15 +375,18 @@
         pre-commit.settings = {
           hooks = import ./tools/pre-commit-hooks.nix {
             inherit pkgs;
-            nightly-rust = pkgs.rust-bin.nightly.${nightly-rust-version};
+            nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
         local-remote-execution.settings = {
           Env = with pkgs.lre;
             if pkgs.stdenv.isDarwin
-            then [] # Doesn't support Darwin yet.
-            else lre-cc.meta.Env;
-          prefix = "linux";
+            then lre-rs.meta.Env # C++ doesn't support Darwin yet.
+            else (lre-cc.meta.Env ++ lre-rs.meta.Env);
+          prefix =
+            if pkgs.stdenv.isDarwin
+            then "macos"
+            else "linux";
         };
         nixos.settings = {
           path = with pkgs; [
@@ -438,8 +411,9 @@
               pkgs.pre-commit
 
               # Rust
-              (stableRustFor pkgs)
               bazel
+              pkgs.lre.stable-rust
+              pkgs.lre.lre-rs.lre-rs-configs-gen
 
               ## Infrastructure
               pkgs.awscli2
