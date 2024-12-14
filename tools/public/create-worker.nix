@@ -1,7 +1,7 @@
 {
   bash,
   buildEnv,
-  buildImage,
+  nix2container,
   coreutils,
   gnused,
   lib,
@@ -76,7 +76,7 @@ in
   # added and set as entrypoint. This allows arbitrary base images to be
   # "enriched" with nativelink to create worker images for cloud deployments.
   image:
-    buildImage {
+    nix2container.buildImage {
       name = "nativelink-worker-${image.imageName}";
       fromImage = image;
       maxLayers = 20;
