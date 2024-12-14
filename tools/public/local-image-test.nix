@@ -16,7 +16,7 @@ writeShellScriptBin "local-image-test" ''
   IMAGE_TAG=$(nix eval .#$1.imageTag --raw)
   IMAGE_NAME=$(nix eval .#$1.imageName --raw)
 
-  nix run .#image.copyTo \
+  nix run .#$1.copyTo \
     docker-daemon:''${IMAGE_NAME}:''${IMAGE_TAG}
 
   # Ensure that the image has minimal closure size.
