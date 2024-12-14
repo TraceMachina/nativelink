@@ -155,15 +155,9 @@
             cargoExtraArgs = "--features enable_tokio_console";
           });
 
-        publish-ghcr = pkgs.callPackage ./tools/publish-ghcr.nix {};
-
-        local-image-test = pkgs.callPackage ./tools/local-image-test.nix {};
-
         nativelink-is-executable-test = pkgs.callPackage ./tools/nativelink-is-executable-test.nix {inherit nativelink;};
 
         generate-toolchains = pkgs.callPackage ./tools/generate-toolchains.nix {};
-
-        native-cli = pkgs.callPackage ./native-cli/default.nix {};
 
         build-chromium-tests =
           pkgs.writeShellScriptBin
@@ -209,7 +203,8 @@
 
         nativelink-worker-init = pkgs.callPackage ./tools/nativelink-worker-init.nix {inherit buildImage self nativelink-image;};
 
-        createWorker = pkgs.callPackage ./tools/create-worker.nix {inherit buildImage self;};
+        createWorker = pkgs.nativelink-tools.lib.createWorker self;
+
         buck2-toolchain = let
           buck2-nightly-rust-version = "2024-04-28";
           buck2-nightly-rust = pkgs.rust-bin.nightly.${buck2-nightly-rust-version};
@@ -305,6 +300,7 @@
           overlays = [
             self.overlays.lre
             (import ./tools/nixpkgs-disable-ratehammering-pulumi-tests.nix)
+            self.overlays.tools
             (import rust-overlay)
             (import ./tools/rust-overlay-cut-libsecret.nix)
           ];
@@ -316,14 +312,12 @@
           };
           native = {
             type = "app";
-            program = "${native-cli}/bin/native";
+            program = "${pkgs.nativelink-tools.native-cli}/bin/native";
           };
         };
         packages =
           rec {
             inherit
-              local-image-test
-              native-cli
               nativelink
               nativelinkCoverageForHost
               nativelink-aarch64-linux
@@ -332,8 +326,9 @@
               nativelink-is-executable-test
               nativelink-worker-init
               nativelink-x86_64-linux
-              publish-ghcr
               ;
+
+            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr native-cli;
 
             default = nativelink;
 
@@ -444,13 +439,13 @@
               pkgs.playwright-test
 
               # Additional tools from within our development environment.
-              local-image-test
-              generate-toolchains
-              pkgs.lre.lre-cc.lre-cc-configs-gen
-              pkgs.lre.clang
-              native-cli
-              docs
               build-chromium-tests
+              docs
+              generate-toolchains
+              pkgs.lre.clang
+              pkgs.lre.lre-cc.lre-cc-configs-gen
+              pkgs.nativelink-tools.local-image-test
+              pkgs.nativelink-tools.native-cli
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.darwin.apple_sdk.frameworks.CoreFoundation
@@ -512,6 +507,7 @@
       };
       overlays = {
         lre = import ./local-remote-execution/overlays/default.nix {inherit nix2container;};
+        tools = import ./tools/public/default.nix {inherit nix2container;};
       };
     };
 }
