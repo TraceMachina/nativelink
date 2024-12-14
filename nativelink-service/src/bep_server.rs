@@ -82,7 +82,7 @@ impl BepServer {
         let sequence_number = build_event.sequence_number;
 
         let store_key = StoreKey::Str(Cow::Owned(format!(
-            "BepEvent:{}:{}:{}",
+            "BepEvent:le:{}:{}:{}",
             &stream_id.build_id, &stream_id.invocation_id, sequence_number,
         )));
 
@@ -140,7 +140,7 @@ impl BepServer {
             store
                 .update_oneshot(
                     StoreKey::Str(Cow::Owned(format!(
-                        "BepEvent:{}:{}:{}",
+                        "BepEvent:be:{}:{}:{}",
                         &stream_id.build_id, &stream_id.invocation_id, sequence_number,
                     ))),
                     buf.freeze(),
