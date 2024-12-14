@@ -20,6 +20,14 @@ common --enable_platform_specific_config
 common --incompatible_enable_cc_toolchain_resolution
 common --incompatible_enable_proto_toolchain_resolution
 
+# Simulate rules_python's initialization with a script and use a statically
+# linked musl Python toolchain.
+# TODO(aaronmondal): This is a hack. It works for us because have just a few
+#                    simple python scripts in the repository and don't have
+#                    complex Python dependencies. Implement LRE for Python.
+common --@rules_python//python/config_settings:bootstrap_impl=script
+common --@rules_python//python/config_settings:py_linux_libc=musl
+
 # Don't leak PATH and LD_LIBRARY_PATH into the build.
 build --incompatible_strict_action_env
 
