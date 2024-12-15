@@ -328,7 +328,7 @@
               nativelink-x86_64-linux
               ;
 
-            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr native-cli;
+            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr publish-ecr native-cli;
 
             default = nativelink;
 

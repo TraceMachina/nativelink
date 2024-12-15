@@ -1,0 +1,66 @@
+name: Publish image to ECR
+
+# Controls when the workflow will run.
+on:
+  push:
+    branches: [ publish-ecr ]
+  pull_request:
+    branches: [ publish-ecr ]
+    paths-ignore:
+      - 'docs/**'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/publish-ecr' }}
+
+jobs:
+  publish-ecr:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [nativelink-worker-lre-rs]
+    runs-on: large-ubuntu-22.04
+    environment: production
+    name: Publish ${{ matrix.image }}
+    if: github.ref == 'refs/heads/publish-ecr'
+    steps:
+    - name: Checkout
+      uses: >- # v4.1.1
+        actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+    - name: Set up AWS CLI
+      uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+      with:
+        aws-access-key-id: ${{ secrets.RBE_ECR_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.RBE_ECR_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.RBE_ECR_AWS_ACCOUNT_REGION }}
+
+    - name: Install Nix
+      uses: >- # v10
+        DeterminateSystems/nix-installer-action@de22e16c4711fca50c816cc9081563429d1cf563
+
+    - name: Free disk space
+      uses: >- # v2.0.0
+        endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
+      with:
+        remove_android: true
+        remove_dotnet: true
+        remove_haskell: true
+        remove_tool_cache: false
+
+    - name: Cache Nix derivations
+      uses: >- # v4
+        DeterminateSystems/magic-nix-cache-action@fc6aaceb40b9845a02b91e059ec147e78d1b4e41
+
+    - name: Test image
+      run: |
+        nix run .#local-image-test ${{ matrix.image }}
+
+    - name: Publish Image
+      env:
+        AWS_ACCOUNT_ID: ${{ secrets.RBE_ECR_AWS_ACCESS_KEY_ID }}
+        AWS_REGION: ${{ secrets.RBE_ECR_AWS_ACCOUNT_REGION }}
+      run: |
+        nix run .#publish-ecr ${{ matrix.image }}

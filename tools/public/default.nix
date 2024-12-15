@@ -5,6 +5,7 @@
   nativelink-tools = {
     local-image-test = final.callPackage ./local-image-test.nix {};
     publish-ghcr = final.callPackage ./publish-ghcr.nix {};
+    publish-ecr = final.callPackage ./publish-ecr.nix {};
     native-cli = final.callPackage ../../native-cli/default.nix {};
 
     lib = {
