@@ -15,6 +15,7 @@ rust_library(
         "//nativelink-metric",
         "//nativelink-proto",
         "@crates//:fred",
+        "@crates//:google-cloud-storage",
         "@crates//:hex",
         "@crates//:prost",
         "@crates//:prost-types",

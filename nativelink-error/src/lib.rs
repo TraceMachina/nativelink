@@ -14,6 +14,7 @@
 
 use std::convert::Into;
 
+pub use google_cloud_storage::http::Error as GcsError;
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
@@ -216,6 +217,36 @@ impl From<std::io::Error> for Error {
 impl From<Code> for Error {
     fn from(code: Code) -> Self {
         make_err!(code, "")
+    }
+}
+
+impl From<GcsError> for Error {
+    fn from(err: GcsError) -> Self {
+        match err {
+            GcsError::Response(error_response) => {
+                make_err!(
+                    Code::Unavailable,
+                    "GCS Response Error: {:?}",
+                    error_response
+                )
+            }
+            GcsError::HttpClient(error) => {
+                make_err!(Code::Unavailable, "GCS HTTP Client Error: {:?}", error)
+            }
+            GcsError::HttpMiddleware(error) => {
+                make_err!(Code::Unavailable, "GCS HTTP Middleware Error: {:?}", error)
+            }
+            GcsError::TokenSource(error) => {
+                make_err!(Code::Unauthenticated, "GCS Token Source Error: {:?}", error)
+            }
+            GcsError::InvalidRangeHeader(header) => {
+                make_err!(
+                    Code::InvalidArgument,
+                    "GCS Invalid Range Header: {:?}",
+                    header
+                )
+            }
+        }
     }
 }
 

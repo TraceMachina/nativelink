@@ -19,3 +19,4 @@ prost-types = { version = "0.13.4", default-features = false }
 serde = { version = "1.0.216", default-features = false }
 tokio = { version = "1.42.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
 tonic = { version = "0.12.3", features = ["transport", "tls"], default-features = false }
+google-cloud-storage = "0.23.0"

@@ -70,6 +70,7 @@ opentelemetry = { version = "0.27.1", default-features = false }
 prometheus = { version = "0.13.4", default-features = false }
 opentelemetry-prometheus = "0.27.0"
 serde_json = "1.0.133"
+google-cloud-storage = "0.23.0"
 
 [workspace.cargo-features-manager.keep]
 async-lock = ["std"]
