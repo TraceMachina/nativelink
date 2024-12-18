@@ -726,7 +726,10 @@ async fn test_supported_digest_functions() -> Result<(), Box<dyn std::error::Err
 #[nativelink_test]
 async fn test_unsupported_digest_functions() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(is_supported_digest_function("sha3"), false);
-    assert_eq!(is_supported_digest_function("invalid_digest_function"), false);
+    assert_eq!(
+        is_supported_digest_function("invalid_digest_function"),
+        false
+    );
     assert_eq!(is_supported_digest_function("boo"), false);
     assert_eq!(is_supported_digest_function("random_hash"), false);
 
