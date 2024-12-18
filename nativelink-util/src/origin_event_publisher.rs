@@ -84,7 +84,7 @@ impl OriginEventPublisher {
     }
 
     async fn handle_batch(&self, batch: &mut Vec<OriginEvent>) {
-        let uuid = Uuid::now_v6(get_node_id());
+        let uuid = Uuid::now_v6(&get_node_id(None));
         let events = OriginEvents {
             // Clippy wants us to use use `mem::take`, but this would
             // move all capacity as well to the new vector. Since it is
