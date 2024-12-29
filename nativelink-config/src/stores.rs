@@ -432,6 +432,21 @@ pub enum StoreSpec {
     noop(NoopSpec),
 }
 
+impl StoreSpec {
+    // To enforce no duplicate connection configs for a store, add it to the matcher and implement
+    // disallow_duplicates_digest() on it. Returns `None` for stores that are not being enforced unique.
+    pub fn disallow_duplicates_digest(&self) -> Option<String> {
+        match self {
+            Self::memory(spec) => Some(spec.disallow_duplicates_digest()),
+            Self::experimental_s3_store(spec) => Some(spec.disallow_duplicates_digest()),
+            Self::filesystem(spec) => Some(spec.disallow_duplicates_digest()),
+            Self::grpc(spec) => Some(spec.disallow_duplicates_digest()),
+            Self::redis_store(spec) => Some(spec.disallow_duplicates_digest()),
+            _ => None,
+        }
+    }
+}
+
 /// Configuration for an individual shard of the store.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
@@ -514,6 +529,12 @@ pub struct FilesystemSpec {
     pub block_size: u64,
 }
 
+impl FilesystemSpec {
+    fn disallow_duplicates_digest(&self) -> String {
+        format!("{}{}", self.content_path, self.temp_path)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct FastSlowSpec {
@@ -533,6 +554,12 @@ pub struct MemorySpec {
     /// value will cause items to never be removed from the store causing
     /// infinite memory usage.
     pub eviction_policy: Option<EvictionPolicy>,
+}
+
+impl MemorySpec {
+    pub fn disallow_duplicates_digest(&self) -> String {
+        "InMemoryStore".into()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -787,6 +814,14 @@ pub struct S3Spec {
     pub disable_http2: bool,
 }
 
+impl S3Spec {
+    pub fn disallow_duplicates_digest(&self) -> String {
+        let key_prefix = self.key_prefix.as_deref().unwrap_or_default();
+
+        format!("{}{}{}", self.region, self.bucket, key_prefix)
+    }
+}
+
 #[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub enum StoreType {
@@ -850,6 +885,22 @@ pub struct GrpcSpec {
     /// the load over multiple TCP connections.  Default 1.
     #[serde(default)]
     pub connections_per_endpoint: usize,
+}
+
+impl GrpcSpec {
+    // todo: could improve duplication detection to individual endpoints to disallow accidental re-use
+    fn disallow_duplicates_digest(&self) -> String {
+        format!(
+            "{}{}",
+            self.instance_name,
+            self.endpoints
+                .clone()
+                .into_iter()
+                .map(|endpoint| endpoint.address)
+                .collect::<Vec<String>>()
+                .join(",")
+        )
+    }
 }
 
 /// The possible error codes that might occur on an upstream request.
@@ -991,6 +1042,12 @@ pub struct RedisSpec {
     /// ```
     #[serde(default)]
     pub retry: Retry,
+}
+
+impl RedisSpec {
+    fn disallow_duplicates_digest(&self) -> String {
+        format!("{}{}", self.addresses.clone().join(","), self.key_prefix)
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]

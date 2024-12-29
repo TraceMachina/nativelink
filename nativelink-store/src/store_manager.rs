@@ -23,18 +23,21 @@ use parking_lot::RwLock;
 pub struct StoreManager {
     #[metric]
     stores: RwLock<HashMap<String, Store>>,
+    store_config_anti_collision_digests: RwLock<Vec<String>>,
 }
 
 impl StoreManager {
     pub fn new() -> StoreManager {
         StoreManager {
             stores: RwLock::new(HashMap::new()),
+            store_config_anti_collision_digests: RwLock::new(vec![]),
         }
     }
 
     pub fn add_store(&self, name: &str, store: Store) -> Result<(), Error> {
+        let stores_rd = self.stores.read();
         let mut stores = self.stores.write();
-        match stores.contains_key(name) {
+        match stores_rd.contains_key(name) {
             true => Err(make_err!(
                 Code::AlreadyExists,
                 "A store with the name '{}' already exists",
@@ -45,6 +48,22 @@ impl StoreManager {
                 Ok(())
             }
         }
+    }
+
+    pub fn digest_not_already_present(&self, digest: &str) -> Result<(), Error> {
+        let digests = self.store_config_anti_collision_digests.read();
+        match digests.contains(&String::from(digest)) {
+            true => Err(make_err!(
+                Code::AlreadyExists,
+                "the provided config is already being used by another store"
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn config_digest_add(&self, digest: String) {
+        let mut digests = self.store_config_anti_collision_digests.write();
+        digests.push(digest);
     }
 
     pub fn get_store(&self, name: &str) -> Option<Store> {

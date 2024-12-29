@@ -45,7 +45,7 @@ use nativelink_service::cas_server::CasServer;
 use nativelink_service::execution_server::ExecutionServer;
 use nativelink_service::health_server::HealthServer;
 use nativelink_service::worker_api_server::WorkerApiServer;
-use nativelink_store::default_store_factory::store_factory;
+use nativelink_store::default_store_factory::make_and_add_store_to_manager;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::WorkerId;
 use nativelink_util::common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
@@ -194,11 +194,14 @@ async fn inner_main(
             let health_component_name = format!("stores/{name}");
             let mut health_register_store =
                 health_registry_lock.sub_builder(&health_component_name);
-            let store = store_factory(&store_cfg, &store_manager, Some(&mut health_register_store))
-                .await
-                .err_tip(|| format!("Failed to create store '{name}'"))?;
-
-            store_manager.add_store(&name, store).err_tip(|| format!("Failed to add store to manager '{name}'"))?;
+            make_and_add_store_to_manager(
+                &name,
+                &store_cfg,
+                &store_manager,
+                Some(&mut health_register_store),
+            )
+            .await
+            .err_tip(|| format!("Failed to create store '{name}'"))?;
         }
     }
 

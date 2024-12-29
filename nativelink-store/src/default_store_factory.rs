@@ -42,12 +42,44 @@ use crate::verify_store::VerifyStore;
 
 type FutureMaybeStore<'a> = Box<dyn Future<Output = Result<Store, Error>> + 'a>;
 
-pub fn store_factory<'a>(
+pub async fn make_and_add_store_to_manager<'a>(
+    name: &'a str,
+    backend: &'a StoreSpec,
+    store_manager: &'a Arc<StoreManager>,
+    maybe_health_registry_builder: Option<&'a mut HealthRegistryBuilder>,
+) -> Result<(), Error> {
+    match store_factory(backend, store_manager, maybe_health_registry_builder).await {
+        Ok(store) => match store_manager.add_store(name, store) {
+            Ok(_) => {
+                if let Some(digest) = backend.disallow_duplicates_digest() {
+                    store_manager.digest_not_already_present(&digest)?;
+                    store_manager.config_digest_add(digest);
+                }
+
+                Ok(())
+            }
+
+            Err(e) => {
+                return Err(e);
+            }
+        },
+
+        Err(e) => {
+            return Err(e);
+        }
+    }
+}
+
+fn store_factory<'a>(
     backend: &'a StoreSpec,
     store_manager: &'a Arc<StoreManager>,
     maybe_health_registry_builder: Option<&'a mut HealthRegistryBuilder>,
 ) -> Pin<FutureMaybeStore<'a>> {
     Box::pin(async move {
+        if let Some(backend_config_digest) = backend.disallow_duplicates_digest() {
+            store_manager.digest_not_already_present(&backend_config_digest)?;
+        }
+
         let store: Arc<dyn StoreDriver> = match backend {
             StoreSpec::memory(spec) => MemoryStore::new(spec),
             StoreSpec::experimental_s3_store(spec) => S3Store::new(spec, SystemTime::now).await?,
