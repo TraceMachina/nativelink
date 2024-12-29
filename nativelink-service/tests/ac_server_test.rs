@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use bytes::BytesMut;
 use maplit::hashmap;
-use nativelink_config::stores::{EvictionPolicy, FilesystemSpec, MemorySpec, StoreSpec};
+use nativelink_config::stores::{FilesystemSpec, MemorySpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
@@ -49,6 +49,7 @@ async fn insert_into_store<T: Message>(
     let data_len = store_data.len();
     let digest = DigestInfo::try_new(hash, action_size)?;
     store.update_oneshot(digest, store_data.freeze()).await?;
+
     Ok(data_len.try_into().unwrap())
 }
 
@@ -64,6 +65,8 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
 
     let current_dir = env::current_dir().expect("Failed to get current directory");
 
+    let default_filesystem_spec = FilesystemSpec::default();
+
     make_and_add_store_to_manager(
         "main_ac",
         &StoreSpec::filesystem(FilesystemSpec {
@@ -77,14 +80,9 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
                 .into_os_string()
                 .into_string()
                 .unwrap(),
-            read_buffer_size: 100,
-            block_size: 100,
-            eviction_policy: Some(EvictionPolicy {
-                max_bytes: 1_000_000_000,
-                evict_bytes: 10000,
-                max_seconds: 500,
-                max_count: 1_000_000,
-            }),
+            read_buffer_size: default_filesystem_spec.read_buffer_size,
+            eviction_policy: default_filesystem_spec.eviction_policy,
+            block_size: default_filesystem_spec.block_size,
         }),
         &store_manager,
         None,
