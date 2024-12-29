@@ -55,7 +55,7 @@ pub async fn make_and_add_store_to_manager<'a>(
 
     let store = store_factory(backend, store_manager, maybe_health_registry_builder).await?;
     store_manager.add_store(name, store)?;
-        
+
     Ok(())
 }
 
@@ -65,7 +65,6 @@ fn store_factory<'a>(
     maybe_health_registry_builder: Option<&'a mut HealthRegistryBuilder>,
 ) -> Pin<FutureMaybeStore<'a>> {
     Box::pin(async move {
-
         let store: Arc<dyn StoreDriver> = match backend {
             StoreSpec::memory(spec) => MemoryStore::new(spec),
             StoreSpec::experimental_s3_store(spec) => S3Store::new(spec, SystemTime::now).await?,
