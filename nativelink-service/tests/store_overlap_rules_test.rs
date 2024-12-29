@@ -21,7 +21,7 @@ use nativelink_store::default_store_factory::make_and_add_store_to_manager;
 use nativelink_store::store_manager::StoreManager;
 
 #[nativelink_test]
-async fn same_datasource() -> Result<(), Error> {
+async fn same_datasource_disallowed_simple() -> Result<(), Error> {
     let store_manager = Arc::new(StoreManager::new());
     assert!(make_and_add_store_to_manager(
         "main_cas",
@@ -33,7 +33,31 @@ async fn same_datasource() -> Result<(), Error> {
     .is_ok());
 
     assert!(make_and_add_store_to_manager(
+        "main_ac",
+        &StoreSpec::memory(MemorySpec::default()),
+        &store_manager,
+        None,
+    )
+    .await
+    .is_err());
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn same_datasource_disallowed_complex() -> Result<(), Error> {
+    let store_manager = Arc::new(StoreManager::new());
+    assert!(make_and_add_store_to_manager(
         "main_cas",
+        &StoreSpec::memory(MemorySpec::default()),
+        &store_manager,
+        None,
+    )
+    .await
+    .is_ok());
+
+    assert!(make_and_add_store_to_manager(
+        "main_ac",
         &StoreSpec::memory(MemorySpec::default()),
         &store_manager,
         None,
