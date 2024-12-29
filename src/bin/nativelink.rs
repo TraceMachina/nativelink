@@ -197,7 +197,8 @@ async fn inner_main(
             let store = store_factory(&store_cfg, &store_manager, Some(&mut health_register_store))
                 .await
                 .err_tip(|| format!("Failed to create store '{name}'"))?;
-            store_manager.add_store(&name, store);
+
+            store_manager.add_store(&name, store).err_tip(|| format!("Failed to add store to manager '{name}'"))?;
         }
     }
 
