@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use bytes::BytesMut;
 use maplit::hashmap;
-use nativelink_config::stores::{MemorySpec, StoreSpec};
+use nativelink_config::stores::{EvictionPolicy, FilesystemSpec, MemorySpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
@@ -63,7 +63,18 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
 
     make_and_add_store_to_manager(
         "main_ac",
-        &StoreSpec::memory(MemorySpec::default()),
+        &StoreSpec::filesystem(FilesystemSpec {
+            content_path: "/tmp/nativelink/testing/ac/content_path".into(),
+            temp_path: "/tmp/nativelink/testing/ac/tmp_path".into(),
+            read_buffer_size: 100,
+            block_size: 100,
+            eviction_policy: Some(EvictionPolicy {
+                max_bytes: 1_000_000_000,
+                evict_bytes: 10000,
+                max_seconds: 500,
+                max_count: 1_000_000,
+            }),
+        }),
         &store_manager,
         None,
     )
