@@ -60,7 +60,6 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
         None,
     )
     .await?;
-
     make_and_add_store_to_manager(
         "main_ac",
         &StoreSpec::memory(MemorySpec::default()),
@@ -68,7 +67,6 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
         None,
     )
     .await?;
-
     Ok(store_manager)
 }
 

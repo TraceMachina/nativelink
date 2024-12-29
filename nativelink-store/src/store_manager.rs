@@ -35,19 +35,16 @@ impl StoreManager {
     }
 
     pub fn add_store(&self, name: &str, store: Store) -> Result<(), Error> {
-        let stores_rd = self.stores.read();
         let mut stores = self.stores.write();
-        match stores_rd.contains_key(name) {
-            true => Err(make_err!(
+        if stores.contains_key(name) {
+            return Err(make_err!(
                 Code::AlreadyExists,
                 "A store with the name '{}' already exists",
                 name
-            )),
-            _ => {
-                stores.insert(name.to_string(), store);
-                Ok(())
-            }
+            ));
         }
+        stores.insert(name.to_string(), store);
+        Ok(())
     }
 
     pub fn digest_not_already_present(&self, digest: &str) -> Result<(), Error> {

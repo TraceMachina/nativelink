@@ -201,7 +201,7 @@ async fn inner_main(
                 Some(&mut health_register_store),
             )
             .await
-            .err_tip(|| format!("Failed to create store '{name}'"))?;
+                .err_tip(|| format!("Failed to create store '{name}'"))?;
         }
     }
 
