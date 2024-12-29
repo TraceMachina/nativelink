@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::env;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -61,11 +62,21 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     )
     .await?;
 
+    let current_dir = env::current_dir().expect("Failed to get current directory");
+
     make_and_add_store_to_manager(
         "main_ac",
         &StoreSpec::filesystem(FilesystemSpec {
-            content_path: "/tmp/nativelink/testing/ac/content_path".into(),
-            temp_path: "/tmp/nativelink/testing/ac/tmp_path".into(),
+            content_path: current_dir
+                .join("testing_data/ac/content_path")
+                .into_os_string()
+                .into_string()
+                .unwrap(),
+            temp_path: current_dir
+                .join("testing_data/ac/tmp_path")
+                .into_os_string()
+                .into_string()
+                .unwrap(),
             read_buffer_size: 100,
             block_size: 100,
             eviction_policy: Some(EvictionPolicy {
