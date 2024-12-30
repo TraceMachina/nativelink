@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::env;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use bytes::BytesMut;
 use maplit::hashmap;
-use nativelink_config::stores::{FilesystemSpec, MemorySpec, StoreSpec};
+use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
@@ -63,27 +62,9 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     )
     .await?;
 
-    let current_dir = env::current_dir().expect("Failed to get current directory");
-
-    let default_filesystem_spec = FilesystemSpec::default();
-
     make_and_add_store_to_manager(
         "main_ac",
-        &StoreSpec::filesystem(FilesystemSpec {
-            content_path: current_dir
-                .join("testing_data/ac/content_path")
-                .into_os_string()
-                .into_string()
-                .unwrap(),
-            temp_path: current_dir
-                .join("testing_data/ac/tmp_path")
-                .into_os_string()
-                .into_string()
-                .unwrap(),
-            read_buffer_size: default_filesystem_spec.read_buffer_size,
-            eviction_policy: default_filesystem_spec.eviction_policy,
-            block_size: default_filesystem_spec.block_size,
-        }),
+        &StoreSpec::memory(MemorySpec::default()),
         &store_manager,
         None,
     )

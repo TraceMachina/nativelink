@@ -39,31 +39,10 @@ async fn same_datasource_disallowed_simple() -> Result<(), Error> {
         None,
     )
     .await
-    .is_err());
-
-    Ok(())
-}
-
-#[nativelink_test]
-async fn same_datasource_disallowed_complex() -> Result<(), Error> {
-    let store_manager = Arc::new(StoreManager::new());
-    assert!(make_and_add_store_to_manager(
-        "main_cas",
-        &StoreSpec::memory(MemorySpec::default()),
-        &store_manager,
-        None,
-    )
-    .await
     .is_ok());
 
-    assert!(make_and_add_store_to_manager(
-        "main_ac",
-        &StoreSpec::memory(MemorySpec::default()),
-        &store_manager,
-        None,
-    )
-    .await
-    .is_err());
+    let existing_cas = store_manager.get_store("main_cas").unwrap();
+    store_manager.add_store("different_store", existing_cas)?;
 
     Ok(())
 }

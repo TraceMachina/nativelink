@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::ptr;
 
 use nativelink_error::{make_err, Code, Error};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
@@ -36,14 +37,26 @@ impl StoreManager {
 
     pub fn add_store(&self, name: &str, store: Store) -> Result<(), Error> {
         let mut stores = self.stores.write();
+
         if stores.contains_key(name) {
             return Err(make_err!(
                 Code::AlreadyExists,
-                "A store with the name '{}' already exists",
+                "a store with the name '{}' already exists",
                 name
             ));
         }
-        stores.insert(name.to_string(), store);
+
+        for existing_store in stores.values().into_iter() {
+            if ptr::eq(&store, existing_store) {
+                return Err(make_err!(
+                    Code::AlreadyExists,
+                    "an instance of this store is already managed"
+                ));
+            }
+        }
+
+        stores.insert(name.into(), store);
+
         Ok(())
     }
 

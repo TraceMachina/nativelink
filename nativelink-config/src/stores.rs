@@ -437,7 +437,6 @@ impl StoreSpec {
     // disallow_duplicates_digest() on it. Returns `None` for stores that are not being enforced unique.
     pub fn disallow_duplicates_digest(&self) -> Option<String> {
         match self {
-            Self::memory(spec) => Some(spec.disallow_duplicates_digest()),
             Self::experimental_s3_store(spec) => Some(spec.disallow_duplicates_digest()),
             Self::filesystem(spec) => Some(spec.disallow_duplicates_digest()),
             Self::grpc(spec) => Some(spec.disallow_duplicates_digest()),
@@ -554,12 +553,6 @@ pub struct MemorySpec {
     /// value will cause items to never be removed from the store causing
     /// infinite memory usage.
     pub eviction_policy: Option<EvictionPolicy>,
-}
-
-impl MemorySpec {
-    pub fn disallow_duplicates_digest(&self) -> String {
-        "InMemoryStore".into()
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
