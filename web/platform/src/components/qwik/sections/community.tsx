@@ -16,7 +16,7 @@ const communityLinks = [
   {
     name: "Slack",
     icon: <Slack />,
-    link: "https://nativelink.slack.com/join/shared_invite/zt-2i2mipfr5-lZAEeWYEy4Eru94b3IOcdg#/shared-invite/email",
+    link: "https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A",
   },
   {
     name: "GitHub",

@@ -138,7 +138,7 @@ const Widgets = component$(() => {
         <a
           target="_blank"
           class="md:hidden"
-          href="https://nativelink.slack.com/join/shared_invite/zt-2i2mipfr5-lZAEeWYEy4Eru94b3IOcdg#/shared-invite/email"
+          href="https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A"
           rel="noreferrer"
         >
           <Slack />
@@ -146,7 +146,7 @@ const Widgets = component$(() => {
         <a
           target="_blank"
           class="hidden md:flex hover:rotate-360 transition-all duration-300"
-          href="https://nativelink.slack.com/join/shared_invite/zt-2i2mipfr5-lZAEeWYEy4Eru94b3IOcdg#/shared-invite/email"
+          href="https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A"
           rel="noreferrer"
         >
           <SlackIcon />

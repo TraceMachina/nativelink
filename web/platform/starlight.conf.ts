@@ -16,7 +16,7 @@ export const starlightConfig = {
   social: {
     github: "https://github.com/TraceMachina/nativelink",
     slack:
-      "https://nativelink.slack.com/join/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A",
+      "https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A",
   },
   customCss: [
     "/styles/tailwind.css",
