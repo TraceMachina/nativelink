@@ -57,7 +57,7 @@ serde = { version = "1.0.218", default-features = false }
 tokio = { version = "1.43.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
 tokio-stream = { version = "0.1.17", features = ["fs"], default-features = false }
 tokio-util = { version = "0.7.13" }
-tonic = { version = "0.12.3", features = ["transport", "tls"], default-features = false }
+tonic = { version = "0.12.3", features = ["transport", "tls", "tls-native-roots"], default-features = false }
 tracing = { version = "0.1.41", default-features = false }
 uuid = { version = "1.14.0", default-features = false, features = ["v4", "serde"] }
 
