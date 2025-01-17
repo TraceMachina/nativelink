@@ -110,7 +110,7 @@ genrule(
     cmd = select({
         platform: '''
         set -e
-        export PROTOC=$(execpath @@toolchains_protoc~~protoc~toolchains_protoc_hub.{}//:bin/protoc)
+        export PROTOC=$(execpath @@toolchains_protoc++protoc+toolchains_protoc_hub.{}//:bin/protoc)
 
         $(execpath :gen_protos_tool) $(SRCS) -o $(RULEDIR)
 
@@ -124,7 +124,7 @@ genrule(
         ":gen_protos_tool",
     ] + select({
         platform: [
-            "@@toolchains_protoc~~protoc~toolchains_protoc_hub.{}//:bin/protoc".format(platform),
+            "@@toolchains_protoc++protoc+toolchains_protoc_hub.{}//:bin/protoc".format(platform),
         ]
         for platform in PLATFORM_NAMES
     }),

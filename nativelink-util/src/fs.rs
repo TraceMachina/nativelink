@@ -198,7 +198,6 @@ impl ResumeableFileSlot {
                         self.close_file()
                             .await
                             .err_tip(|| "Could not close file due to timeout in read_buf_cb")?;
-                        continue;
                     }
                 }
             }

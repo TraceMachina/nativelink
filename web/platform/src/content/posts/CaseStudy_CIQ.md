@@ -118,4 +118,4 @@ the distractions of an unreliable RBE system.
 
 
 To learn more about NativeLink, read our documentation, check out our GitHub
-Repository, or contact our team directly at hello@NativeLink.com.
+Repository, or contact our team directly at hello@nativelink.com.

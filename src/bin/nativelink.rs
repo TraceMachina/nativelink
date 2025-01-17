@@ -74,7 +74,7 @@ use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{broadcast, mpsc};
-use tokio_rustls::rustls::pki_types::{CertificateDer, CertificateRevocationListDer};
+use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
 use tokio_rustls::TlsAcceptor;
@@ -696,7 +696,6 @@ async fn inner_main(
                         .err_tip(|| format!("Could not open cert file {cert_file}"))?,
                 );
                 let certs = extract_certs(&mut cert_reader)
-                    .map(|certificate| certificate.map(CertificateDer::from))
                     .collect::<Result<Vec<CertificateDer<'_>>, _>>()
                     .err_tip(|| format!("Could not extract certs from file {cert_file}"))?;
                 Ok(certs)
@@ -740,7 +739,6 @@ async fn inner_main(
                             .err_tip(|| format!("Could not open CRL file {client_crl_file}"))?,
                     );
                     extract_crls(&mut crl_reader)
-                        .map(|crl| crl.map(CertificateRevocationListDer::from))
                         .collect::<Result<_, _>>()
                         .err_tip(|| format!("Could not extract CRLs from file {client_crl_file}"))?
                 } else {
@@ -911,7 +909,6 @@ async fn inner_main(
                             },
                             Err(err) => {
                                 event!(Level::ERROR, ?err, "Failed to accept tcp connection");
-                                continue;
                             }
                         }
                     },

@@ -27,8 +27,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-24.04, macos-14 ]
-
+        os:
+          - ubuntu-24.04
+          # TODO(aaronmondal): Re-enable after:
+          #                    https://github.com/NixOS/nixpkgs/pull/371501
+          # - macos-14
     name: Web Platform Deployment / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     environment: production
