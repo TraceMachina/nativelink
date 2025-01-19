@@ -252,7 +252,6 @@ fn recursive_parse<'a>(
                     *bytes_processed += part.len() + SLASH_SIZE;
                     return Ok(state);
                 }
-                continue;
             }
             State::Hash => {
                 output.hash = Cow::Borrowed(part);

@@ -5,7 +5,8 @@ module(
 )
 
 bazel_dep(name = "rules_cc", version = "0.0.17")
-bazel_dep(name = "platforms", version = "0.0.10")
+bazel_dep(name = "platforms", version = "0.0.11")
+bazel_dep(name = "bazel_skylib", version = "1.7.1")
 bazel_dep(name = "rules_python", version = "1.0.0")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
@@ -18,14 +19,14 @@ python.toolchain(
 )
 use_repo(python, python = "python_versions")
 
-bazel_dep(name = "rules_rust", version = "0.54.1")
+bazel_dep(name = "rules_rust", version = "0.56.0")
 archive_override(
     module_name = "rules_rust",
-    integrity = "sha256-r09Wyq5QqZpov845sUG1Cd1oVIyCBLmKt6HK/JTVuwI=",
+    integrity = "sha256-8TBqrAsli3kN8BrZq8arsN8LZUFsdLTvJ/Sqsph4CmQ=",
     patch_strip = 1,
     patches = ["//tools:rules_rust-musl-platforms.diff"],
     urls = [
-        "https://github.com/bazelbuild/rules_rust/releases/download/0.54.1/rules_rust-v0.54.1.tar.gz",
+        "https://github.com/bazelbuild/rules_rust/releases/download/0.56.0/rules_rust-0.56.0.tar.gz",
     ],
 )
 
@@ -33,7 +34,21 @@ crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
 crate.from_cargo(
     name = "crates",
     cargo_lockfile = "//:Cargo.lock",
-    manifests = ["//:Cargo.toml"],
+    manifests = [
+        "//:Cargo.toml",
+        "//nativelink-config:Cargo.toml",
+        "//nativelink-error:Cargo.toml",
+        "//nativelink-macro:Cargo.toml",
+        "//nativelink-metric:Cargo.toml",
+        "//nativelink-metric/nativelink-metric-macro-derive:Cargo.toml",
+        "//nativelink-metric-collector:Cargo.toml",
+        "//nativelink-proto:Cargo.toml",
+        "//nativelink-scheduler:Cargo.toml",
+        "//nativelink-service:Cargo.toml",
+        "//nativelink-store:Cargo.toml",
+        "//nativelink-util:Cargo.toml",
+        "//nativelink-worker:Cargo.toml",
+    ],
     supported_platform_triples = [
         "aarch64-apple-darwin",
         "aarch64-unknown-linux-gnu",
@@ -80,14 +95,13 @@ rust.toolchain(
         "2024-11-23/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "ac2a8fff891473220d36c9e62afc2dc0d5aebaefbb8489584bd2446a37d6fd7b",
     },
     versions = [
-        "1.82.0",
+        "1.84.0",
         "nightly/2024-11-23",
     ],
 )
 use_repo(rust, "rust_toolchains")
 
-bazel_dep(name = "protobuf", version = "29.0", repo_name = "com_google_protobuf")
-bazel_dep(name = "toolchains_protoc", version = "0.3.4")
+bazel_dep(name = "toolchains_protoc", version = "0.3.6")
 
 protoc = use_extension("@toolchains_protoc//protoc:extensions.bzl", "protoc")
 protoc.toolchain(

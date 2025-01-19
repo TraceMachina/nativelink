@@ -599,8 +599,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                 // get some more and it might resource lock us.
                 self.running_actions_manager.kill_all().await;
 
-                (error_handler)(err).await;
-                continue; // Try to connect again.
+                (error_handler)(err).await; // Try to connect again.
             }
         }
         // Unreachable.

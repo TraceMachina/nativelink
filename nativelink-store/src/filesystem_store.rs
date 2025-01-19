@@ -1034,7 +1034,6 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                             .close_file()
                             .await
                             .err_tip(|| "Could not close file due to timeout in FileSystemStore::get_part")?;
-                        continue;
                     }
                     res = writer.send(buf_content.clone()) => {
                         match res {
