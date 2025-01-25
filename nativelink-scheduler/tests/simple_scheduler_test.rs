@@ -2221,3 +2221,71 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
+    const CLIENT_ACTION_TIMEOUT_S: u64 = 60;
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            worker_timeout_s: WORKER_TIMEOUT_S,
+            client_action_timeout_s: CLIENT_ACTION_TIMEOUT_S,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    {
+        let insert_timestamp = make_system_time(1);
+        let mut action_listener =
+            setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
+                .await
+                .unwrap();
+
+        // We should get one notification saying it's queued.
+        assert_eq!(
+            action_listener.changed().await.unwrap().stage,
+            ActionStage::Queued
+        );
+
+        let changed_fut = action_listener.changed();
+        tokio::pin!(changed_fut);
+
+        MockClock::advance(Duration::from_secs(2));
+        scheduler.do_try_match_for_test().await.unwrap();
+        assert_eq!(poll!(&mut changed_fut), Poll::Pending);
+    }
+
+    MockClock::advance(Duration::from_secs(CLIENT_ACTION_TIMEOUT_S + 1));
+
+    {
+        let insert_timestamp = make_system_time(1);
+        let mut action_listener =
+            setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
+                .await
+                .unwrap();
+
+        // We should get one notification saying it's queued.
+        assert_eq!(
+            action_listener.changed().await.unwrap().stage,
+            ActionStage::Queued
+        );
+
+        let changed_fut = action_listener.changed();
+        tokio::pin!(changed_fut);
+
+        MockClock::advance(Duration::from_secs(2));
+        tokio::task::yield_now().await;
+        assert_eq!(poll!(&mut changed_fut), Poll::Pending);
+    }
+
+    Ok(())
+}
