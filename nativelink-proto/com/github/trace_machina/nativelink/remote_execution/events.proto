@@ -108,9 +108,10 @@ message StreamEvent {
         uint64 data_length = 3;
         WriteRequestOverride write_request = 4;
         google.longrunning.Operation operation = 5;
+        google.protobuf.Empty closed = 6;
     }
 
-    reserved 6; // NextId.
+    reserved 7; // NextId.
 }
 
 message Event {
