@@ -590,7 +590,7 @@ async fn remove_evicts_on_time() -> Result<(), Error> {
 async fn range_multiple_items_test() -> Result<(), Error> {
     async fn get_map_range(
         evicting_map: &EvictingMap<String, BytesWrapper, MockInstantWrapped>,
-        range: impl std::ops::RangeBounds<String>,
+        range: impl std::ops::RangeBounds<String> + Send,
     ) -> Vec<(String, Bytes)> {
         let mut found_values = Vec::new();
         evicting_map
