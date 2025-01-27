@@ -121,6 +121,7 @@ fn get_id_for_event_test() {
                     Some(stream_event::Event::DataLength(_)) => [0x03, 0x03],
                     Some(stream_event::Event::WriteRequest(_)) => [0x03, 0x04],
                     Some(stream_event::Event::Operation(_)) => [0x03, 0x05],
+                    Some(stream_event::Event::Closed(())) => [0x03, 0x06],
                     // Don't forget to add new entries to test cases.
                 }
             }
@@ -161,4 +162,5 @@ fn get_id_for_event_test() {
     test_event!(Stream, DataLength);
     test_event!(Stream, WriteRequest);
     test_event!(Stream, Operation);
+    test_event!(Stream, Closed);
 }
