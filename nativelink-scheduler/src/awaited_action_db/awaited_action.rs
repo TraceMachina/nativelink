@@ -124,7 +124,7 @@ impl AwaitedAction {
         }
     }
 
-    pub(crate) fn version(&self) -> u64 {
+    pub(crate) const fn version(&self) -> u64 {
         self.version.0
     }
 
@@ -136,31 +136,31 @@ impl AwaitedAction {
         self.version = AwaitedActionVersion(self.version.0 + 1);
     }
 
-    pub fn action_info(&self) -> &Arc<ActionInfo> {
+    pub const fn action_info(&self) -> &Arc<ActionInfo> {
         &self.action_info
     }
 
-    pub fn operation_id(&self) -> &OperationId {
+    pub const fn operation_id(&self) -> &OperationId {
         &self.operation_id
     }
 
-    pub(crate) fn sort_key(&self) -> AwaitedActionSortKey {
+    pub(crate) const fn sort_key(&self) -> AwaitedActionSortKey {
         self.sort_key
     }
 
-    pub fn state(&self) -> &Arc<ActionState> {
+    pub const fn state(&self) -> &Arc<ActionState> {
         &self.state
     }
 
-    pub(crate) fn maybe_origin_metadata(&self) -> Option<&OriginMetadata> {
+    pub(crate) const fn maybe_origin_metadata(&self) -> Option<&OriginMetadata> {
         self.maybe_origin_metadata.as_ref()
     }
 
-    pub(crate) fn worker_id(&self) -> Option<&WorkerId> {
+    pub(crate) const fn worker_id(&self) -> Option<&WorkerId> {
         self.worker_id.as_ref()
     }
 
-    pub(crate) fn last_worker_updated_timestamp(&self) -> SystemTime {
+    pub(crate) const fn last_worker_updated_timestamp(&self) -> SystemTime {
         self.last_worker_updated_timestamp
     }
 
@@ -168,7 +168,7 @@ impl AwaitedAction {
         self.last_worker_updated_timestamp = now;
     }
 
-    pub(crate) fn last_client_keepalive_timestamp(&self) -> SystemTime {
+    pub(crate) const fn last_client_keepalive_timestamp(&self) -> SystemTime {
         self.last_client_keepalive_timestamp
     }
 
@@ -251,7 +251,7 @@ impl AwaitedActionSortKey {
         Self::new(priority, timestamp)
     }
 
-    pub(crate) fn as_u64(self) -> u64 {
+    pub(crate) const fn as_u64(self) -> u64 {
         self.0
     }
 }
