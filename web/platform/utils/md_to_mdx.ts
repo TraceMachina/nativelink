@@ -301,7 +301,11 @@ function escapeHtml(line: string): string {
   const htmlTagPattern = /^[<\s][^>]*>/g;
   return htmlTagPattern.test(line)
     ? line
-    : line.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    : line
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/{/g, "[")
+        .replace(/}/g, "]");
 }
 
 export async function transformMarkdownToMdx(
