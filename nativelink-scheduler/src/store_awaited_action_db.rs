@@ -490,7 +490,7 @@ where
             .await
             .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
         match maybe_awaited_action {
-            Some(awaited_action) => {
+            Some(mut awaited_action) => {
                 // TODO(allada) We don't support joining completed jobs because we
                 // need to also check that all the data is still in the cache.
                 if awaited_action.state().stage.is_finished() {
@@ -498,10 +498,23 @@ where
                 }
                 // TODO(allada) We only care about the operation_id here, we should
                 // have a way to tell the decoder we only care about specific fields.
-                let operation_id = awaited_action.operation_id();
+                let operation_id = awaited_action.operation_id().clone();
+
+                awaited_action.update_client_keep_alive((self.now_fn)().now());
+                let update_res = inner_update_awaited_action(self.store.as_ref(), awaited_action)
+                    .await
+                    .err_tip(|| "In OperationSubscriber::changed");
+                if let Err(err) = update_res {
+                    event!(
+                        Level::WARN,
+                        "Error updating client keep alive in RedisAwaitedActionDb::try_subscribe - {err:?} - This is not a critical error, but we did decide to create a new action instead of joining an existing one."
+                    );
+                    return Ok(None);
+                }
+
                 Ok(Some(OperationSubscriber::new(
                     Some(client_operation_id.clone()),
-                    OperationIdToAwaitedAction(Cow::Owned(operation_id.clone())),
+                    OperationIdToAwaitedAction(Cow::Owned(operation_id)),
                     Arc::downgrade(&self.store),
                     self.now_fn.clone(),
                 )))

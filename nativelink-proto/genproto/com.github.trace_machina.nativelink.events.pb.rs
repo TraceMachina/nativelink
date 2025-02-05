@@ -197,7 +197,7 @@ pub mod response_event {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StreamEvent {
-    #[prost(oneof = "stream_event::Event", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "stream_event::Event", tags = "1, 2, 3, 4, 5, 6")]
     pub event: ::core::option::Option<stream_event::Event>,
 }
 /// Nested message and enum types in `StreamEvent`.
@@ -218,6 +218,8 @@ pub mod stream_event {
         Operation(
             super::super::super::super::super::super::google::longrunning::Operation,
         ),
+        #[prost(message, tag = "6")]
+        Closed(()),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]

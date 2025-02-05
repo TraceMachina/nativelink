@@ -20,6 +20,9 @@ common --enable_platform_specific_config
 common --incompatible_enable_cc_toolchain_resolution
 common --incompatible_enable_proto_toolchain_resolution
 
+# Use '+' instead of the legacy '~' when resolving repo names.
+common --incompatible_use_plus_in_repo_names
+
 # Simulate rules_python's initialization with a script and use a statically
 # linked musl Python toolchain.
 # TODO(aaronmondal): This is a hack. It works for us because have just a few

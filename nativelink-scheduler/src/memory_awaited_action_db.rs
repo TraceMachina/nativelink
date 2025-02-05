@@ -783,6 +783,15 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         };
         *connected_clients += 1;
 
+        // Immediately mark the keep alive, we don't need to wake anyone
+        // so we always fake that it was not actually changed.
+        // Failing update the client could lead to the client connecting
+        // then not updating the keep alive in time, resulting in the
+        // operation timing out due to async behavior.
+        tx.send_if_modified(|awaited_action| {
+            awaited_action.update_client_keep_alive((self.now_fn)().now());
+            false
+        });
         let subscription = tx.subscribe();
 
         self.client_operation_to_awaited_action

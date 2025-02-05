@@ -31,6 +31,7 @@ use nativelink_config::cas_server::{
     CasConfig, GlobalConfig, HttpCompressionAlgorithm, ListenerConfig, ServerConfig, WorkerConfig,
 };
 use nativelink_config::stores::ConfigDigestHashFunction;
+use nativelink_config::{SchedulerConfig, StoreConfig};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, RootMetricsComponent,
@@ -74,7 +75,7 @@ use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{broadcast, mpsc};
-use tokio_rustls::rustls::pki_types::{CertificateDer, CertificateRevocationListDer};
+use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
 use tokio_rustls::TlsAcceptor;
@@ -190,11 +191,11 @@ async fn inner_main(
     {
         let mut health_registry_lock = health_registry_builder.lock().await;
 
-        for (name, store_cfg) in cfg.stores {
+        for StoreConfig { name, spec } in cfg.stores {
             let health_component_name = format!("stores/{name}");
             let mut health_register_store =
                 health_registry_lock.sub_builder(&health_component_name);
-            let store = store_factory(&store_cfg, &store_manager, Some(&mut health_register_store))
+            let store = store_factory(&spec, &store_manager, Some(&mut health_register_store))
                 .await
                 .err_tip(|| format!("Failed to create store '{name}'"))?;
             store_manager.add_store(&name, store);
@@ -203,17 +204,15 @@ async fn inner_main(
 
     let mut action_schedulers = HashMap::new();
     let mut worker_schedulers = HashMap::new();
-    if let Some(schedulers_cfg) = cfg.schedulers {
-        for (name, scheduler_cfg) in schedulers_cfg {
-            let (maybe_action_scheduler, maybe_worker_scheduler) =
-                scheduler_factory(&scheduler_cfg, &store_manager)
-                    .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
-            if let Some(action_scheduler) = maybe_action_scheduler {
-                action_schedulers.insert(name.clone(), action_scheduler.clone());
-            }
-            if let Some(worker_scheduler) = maybe_worker_scheduler {
-                worker_schedulers.insert(name.clone(), worker_scheduler.clone());
-            }
+    for SchedulerConfig { name, spec } in cfg.schedulers.iter().flatten() {
+        let (maybe_action_scheduler, maybe_worker_scheduler) =
+            scheduler_factory(spec, &store_manager)
+                .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
+        if let Some(action_scheduler) = maybe_action_scheduler {
+            action_schedulers.insert(name.clone(), action_scheduler.clone());
+        }
+        if let Some(worker_scheduler) = maybe_worker_scheduler {
+            worker_schedulers.insert(name.clone(), worker_scheduler.clone());
         }
     }
 
@@ -696,7 +695,6 @@ async fn inner_main(
                         .err_tip(|| format!("Could not open cert file {cert_file}"))?,
                 );
                 let certs = extract_certs(&mut cert_reader)
-                    .map(|certificate| certificate.map(CertificateDer::from))
                     .collect::<Result<Vec<CertificateDer<'_>>, _>>()
                     .err_tip(|| format!("Could not extract certs from file {cert_file}"))?;
                 Ok(certs)
@@ -740,7 +738,6 @@ async fn inner_main(
                             .err_tip(|| format!("Could not open CRL file {client_crl_file}"))?,
                     );
                     extract_crls(&mut crl_reader)
-                        .map(|crl| crl.map(CertificateRevocationListDer::from))
                         .collect::<Result<_, _>>()
                         .err_tip(|| format!("Could not extract CRLs from file {client_crl_file}"))?
                 } else {
@@ -911,7 +908,6 @@ async fn inner_main(
                             },
                             Err(err) => {
                                 event!(Level::ERROR, ?err, "Failed to accept tcp connection");
-                                continue;
                             }
                         }
                     },
