@@ -95,6 +95,7 @@ fn get_id_for_event_test() {
                     Some(request_event::Event::QueryWriteStatusRequest(_)) => [0x01, 0x0A],
                     Some(request_event::Event::ExecuteRequest(_)) => [0x01, 0x0B],
                     Some(request_event::Event::WaitExecutionRequest(_)) => [0x01, 0x0C],
+                    Some(request_event::Event::SchedulerStartExecute(_)) => [0x01, 0x0D],
                     // Don't forget to add new entries to test cases.
                 }
             }
@@ -144,6 +145,7 @@ fn get_id_for_event_test() {
     test_event!(Request, QueryWriteStatusRequest);
     test_event!(Request, ExecuteRequest);
     test_event!(Request, WaitExecutionRequest);
+    test_event!(Request, SchedulerStartExecute);
 
     test_event!(Response, None);
     test_event!(Response, Error);

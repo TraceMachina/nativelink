@@ -23,7 +23,8 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
-use nativelink_util::metrics_utils::{CounterWithTime, FuncCounterWrapper};
+use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
+use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -52,6 +53,13 @@ pub enum WorkerUpdate {
     Disconnect,
 }
 
+#[derive(MetricsComponent)]
+pub struct PendingActionInfoData {
+    #[metric]
+    pub action_info: ActionInfoWithProps,
+    ctx: OriginEventContext<StartExecute>,
+}
+
 /// Represents a connection to a worker and used as the medium to
 /// interact with the worker from the client/scheduler.
 #[derive(MetricsComponent)]
@@ -69,7 +77,7 @@ pub struct Worker {
 
     /// The action info of the running actions on the worker.
     #[metric(group = "running_action_infos")]
-    pub running_action_infos: HashMap<OperationId, ActionInfoWithProps>,
+    pub running_action_infos: HashMap<OperationId, PendingActionInfoData>,
 
     /// Timestamp of last time this worker had been communicated with.
     // Warning: Do not update this timestamp without updating the placement of the worker in
@@ -139,7 +147,7 @@ impl Worker {
                     .unwrap()
                     .as_secs(),
                 actions_completed: CounterWithTime::default(),
-                run_action: FuncCounterWrapper::default(),
+                run_action: AsyncCounterWrapper::default(),
                 keep_alive: FuncCounterWrapper::default(),
                 notify_disconnect: CounterWithTime::default(),
             }),
@@ -159,10 +167,10 @@ impl Worker {
     }
 
     /// Notifies the worker of a requested state change.
-    pub fn notify_update(&mut self, worker_update: WorkerUpdate) -> Result<(), Error> {
+    pub async fn notify_update(&mut self, worker_update: WorkerUpdate) -> Result<(), Error> {
         match worker_update {
             WorkerUpdate::RunAction((operation_id, action_info)) => {
-                self.run_action(operation_id, action_info)
+                self.run_action(operation_id, action_info).await
             }
             WorkerUpdate::Disconnect => {
                 self.metrics.notify_disconnect.inc();
@@ -180,7 +188,7 @@ impl Worker {
         })
     }
 
-    fn run_action(
+    async fn run_action(
         &mut self,
         operation_id: OperationId,
         action_info: ActionInfoWithProps,
@@ -188,33 +196,45 @@ impl Worker {
         let tx = &mut self.tx;
         let worker_platform_properties = &mut self.platform_properties;
         let running_action_infos = &mut self.running_action_infos;
-        self.metrics.run_action.wrap(move || {
-            let action_info_clone = action_info.clone();
-            let operation_id_string = operation_id.to_string();
-            running_action_infos.insert(operation_id, action_info.clone());
-            reduce_platform_properties(
-                worker_platform_properties,
-                &action_info.platform_properties,
-            );
-            send_msg_to_worker(
-                tx,
-                update_for_worker::Update::StartAction(StartExecute {
+        let worker_id = self.id.to_string();
+        self.metrics
+            .run_action
+            .wrap(async move {
+                let action_info_clone = action_info.clone();
+                let operation_id_string = operation_id.to_string();
+                let start_execute = StartExecute {
                     execute_request: Some(action_info_clone.inner.as_ref().into()),
                     operation_id: operation_id_string,
                     queued_timestamp: Some(action_info.inner.insert_timestamp.into()),
-                }),
-            )
-        })
+                    platform: Some((&action_info.platform_properties).into()),
+                    worker_id,
+                };
+                reduce_platform_properties(
+                    worker_platform_properties,
+                    &action_info.platform_properties,
+                );
+
+                let ctx = OriginEventContext::new(|| &start_execute).await;
+                running_action_infos
+                    .insert(operation_id, PendingActionInfoData { action_info, ctx });
+
+                send_msg_to_worker(tx, update_for_worker::Update::StartAction(start_execute))
+            })
+            .await
     }
 
-    pub(crate) fn complete_action(&mut self, operation_id: &OperationId) -> Result<(), Error> {
-        let action_info = self.running_action_infos.remove(operation_id).err_tip(|| {
+    pub(crate) async fn complete_action(
+        &mut self,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
+        let pending_action_info = self.running_action_infos.remove(operation_id).err_tip(|| {
             format!(
                 "Worker {} tried to complete operation {} that was not running",
                 self.id, operation_id
             )
         })?;
-        self.restore_platform_properties(&action_info.platform_properties);
+        pending_action_info.ctx.emit(|| &()).await;
+        self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
         self.is_paused = false;
         self.metrics.actions_completed.inc();
         Ok(())
@@ -263,7 +283,7 @@ struct Metrics {
     #[metric(help = "The number of actions completed for this worker.")]
     actions_completed: CounterWithTime,
     #[metric(help = "The number of actions started for this worker.")]
-    run_action: FuncCounterWrapper,
+    run_action: AsyncCounterWrapper,
     #[metric(help = "The number of keep_alive sent to this worker.")]
     keep_alive: FuncCounterWrapper,
     #[metric(help = "The number of notify_disconnect sent to this worker.")]

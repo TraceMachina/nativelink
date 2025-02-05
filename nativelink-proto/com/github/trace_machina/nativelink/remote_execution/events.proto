@@ -16,6 +16,7 @@ syntax = "proto3";
 
 package com.github.trace_machina.nativelink.events;
 
+import "com/github/trace_machina/nativelink/remote_execution/worker_api.proto";
 import "build/bazel/remote/execution/v2/remote_execution.proto";
 import "google/bytestream/bytestream.proto";
 import "google/devtools/build/v1/publish_build_event.proto";
@@ -81,7 +82,10 @@ message RequestEvent {
         google.bytestream.QueryWriteStatusRequest query_write_status_request = 10;
         build.bazel.remote.execution.v2.ExecuteRequest execute_request = 11;
         build.bazel.remote.execution.v2.WaitExecutionRequest wait_execution_request = 12;
+
+        com.github.trace_machina.nativelink.remote_execution.StartExecute scheduler_start_execute = 13;
     }
+    reserved 14; // NextId.
 }
 
 message ResponseEvent {

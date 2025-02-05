@@ -502,6 +502,8 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: None,
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
                 },
             )
             .await?;
@@ -619,6 +621,8 @@ async fn ensure_output_files_full_directories_are_created_test(
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: None,
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
                 },
             )
             .await?;
@@ -752,6 +756,8 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: None,
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
                 },
             )
             .await?;
@@ -924,6 +930,8 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: None,
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
                 },
             )
             .await?;
@@ -1085,6 +1093,8 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(queued_timestamp.into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
                 },
             )
             .await?;
@@ -1280,6 +1290,8 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(queued_timestamp.into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
                 },
             )
             .await?;
@@ -1412,6 +1424,8 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
                 execute_request: Some(execute_request),
                 operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
+                platform: action.platform.clone(),
+                worker_id: WORKER_ID.to_string(),
             },
         )
         .await?;
@@ -1563,6 +1577,8 @@ exit 0
                 execute_request: Some(execute_request),
                 operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
+                platform: action.platform.clone(),
+                worker_id: WORKER_ID.to_string(),
             },
         )
         .await?;
@@ -1735,6 +1751,8 @@ exit 0
                 execute_request: Some(execute_request),
                 operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
+                platform: action.platform.clone(),
+                worker_id: WORKER_ID.to_string(),
             },
         )
         .await?;
@@ -1876,6 +1894,8 @@ exit 1
                 execute_request: Some(execute_request),
                 operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
+                platform: action.platform.clone(),
+                worker_id: WORKER_ID.to_string(),
             },
         )
         .await?;
@@ -2391,6 +2411,8 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
                 },
             )
             .and_then(|action| {
@@ -2471,6 +2493,8 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
                 },
             )
             .and_then(|action| {
@@ -2551,6 +2575,8 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
                 },
             )
             .and_then(|action| {
@@ -2674,6 +2700,8 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
                 execute_request: Some(execute_request),
                 operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
+                platform: action.platform.clone(),
+                worker_id: WORKER_ID.to_string(),
             },
         )
         .and_then(|action| {
@@ -2800,6 +2828,8 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
                 execute_request: Some(execute_request),
                 operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
+                platform: action.platform.clone(),
+                worker_id: WORKER_ID.to_string(),
             },
         )
         .await?;
@@ -3048,6 +3078,8 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
                 execute_request: Some(execute_request),
                 operation_id,
                 queued_timestamp: Some(queued_timestamp.into()),
+                platform: action.platform.clone(),
+                worker_id: WORKER_ID.to_string(),
             },
         )
         .await?;
@@ -3182,6 +3214,8 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: None,
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
                 },
             )
             .await?;
@@ -3361,6 +3395,8 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
                 execute_request: Some(execute_request),
                 operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
+                platform: action.platform.clone(),
+                worker_id: WORKER_ID.to_string(),
             },
         )
         .await?;

@@ -28,7 +28,9 @@ use nativelink_config::schedulers::{PropertyType, SimpleSpec};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
-use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, ExecuteRequest};
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    digest_function, ExecuteRequest, Platform,
+};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
@@ -192,6 +194,8 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
                 }),
                 operation_id: "Unknown Generated internally".to_string(),
                 queued_timestamp: Some(insert_timestamp.into()),
+                platform: Some(Platform::default()),
+                worker_id: worker_id.to_string(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -341,6 +345,8 @@ async fn find_executing_action() -> Result<(), Error> {
                 }),
                 operation_id: "Unknown Generated internally".to_string(),
                 queued_timestamp: Some(insert_timestamp.into()),
+                platform: Some(Platform::default()),
+                worker_id: worker_id.to_string(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -412,6 +418,8 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         }),
         operation_id: "WILL BE SET BELOW".to_string(),
         queued_timestamp: Some(insert_timestamp1.into()),
+        platform: Some(Platform::default()),
+        worker_id: worker_id1.to_string(),
     };
 
     let mut expected_start_execute_for_worker2 = StartExecute {
@@ -423,6 +431,8 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         }),
         operation_id: "WILL BE SET BELOW".to_string(),
         queued_timestamp: Some(insert_timestamp2.into()),
+        platform: Some(Platform::default()),
+        worker_id: worker_id1.to_string(),
     };
     let operation_id1 = {
         // Worker1 should now see first execution request.
@@ -514,6 +524,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         // Worker2 should now see execution request.
         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
         expected_start_execute_for_worker1.operation_id = operation_id1.to_string();
+        expected_start_execute_for_worker1.worker_id = worker_id2.to_string();
         assert_eq!(
             msg_for_worker,
             UpdateForWorker {
@@ -527,6 +538,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         // Worker2 should now see execution request.
         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
         expected_start_execute_for_worker2.operation_id = operation_id2.to_string();
+        expected_start_execute_for_worker2.worker_id = worker_id2.to_string();
         assert_eq!(
             msg_for_worker,
             UpdateForWorker {
@@ -679,7 +691,8 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         "prop".to_string(),
         PlatformPropertyValue::Exact("1".to_string()),
     );
-    let mut rx_from_worker2 = setup_new_worker(&scheduler, worker_id2, worker2_properties).await?;
+    let mut rx_from_worker2 =
+        setup_new_worker(&scheduler, worker_id2, worker2_properties.clone()).await?;
     {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
@@ -692,6 +705,8 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
                 }),
                 operation_id: "Unknown Generated internally".to_string(),
                 queued_timestamp: Some(insert_timestamp.into()),
+                platform: Some((&worker2_properties).into()),
+                worker_id: worker_id2.to_string(),
             })),
         };
         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
@@ -784,6 +799,8 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
                 }),
                 operation_id: "Unknown Generated internally".to_string(),
                 queued_timestamp: Some(insert_timestamp1.into()),
+                platform: Some(Platform::default()),
+                worker_id: worker_id.to_string(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -1115,6 +1132,8 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         }),
         operation_id: "UNKNOWN HERE, WE WILL SET IT LATER".to_string(),
         queued_timestamp: Some(insert_timestamp.into()),
+        platform: Some(Platform::default()),
+        worker_id: worker_id1.to_string(),
     };
 
     {
@@ -1184,14 +1203,13 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         );
     }
     {
+        start_execute.worker_id = worker_id2.to_string();
         // Worker2 should now see execution request.
         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
         assert_eq!(
             msg_for_worker,
             UpdateForWorker {
-                update: Some(update_for_worker::Update::StartAction(
-                    start_execute.clone()
-                )),
+                update: Some(update_for_worker::Update::StartAction(start_execute)),
             }
         );
     }
@@ -1562,6 +1580,8 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
                 }),
                 operation_id: "Unknown Generated internally".to_string(),
                 queued_timestamp: Some(insert_timestamp.into()),
+                platform: Some(Platform::default()),
+                worker_id: worker_id.to_string(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();

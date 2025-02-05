@@ -100,7 +100,7 @@ pub struct WriteRequestOverride {
 pub struct RequestEvent {
     #[prost(
         oneof = "request_event::Event",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
     )]
     pub event: ::core::option::Option<request_event::Event>,
 }
@@ -152,6 +152,8 @@ pub mod request_event {
         WaitExecutionRequest(
             super::super::super::super::super::super::build::bazel::remote::execution::v2::WaitExecutionRequest,
         ),
+        #[prost(message, tag = "13")]
+        SchedulerStartExecute(super::super::remote_execution::StartExecute),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
