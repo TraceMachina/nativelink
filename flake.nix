@@ -131,6 +131,7 @@
           (craneLibFor p).buildPackage ((commonArgsFor p)
             // {
               cargoArtifacts = cargoArtifactsFor p;
+              dontStrip = true;
             });
 
         nativeTargetPkgs =

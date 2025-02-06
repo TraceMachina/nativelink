@@ -10,6 +10,8 @@ rust-version = "1.84.0"
 [profile.release]
 lto = true
 opt-level = 3
+debug = true
+strip = false
 
 [profile.dev]
 lto = false
