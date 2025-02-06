@@ -171,6 +171,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -204,7 +205,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
     }
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -244,6 +245,7 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
         || async move {},
         task_change_notify.clone(),
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -261,7 +263,7 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
     // Trigger a do_try_match to ensure we get a state change.
     scheduler.do_try_match_for_test().await.unwrap();
     assert_eq!(
-        action_listener.changed().await.unwrap().stage,
+        action_listener.changed().await.unwrap().0.stage,
         ActionStage::Executing
     );
 
@@ -283,7 +285,7 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
     {
         // Now we should have received a timeout and the action should have been
         // put back in the queue.
-        assert_eq!(changed_fut.await.unwrap().stage, ActionStage::Queued);
+        assert_eq!(changed_fut.await.unwrap().0.stage, ActionStage::Queued);
     }
 
     Ok(())
@@ -304,6 +306,7 @@ async fn find_executing_action() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -318,6 +321,7 @@ async fn find_executing_action() -> Result<(), Error> {
         .as_state()
         .await
         .unwrap()
+        .0
         .client_operation_id
         .clone();
     // Drop our receiver and look up a new one.
@@ -355,7 +359,7 @@ async fn find_executing_action() -> Result<(), Error> {
     }
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -386,6 +390,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest1 = DigestInfo::new([99u8; 32], 512);
     let action_digest2 = DigestInfo::new([88u8; 32], 512);
@@ -480,14 +485,16 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client1_action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) =
+            client1_action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client2_action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) =
+            client2_action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
@@ -509,14 +516,16 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client1_action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) =
+            client1_action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client2_action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) =
+            client2_action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
@@ -567,6 +576,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -586,7 +596,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         };
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
         operation_id
@@ -603,7 +613,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
 
     {
         // Client should get notification saying it's been queued.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -619,7 +629,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
 
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -654,6 +664,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
     let mut platform_properties = HashMap::new();
@@ -677,7 +688,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
 
     {
         // Client should get notification saying it's been queued.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -714,7 +725,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
     }
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -748,6 +759,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -767,8 +779,10 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
 
     let (operation_id1, operation_id2) = {
         // Clients should get notification saying it's been queued.
-        let action_state1 = client1_action_listener.changed().await.unwrap();
-        let action_state2 = client2_action_listener.changed().await.unwrap();
+        let (action_state1, _maybe_origin_metadata) =
+            client1_action_listener.changed().await.unwrap();
+        let (action_state2, _maybe_origin_metadata) =
+            client2_action_listener.changed().await.unwrap();
         let operation_id1 = action_state1.client_operation_id.clone();
         let operation_id2 = action_state2.client_operation_id.clone();
         // Name is random so we set force it to be the same.
@@ -815,12 +829,12 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         // Most importantly the `name` (which is random) will be the same.
         expected_action_state.client_operation_id = operation_id1.clone();
         assert_eq!(
-            client1_action_listener.changed().await.unwrap().as_ref(),
+            client1_action_listener.changed().await.unwrap().0.as_ref(),
             &expected_action_state
         );
         expected_action_state.client_operation_id = operation_id2.clone();
         assert_eq!(
-            client2_action_listener.changed().await.unwrap().as_ref(),
+            client2_action_listener.changed().await.unwrap().0.as_ref(),
             &expected_action_state
         );
     }
@@ -830,7 +844,8 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         let insert_timestamp3 = make_system_time(2);
         let mut client3_action_listener =
             setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp3).await?;
-        let action_state = client3_action_listener.changed().await.unwrap().clone();
+        let (action_state, _maybe_origin_metadata) =
+            client3_action_listener.changed().await.unwrap().clone();
         expected_action_state.client_operation_id = action_state.client_operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -851,6 +866,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
     let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -866,7 +882,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
         setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
     {
         // Client should get notification saying it's being queued not executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -1006,6 +1022,7 @@ async fn matching_engine_fails_sends_abort() -> Result<(), Error> {
             || async move {},
             task_change_notify,
             MockInstantWrapped::default,
+            None,
         );
         // Initial worker calls do_try_match, so send it no items.
         senders.get_range_of_actions.send(vec![]).unwrap();
@@ -1051,6 +1068,7 @@ async fn matching_engine_fails_sends_abort() -> Result<(), Error> {
             || async move {},
             task_change_notify,
             MockInstantWrapped::default,
+            None,
         );
         // senders.tx_get_awaited_action_by_id.send(Ok(None)).unwrap();
         senders.get_range_of_actions.send(vec![]).unwrap();
@@ -1109,6 +1127,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1159,7 +1178,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
 
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         assert_eq!(
             action_state.as_ref(),
             &ActionState {
@@ -1192,7 +1211,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
     }
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         assert_eq!(
             action_state.as_ref(),
             &ActionState {
@@ -1232,6 +1251,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1247,7 +1267,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
             Some(update_for_worker::Update::StartAction(start_execute)) => {
                 // Other tests check full data. We only care if client thinks we are Executing.
                 assert_eq!(
-                    action_listener.changed().await.unwrap().stage,
+                    action_listener.changed().await.unwrap().0.stage,
                     ActionStage::Executing
                 );
                 start_execute.operation_id
@@ -1305,7 +1325,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
 
     {
         // Client should get notification saying it has been completed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -1333,6 +1353,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1346,6 +1367,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         .as_state()
         .await
         .unwrap()
+        .0
         .client_operation_id
         .clone();
 
@@ -1422,7 +1444,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         .expect("Action not found");
     {
         // Client should get notification saying it has been completed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -1451,6 +1473,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1468,7 +1491,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         }
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
     }
@@ -1549,6 +1572,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1601,7 +1625,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
 
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         expected_action_state.client_operation_id = action_state.client_operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -1647,7 +1671,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         // Action should now be executing.
         expected_action_state.stage = ActionStage::Completed(action_result.clone());
         assert_eq!(
-            action_listener.changed().await.unwrap().as_ref(),
+            action_listener.changed().await.unwrap().0.as_ref(),
             &expected_action_state
         );
     }
@@ -1663,7 +1687,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
                 .unwrap();
         // We didn't disconnect our worker, so it will have scheduled it to the worker.
         expected_action_state.stage = ActionStage::Executing;
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         // The name of the action changed (since it's a new action), so update it.
         expected_action_state.client_operation_id = action_state.client_operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -1694,6 +1718,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1732,8 +1757,8 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         v => panic!("Expected StartAction, got : {v:?}"),
     };
     {
-        let state_1 = client1_action_listener.changed().await.unwrap();
-        let state_2 = client2_action_listener.changed().await.unwrap();
+        let (state_1, _maybe_origin_metadata) = client1_action_listener.changed().await.unwrap();
+        let (state_2, _maybe_origin_metadata) = client2_action_listener.changed().await.unwrap();
         // First client should be in an Executing state.
         assert_eq!(state_1.stage, ActionStage::Executing);
         // Second client should be in a queued state.
@@ -1779,7 +1804,8 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
 
     {
         // First action should now be completed.
-        let action_state = client1_action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) =
+            client1_action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -1802,7 +1828,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         };
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            client2_action_listener.changed().await.unwrap().stage,
+            client2_action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
         operation_id
@@ -1822,7 +1848,8 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
 
     {
         // Our second client should be notified it completed.
-        let action_state = client2_action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) =
+            client2_action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -1856,6 +1883,7 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1892,12 +1920,12 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
     {
         // First client should be in an Executing state.
         assert_eq!(
-            client1_action_listener.changed().await.unwrap().stage,
+            client1_action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
         // Second client should be in a queued state.
         assert_eq!(
-            client2_action_listener.changed().await.unwrap().stage,
+            client2_action_listener.changed().await.unwrap().0.stage,
             ActionStage::Queued
         );
     }
@@ -1923,6 +1951,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1940,7 +1969,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         };
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
         OperationId::from(operation_id.as_str())
@@ -1956,7 +1985,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
 
     {
         // Client should get notification saying it has been queued again.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -1977,7 +2006,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         }
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
     }
@@ -1994,7 +2023,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
 
     {
         // Client should get notification saying it has been queued again.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             client_operation_id: action_state.client_operation_id.clone(),
@@ -2076,6 +2105,7 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
         },
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     assert_eq!(dropped.load(Ordering::Relaxed), false);
 
@@ -2105,6 +2135,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2129,7 +2160,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         };
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
         OperationId::from(operation_id.as_str())
@@ -2154,7 +2185,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
             .err_tip(|| "worker went away")?;
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
     }
@@ -2180,6 +2211,7 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2192,6 +2224,7 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         .as_state()
         .await
         .unwrap()
+        .0
         .client_operation_id
         .clone();
 
@@ -2211,7 +2244,7 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
 
     // We should get one notification saying it's queued.
     assert_eq!(
-        new_action_listener.changed().await.unwrap().stage,
+        new_action_listener.changed().await.unwrap().0.stage,
         ActionStage::Queued
     );
 
@@ -2260,6 +2293,7 @@ async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2272,7 +2306,7 @@ async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
 
         // We should get one notification saying it's queued.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Queued
         );
 
@@ -2295,7 +2329,7 @@ async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
 
         // We should get one notification saying it's queued.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Queued
         );
 

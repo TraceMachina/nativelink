@@ -22,6 +22,8 @@ use nativelink_metric::{
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
+use nativelink_util::origin_context::ActiveOriginContext;
+use nativelink_util::origin_event::{OriginMetadata, ORIGIN_EVENT_COLLECTOR};
 use serde::{Deserialize, Serialize};
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 
@@ -78,6 +80,9 @@ pub struct AwaitedAction {
     #[metric(help = "The state of the AwaitedAction")]
     state: Arc<ActionState>,
 
+    /// The origin metadata of the action.
+    maybe_origin_metadata: Option<OriginMetadata>,
+
     /// Number of attempts the job has been tried.
     #[metric(help = "The number of attempts the AwaitedAction has been tried")]
     pub attempts: usize,
@@ -100,6 +105,11 @@ impl AwaitedAction {
             client_operation_id: operation_id.clone(),
             action_digest: action_info.unique_qualifier.digest(),
         });
+        let maybe_origin_metadata = ActiveOriginContext::get_value(&ORIGIN_EVENT_COLLECTOR)
+            .ok()
+            .flatten()
+            .map(|v| v.metadata.clone());
+
         Self {
             version: AwaitedActionVersion(0),
             action_info,
@@ -108,6 +118,7 @@ impl AwaitedAction {
             attempts: 0,
             last_worker_updated_timestamp: now,
             last_client_keepalive_timestamp: now,
+            maybe_origin_metadata,
             worker_id: None,
             state,
         }
@@ -139,6 +150,10 @@ impl AwaitedAction {
 
     pub fn state(&self) -> &Arc<ActionState> {
         &self.state
+    }
+
+    pub(crate) fn maybe_origin_metadata(&self) -> Option<&OriginMetadata> {
+        self.maybe_origin_metadata.as_ref()
     }
 
     pub(crate) fn worker_id(&self) -> Option<WorkerId> {

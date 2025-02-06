@@ -24,6 +24,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::ActionStateResult;
+use nativelink_util::origin_event::OriginMetadata;
 use tokio::sync::watch;
 
 pub const INSTANCE_NAME: &str = "foobar_instance_name";
@@ -73,13 +74,13 @@ impl TokioWatchActionStateResult {
 
 #[async_trait]
 impl ActionStateResult for TokioWatchActionStateResult {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
-        Ok(action_state)
+        Ok((action_state, None))
     }
 
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         self.rx.changed().await.map_err(|_| {
             make_err!(
                 Code::Internal,
@@ -88,10 +89,10 @@ impl ActionStateResult for TokioWatchActionStateResult {
         })?;
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
-        Ok(action_state)
+        Ok((action_state, None))
     }
 
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
-        Ok(self.action_info.clone())
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
+        Ok((self.action_info.clone(), None))
     }
 }

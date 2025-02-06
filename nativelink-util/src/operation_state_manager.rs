@@ -27,6 +27,7 @@ use crate::action_messages::{
 };
 use crate::common::DigestInfo;
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
+use crate::origin_event::OriginMetadata;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -47,12 +48,12 @@ impl Default for OperationStageFlags {
 
 #[async_trait]
 pub trait ActionStateResult: Send + Sync + 'static {
-    // Provides the current state of the action.
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error>;
-    // Waits for the state of the action to change.
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error>;
-    // Provide result as action info. This behavior will not be supported by all implementations.
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error>;
+    /// Provides the current state of the action.
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error>;
+    /// Waits for the state of the action to change.
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error>;
+    /// Provide result as action info. This behavior will not be supported by all implementations.
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error>;
 }
 
 /// The direction in which the results are ordered.

@@ -37,6 +37,7 @@ use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProv
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
+use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
@@ -55,13 +56,15 @@ struct GrpcActionStateResult {
 
 #[async_trait]
 impl ActionStateResult for GrpcActionStateResult {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
-        Ok(action_state)
+        // TODO(allada) We currently don't support OriginMetadata in this implementation, but
+        // we should.
+        Ok((action_state, None))
     }
 
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         self.rx.changed().await.map_err(|_| {
             make_err!(
                 Code::Internal,
@@ -70,10 +73,12 @@ impl ActionStateResult for GrpcActionStateResult {
         })?;
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
-        Ok(action_state)
+        // TODO(allada) We currently don't support OriginMetadata in this implementation, but
+        // we should.
+        Ok((action_state, None))
     }
 
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
         // TODO(allada) We should probably remove as_action_info()
         // or implement it properly.
         return Err(make_err!(
