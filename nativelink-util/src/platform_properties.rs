@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use nativelink_metric::{
     publish, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
+use nativelink_proto::build::bazel::remote::execution::v2::platform::Property as ProtoProperty;
 use nativelink_proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +67,21 @@ impl From<ProtoPlatform> for PlatformProperties {
             );
         }
         Self { properties }
+    }
+}
+
+impl From<&PlatformProperties> for ProtoPlatform {
+    fn from(val: &PlatformProperties) -> Self {
+        ProtoPlatform {
+            properties: val
+                .properties
+                .iter()
+                .map(|(name, value)| ProtoProperty {
+                    name: name.clone(),
+                    value: value.as_str().to_string(),
+                })
+                .collect(),
+        }
     }
 }
 

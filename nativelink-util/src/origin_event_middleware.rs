@@ -29,7 +29,7 @@ use tower::Service;
 use tracing::trace_span;
 
 use crate::origin_context::{ActiveOriginContext, ORIGIN_IDENTITY};
-use crate::origin_event::{OriginEventCollector, ORIGIN_EVENT_COLLECTOR};
+use crate::origin_event::{OriginEventCollector, OriginMetadata, ORIGIN_EVENT_COLLECTOR};
 
 /// Default identity header name.
 /// Note: If this is changed, the default value in the [`IdentityHeaderSpec`]
@@ -138,8 +138,10 @@ where
                 &ORIGIN_EVENT_COLLECTOR,
                 Arc::new(OriginEventCollector::new(
                     origin_event_tx.clone(),
-                    identity,
-                    bazel_metadata,
+                    OriginMetadata {
+                        identity,
+                        bazel_metadata,
+                    },
                 )),
             );
         }

@@ -193,10 +193,6 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));
-    // let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
-    //     name,
-    //     PropertyType::exact,
-    // )])));
     let client_operation_id = OperationId::default();
     let (_, (passed_client_operation_id, action_info)) = join!(
         context

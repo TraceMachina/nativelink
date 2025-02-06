@@ -16,10 +16,11 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use futures::Future;
+use futures::{Future, FutureExt};
 use nativelink_config::schedulers::SimpleSpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
+use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
@@ -27,12 +28,14 @@ use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
+use nativelink_util::origin_context::ActiveOriginContext;
+use nativelink_util::origin_event::{OriginEventCollector, OriginMetadata, ORIGIN_EVENT_COLLECTOR};
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::Notify;
+use tokio::sync::{mpsc, Notify};
 use tokio::time::Duration;
 use tokio_stream::StreamExt;
-use tracing::{event, Level};
+use tracing::{event, info_span, Level};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::AwaitedActionDb;
@@ -73,8 +76,8 @@ impl SimpleSchedulerActionStateResult {
 
 #[async_trait]
 impl ActionStateResult for SimpleSchedulerActionStateResult {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
-        let mut action_state = self
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+        let (mut action_state, origin_metadata) = self
             .action_state_result
             .as_state()
             .await
@@ -82,11 +85,11 @@ impl ActionStateResult for SimpleSchedulerActionStateResult {
         // We need to ensure the client is not aware of the downstream
         // operation id, so override it before it goes out.
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
-        Ok(action_state)
+        Ok((action_state, origin_metadata))
     }
 
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
-        let mut action_state = self
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+        let (mut action_state, origin_metadata) = self
             .action_state_result
             .changed()
             .await
@@ -94,10 +97,10 @@ impl ActionStateResult for SimpleSchedulerActionStateResult {
         // We need to ensure the client is not aware of the downstream
         // operation id, so override it before it goes out.
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
-        Ok(action_state)
+        Ok((action_state, origin_metadata))
     }
 
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
         self.action_state_result
             .as_action_info()
             .await
@@ -126,6 +129,9 @@ pub struct SimpleScheduler {
     /// order based on the allocation strategy.
     #[metric(group = "worker_scheduler")]
     worker_scheduler: Arc<ApiWorkerScheduler>,
+
+    /// The sender to send origin events to the origin events.
+    maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
 
     /// Background task that tries to match actions to workers. If this struct
     /// is dropped the spawn will be cancelled as well.
@@ -191,11 +197,13 @@ impl SimpleScheduler {
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             platform_property_manager: &PlatformPropertyManager,
+            maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
         ) -> Result<(), Error> {
-            let action_info = action_state_result
-                .as_action_info()
-                .await
-                .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
+            let (action_info, maybe_origin_metadata) =
+                action_state_result
+                    .as_action_info()
+                    .await
+                    .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
 
             // TODO(allada) We should not compute this every time and instead store
             // it with the ActionInfo when we receive it.
@@ -223,39 +231,62 @@ impl SimpleScheduler {
                 }
             };
 
-            // Extract the operation_id from the action_state.
-            let operation_id = {
-                let action_state = action_state_result
-                    .as_state()
+            let attach_operation_fut = async move {
+                // Extract the operation_id from the action_state.
+                let operation_id = {
+                    let (action_state, _origin_metadata) = action_state_result
+                        .as_state()
+                        .await
+                        .err_tip(|| "Failed to get action_info from as_state_result stream")?;
+                    action_state.client_operation_id.clone()
+                };
+
+                // Tell the matching engine that the operation is being assigned to a worker.
+                let assign_result = matching_engine_state_manager
+                    .assign_operation(&operation_id, Ok(&worker_id))
                     .await
-                    .err_tip(|| "Failed to get action_info from as_state_result stream")?;
-                action_state.client_operation_id.clone()
-            };
-
-            // Tell the matching engine that the operation is being assigned to a worker.
-            let assign_result = matching_engine_state_manager
-                .assign_operation(&operation_id, Ok(&worker_id))
-                .await
-                .err_tip(|| "Failed to assign operation in do_try_match");
-            if let Err(err) = assign_result {
-                if err.code == Code::Aborted {
-                    // If the operation was aborted, it means that the operation was
-                    // cancelled due to another operation being assigned to the worker.
-                    return Ok(());
+                    .err_tip(|| "Failed to assign operation in do_try_match");
+                if let Err(err) = assign_result {
+                    if err.code == Code::Aborted {
+                        // If the operation was aborted, it means that the operation was
+                        // cancelled due to another operation being assigned to the worker.
+                        return Ok(());
+                    }
+                    // Any other error is a real error.
+                    return Err(err);
                 }
-                // Any other error is a real error.
-                return Err(err);
-            }
 
-            // Notify the worker to run the action.
-            {
                 workers
                     .worker_notify_run_action(worker_id, operation_id, action_info)
                     .await
                     .err_tip(|| {
                         "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
                     })
-            }
+            };
+            tokio::pin!(attach_operation_fut);
+
+            let attach_operation_fut = if let Some(origin_event_tx) = maybe_origin_event_tx {
+                let mut ctx = ActiveOriginContext::fork().unwrap_or_default();
+
+                // Populate our origin event collector with the origin metadata
+                // associated with the action.
+                ctx.replace_value(&ORIGIN_EVENT_COLLECTOR, move |maybe_old_collector| {
+                    let origin_metadata = maybe_origin_metadata.unwrap_or_default();
+                    let Some(old_collector) = maybe_old_collector else {
+                        return Some(Arc::new(OriginEventCollector::new(
+                            origin_event_tx.clone(),
+                            origin_metadata,
+                        )));
+                    };
+                    Some(Arc::new(old_collector.clone_with_metadata(origin_metadata)))
+                });
+                Arc::new(ctx)
+                    .wrap_async(info_span!("do_try_match"), attach_operation_fut)
+                    .left_future()
+            } else {
+                attach_operation_fut.right_future()
+            };
+            attach_operation_fut.await
         }
 
         let mut result = Ok(());
@@ -272,6 +303,7 @@ impl SimpleScheduler {
                     self.worker_scheduler.as_ref(),
                     self.matching_engine_state_manager.as_ref(),
                     self.platform_property_manager.as_ref(),
+                    self.maybe_origin_event_tx.as_ref(),
                 )
                 .await,
             );
@@ -285,6 +317,7 @@ impl SimpleScheduler {
         spec: &SimpleSpec,
         awaited_action_db: A,
         task_change_notify: Arc<Notify>,
+        maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         Self::new_with_callback(
             spec,
@@ -302,6 +335,7 @@ impl SimpleScheduler {
             },
             task_change_notify,
             SystemTime::now,
+            maybe_origin_event_tx,
         )
     }
 
@@ -317,6 +351,7 @@ impl SimpleScheduler {
         on_matching_engine_run: F,
         task_change_notify: Arc<Notify>,
         now_fn: NowFn,
+        maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             spec.supported_platform_properties
@@ -389,6 +424,7 @@ impl SimpleScheduler {
                 client_state_manager: state_manager.clone(),
                 worker_scheduler,
                 platform_property_manager,
+                maybe_origin_event_tx,
                 _task_worker_matching_spawn: task_worker_matching_spawn,
             }
         });

@@ -202,11 +202,37 @@ async fn inner_main(
         }
     }
 
+    let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
+
+    let maybe_origin_event_tx = cfg
+        .experimental_origin_events
+        .as_ref()
+        .map(|origin_events_cfg| {
+            let mut max_queued_events = origin_events_cfg.max_event_queue_size;
+            if max_queued_events == 0 {
+                max_queued_events = DEFAULT_MAX_QUEUE_EVENTS;
+            }
+            let (tx, rx) = mpsc::channel(max_queued_events);
+            let store_name = origin_events_cfg.publisher.store.as_str();
+            let store = store_manager.get_store(store_name).err_tip(|| {
+                format!("Could not get store {store_name} for origin event publisher")
+            })?;
+
+            root_futures.push(Box::pin(
+                OriginEventPublisher::new(store, rx, shutdown_tx.clone())
+                    .run()
+                    .map(Ok),
+            ));
+
+            Ok::<_, Error>(tx)
+        })
+        .transpose()?;
+
     let mut action_schedulers = HashMap::new();
     let mut worker_schedulers = HashMap::new();
     for SchedulerConfig { name, spec } in cfg.schedulers.iter().flatten() {
         let (maybe_action_scheduler, maybe_worker_scheduler) =
-            scheduler_factory(spec, &store_manager)
+            scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref())
                 .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
         if let Some(action_scheduler) = maybe_action_scheduler {
             action_schedulers.insert(name.clone(), action_scheduler.clone());
@@ -241,38 +267,12 @@ async fn inner_main(
         })
         .collect();
 
-    let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
-
     let root_metrics = Arc::new(RwLock::new(RootMetrics {
         stores: store_manager.clone(),
         servers: server_metrics,
         workers: HashMap::new(), // Will be filled in later.
         schedulers: action_schedulers.clone(),
     }));
-
-    let maybe_origin_event_tx = cfg
-        .experimental_origin_events
-        .as_ref()
-        .map(|origin_events_cfg| {
-            let mut max_queued_events = origin_events_cfg.max_event_queue_size;
-            if max_queued_events == 0 {
-                max_queued_events = DEFAULT_MAX_QUEUE_EVENTS;
-            }
-            let (tx, rx) = mpsc::channel(max_queued_events);
-            let store_name = origin_events_cfg.publisher.store.as_str();
-            let store = store_manager.get_store(store_name).err_tip(|| {
-                format!("Could not get store {store_name} for origin event publisher")
-            })?;
-
-            root_futures.push(Box::pin(
-                OriginEventPublisher::new(store, rx, shutdown_tx.clone())
-                    .run()
-                    .map(Ok),
-            ));
-
-            Ok::<_, Error>(tx)
-        })
-        .transpose()?;
 
     for (server_cfg, connected_clients_mux) in servers_and_clients {
         let services = server_cfg

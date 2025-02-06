@@ -339,7 +339,7 @@ impl SchedulerStoreDataProvider for UpdateOperationIdToAwaitedAction {
             ActionUniqueQualifier::Cachable(_) => Some(unique_qualifier),
             ActionUniqueQualifier::Uncachable(_) => None,
         };
-        let mut output = Vec::with_capacity(1 + maybe_unique_qualifier.map_or(0, |_| 1));
+        let mut output = Vec::with_capacity(2 + maybe_unique_qualifier.map_or(0, |_| 1));
         if maybe_unique_qualifier.is_some() {
             output.push((
                 "unique_qualifier",

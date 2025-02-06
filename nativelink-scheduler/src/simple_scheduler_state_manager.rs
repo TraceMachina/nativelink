@@ -32,6 +32,7 @@ use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
 };
+use nativelink_util::origin_event::OriginMetadata;
 use tracing::{event, Level};
 
 use super::awaited_action_db::{
@@ -47,15 +48,15 @@ struct ErrorActionStateResult(Error);
 
 #[async_trait]
 impl ActionStateResult for ErrorActionStateResult {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         Err(self.0.clone())
     }
 
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         Err(self.0.clone())
     }
 
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
         Err(self.0.clone())
     }
 }
@@ -102,15 +103,15 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         self.inner.as_state().await
     }
 
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         self.inner.changed().await
     }
 
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
         self.inner.as_action_info().await
     }
 }
@@ -157,24 +158,26 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
-        Ok(self
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+        let awaited_action = self
             .awaited_action_sub
             .borrow()
             .await
-            .err_tip(|| "In MatchingEngineActionStateResult::as_state")?
-            .state()
-            .clone())
+            .err_tip(|| "In MatchingEngineActionStateResult::as_state")?;
+        Ok((
+            awaited_action.state().clone(),
+            awaited_action.maybe_origin_metadata().cloned(),
+        ))
     }
 
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         let mut timeout_attempts = 0;
         loop {
             tokio::select! {
                 awaited_action_result = self.awaited_action_sub.changed() => {
                     return awaited_action_result
                         .err_tip(|| "In MatchingEngineActionStateResult::changed")
-                        .map(|v| v.state().clone());
+                        .map(|v| (v.state().clone(), v.maybe_origin_metadata().cloned()));
                 }
                 () = (self.now_fn)().sleep(self.no_event_action_timeout) => {
                     // Timeout happened, do additional checks below.
@@ -225,14 +228,16 @@ where
         }
     }
 
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
-        Ok(self
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
+        let awaited_action = self
             .awaited_action_sub
             .borrow()
             .await
-            .err_tip(|| "In MatchingEngineActionStateResult::as_action_info")?
-            .action_info()
-            .clone())
+            .err_tip(|| "In MatchingEngineActionStateResult::as_action_info")?;
+        Ok((
+            awaited_action.action_info().clone(),
+            awaited_action.maybe_origin_metadata().cloned(),
+        ))
     }
 }
 
@@ -777,7 +782,7 @@ where
         action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
         let sub = self
-            .inner_add_operation(client_operation_id.clone(), action_info.clone())
+            .inner_add_operation(client_operation_id, action_info.clone())
             .await?;
 
         Ok(Box::new(ClientActionStateResult::new(

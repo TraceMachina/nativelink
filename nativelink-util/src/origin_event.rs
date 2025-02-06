@@ -16,6 +16,8 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
+use base64::prelude::BASE64_STANDARD_NO_PAD;
+use base64::Engine;
 use futures::future::ready;
 use futures::task::{Context, Poll};
 use futures::{Future, FutureExt, Stream, StreamExt};
@@ -30,6 +32,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
     response_event, stream_event, BatchReadBlobsResponseOverride, BatchUpdateBlobsRequestOverride,
     Event, OriginEvent, RequestEvent, ResponseEvent, StreamEvent, WriteRequestOverride,
 };
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use nativelink_proto::google::bytestream::{
     QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest,
     WriteResponse,
@@ -37,7 +40,9 @@ use nativelink_proto::google::bytestream::{
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_proto::google::rpc::Status;
 use pin_project_lite::pin_project;
+use prost::Message;
 use rand::RngCore;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tonic::{Response, Status as TonicStatus, Streaming};
@@ -73,6 +78,7 @@ pub fn get_id_for_event(event: &Event) -> [u8; 2] {
             Some(request_event::Event::QueryWriteStatusRequest(_)) => [0x01, 0x0A],
             Some(request_event::Event::ExecuteRequest(_)) => [0x01, 0x0B],
             Some(request_event::Event::WaitExecutionRequest(_)) => [0x01, 0x0C],
+            Some(request_event::Event::SchedulerStartExecute(_)) => [0x01, 0x0D],
         },
         Some(event::Event::Response(res)) => match res.event {
             None => [0x02, 0x00],
@@ -115,22 +121,64 @@ pub fn get_node_id(event: Option<&Event>) -> [u8; 6] {
     node_id
 }
 
+fn serialize_request_metadata<S>(
+    value: &Option<RequestMetadata>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        Some(msg) => serializer.serialize_some(&BASE64_STANDARD_NO_PAD.encode(msg.encode_to_vec())),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_request_metadata<'de, D>(
+    deserializer: D,
+) -> Result<Option<RequestMetadata>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    match opt {
+        Some(s) => {
+            let decoded = BASE64_STANDARD_NO_PAD
+                .decode(s.as_bytes())
+                .map_err(serde::de::Error::custom)?;
+            RequestMetadata::decode(&*decoded)
+                .map_err(serde::de::Error::custom)
+                .map(Some)
+        }
+        None => Ok(None),
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OriginMetadata {
+    pub identity: String,
+    #[serde(
+        serialize_with = "serialize_request_metadata",
+        deserialize_with = "deserialize_request_metadata"
+    )]
+    pub bazel_metadata: Option<RequestMetadata>,
+}
+
 pub struct OriginEventCollector {
     sender: mpsc::Sender<OriginEvent>,
-    identity: String,
-    bazel_metadata: Option<RequestMetadata>,
+    pub metadata: OriginMetadata,
 }
 
 impl OriginEventCollector {
-    pub fn new(
-        sender: mpsc::Sender<OriginEvent>,
-        identity: String,
-        bazel_metadata: Option<RequestMetadata>,
-    ) -> Self {
+    pub fn new(sender: mpsc::Sender<OriginEvent>, metadata: OriginMetadata) -> Self {
+        Self { sender, metadata }
+    }
+
+    #[must_use]
+    pub fn clone_with_metadata(&self, metadata: OriginMetadata) -> Self {
         Self {
-            sender,
-            identity,
-            bazel_metadata,
+            sender: self.sender.clone(),
+            metadata,
         }
     }
 
@@ -151,8 +199,8 @@ impl OriginEventCollector {
                 version: ORIGIN_EVENT_VERSION,
                 event_id: event_id.as_hyphenated().to_string(),
                 parent_event_id,
-                bazel_request_metadata: self.bazel_metadata.clone(),
-                identity: self.identity.clone(),
+                bazel_request_metadata: self.metadata.bazel_metadata.clone(),
+                identity: self.metadata.identity.clone(),
                 event: Some(event),
             })
             .await;
@@ -172,8 +220,8 @@ impl OriginEventCollector {
                 version: ORIGIN_EVENT_VERSION,
                 event_id: event_id.as_hyphenated().to_string(),
                 parent_event_id,
-                bazel_request_metadata: self.bazel_metadata.clone(),
-                identity: self.identity.clone(),
+                bazel_request_metadata: self.metadata.bazel_metadata.clone(),
+                identity: self.metadata.identity.clone(),
                 event: Some(event),
             })
             .map_or_else(
@@ -508,6 +556,7 @@ impl_as_event! {Request, (), Streaming<WriteRequest>, WriteRequest, to_empty_wri
 impl_as_event! {Request, (), QueryWriteStatusRequest}
 impl_as_event! {Request, (), ExecuteRequest}
 impl_as_event! {Request, (), WaitExecutionRequest}
+impl_as_event! {Request, (), StartExecute, SchedulerStartExecute}
 
 // -- Responses --
 
@@ -522,6 +571,7 @@ impl_as_event! {Response, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse}
 impl_as_event! {Response, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchReadBlobsResponseOverride, to_batch_read_blobs_response_override}
 impl_as_event! {Response, GetTreeRequest, Pin<Box<dyn Stream<Item = Result<GetTreeResponse, TonicStatus>> + Send + '_>>, Empty, to_empty_response}
 impl_as_event! {Response, ExecuteRequest, Pin<Box<dyn Stream<Item = Result<Operation, TonicStatus>> + Send + '_>>, Empty, to_empty_response}
+impl_as_event! {Response, StartExecute, (), Empty}
 
 // -- Streams --
 

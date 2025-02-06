@@ -33,6 +33,8 @@ use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProv
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
+use nativelink_util::origin_context::ActiveOriginContext;
+use nativelink_util::origin_event::{OriginMetadata, ORIGIN_EVENT_COLLECTOR};
 use nativelink_util::store_trait::Store;
 use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
@@ -109,16 +111,20 @@ fn subscribe_to_existing_action(
 
 struct CacheLookupActionStateResult {
     action_state: Arc<ActionState>,
+    maybe_origin_metadata: Option<OriginMetadata>,
     change_called: bool,
 }
 
 #[async_trait]
 impl ActionStateResult for CacheLookupActionStateResult {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
-        Ok(self.action_state.clone())
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+        Ok((
+            self.action_state.clone(),
+            self.maybe_origin_metadata.clone(),
+        ))
     }
 
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         if self.change_called {
             return Err(make_err!(
                 Code::Internal,
@@ -126,10 +132,13 @@ impl ActionStateResult for CacheLookupActionStateResult {
             ));
         }
         self.change_called = true;
-        Ok(self.action_state.clone())
+        Ok((
+            self.action_state.clone(),
+            self.maybe_origin_metadata.clone(),
+        ))
     }
 
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
         // TODO(allada) We should probably remove as_action_info()
         // or implement it properly.
         return Err(make_err!(
@@ -251,11 +260,17 @@ impl CacheLookupScheduler {
                         action_digest: action_info.unique_qualifier.digest(),
                     };
 
+                    let maybe_origin_metadata =
+                        ActiveOriginContext::get_value(&ORIGIN_EVENT_COLLECTOR)
+                            .ok()
+                            .flatten()
+                            .map(|v| v.metadata.clone());
                     for (client_operation_id, pending_tx) in pending_txs {
                         action_state.client_operation_id = client_operation_id;
                         // Ignore errors here, as the other end may have hung up.
                         let _ = pending_tx.send(Ok(Box::new(CacheLookupActionStateResult {
                             action_state: Arc::new(action_state.clone()),
+                            maybe_origin_metadata: maybe_origin_metadata.clone(),
                             change_called: false,
                         })));
                     }

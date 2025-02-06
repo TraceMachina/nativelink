@@ -422,7 +422,7 @@ impl StoreDriver for CompressionStore {
         let read_fut = async move {
             let header = {
                 // Read header.
-                static EMPTY_HEADER: Header = Header {
+                const EMPTY_HEADER: Header = Header {
                     version: CURRENT_STREAM_FORMAT_VERSION,
                     config: Lz4Config { block_size: 0 },
                     upload_size: UploadSizeInfo::ExactSize(0),

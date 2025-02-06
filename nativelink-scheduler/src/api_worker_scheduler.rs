@@ -250,7 +250,7 @@ impl ApiWorkerSchedulerImpl {
             let was_paused = !worker.can_accept_work();
 
             // Note: We need to run this before dealing with backpressure logic.
-            let complete_action_res = worker.complete_action(operation_id);
+            let complete_action_res = worker.complete_action(operation_id).await;
 
             // Only pause if there's an action still waiting that will unpause.
             if (was_paused || due_to_backpressure) && worker.has_actions() {
@@ -273,8 +273,9 @@ impl ApiWorkerSchedulerImpl {
         action_info: ActionInfoWithProps,
     ) -> Result<(), Error> {
         if let Some(worker) = self.workers.get_mut(&worker_id) {
-            let notify_worker_result =
-                worker.notify_update(WorkerUpdate::RunAction((operation_id, action_info.clone())));
+            let notify_worker_result = worker
+                .notify_update(WorkerUpdate::RunAction((operation_id, action_info.clone())))
+                .await;
 
             if notify_worker_result.is_err() {
                 event!(
@@ -314,7 +315,7 @@ impl ApiWorkerSchedulerImpl {
         let mut result = Ok(());
         if let Some(mut worker) = self.remove_worker(worker_id) {
             // We don't care if we fail to send message to worker, this is only a best attempt.
-            let _ = worker.notify_update(WorkerUpdate::Disconnect);
+            let _ = worker.notify_update(WorkerUpdate::Disconnect).await;
             for (operation_id, _) in worker.running_action_infos.drain() {
                 result = result.merge(
                     self.worker_state_manager

@@ -35,6 +35,7 @@ use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreS
 use nativelink_error::{make_err, make_input_err, Code, Error};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
+use nativelink_proto::build::bazel::remote::execution::v2::Platform;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     execute_result, ConnectionResult, ExecuteResult, KillOperationRequest, StartExecute,
@@ -248,6 +249,8 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
                     execute_request: Some((&action_info).into()),
                     operation_id: String::new(),
                     queued_timestamp: None,
+                    platform: Some(Platform::default()),
+                    worker_id: expected_worker_id.clone(),
                 })),
             })?))
             .await
@@ -330,6 +333,8 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
                     execute_request: Some((&action_info).into()),
                     operation_id: String::new(),
                     queued_timestamp: None,
+                    platform: Some(Platform::default()),
+                    worker_id: expected_worker_id.clone(),
                 })),
             })?))
             .await
@@ -581,6 +586,8 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
                     execute_request: Some((&action_info).into()),
                     operation_id: String::new(),
                     queued_timestamp: None,
+                    platform: Some(Platform::default()),
+                    worker_id: expected_worker_id.clone(),
                 })),
             })?))
             .await
@@ -624,13 +631,15 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
         assert_eq!(props, SupportedProperties::default());
     }
 
+    let expected_worker_id = "foobar".to_string();
+
     // Handle registration (kill_all not called unless registered).
     let tx_stream = test_context.maybe_tx_stream.take().unwrap();
     {
         tx_stream
             .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
-                    worker_id: "foobar".to_string(),
+                    worker_id: expected_worker_id.clone(),
                 })),
             })?))
             .await
@@ -662,6 +671,8 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
                     execute_request: Some((&action_info).into()),
                     operation_id: operation_id.to_string(),
                     queued_timestamp: None,
+                    platform: Some(Platform::default()),
+                    worker_id: expected_worker_id.clone(),
                 })),
             })?))
             .await

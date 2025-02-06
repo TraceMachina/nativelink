@@ -20,11 +20,12 @@ use nativelink_config::schedulers::{
 };
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
 use nativelink_store::redis_store::RedisStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::operation_state_manager::ClientStateManager;
-use tokio::sync::Notify;
+use tokio::sync::{mpsc, Notify};
 
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
 use crate::grpc_scheduler::GrpcScheduler;
@@ -46,17 +47,19 @@ pub type SchedulerFactoryResults = (
 pub fn scheduler_factory(
     spec: &SchedulerSpec,
     store_manager: &StoreManager,
+    maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
 ) -> Result<SchedulerFactoryResults, Error> {
-    inner_scheduler_factory(spec, store_manager)
+    inner_scheduler_factory(spec, store_manager, maybe_origin_event_tx)
 }
 
 fn inner_scheduler_factory(
     spec: &SchedulerSpec,
     store_manager: &StoreManager,
+    maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match spec {
         SchedulerSpec::simple(spec) => {
-            simple_scheduler_factory(spec, store_manager, SystemTime::now)?
+            simple_scheduler_factory(spec, store_manager, SystemTime::now, maybe_origin_event_tx)?
         }
         SchedulerSpec::grpc(spec) => (Some(Arc::new(GrpcScheduler::new(spec)?)), None),
         SchedulerSpec::cache_lookup(spec) => {
@@ -64,7 +67,7 @@ fn inner_scheduler_factory(
                 .get_store(&spec.ac_store)
                 .err_tip(|| format!("'ac_store': '{}' does not exist", spec.ac_store))?;
             let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&spec.scheduler, store_manager)
+                inner_scheduler_factory(&spec.scheduler, store_manager, maybe_origin_event_tx)
                     .err_tip(|| "In nested CacheLookupScheduler construction")?;
             let cache_lookup_scheduler = Arc::new(CacheLookupScheduler::new(
                 ac_store,
@@ -74,7 +77,7 @@ fn inner_scheduler_factory(
         }
         SchedulerSpec::property_modifier(spec) => {
             let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&spec.scheduler, store_manager)
+                inner_scheduler_factory(&spec.scheduler, store_manager, maybe_origin_event_tx)
                     .err_tip(|| "In nested PropertyModifierScheduler construction")?;
             let property_modifier_scheduler = Arc::new(PropertyModifierScheduler::new(
                 spec,
@@ -91,6 +94,7 @@ fn simple_scheduler_factory(
     spec: &SimpleSpec,
     store_manager: &StoreManager,
     now_fn: fn() -> SystemTime,
+    maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
 ) -> Result<SchedulerFactoryResults, Error> {
     match spec
         .experimental_backend
@@ -104,8 +108,12 @@ fn simple_scheduler_factory(
                 &task_change_notify.clone(),
                 SystemTime::now,
             );
-            let (action_scheduler, worker_scheduler) =
-                SimpleScheduler::new(spec, awaited_action_db, task_change_notify);
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
+                spec,
+                awaited_action_db,
+                task_change_notify,
+                maybe_origin_event_tx.cloned(),
+            );
             Ok((Some(action_scheduler), Some(worker_scheduler)))
         }
         ExperimentalSimpleSchedulerBackend::redis(redis_config) => {
@@ -134,8 +142,12 @@ fn simple_scheduler_factory(
                 Default::default,
             )
             .err_tip(|| "In state_manager_factory::redis_state_manager")?;
-            let (action_scheduler, worker_scheduler) =
-                SimpleScheduler::new(spec, awaited_action_db, task_change_notify);
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
+                spec,
+                awaited_action_db,
+                task_change_notify,
+                maybe_origin_event_tx.cloned(),
+            );
             Ok((Some(action_scheduler), Some(worker_scheduler)))
         }
     }

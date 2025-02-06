@@ -16,6 +16,7 @@ use core::panic;
 use std::any::Any;
 use std::cell::RefCell;
 use std::clone::Clone;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::pin::Pin;
@@ -103,6 +104,29 @@ impl OriginContext {
     /// Creates a new (empty) context.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Replaces the value for a given symbol on the context.
+    pub fn replace_value<T: Any + Send + Sync + 'static>(
+        &mut self,
+        symbol: &'static impl Symbol<Type = T>,
+        cb: impl FnOnce(Option<Arc<T>>) -> Option<Arc<T>>,
+    ) {
+        let entry = self.data.entry(RawSymbolWrapper(symbol.as_ptr()));
+        let old_value = match &entry {
+            Entry::Occupied(data) => Arc::downcast(data.get().clone()).ok(),
+            Entry::Vacant(_) => None,
+        };
+        match cb(old_value) {
+            Some(new_value) => {
+                entry.insert_entry(new_value);
+            }
+            None => {
+                if let Entry::Occupied(entry) = entry {
+                    entry.remove();
+                }
+            }
+        }
     }
 
     /// Sets the value for a given symbol on the context.

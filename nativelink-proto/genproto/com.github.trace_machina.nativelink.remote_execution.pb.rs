@@ -143,6 +143,15 @@ pub struct StartExecute {
     /// / of the ActionResult.
     #[prost(message, optional, tag = "3")]
     pub queued_timestamp: ::core::option::Option<::prost_types::Timestamp>,
+    /// / The post-computed platform properties that the scheduler has reserved for
+    /// / the action.
+    #[prost(message, optional, tag = "5")]
+    pub platform: ::core::option::Option<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Platform,
+    >,
+    /// / The ID of the worker that is executing the action.
+    #[prost(string, tag = "6")]
+    pub worker_id: ::prost::alloc::string::String,
 }
 /// / This is a special message used to save actions into the CAS that can be used
 /// / by programs like bb_browswer to inspect the history of a build.
