@@ -368,6 +368,12 @@ impl SimpleScheduler {
         if client_action_timeout_s == 0 {
             client_action_timeout_s = DEFAULT_CLIENT_ACTION_TIMEOUT_S;
         }
+        // This matches the value of CLIENT_KEEPALIVE_DURATION which means that
+        // tasks are going to be dropped all over the place, this isn't a good
+        // setting.
+        if client_action_timeout_s <= 10 {
+            event!(Level::ERROR, client_action_timeout_s, "Setting client_action_timeout_s to less than the client keep alive interval is going to cause issues, please set above 10.");
+        }
 
         let mut max_job_retries = spec.max_job_retries;
         if max_job_retries == 0 {

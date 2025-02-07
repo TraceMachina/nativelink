@@ -452,11 +452,21 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     }
                 }
                 ActionEvent::ClientKeepAlive(client_id) => {
-                    let maybe_size = self
+                    if let Some(client_awaited_action) = self
                         .client_operation_to_awaited_action
-                        .size_for_key(&client_id)
-                        .await;
-                    if maybe_size.is_none() {
+                        .get(&client_id)
+                        .await
+                    {
+                        if let Some(awaited_action_sender) = self
+                            .operation_id_to_awaited_action
+                            .get(&client_awaited_action.operation_id)
+                        {
+                            awaited_action_sender.send_if_modified(|awaited_action| {
+                                awaited_action.update_client_keep_alive((self.now_fn)().now());
+                                false
+                            });
+                        }
+                    } else {
                         event!(
                             Level::ERROR,
                             ?client_id,
