@@ -38,13 +38,10 @@ use tracing::{event, Level};
 
 use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
-    SortedAwaitedActionState,
+    SortedAwaitedActionState, CLIENT_KEEPALIVE_DURATION,
 };
 
 type ClientOperationId = OperationId;
-
-/// Duration to wait before sending client keep alive messages.
-const CLIENT_KEEPALIVE_DURATION: Duration = Duration::from_secs(10);
 
 /// Maximum number of retries to update client keep alive.
 const MAX_RETRIES_FOR_CLIENT_KEEPALIVE: u32 = 8;

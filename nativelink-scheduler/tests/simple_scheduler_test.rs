@@ -49,7 +49,8 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ClientStateManager, OperationFilter, UpdateOperationType,
+    ActionStateResult, ClientStateManager, OperationFilter, OperationStageFlags,
+    UpdateOperationType,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
@@ -2292,18 +2293,15 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         assert_eq!(poll!(&mut changed_fut), Poll::Pending);
         tokio::task::yield_now().await;
         // Eviction happens when someone touches the internal
-        // evicting map. So we constantly ask for some other client
-        // to trigger eviction logic.
-        assert!(scheduler
+        // evicting map.  So we constantly ask for all queued actions.
+        // Regression: https://github.com/TraceMachina/nativelink/issues/1579
+        let mut stream = scheduler
             .filter_operations(OperationFilter {
-                client_operation_id: Some(OperationId::from("dummy_client_id")),
+                stages: OperationStageFlags::Queued,
                 ..Default::default()
             })
-            .await
-            .unwrap()
-            .next()
-            .await
-            .is_none());
+            .await?;
+        while stream.next().await.is_some() {}
     }
 
     Ok(())
