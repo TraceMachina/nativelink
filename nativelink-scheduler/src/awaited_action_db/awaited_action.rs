@@ -171,6 +171,7 @@ impl AwaitedAction {
     pub(crate) fn last_client_keepalive_timestamp(&self) -> SystemTime {
         self.last_client_keepalive_timestamp
     }
+
     pub(crate) fn update_client_keep_alive(&mut self, now: SystemTime) {
         self.last_client_keepalive_timestamp = now;
     }

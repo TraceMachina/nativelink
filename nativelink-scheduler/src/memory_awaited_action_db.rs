@@ -15,7 +15,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::{Bound, RangeBounds};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_lock::Mutex;
 use futures::{FutureExt, Stream};
@@ -35,14 +34,11 @@ use tracing::{event, Level};
 
 use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
-    SortedAwaitedActionState,
+    SortedAwaitedActionState, CLIENT_KEEPALIVE_DURATION,
 };
 
 /// Number of events to process per cycle.
 const MAX_ACTION_EVENTS_RX_PER_CYCLE: usize = 1024;
-
-/// Duration to wait before sending client keep alive messages.
-const CLIENT_KEEPALIVE_DURATION: Duration = Duration::from_secs(10);
 
 /// Represents a client that is currently listening to an action.
 /// When the client is dropped, it will send the `AwaitedAction` to the
@@ -452,11 +448,21 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     }
                 }
                 ActionEvent::ClientKeepAlive(client_id) => {
-                    let maybe_size = self
+                    if let Some(client_awaited_action) = self
                         .client_operation_to_awaited_action
-                        .size_for_key(&client_id)
-                        .await;
-                    if maybe_size.is_none() {
+                        .get(&client_id)
+                        .await
+                    {
+                        if let Some(awaited_action_sender) = self
+                            .operation_id_to_awaited_action
+                            .get(&client_awaited_action.operation_id)
+                        {
+                            awaited_action_sender.send_if_modified(|awaited_action| {
+                                awaited_action.update_client_keep_alive((self.now_fn)().now());
+                                false
+                            });
+                        }
+                    } else {
                         event!(
                             Level::ERROR,
                             ?client_id,

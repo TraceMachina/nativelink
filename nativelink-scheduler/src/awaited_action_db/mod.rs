@@ -15,6 +15,7 @@
 use std::cmp;
 use std::ops::Bound;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub use awaited_action::{AwaitedAction, AwaitedActionSortKey};
 use futures::{Future, Stream};
@@ -24,6 +25,9 @@ use nativelink_util::action_messages::{ActionInfo, ActionStage, OperationId};
 use serde::{Deserialize, Serialize};
 
 mod awaited_action;
+
+/// Duration to wait before sending client keep alive messages.
+pub const CLIENT_KEEPALIVE_DURATION: Duration = Duration::from_secs(10);
 
 /// A simple enum to represent the state of an `AwaitedAction`.
 #[derive(Debug, Clone, Copy)]

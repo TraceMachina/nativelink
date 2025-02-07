@@ -38,7 +38,7 @@ use tokio_stream::StreamExt;
 use tracing::{event, info_span, Level};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
-use crate::awaited_action_db::AwaitedActionDb;
+use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
@@ -367,6 +367,12 @@ impl SimpleScheduler {
         let mut client_action_timeout_s = spec.client_action_timeout_s;
         if client_action_timeout_s == 0 {
             client_action_timeout_s = DEFAULT_CLIENT_ACTION_TIMEOUT_S;
+        }
+        // This matches the value of CLIENT_KEEPALIVE_DURATION which means that
+        // tasks are going to be dropped all over the place, this isn't a good
+        // setting.
+        if client_action_timeout_s <= CLIENT_KEEPALIVE_DURATION.as_secs() {
+            event!(Level::ERROR, client_action_timeout_s, "Setting client_action_timeout_s to less than the client keep alive interval is going to cause issues, please set above {}.", CLIENT_KEEPALIVE_DURATION.as_secs());
         }
 
         let mut max_job_retries = spec.max_job_retries;
