@@ -23,7 +23,7 @@ use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use futures::{FutureExt, join};
-use nativelink_config::stores::FastSlowSpec;
+use nativelink_config::stores::{FastSlowSpec, StoreDirection};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
@@ -51,8 +51,10 @@ type Loader = Arc<OnceCell<()>>;
 pub struct FastSlowStore {
     #[metric(group = "fast_store")]
     fast_store: Store,
+    fast_direction: StoreDirection,
     #[metric(group = "slow_store")]
     slow_store: Store,
+    slow_direction: StoreDirection,
     weak_self: Weak<Self>,
     #[metric]
     metrics: FastSlowStoreMetrics,
@@ -113,10 +115,12 @@ impl Drop for LoaderGuard<'_> {
 }
 
 impl FastSlowStore {
-    pub fn new(_spec: &FastSlowSpec, fast_store: Store, slow_store: Store) -> Arc<Self> {
+    pub fn new(spec: &FastSlowSpec, fast_store: Store, slow_store: Store) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| Self {
             fast_store,
+            fast_direction: spec.fast_direction,
             slow_store,
+            slow_direction: spec.slow_direction,
             weak_self: weak_self.clone(),
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
@@ -181,6 +185,29 @@ impl FastSlowStore {
         self.metrics
             .slow_store_hit_count
             .fetch_add(1, Ordering::Acquire);
+
+        // If the fast store is noop or read only or update only then bypass it.
+        if self
+            .fast_store
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.fast_direction == StoreDirection::ReadOnly
+            || self.fast_direction == StoreDirection::Update
+        {
+            let Some(writer) = maybe_writer else {
+                return Err(make_err!(
+                    Code::Internal,
+                    "Attempt to populate fast store that is read only or noop"
+                ));
+            };
+            self.slow_store
+                .get_part(key, writer.borrow_mut(), offset, length)
+                .await?;
+            self.metrics
+                .slow_store_downloaded_bytes
+                .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+            return Ok(());
+        }
 
         let send_range = offset..length.map_or(u64::MAX, |length| length + offset);
         let mut bytes_received: u64 = 0;
@@ -327,12 +354,31 @@ impl StoreDriver for FastSlowStore {
     ) -> Result<(), Error> {
         // If either one of our stores is a noop store, bypass the multiplexing
         // and just use the store that is not a noop store.
-        let slow_store = self.slow_store.inner_store(Some(key.borrow()));
-        if slow_store.optimized_for(StoreOptimizations::NoopUpdates) {
+        let ignore_slow = self
+            .slow_store
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.slow_direction == StoreDirection::ReadOnly
+            || self.slow_direction == StoreDirection::Get;
+        let ignore_fast = self
+            .fast_store
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.fast_direction == StoreDirection::ReadOnly
+            || self.fast_direction == StoreDirection::Get;
+        if ignore_slow && ignore_fast {
+            // We need to drain the reader to avoid the writer complaining that we dropped
+            // the connection prematurely.
+            reader
+                .drain()
+                .await
+                .err_tip(|| "In FastFlowStore::update")?;
+            return Ok(());
+        }
+        if ignore_slow {
             return self.fast_store.update(key, reader, size_info).await;
         }
-        let fast_store = self.fast_store.inner_store(Some(key.borrow()));
-        if fast_store.optimized_for(StoreOptimizations::NoopUpdates) {
+        if ignore_fast {
             return self.slow_store.update(key, reader, size_info).await;
         }
 
@@ -406,7 +452,10 @@ impl StoreDriver for FastSlowStore {
         {
             if !self
                 .slow_store
+                .inner_store(Some(key.borrow()))
                 .optimized_for(StoreOptimizations::NoopUpdates)
+                && self.slow_direction != StoreDirection::ReadOnly
+                && self.slow_direction != StoreDirection::Get
             {
                 slow_update_store_with_file(
                     self.slow_store.as_store_driver_pin(),
@@ -416,6 +465,11 @@ impl StoreDriver for FastSlowStore {
                 )
                 .await
                 .err_tip(|| "In FastSlowStore::update_with_whole_file slow_store")?;
+            }
+            if self.fast_direction == StoreDirection::ReadOnly
+                || self.fast_direction == StoreDirection::Get
+            {
+                return Ok(Some(file));
             }
             return self
                 .fast_store
@@ -427,10 +481,13 @@ impl StoreDriver for FastSlowStore {
             .slow_store
             .optimized_for(StoreOptimizations::FileUpdates)
         {
-            if !self
+            let ignore_fast = self
                 .fast_store
+                .inner_store(Some(key.borrow()))
                 .optimized_for(StoreOptimizations::NoopUpdates)
-            {
+                || self.fast_direction == StoreDirection::ReadOnly
+                || self.fast_direction == StoreDirection::Get;
+            if !ignore_fast {
                 slow_update_store_with_file(
                     self.fast_store.as_store_driver_pin(),
                     key.borrow(),
@@ -439,6 +496,11 @@ impl StoreDriver for FastSlowStore {
                 )
                 .await
                 .err_tip(|| "In FastSlowStore::update_with_whole_file fast_store")?;
+            }
+            let ignore_slow = self.slow_direction == StoreDirection::ReadOnly
+                || self.slow_direction == StoreDirection::Get;
+            if ignore_slow {
+                return Ok(Some(file));
             }
             return self
                 .slow_store
