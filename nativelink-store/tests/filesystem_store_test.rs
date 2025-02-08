@@ -27,7 +27,9 @@ use filetime::{set_file_atime, FileTime};
 use futures::executor::block_on;
 use futures::task::Poll;
 use futures::{poll, Future, FutureExt};
-use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
+use nativelink_config::stores::{
+    FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::fast_slow_store::FastSlowStore;
@@ -1333,7 +1335,9 @@ async fn update_with_whole_file_slow_path_when_low_file_descriptors() -> Result<
         // Note: The config is not needed for this test, so use dummy data.
         &FastSlowSpec {
             fast: StoreSpec::memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
             slow: StoreSpec::memory(MemorySpec::default()),
+            slow_direction: StoreDirection::default(),
         },
         Store::new(
             FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {

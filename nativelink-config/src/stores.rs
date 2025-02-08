@@ -514,6 +514,26 @@ pub struct FilesystemSpec {
     pub block_size: u64,
 }
 
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreDirection {
+    /// The store operates normally and all get and put operations are
+    /// handled by it.
+    #[default]
+    Both,
+    /// Update operations will cause persistence to this store, but Get
+    /// operations will be ignored.
+    /// This only makes sense on the fast store as the slow store will
+    /// never get written to on Get anyway.
+    Update,
+    /// Get operations will cause persistence to this store, but Update
+    /// operations will be ignored.
+    Get,
+    /// Operate as a read only store, only really makes sense if there's
+    /// another way to write to it.
+    ReadOnly,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct FastSlowSpec {
@@ -521,9 +541,19 @@ pub struct FastSlowSpec {
     /// out to the `slow` store.
     pub fast: StoreSpec,
 
+    /// How to handle the fast store.  This can be useful to set to Get for
+    /// worker nodes such that results are persisted to the slow store only.
+    #[serde(default)]
+    pub fast_direction: StoreDirection,
+
     /// If the object does not exist in the `fast` store it will try to
     /// get it from this store.
     pub slow: StoreSpec,
+
+    /// How to handle the slow store.  This can be useful if creating a diode
+    /// and you wish to have an upstream read only store.
+    #[serde(default)]
+    pub slow_direction: StoreDirection,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]

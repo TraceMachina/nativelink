@@ -31,7 +31,9 @@ mod utils {
 
 use hyper::body::Frame;
 use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
-use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
+use nativelink_config::stores::{
+    FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+};
 use nativelink_error::{make_err, make_input_err, Code, Error};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
@@ -416,7 +418,9 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn st
         &FastSlowSpec {
             // Note: These are not needed for this test, so we put dummy memory stores here.
             fast: StoreSpec::memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
             slow: StoreSpec::memory(MemorySpec::default()),
+            slow_direction: StoreDirection::default(),
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -456,7 +460,9 @@ async fn new_local_worker_removes_work_directory_before_start_test(
         &FastSlowSpec {
             // Note: These are not needed for this test, so we put dummy memory stores here.
             fast: StoreSpec::memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
             slow: StoreSpec::memory(MemorySpec::default()),
+            slow_direction: StoreDirection::default(),
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
