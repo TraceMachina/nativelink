@@ -50,13 +50,6 @@ pub trait LenEntry: 'static {
     /// Returns `true` if `self` has zero length.
     fn is_empty(&self) -> bool;
 
-    /// Called when an entry is touched.  On failure, will remove the entry
-    /// from the map.
-    #[inline]
-    fn touch(&self) -> impl Future<Output = bool> + Send {
-        std::future::ready(true)
-    }
-
     /// This will be called when object is removed from map.
     /// Note: There may still be a reference to it held somewhere else, which
     /// is why it can't be mutable. This is a good place to mark the item
@@ -84,11 +77,6 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     #[inline]
     fn is_empty(&self) -> bool {
         T::is_empty(self.as_ref())
-    }
-
-    #[inline]
-    async fn touch(&self) -> bool {
-        self.as_ref().touch().await
     }
 
     #[inline]
@@ -347,27 +335,21 @@ where
             };
             match maybe_entry {
                 Some(entry) => {
-                    // Since we are not inserting anythign we don't need to evict based
-                    // on the size of the store.
                     // Note: We need to check eviction because the item might be expired
                     // based on the current time. In such case, we remove the item while
                     // we are here.
-                    let should_evict = self.should_evict(lru_len, entry, 0, u64::MAX);
-                    if !should_evict && peek {
-                        *result = Some(entry.data.len());
-                    } else if !should_evict && entry.data.touch().await {
-                        entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
-                        *result = Some(entry.data.len());
-                    } else {
+                    if self.should_evict(lru_len, entry, 0, u64::MAX) {
                         *result = None;
                         if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
-                            if should_evict {
-                                event!(Level::INFO, ?key, "Item expired, evicting");
-                            } else {
-                                event!(Level::INFO, ?key, "Touch failed, evicting");
-                            }
+                            event!(Level::INFO, ?key, "Item expired, evicting");
                             state.remove(key.borrow(), &eviction_item, false).await;
                         }
+                    } else {
+                        if !peek {
+                            entry.seconds_since_anchor =
+                                self.anchor_time.elapsed().as_secs() as i32;
+                        }
+                        *result = Some(entry.data.len());
                     }
                 }
                 None => *result = None,
@@ -385,15 +367,8 @@ where
 
         let entry = state.lru.get_mut(key.borrow())?;
 
-        if entry.data.touch().await {
-            entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
-            return Some(entry.data.clone());
-        }
-
-        let (key, eviction_item) = state.lru.pop_entry(key.borrow())?;
-        event!(Level::INFO, ?key, "Touch failed, evicting");
-        state.remove(key.borrow(), &eviction_item, false).await;
-        None
+        entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
+        Some(entry.data.clone())
     }
 
     /// Returns the replaced item if any.
