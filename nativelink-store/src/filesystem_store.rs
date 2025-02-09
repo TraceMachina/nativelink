@@ -23,12 +23,12 @@ use std::time::SystemTime;
 use async_lock::RwLock;
 use async_trait::async_trait;
 use bytes::BytesMut;
-use filetime::{set_file_atime, FileTime};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
+use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
@@ -38,7 +38,6 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::store_trait::{
     StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
-use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{event, Level};
@@ -338,33 +337,6 @@ impl LenEntry for FileEntryImpl {
         self.data_size == 0
     }
 
-    #[inline]
-    async fn touch(&self) -> bool {
-        let result = self
-            .get_file_path_locked(move |full_content_path| async move {
-                let full_content_path = full_content_path.clone();
-                spawn_blocking!("filesystem_touch_set_mtime", move || {
-                    set_file_atime(&full_content_path, FileTime::now()).err_tip(|| {
-                        format!("Failed to touch file in filesystem store {full_content_path:?}")
-                    })
-                })
-                .await
-                .map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Failed to change atime of file due to spawn failing {:?}",
-                        e
-                    )
-                })?
-            })
-            .await;
-        if let Err(err) = result {
-            event!(Level::ERROR, ?err, "Failed to touch file",);
-            return false;
-        }
-        true
-    }
-
     // unref() only triggers when an item is removed from the eviction_map. It is possible
     // that another place in code has a reference to `FileEntryImpl` and may later read the
     // file. To support this edge case, we first move the file to a temp file and point
@@ -499,20 +471,13 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 // We need to filter out folders - we do not want to try to cache the s and d folders.
                 let is_file =
                     metadata.is_file() || !(file_name == STR_FOLDER || file_name == DIGEST_FOLDER);
-                let atime = match metadata.accessed() {
-                    Ok(atime) => atime,
-                    Err(err) => {
-                        panic!(
-                            "{}{}{} : {} {:?}",
-                            "It appears this filesystem does not support access time. ",
-                            "Please configure this program to run on a drive that supports ",
-                            "atime",
-                            file_name,
-                            err
-                        );
-                    }
-                };
-
+                // Using access time is not perfect, but better than random. We do not update the
+                // atime when a file is actually "touched", we rely on whatever the filesystem does
+                // when we read the file (usually update on read).
+                let atime = metadata
+                    .accessed()
+                    .or_else(|_| metadata.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
                 Result::<(String, SystemTime, u64, bool), Error>::Ok((
                     file_name,
                     atime,
@@ -966,7 +931,19 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             )
         })?;
         let read_limit = length.unwrap_or(u64::MAX);
-        let mut temp_file = entry.read_file_part(offset, read_limit).await?;
+        let mut temp_file = entry.read_file_part(offset, read_limit).or_else(|err| async move {
+            // If the file is not found, we need to remove it from the eviction map.
+            if err.code == Code::NotFound {
+                event!(
+                    Level::ERROR,
+                    ?err,
+                    ?key,
+                    "Entry was in our map, but not found on disk. Removing from map as a precaution, but process probably need restarted."
+                );
+                self.evicting_map.remove(&key).await;
+            }
+            Err(err)
+        }).await?;
 
         loop {
             let mut buf = BytesMut::with_capacity(self.read_buffer_size);

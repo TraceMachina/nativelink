@@ -318,9 +318,7 @@ pub enum StoreSpec {
     /// Stores the data on the filesystem. This store is designed for
     /// local persistent storage. Restarts of this program should restore
     /// the previous state, meaning anything uploaded will be persistent
-    /// as long as the filesystem integrity holds. This store uses the
-    /// filesystem's `atime` (access time) to hold the last touched time
-    /// of the file(s).
+    /// as long as the filesystem integrity holds.
     ///
     /// **Example JSON Config:**
     /// ```json
