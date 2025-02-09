@@ -372,7 +372,7 @@ impl DropCloserReadHalf {
             let mut chunk = self
                 .recv()
                 .await
-                .err_tip(|| "During first read of buf_channel::take()")?;
+                .err_tip(|| "During next read of buf_channel::take()")?;
             if chunk.is_empty() {
                 break; // EOF.
             }

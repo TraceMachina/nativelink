@@ -261,24 +261,17 @@ async fn upload_file(
 ) -> Result<FileInfo, Error> {
     let is_executable = is_executable(&metadata, &full_path);
     let file_size = metadata.len();
-    let resumeable_file = fs::open_file(&full_path, u64::MAX)
+    let file = fs::open_file(&full_path, 0, u64::MAX)
         .await
         .err_tip(|| format!("Could not open file {full_path:?}"))?;
 
-    let (digest, mut resumeable_file) = hasher
+    let (digest, mut file) = hasher
         .hasher()
-        .digest_for_file(resumeable_file, Some(file_size))
+        .digest_for_file(&full_path, file.into_inner(), Some(file_size))
         .await
         .err_tip(|| format!("Failed to hash file in digest_for_file failed for {full_path:?}"))?;
 
-    resumeable_file
-        .as_reader()
-        .await
-        .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?
-        .get_mut()
-        .rewind()
-        .await
-        .err_tip(|| "Could not rewind file")?;
+    file.rewind().await.err_tip(|| "Could not rewind file")?;
 
     // Note: For unknown reasons we appear to be hitting:
     // https://github.com/rust-lang/rust/issues/92096
@@ -288,7 +281,8 @@ async fn upload_file(
         .as_store_driver_pin()
         .update_with_whole_file(
             digest.into(),
-            resumeable_file,
+            full_path.as_ref().into(),
+            file,
             UploadSizeInfo::ExactSize(digest.size_bytes()),
         )
         .await
@@ -490,7 +484,7 @@ async fn process_side_channel_file(
     let mut json_contents = String::new();
     {
         // Note: Scoping `file_slot` allows the file_slot semaphore to be released faster.
-        let mut file_slot = match fs::open_file(side_channel_file, u64::MAX).await {
+        let mut file_slot = match fs::open_file(side_channel_file, 0, u64::MAX).await {
             Ok(file_slot) => file_slot,
             Err(e) => {
                 if e.code != Code::NotFound {
@@ -500,11 +494,7 @@ async fn process_side_channel_file(
                 return Ok(None);
             }
         };
-        let reader = file_slot
-            .as_reader()
-            .await
-            .err_tip(|| "Error getting reader from side channel file (maybe permissions?)")?;
-        reader
+        file_slot
             .read_to_string(&mut json_contents)
             .await
             .err_tip(|| "Error reading side channel file")?;
@@ -991,12 +981,6 @@ impl RunningActionImpl {
                             operation_id = ?self.operation_id,
                             ?err,
                             "Could not kill process",
-                        );
-                    } else {
-                        event!(
-                            Level::ERROR,
-                            operation_id = ?self.operation_id,
-                            "Could not get child process id, maybe already dead?",
                         );
                     }
                     {
