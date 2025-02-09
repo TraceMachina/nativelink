@@ -14,6 +14,7 @@
 
 use std::borrow::BorrowMut;
 use std::cmp::{max, min};
+use std::ffi::OsString;
 use std::ops::Range;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -224,9 +225,10 @@ impl StoreDriver for FastSlowStore {
     async fn update_with_whole_file(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        mut file: fs::ResumeableFileSlot,
+        path: OsString,
+        mut file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
+    ) -> Result<Option<fs::FileSlot>, Error> {
         if self
             .fast_store
             .optimized_for(StoreOptimizations::FileUpdates)
@@ -246,7 +248,7 @@ impl StoreDriver for FastSlowStore {
             }
             return self
                 .fast_store
-                .update_with_whole_file(key, file, upload_size)
+                .update_with_whole_file(key, path, file, upload_size)
                 .await;
         }
 
@@ -269,7 +271,7 @@ impl StoreDriver for FastSlowStore {
             }
             return self
                 .slow_store
-                .update_with_whole_file(key, file, upload_size)
+                .update_with_whole_file(key, path, file, upload_size)
                 .await;
         }
 

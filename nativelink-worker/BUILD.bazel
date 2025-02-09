@@ -76,6 +76,7 @@ rust_test_suite(
         "@crates//:prost",
         "@crates//:prost-types",
         "@crates//:rand",
+        "@crates//:serial_test",
         "@crates//:tokio",
         "@crates//:tonic",
     ],
