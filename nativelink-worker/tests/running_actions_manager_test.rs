@@ -23,9 +23,10 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::str::from_utf8;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::task::Poll;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{poll, FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use nativelink_config::cas_server::EnvironmentSource;
 use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
 use nativelink_error::{make_input_err, Code, Error, ResultExt};
@@ -60,6 +61,7 @@ use nativelink_worker::running_actions_manager::{
 use pretty_assertions::assert_eq;
 use prost::Message;
 use rand::{thread_rng, Rng};
+use serial_test::serial;
 use tokio::sync::oneshot;
 
 /// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
@@ -144,6 +146,7 @@ fn increment_clock(time: &mut SystemTime) -> SystemTime {
     previous_time
 }
 
+#[serial]
 #[nativelink_test]
 async fn download_to_directory_file_download_test() -> Result<(), Box<dyn std::error::Error>> {
     const FILE1_NAME: &str = "file1.txt";
@@ -242,6 +245,7 @@ async fn download_to_directory_file_download_test() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn download_to_directory_folder_download_test() -> Result<(), Box<dyn std::error::Error>> {
     const DIRECTORY1_NAME: &str = "folder1";
@@ -340,6 +344,7 @@ async fn download_to_directory_folder_download_test() -> Result<(), Box<dyn std:
 
 // Windows does not support symlinks.
 #[cfg(not(target_family = "windows"))]
+#[serial]
 #[nativelink_test]
 async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std::error::Error>> {
     const FILE_NAME: &str = "file.txt";
@@ -411,6 +416,7 @@ async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn ensure_output_files_full_directories_are_created_no_working_directory_test(
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -449,6 +455,10 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
         let command = Command {
             arguments: vec!["touch".to_string(), "./some/path/test.txt".to_string()],
             output_files: vec!["some/path/test.txt".to_string()],
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: std::env::var("PATH").unwrap(),
+            }],
             ..Default::default()
         };
         let command_digest = serialize_and_upload_message(
@@ -528,6 +538,7 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn ensure_output_files_full_directories_are_created_test(
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -568,6 +579,10 @@ async fn ensure_output_files_full_directories_are_created_test(
             arguments: vec!["touch".to_string(), "./some/path/test.txt".to_string()],
             output_files: vec!["some/path/test.txt".to_string()],
             working_directory: working_directory.to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: std::env::var("PATH").unwrap(),
+            }],
             ..Default::default()
         };
         let command_digest = serialize_and_upload_message(
@@ -648,6 +663,7 @@ async fn ensure_output_files_full_directories_are_created_test(
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -702,6 +718,10 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
             arguments,
             output_paths: vec!["test.txt".to_string()],
             working_directory: working_directory.to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: std::env::var("PATH").unwrap(),
+            }],
             ..Default::default()
         };
         let command_digest = serialize_and_upload_message(
@@ -823,6 +843,7 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -877,6 +898,10 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
             arguments,
             output_paths: vec!["test.txt".to_string()],
             working_directory: working_directory.to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: std::env::var("PATH").unwrap(),
+            }],
             ..Default::default()
         };
         let command_digest = serialize_and_upload_message(
@@ -999,7 +1024,7 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
 
 // Windows does not support symlinks.
 #[cfg(not(target_family = "windows"))]
-#[cfg_attr(feature = "nix", ignore)]
+#[serial]
 #[nativelink_test]
 async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -1206,6 +1231,7 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -1251,6 +1277,10 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
             arguments,
             output_paths: vec![],
             working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: std::env::var("PATH").unwrap(),
+            }],
             ..Default::default()
         };
         let command_digest = serialize_and_upload_message(
@@ -1340,7 +1370,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-#[cfg_attr(feature = "nix", ignore)]
+#[serial]
 #[nativelink_test]
 async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -1365,11 +1395,17 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
             timeout_handled_externally: false,
         })?);
 
+    let process_started_file = {
+        let tmp_dir = make_temp_path("root_action_directory");
+        fs::create_dir_all(&tmp_dir).await.unwrap();
+        format!("{tmp_dir}/process_started")
+    };
+
     #[cfg(target_family = "unix")]
     let arguments = vec![
         "sh".to_string(),
         "-c".to_string(),
-        "sleep infinity".to_string(),
+        format!("touch {process_started_file} && sleep infinity"),
     ];
     #[cfg(target_family = "windows")]
     // Windows is weird with timeout, so we use ping. See:
@@ -1384,6 +1420,10 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
         arguments,
         output_paths: vec![],
         working_directory: ".".to_string(),
+        environment_variables: vec![EnvironmentVariable {
+            name: "PATH".to_string(),
+            value: std::env::var("PATH").unwrap(),
+        }],
         ..Default::default()
     };
     let command_digest = serialize_and_upload_message(
@@ -1430,16 +1470,27 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    // Start the action and kill it at the same time.
-    let result = futures::join!(
-        run_action(running_action_impl),
-        running_actions_manager.kill_all()
-    )
-    .0?;
+    let run_action_fut = run_action(running_action_impl);
+    tokio::pin!(run_action_fut);
+    loop {
+        assert_eq!(poll!(&mut run_action_fut), Poll::Pending);
+        tokio::task::yield_now().await;
+        match fs::metadata(&process_started_file).await {
+            Ok(_) => break,
+            Err(err) => {
+                assert_eq!(err.code, Code::NotFound, "Unknown error {err:?}");
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }
+    }
+
+    let result = futures::join!(run_action_fut, running_actions_manager.kill_all())
+        .0
+        .unwrap();
 
     // Check that the action was killed.
     #[cfg(target_family = "unix")]
-    assert_eq!(9, result.exit_code);
+    assert_eq!(9, result.exit_code, "Wrong exit_code - {result:?}");
     // Note: Windows kill command returns exit code 1.
     #[cfg(target_family = "windows")]
     assert_eq!(1, result.exit_code);
@@ -1451,7 +1502,7 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
 // The wrapper script will print a constant string to stderr, and the test itself will
 // print to stdout. We then check the results of both to make sure the shell script was
 // invoked and the actual command was invoked under the shell script.
-#[cfg_attr(feature = "nix", ignore)]
+#[serial]
 #[nativelink_test]
 async fn entrypoint_does_invoke_if_set() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_family = "unix")]
@@ -1504,9 +1555,6 @@ exit 0
 
         test_wrapper_script
     };
-
-    // TODO(#527) Sleep to reduce flakey chances.
-    tokio::time::sleep(Duration::from_millis(250)).await;
 
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
@@ -1601,7 +1649,7 @@ exit 0
     Ok(())
 }
 
-#[cfg_attr(feature = "nix", ignore)]
+#[serial]
 #[nativelink_test]
 async fn entrypoint_injects_properties() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_family = "unix")]
@@ -1656,9 +1704,6 @@ exit 0
         test_wrapper_script
     };
 
-    // TODO(#527) Sleep to reduce flakey chances.
-    tokio::time::sleep(Duration::from_millis(250)).await;
-
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: root_action_directory.clone(),
@@ -1701,6 +1746,10 @@ exit 0
     let command = Command {
         arguments,
         working_directory: ".".to_string(),
+        environment_variables: vec![EnvironmentVariable {
+            name: "PATH".to_string(),
+            value: std::env::var("PATH").unwrap(),
+        }],
         ..Default::default()
     };
     let command_digest = serialize_and_upload_message(
@@ -1783,7 +1832,7 @@ exit 0
     Ok(())
 }
 
-#[cfg_attr(feature = "nix", ignore)]
+#[serial]
 #[nativelink_test]
 async fn entrypoint_sends_timeout_via_side_channel() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_family = "unix")]
@@ -1826,9 +1875,6 @@ exit 1
         test_wrapper_script
     };
 
-    // TODO(#527) Sleep to reduce flakey chances.
-    tokio::time::sleep(Duration::from_millis(250)).await;
-
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: root_action_directory.clone(),
@@ -1854,6 +1900,10 @@ exit 1
     let command = Command {
         arguments,
         working_directory: ".".to_string(),
+        environment_variables: vec![EnvironmentVariable {
+            name: "PATH".to_string(),
+            value: std::env::var("PATH").unwrap(),
+        }],
         ..Default::default()
     };
     let command_digest = serialize_and_upload_message(
@@ -1909,6 +1959,7 @@ exit 1
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn std::error::Error>> {
     let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -1980,6 +2031,7 @@ async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn std::error::Error>> {
     let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -2051,6 +2103,7 @@ async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>> {
     let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -2150,6 +2203,7 @@ async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn failure_does_not_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>> {
     let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -2189,6 +2243,7 @@ async fn failure_does_not_cache_in_historical_results() -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn infra_failure_does_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -2257,6 +2312,7 @@ async fn infra_failure_does_cache_in_historical_results() -> Result<(), Box<dyn 
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn action_result_has_used_in_message() -> Result<(), Box<dyn std::error::Error>> {
     let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -2307,7 +2363,7 @@ async fn action_result_has_used_in_message() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-#[cfg_attr(feature = "nix", ignore)]
+#[serial]
 #[nativelink_test]
 async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -2336,6 +2392,10 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
         arguments,
         output_paths: vec![],
         working_directory: ".".to_string(),
+        environment_variables: vec![EnvironmentVariable {
+            name: "PATH".to_string(),
+            value: std::env::var("PATH").unwrap(),
+        }],
         ..Default::default()
     };
     let command_digest = serialize_and_upload_message(
@@ -2598,6 +2658,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -2661,6 +2722,10 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
         arguments,
         output_paths: vec![],
         working_directory: ".".to_string(),
+        environment_variables: vec![EnvironmentVariable {
+            name: "PATH".to_string(),
+            value: std::env::var("PATH").unwrap(),
+        }],
         ..Default::default()
     };
     let command_digest = serialize_and_upload_message(
@@ -2729,7 +2794,7 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg_attr(feature = "nix", ignore)]
+#[serial]
 #[nativelink_test]
 async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -2896,7 +2961,7 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
 
 /// Regression Test for Issue #675
 #[cfg(target_family = "unix")]
-#[cfg_attr(feature = "nix", ignore)]
+#[serial]
 #[nativelink_test]
 async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -2999,6 +3064,7 @@ async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[serial]
 #[nativelink_test]
 async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
@@ -3096,11 +3162,11 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
 
 // We've experienced deadlocks when uploading, so make only a single permit available and
 // check it's able to handle uploading some directories with some files in.
-// Be default this test is ignored because it *must* be run single threaded... to run this
-// test execute:
-// cargo test -p nativelink-worker --test running_actions_manager_test -- --test-threads=1 --ignored
+// By default this test is ignored because it *must* be run single threaded.
+// Note: If this test is failing or timing out, check that other tests in this file
+// are also `#[serial]`.
+#[serial]
 #[nativelink_test]
-#[ignore]
 async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
@@ -3161,6 +3227,10 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
             arguments,
             output_paths: vec!["test.txt".to_string(), "tst".to_string()],
             working_directory: working_directory.to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: std::env::var("PATH").unwrap(),
+            }],
             ..Default::default()
         };
         let command_digest = serialize_and_upload_message(
@@ -3287,7 +3357,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg_attr(feature = "nix", ignore)]
+#[serial]
 #[nativelink_test]
 async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn std::error::Error>>
 {

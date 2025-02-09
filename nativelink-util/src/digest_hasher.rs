@@ -25,7 +25,7 @@ use nativelink_metric::{
 use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Value as ProtoDigestFunction;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 
 use crate::common::DigestInfo;
 use crate::origin_context::{ActiveOriginContext, OriginContext};
@@ -187,9 +187,10 @@ pub trait DigestHasher {
     /// the file and feed it into the hasher.
     fn digest_for_file(
         self,
-        file: fs::ResumeableFileSlot,
+        file_path: impl AsRef<std::path::Path>,
+        file: fs::FileSlot,
         size_hint: Option<u64>,
-    ) -> impl Future<Output = Result<(DigestInfo, fs::ResumeableFileSlot), Error>>;
+    ) -> impl Future<Output = Result<(DigestInfo, fs::FileSlot), Error>>;
 
     /// Utility function to compute a hash from a generic reader.
     fn compute_from_reader<R: AsyncRead + Unpin + Send>(
@@ -229,11 +230,10 @@ impl DigestHasherImpl {
     #[inline]
     async fn hash_file(
         &mut self,
-        mut file: fs::ResumeableFileSlot,
-    ) -> Result<(DigestInfo, fs::ResumeableFileSlot), Error> {
-        let reader = file.as_reader().await.err_tip(|| "In digest_for_file")?;
+        mut file: fs::FileSlot,
+    ) -> Result<(DigestInfo, fs::FileSlot), Error> {
         let digest = self
-            .compute_from_reader(reader)
+            .compute_from_reader(&mut file)
             .await
             .err_tip(|| "In digest_for_file")?;
         Ok((digest, file))
@@ -263,9 +263,10 @@ impl DigestHasher for DigestHasherImpl {
 
     async fn digest_for_file(
         mut self,
-        mut file: fs::ResumeableFileSlot,
+        file_path: impl AsRef<std::path::Path>,
+        mut file: fs::FileSlot,
         size_hint: Option<u64>,
-    ) -> Result<(DigestInfo, fs::ResumeableFileSlot), Error> {
+    ) -> Result<(DigestInfo, fs::FileSlot), Error> {
         let file_position = file
             .stream_position()
             .await
@@ -280,11 +281,12 @@ impl DigestHasher for DigestHasherImpl {
                 return self.hash_file(file).await;
             }
         }
+        let file_path = file_path.as_ref().to_path_buf();
         match self.hash_func_impl {
             DigestHasherFuncImpl::Sha256(_) => self.hash_file(file).await,
             DigestHasherFuncImpl::Blake3(mut hasher) => {
                 spawn_blocking!("digest_for_file", move || {
-                    hasher.update_mmap(file.get_path()).map_err(|e| {
+                    hasher.update_mmap(file_path).map_err(|e| {
                         make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}")
                     })?;
                     Result::<_, Error>::Ok((
