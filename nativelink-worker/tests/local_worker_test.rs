@@ -15,11 +15,9 @@
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
-#[cfg(target_family = "unix")]
-use std::fs::Permissions;
 use std::io::Write;
 #[cfg(target_family = "unix")]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -75,8 +73,8 @@ fn make_temp_path(data: &str) -> String {
     )
 }
 
-#[cfg_attr(feature = "nix", ignore)]
 #[nativelink_test]
+#[cfg_attr(feature = "nix", ignore)]
 async fn platform_properties_smoke_test() -> Result<(), Error> {
     let mut platform_properties = HashMap::new();
     platform_properties.insert(
@@ -132,7 +130,7 @@ async fn platform_properties_smoke_test() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn reconnect_on_server_disconnect_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn reconnect_on_server_disconnect_test() -> Result<(), Error> {
     let mut test_context = setup_local_worker(HashMap::new()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
@@ -162,7 +160,7 @@ async fn reconnect_on_server_disconnect_test() -> Result<(), Box<dyn std::error:
 }
 
 #[nativelink_test]
-async fn kill_all_called_on_disconnect() -> Result<(), Box<dyn std::error::Error>> {
+async fn kill_all_called_on_disconnect() -> Result<(), Error> {
     let mut test_context = setup_local_worker(HashMap::new()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
@@ -179,11 +177,14 @@ async fn kill_all_called_on_disconnect() -> Result<(), Box<dyn std::error::Error
     let tx_stream = test_context.maybe_tx_stream.take().unwrap();
     {
         tx_stream
-            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
-                update: Some(Update::ConnectionResult(ConnectionResult {
-                    worker_id: "foobar".to_string(),
-                })),
-            })?))
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: "foobar".to_string(),
+                    })),
+                })
+                .unwrap(),
+            ))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -198,7 +199,7 @@ async fn kill_all_called_on_disconnect() -> Result<(), Box<dyn std::error::Error
 }
 
 #[nativelink_test]
-async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::error::Error>> {
+async fn blake3_digest_function_registerd_properly() -> Result<(), Error> {
     let mut test_context = setup_local_worker(HashMap::new()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
@@ -217,11 +218,14 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
     {
         // First initialize our worker by sending the response to the connection request.
         tx_stream
-            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
-                update: Some(Update::ConnectionResult(ConnectionResult {
-                    worker_id: expected_worker_id.clone(),
-                })),
-            })?))
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -245,15 +249,18 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
     {
         // Send execution request.
         tx_stream
-            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
-                update: Some(Update::StartAction(StartExecute {
-                    execute_request: Some((&action_info).into()),
-                    operation_id: String::new(),
-                    queued_timestamp: None,
-                    platform: Some(Platform::default()),
-                    worker_id: expected_worker_id.clone(),
-                })),
-            })?))
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -282,7 +289,7 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
 }
 
 #[nativelink_test]
-async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn simple_worker_start_action_test() -> Result<(), Error> {
     let mut test_context = setup_local_worker(HashMap::new()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
@@ -301,11 +308,14 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
     {
         // First initialize our worker by sending the response to the connection request.
         tx_stream
-            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
-                update: Some(Update::ConnectionResult(ConnectionResult {
-                    worker_id: expected_worker_id.clone(),
-                })),
-            })?))
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -329,15 +339,18 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
     {
         // Send execution request.
         tx_stream
-            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
-                update: Some(Update::StartAction(StartExecute {
-                    execute_request: Some((&action_info).into()),
-                    operation_id: String::new(),
-                    queued_timestamp: None,
-                    platform: Some(Platform::default()),
-                    worker_id: expected_worker_id.clone(),
-                })),
-            })?))
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -411,7 +424,7 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
 }
 
 #[nativelink_test]
-async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn new_local_worker_creates_work_directory_test() -> Result<(), Error> {
     let cas_store = Store::new(FastSlowStore::new(
         &FastSlowSpec {
             // Note: These are not needed for this test, so we put dummy memory stores here.
@@ -450,8 +463,7 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn st
 }
 
 #[nativelink_test]
-async fn new_local_worker_removes_work_directory_before_start_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(), Error> {
     let cas_store = Store::new(FastSlowStore::new(
         &FastSlowSpec {
             // Note: These are not needed for this test, so we put dummy memory stores here.
@@ -473,8 +485,8 @@ async fn new_local_worker_removes_work_directory_before_start_test(
     fs::create_dir_all(format!("{}/{}", work_directory, "another_dir")).await?;
     let mut file =
         fs::create_file(OsString::from(format!("{}/{}", work_directory, "foo.txt"))).await?;
-    file.as_writer().await?.write_all(b"Hello, world!").await?;
-    file.as_writer().await?.as_mut().sync_all().await?;
+    file.write_all(b"Hello, world!").await?;
+    file.as_mut().sync_all().await?;
     drop(file);
     new_local_worker(
         Arc::new(LocalWorkerConfig {
@@ -498,7 +510,7 @@ async fn new_local_worker_removes_work_directory_before_start_test(
 }
 
 #[nativelink_test]
-async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::error::Error>> {
+async fn experimental_precondition_script_fails() -> Result<(), Error> {
     #[cfg(target_family = "unix")]
     const EXPECTED_MSG: &str = "Preconditions script returned status exit status: 1 - ";
     #[cfg(target_family = "windows")]
@@ -509,15 +521,31 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
     #[cfg(target_family = "unix")]
     let precondition_script = {
         let precondition_script = format!("{temp_path}/precondition.sh");
+        let precondition_script_tmp = format!("{precondition_script}.tmp");
+
         // We use std::fs::File here because we sometimes get strange bugs here
         // that result in: "Text file busy (os error 26)" if it is an executeable.
         // It is likley because somewhere the file descriotor does not get closed
         // in tokio's async context.
-        let mut file = std::fs::File::create(OsString::from(&precondition_script))?;
-        file.write_all(b"#!/bin/sh\nexit 1\n")?;
-        file.set_permissions(Permissions::from_mode(0o777))?;
-        file.sync_all()?;
-        drop(file);
+        {
+            // We write to a temporary file and then rename it to force the kernel
+            // to flush all related file descriptors fully before we use it.
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .mode(0o777)
+                .open(OsString::from(&precondition_script_tmp))
+                .unwrap();
+            file.write_all(b"#!/bin/sh\nexit 1\n").unwrap();
+            file.sync_all().unwrap();
+            // Note: Github runners appear to use some kind of filesystem driver
+            // that does not sync data as expected. This is the easiest solution.
+            // See: https://github.com/pantsbuild/pants/issues/10507
+            // See: https://github.com/moby/moby/issues/9547
+            std::process::Command::new("sync").output().unwrap();
+        }
+        std::fs::rename(&precondition_script_tmp, &precondition_script).unwrap();
         precondition_script
     };
     #[cfg(target_family = "windows")]
@@ -525,12 +553,10 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
         let precondition_script = format!("{}/precondition.bat", temp_path);
         let mut file = std::fs::File::create(OsString::from(&precondition_script))?;
         file.write_all(b"@echo off\r\nexit 1")?;
-        file.sync_all()?;
-        drop(file);
+        file.sync_all().unwrap();
         precondition_script
     };
-    // TODO(#527) Sleep to reduce flakey chances.
-    tokio::time::sleep(Duration::from_millis(250)).await;
+
     let local_worker_config = LocalWorkerConfig {
         experimental_precondition_script: Some(precondition_script),
         ..Default::default()
@@ -554,11 +580,14 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
     {
         // First initialize our worker by sending the response to the connection request.
         tx_stream
-            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
-                update: Some(Update::ConnectionResult(ConnectionResult {
-                    worker_id: expected_worker_id.clone(),
-                })),
-            })?))
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -582,15 +611,18 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
     {
         // Send execution request.
         tx_stream
-            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
-                update: Some(Update::StartAction(StartExecute {
-                    execute_request: Some((&action_info).into()),
-                    operation_id: String::new(),
-                    queued_timestamp: None,
-                    platform: Some(Platform::default()),
-                    worker_id: expected_worker_id.clone(),
-                })),
-            })?))
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -618,7 +650,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
 }
 
 #[nativelink_test]
-async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Error>> {
+async fn kill_action_request_kills_action() -> Result<(), Error> {
     let mut test_context = setup_local_worker(HashMap::new()).await;
 
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
@@ -638,11 +670,14 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
     let tx_stream = test_context.maybe_tx_stream.take().unwrap();
     {
         tx_stream
-            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
-                update: Some(Update::ConnectionResult(ConnectionResult {
-                    worker_id: expected_worker_id.clone(),
-                })),
-            })?))
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -667,15 +702,18 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
     {
         // Send execution request.
         tx_stream
-            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
-                update: Some(Update::StartAction(StartExecute {
-                    execute_request: Some((&action_info).into()),
-                    operation_id: operation_id.to_string(),
-                    queued_timestamp: None,
-                    platform: Some(Platform::default()),
-                    worker_id: expected_worker_id.clone(),
-                })),
-            })?))
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: operation_id.to_string(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -690,11 +728,14 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
     {
         // Send kill request.
         tx_stream
-            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
-                update: Some(Update::KillOperationRequest(KillOperationRequest {
-                    operation_id: operation_id.to_string(),
-                })),
-            })?))
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::KillOperationRequest(KillOperationRequest {
+                        operation_id: operation_id.to_string(),
+                    })),
+                })
+                .unwrap(),
+            ))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }

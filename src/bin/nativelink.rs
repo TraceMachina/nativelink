@@ -48,7 +48,7 @@ use nativelink_service::health_server::HealthServer;
 use nativelink_service::worker_api_server::WorkerApiServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
-use nativelink_util::common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
+use nativelink_util::common::fs::set_open_file_limit;
 use nativelink_util::digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::metrics_utils::{set_metrics_enabled_for_this_thread, Counter};
@@ -61,7 +61,7 @@ use nativelink_util::store_trait::{
     set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
 };
 use nativelink_util::task::TaskExecutor;
-use nativelink_util::{background_spawn, init_tracing, spawn, spawn_blocking};
+use nativelink_util::{background_spawn, fs, init_tracing, spawn, spawn_blocking};
 use nativelink_worker::local_worker::new_local_worker;
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
@@ -1009,20 +1009,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut cfg = futures::executor::block_on(get_config())?;
 
-    let (mut metrics_enabled, max_blocking_threads) = {
-        // Note: If the default changes make sure you update the documentation in
-        // `config/cas_server.rs`.
-        const DEFAULT_MAX_OPEN_FILES: usize = 512;
-        // Note: If the default changes make sure you update the documentation in
-        // `config/cas_server.rs`.
-        const DEFAULT_IDLE_FILE_DESCRIPTOR_TIMEOUT_MILLIS: u64 = 1000;
+    let mut metrics_enabled = {
         let global_cfg = if let Some(global_cfg) = &mut cfg.global {
             if global_cfg.max_open_files == 0 {
-                global_cfg.max_open_files = DEFAULT_MAX_OPEN_FILES;
-            }
-            if global_cfg.idle_file_descriptor_timeout_millis == 0 {
-                global_cfg.idle_file_descriptor_timeout_millis =
-                    DEFAULT_IDLE_FILE_DESCRIPTOR_TIMEOUT_MILLIS;
+                global_cfg.max_open_files = fs::DEFAULT_OPEN_FILE_PERMITS;
             }
             if global_cfg.default_digest_size_health_check == 0 {
                 global_cfg.default_digest_size_health_check = DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG;
@@ -1031,8 +1021,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             *global_cfg
         } else {
             GlobalConfig {
-                max_open_files: DEFAULT_MAX_OPEN_FILES,
-                idle_file_descriptor_timeout_millis: DEFAULT_IDLE_FILE_DESCRIPTOR_TIMEOUT_MILLIS,
+                max_open_files: fs::DEFAULT_OPEN_FILE_PERMITS,
                 disable_metrics: cfg.servers.iter().all(|v| {
                     let Some(service) = &v.services else {
                         return true;
@@ -1044,17 +1033,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         set_open_file_limit(global_cfg.max_open_files);
-        set_idle_file_descriptor_timeout(Duration::from_millis(
-            global_cfg.idle_file_descriptor_timeout_millis,
-        ))?;
         set_default_digest_hasher_func(DigestHasherFunc::from(
             global_cfg
                 .default_digest_hash_function
                 .unwrap_or(ConfigDigestHashFunction::sha256),
         ))?;
         set_default_digest_size_health_check(global_cfg.default_digest_size_health_check)?;
-        // TODO (#513): prevent deadlocks by assigning max blocking threads number of open files * ten
-        (!global_cfg.disable_metrics, global_cfg.max_open_files * 10)
+        !global_cfg.disable_metrics
     };
     // Override metrics enabled if the environment variable is set.
     if std::env::var(METRICS_DISABLE_ENV).is_ok() {
@@ -1067,7 +1052,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[allow(clippy::disallowed_methods)]
     {
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .max_blocking_threads(max_blocking_threads)
             .enable_all()
             .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
             .build()?;

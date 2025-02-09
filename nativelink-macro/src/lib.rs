@@ -36,12 +36,10 @@ pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
         async fn #fn_name(#fn_inputs) #fn_output {
             // Error means already initialized, which is ok.
             let _ = nativelink_util::init_tracing();
-            // If already set it's ok.
-            let _ = nativelink_util::fs::set_idle_file_descriptor_timeout(std::time::Duration::from_millis(100));
 
             #[warn(clippy::disallowed_methods)]
             ::std::sync::Arc::new(::nativelink_util::origin_context::OriginContext::new()).wrap_async(
-                ::nativelink_util::__tracing::trace_span!("test"), async move {
+                ::nativelink_util::__tracing::error_span!(stringify!(#fn_name)), async move {
                     #fn_block
                 }
             )
