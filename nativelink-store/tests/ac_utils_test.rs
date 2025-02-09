@@ -22,7 +22,7 @@ use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
-use rand::{thread_rng, Rng};
+use rand::Rng;
 use tokio::io::AsyncWriteExt;
 
 /// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
@@ -31,7 +31,7 @@ async fn make_temp_path(data: &str) -> OsString {
     let dir = format!(
         "{}/{}",
         env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
-        thread_rng().gen::<u64>(),
+        rand::rng().random::<u64>(),
     );
     fs::create_dir_all(&dir).await.unwrap();
     OsString::from(format!("{dir}/{data}"))

@@ -38,5 +38,5 @@ hyper = "1.5.2"
 hyper-util = "0.1.10"
 pretty_assertions = { version = "1.4.1", features = ["std"] }
 prost-types = { version = "0.13.4", default-features = false }
-rand = { version = "0.8.5", default-features = false }
+rand = { version = "0.9.0", default-features = false, features = ["thread_rng"] }
 serial_test = { version = "3.2.0", features = ["async"], default-features = false }

@@ -40,6 +40,7 @@ pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
             #[warn(clippy::disallowed_methods)]
             ::std::sync::Arc::new(::nativelink_util::origin_context::OriginContext::new()).wrap_async(
                 ::nativelink_util::__tracing::error_span!(stringify!(#fn_name)), async move {
+                    ::nativelink_util::common::reseed_rng_for_test().unwrap();
                     #fn_block
                 }
             )
