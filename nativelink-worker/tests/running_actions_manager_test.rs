@@ -58,7 +58,7 @@ use nativelink_worker::running_actions_manager::{
 };
 use pretty_assertions::assert_eq;
 use prost::Message;
-use rand::{thread_rng, Rng};
+use rand::Rng;
 use serial_test::serial;
 use tokio::sync::oneshot;
 
@@ -69,14 +69,14 @@ fn make_temp_path(data: &str) -> String {
     return format!(
         "{}/{}/{}",
         env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
-        thread_rng().gen::<u64>(),
+        rand::rng().random::<u64>(),
         data
     );
     #[cfg(target_family = "windows")]
     return format!(
         "{}\\{}\\{}",
         env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
-        thread_rng().gen::<u64>(),
+        rand::rng().random::<u64>(),
         data
     );
 }

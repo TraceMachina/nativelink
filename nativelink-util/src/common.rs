@@ -476,3 +476,13 @@ pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::
 
     Ok(buf.freeze())
 }
+
+/// Small utility to reseed the global RNG.
+/// Done this way because we use it in a macro
+/// and macro's can't load external crates.
+#[inline]
+pub fn reseed_rng_for_test() -> Result<(), Error> {
+    rand::rng()
+        .reseed()
+        .map_err(|e| make_input_err!("Could not reseed RNG - {e:?}"))
+}
