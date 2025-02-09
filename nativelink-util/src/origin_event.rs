@@ -107,9 +107,8 @@ pub fn get_id_for_event(event: &Event) -> [u8; 2] {
 /// Returns a unique node ID for this process.
 pub fn get_node_id(event: Option<&Event>) -> [u8; 6] {
     let mut node_id = *NODE_ID.get_or_init(|| {
-        let mut rng = rand::thread_rng();
         let mut out = [0; 6];
-        rng.fill_bytes(&mut out);
+        rand::rng().fill_bytes(&mut out);
         out
     });
     let Some(event) = event else {

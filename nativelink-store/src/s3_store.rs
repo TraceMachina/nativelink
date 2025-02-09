@@ -55,7 +55,6 @@ use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
-use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
@@ -266,7 +265,7 @@ where
             }
             let min = 1. - (jitter_amt / 2.);
             let max = 1. + (jitter_amt / 2.);
-            delay.mul_f32(OsRng.gen_range(min..max))
+            delay.mul_f32(rand::rng().random_range(min..max))
         });
         let s3_client = {
             let http_client =

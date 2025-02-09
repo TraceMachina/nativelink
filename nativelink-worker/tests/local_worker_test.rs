@@ -52,7 +52,7 @@ use nativelink_util::store_trait::Store;
 use nativelink_worker::local_worker::new_local_worker;
 use pretty_assertions::assert_eq;
 use prost::Message;
-use rand::{thread_rng, Rng};
+use rand::Rng;
 use tokio::io::AsyncWriteExt;
 use tonic::Response;
 use utils::local_worker_test_utils::{
@@ -68,7 +68,7 @@ fn make_temp_path(data: &str) -> String {
     format!(
         "{}/{}/{}",
         env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
-        thread_rng().gen::<u64>(),
+        rand::rng().random::<u64>(),
         data
     )
 }
