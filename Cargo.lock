@@ -1301,8 +1301,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4567c8db10ae91089c99af84c68c38da3ec2f087c3f82960bcdbf3656b6f4d7"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1322,6 +1324,67 @@ name = "glob-match"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9985c9503b412198aa4197559e9a318524ebc4519c229bfa05a535828c950b9d"
+
+[[package]]
+name = "googleapis-tonic-google-api"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fa8bfc88f43fefb850e967d65297fa03b98ac12bf8f7e62670571481f1385be"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
+]
+
+[[package]]
+name = "googleapis-tonic-google-iam-v1"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddb05fb2fba7a327f61ab160478acc9b3326365276239256d5e0a9c2d8bdecf4"
+dependencies = [
+ "googleapis-tonic-google-api",
+ "googleapis-tonic-google-type",
+ "prost",
+ "prost-types",
+ "tonic",
+]
+
+[[package]]
+name = "googleapis-tonic-google-rpc"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3afa5177d0bcf0f2722d0aa09aa75e0188a9888ef719515a118d49e92210596"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
+]
+
+[[package]]
+name = "googleapis-tonic-google-storage-v2"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9277b7c0432dab5ffd00321f1c8dbad3e9531fb6497f56b71d5cb3da58a4cbbe"
+dependencies = [
+ "googleapis-tonic-google-api",
+ "googleapis-tonic-google-iam-v1",
+ "googleapis-tonic-google-rpc",
+ "googleapis-tonic-google-type",
+ "prost",
+ "prost-types",
+ "tonic",
+]
+
+[[package]]
+name = "googleapis-tonic-google-type"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ba7a85cbf34af971cfcc2d15bc7de8935f33b7a675def0e520e567b64ce8c7f"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
+]
 
 [[package]]
 name = "h2"
@@ -1782,6 +1845,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "9.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
+dependencies = [
+ "base64 0.22.1",
+ "js-sys",
+ "pem",
+ "ring",
+ "serde",
+ "serde_json",
+ "simple_asn1",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2174,14 +2252,17 @@ dependencies = [
  "bytes",
  "bytes-utils",
  "const_format",
+ "crc32c",
  "filetime",
  "fred",
  "futures",
+ "googleapis-tonic-google-storage-v2",
  "hex",
  "http 1.2.0",
  "http-body 1.0.1",
  "hyper 0.14.32",
  "hyper-rustls",
+ "jsonwebtoken",
  "lz4_flex",
  "memory-stats",
  "mock_instant",
@@ -2206,6 +2287,7 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
  "uuid",
 ]
 
@@ -2466,6 +2548,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "31f2f4539bffe53fc4b4da301df49d114b845b077bd5727b7fe2bd9d8df2ae68"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "pem"
+version = "3.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e459365e590736a54c3fa561947c84837534b8e9af6fc5bf781307e82658fae"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
 ]
 
 [[package]]
@@ -3219,6 +3311,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "simple_asn1"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "297f631f50729c8c99b84667867963997ec0b50f32b2a7dbcab828ef0541e8bb"
+dependencies = [
+ "num-bigint",
+ "num-traits",
+ "thiserror 2.0.11",
+ "time",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3383,6 +3487,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35e7868883861bd0e56d9ac6efcaaca0d6d5d82a2a7ec8209ff492c07cf37b21"
 dependencies = [
  "deranged",
+ "itoa",
  "num-conv",
  "powerfmt",
  "serde",
@@ -3526,6 +3631,7 @@ dependencies = [
  "percent-encoding",
  "pin-project",
  "prost",
+ "rustls-native-certs 0.8.1",
  "rustls-pemfile 2.2.0",
  "socket2",
  "tokio",
