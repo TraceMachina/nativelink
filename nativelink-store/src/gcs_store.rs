@@ -1,17 +1,3 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -19,42 +5,59 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::stream::unfold;
+use futures::stream::{unfold, FuturesUnordered};
 use futures::TryStreamExt;
 use nativelink_config::stores::GcsSpec;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
-use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
-};
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
-use rand::rngs::OsRng;
-use rand::Rng;
 use tokio::time::sleep;
-use tracing::{error, info};
 
 use crate::cas_utils::is_zero_digest;
 use crate::gcs_client::client::{GcsClient, ObjectPath};
 
-// Constants for GCS operations
-// Unlike what is specified in the docs, there is a slight discrepancy between
-// the chunk and multipart sizes limit. The chunk size is recommended to be 8MB
-// but the gRPC connection can't handle the size greater than 4MB.
-// Also, we are keeping it slightly below the 4MB limit to make sure we don't
-// exceed the limit when some metadata is added to the request. It was observed
-// that an additional 15 bytes were added to the request size.
-const MIN_MULTIPART_SIZE: u64 = 4 * 1024 * 1000; // < 4MB
-const MAX_CHUNK_SIZE: usize = 4 * 1024 * 1000; // < 4 MiB
-const DEFAULT_MAX_CONCURRENT_UPLOADS: usize = 10;
-const DEFAULT_MAX_RETRY_BUFFER_SIZE: usize = 4 * 1024 * 1000; // < MiB
+const MIN_MULTIPART_SIZE: u64 = 5 * 1024 * 1024; // 5MB
+const DEFAULT_CONCURRENT_UPLOADS: usize = 10;
+const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 2 * 1024 * 1000; // ~2MB.
+const MAX_CHUNK_SIZE: usize = 2 * 1024 * 1000; // ~2MB.
 
-/// The main Google Cloud Storage implementation.
+struct ConnectionPool {
+    semaphore: Arc<tokio::sync::Semaphore>,
+    client: Arc<GcsClient>,
+}
+
+impl ConnectionPool {
+    fn new(max_connections: usize, client: Arc<GcsClient>) -> Self {
+        Self {
+            semaphore: Arc::new(tokio::sync::Semaphore::new(max_connections)),
+            client,
+        }
+    }
+
+    async fn acquire(&self) -> Result<PooledConnection, Error> {
+        let permit =
+            self.semaphore.acquire().await.map_err(|e| {
+                make_err!(Code::Internal, "Failed to acquire connection permit: {}", e)
+            })?;
+        Ok(PooledConnection {
+            client: self.client.clone(),
+            _permit: permit,
+        })
+    }
+}
+
+struct PooledConnection<'a> {
+    client: Arc<GcsClient>,
+    _permit: tokio::sync::SemaphorePermit<'a>,
+}
+
 #[derive(MetricsComponent)]
 pub struct GcsStore<NowFn> {
-    client: Arc<GcsClient>,
+    connection_pool: Arc<ConnectionPool>,
     now_fn: NowFn,
     #[metric(help = "The bucket name for the GCS store")]
     bucket: String,
@@ -66,7 +69,7 @@ pub struct GcsStore<NowFn> {
     #[metric(help = "The number of bytes to buffer for retrying requests")]
     max_retry_buffer_size: usize,
     #[metric(help = "The size of chunks for resumable uploads")]
-    chunk_size: usize,
+    max_chunk_size: usize,
     #[metric(help = "The number of concurrent uploads allowed")]
     max_concurrent_uploads: usize,
 }
@@ -77,90 +80,88 @@ where
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
     pub async fn new(spec: &GcsSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
-        let jitter_amt = spec.retry.jitter;
-        let jitter_fn = Arc::new(move |delay: Duration| {
-            if jitter_amt == 0. {
-                return delay;
-            }
-            let min = 1. - (jitter_amt / 2.);
-            let max = 1. + (jitter_amt / 2.);
-            delay.mul_f32(OsRng.gen_range(min..max))
-        });
+        let jitter_fn =
+            Arc::new(move |delay: Duration| delay.mul_f32(1.0 + rand::random::<f32>() * 0.1));
 
-        let client = GcsClient::new(spec, jitter_fn.clone()).await?;
+        let client = GcsClient::new(spec, jitter_fn).await?;
+        let client = Arc::new(client);
 
-        Self::new_with_client_and_jitter(spec, client, jitter_fn, now_fn)
-    }
+        let max_connections = spec
+            .max_concurrent_uploads
+            .unwrap_or(DEFAULT_CONCURRENT_UPLOADS);
+        let connection_pool = Arc::new(ConnectionPool::new(max_connections, client));
 
-    pub fn new_with_client_and_jitter(
-        spec: &GcsSpec,
-        gcs_client: GcsClient,
-        jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
-        now_fn: NowFn,
-    ) -> Result<Arc<Self>, Error> {
         Ok(Arc::new(Self {
-            client: Arc::new(gcs_client),
+            connection_pool,
             now_fn,
             bucket: spec.bucket.clone(),
             key_prefix: spec.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
-                jitter_fn,
+                Arc::new(move |delay| delay.mul_f32(1.0 + rand::random::<f32>() * 0.1)),
                 spec.retry.clone(),
             ),
             consider_expired_after_s: i64::from(spec.consider_expired_after_s),
             max_retry_buffer_size: spec
                 .max_retry_buffer_per_request
-                .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_SIZE),
-            chunk_size: spec
+                .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST),
+            max_chunk_size: spec
                 .resumable_chunk_size
                 .unwrap_or(MAX_CHUNK_SIZE)
                 .min(MAX_CHUNK_SIZE),
-            max_concurrent_uploads: spec
-                .max_concurrent_uploads
-                .unwrap_or(DEFAULT_MAX_CONCURRENT_UPLOADS),
+            max_concurrent_uploads: max_connections,
         }))
     }
 
-    fn make_object_path(&self, key: &StoreKey<'_>) -> String {
-        format!("{}{}", self.key_prefix, key.as_str())
-    }
-
-    pub async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<u64>, Error> {
-        let object = ObjectPath::new(self.bucket.clone(), &self.make_object_path(digest));
-
-        let client = self.client.clone();
-        let consider_expired_after_s = self.consider_expired_after_s;
-        let now_fn = &self.now_fn;
+    async fn has(self: Pin<&Self>, key: &StoreKey<'_>) -> Result<Option<u64>, Error> {
+        let object = self.make_object_path(key);
 
         self.retrier
-            .retry(futures::stream::unfold(
-                object.clone(),
-                move |object_path| {
-                    let client = client.clone();
-
-                    async move {
-                        let result = client.read_object_metadata(object_path.clone()).await;
-
-                        match result {
-                            Ok(Some(object)) => {
-                                if consider_expired_after_s > 0 {
-                                    if let Some(update_time) = object.update_time {
-                                        let now_s = now_fn().unix_timestamp() as i64;
-                                        if update_time.seconds + consider_expired_after_s <= now_s {
-                                            return Some((RetryResult::Ok(None), object_path));
-                                        }
+            .retry(unfold(object, move |object| async move {
+                match self.connection_pool.acquire().await {
+                    Ok(conn) => match conn.client.read_object_metadata(object.clone()).await {
+                        Ok(Some(metadata)) => {
+                            // Check if the object should be considered expired
+                            if self.consider_expired_after_s != 0 {
+                                if let Some(update_time) = metadata.update_time {
+                                    let now_s = (self.now_fn)().unix_timestamp() as i64;
+                                    // update_time.seconds is the number of seconds since the Unix epoch
+                                    if update_time.seconds + self.consider_expired_after_s <= now_s
+                                    {
+                                        return Some((RetryResult::Ok(None), object));
                                     }
                                 }
-                                Some((RetryResult::Ok(Some(object.size as u64)), object_path))
                             }
-                            Ok(None) => Some((RetryResult::Ok(None), object_path)),
-                            Err(e) => Some((RetryResult::Retry(e), object_path)),
+
+                            let size = metadata.size;
+                            if size >= 0 {
+                                Some((RetryResult::Ok(Some(size as u64)), object))
+                            } else {
+                                Some((
+                                    RetryResult::Err(make_err!(
+                                        Code::InvalidArgument,
+                                        "Invalid metadata size in GCS: {:?}",
+                                        metadata
+                                    )),
+                                    object,
+                                ))
+                            }
                         }
-                    }
-                },
-            ))
+                        Ok(None) => Some((RetryResult::Ok(None), object)),
+                        Err(e) if e.code == Code::NotFound => Some((RetryResult::Ok(None), object)),
+                        Err(e) => Some((RetryResult::Retry(e), object)),
+                    },
+                    Err(e) => Some((RetryResult::Retry(e), object)),
+                }
+            }))
             .await
+    }
+
+    fn make_object_path(&self, key: &StoreKey) -> ObjectPath {
+        ObjectPath::new(
+            self.bucket.clone(),
+            &format!("{}{}", self.key_prefix, key.as_str()),
+        )
     }
 }
 
@@ -175,17 +176,15 @@ where
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        use futures::stream::FuturesUnordered;
-
         keys.iter()
             .zip(results.iter_mut())
             .map(|(key, result)| async move {
                 if is_zero_digest(key.borrow()) {
                     *result = Some(0);
-                    return Ok::<_, Error>(());
+                    return Ok(());
                 }
                 *result = self.has(key).await?;
-                Ok::<_, Error>(())
+                Ok(())
             })
             .collect::<FuturesUnordered<_>>()
             .try_collect()
@@ -198,17 +197,12 @@ where
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let object = ObjectPath::new(self.bucket.clone(), &self.make_object_path(&digest));
-
-        if let UploadSizeInfo::ExactSize(0) = upload_size {
-            return Ok(());
-        }
-
+        let object = self.make_object_path(&digest);
         let max_size = match upload_size {
             UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
         };
 
-        // For small files (< 4MB) use simple upload
+        // For small files, use simple upload
         if max_size < MIN_MULTIPART_SIZE && matches!(upload_size, UploadSizeInfo::ExactSize(_)) {
             let UploadSizeInfo::ExactSize(sz) = upload_size else {
                 unreachable!("upload_size must be ExactSize here");
@@ -219,131 +213,94 @@ where
                     .err_tip(|| "Could not convert max_retry_buffer_size to u64")?,
             );
 
-            return self.retrier
-                .retry(unfold(reader, move |mut reader| {
-                    let client = Arc::clone(&self.client);
-                    let object = object.clone();
-
-                    async move {
-                        let (mut tx, rx) = make_buf_channel_pair();
-
-                        let result = {
-                            let reader_ref = &mut reader;
-                            let (upload_res, bind_res) = tokio::join!(
-                            async {
-                                client
-                                    .simple_upload(object.clone(), rx, sz as i64)
-                                    .await
-                                    .map_err(|e| make_err!(Code::Aborted, "{:?}", e))
-                            },
-                            async {
-                                tx.bind_buffered(reader_ref).await
-                            }
-                        );
-
-                            upload_res
-                                .and(bind_res)
-                                .err_tip(|| "Failed to upload object in single chunk")
+            return self
+                .retrier
+                .retry(unfold(
+                    (reader, object.clone()),
+                    move |(mut reader, object)| async move {
+                        let content = match reader.consume(Some(sz as usize)).await {
+                            Ok(content) => content,
+                            Err(e) => return Some((RetryResult::Err(e), (reader, object))),
                         };
 
-                        match result {
-                            Ok(()) => Some((RetryResult::Ok(()), reader)),
-                            Err(mut err) => {
-                                err.code = Code::Aborted;
-                                let bytes_received = reader.get_bytes_received();
+                        let conn = match self.connection_pool.acquire().await {
+                            Ok(conn) => conn,
+                            Err(e) => return Some((RetryResult::Retry(e), (reader, object))),
+                        };
 
-                                if let Err(try_reset_err) = reader.try_reset_stream() {
-                                    error!(
-                                    ?bytes_received,
-                                    err = ?try_reset_err,
-                                    "Unable to reset stream after failed upload"
-                                );
-                                    Some((
-                                        RetryResult::Err(err
-                                            .merge(try_reset_err)
-                                            .append(format!(
-                                                "Failed to retry upload with {bytes_received} bytes received"
-                                            ))),
-                                        reader,
-                                    ))
-                                } else {
-                                    let err = err.append(format!(
-                                        "Retry on upload happened with {bytes_received} bytes received"
+                        match conn
+                            .client
+                            .simple_upload(&object, content.to_vec(), sz as i64)
+                            .await
+                        {
+                            Ok(()) => Some((RetryResult::Ok(()), (reader, object))),
+                            Err(e) => {
+                                if let Err(reset_err) = reader.try_reset_stream() {
+                                    return Some((
+                                        RetryResult::Err(e.merge(reset_err)),
+                                        (reader, object),
                                     ));
-                                    info!(?err, ?bytes_received, "Retryable GCS error");
-                                    Some((RetryResult::Retry(err), reader))
                                 }
+                                Some((RetryResult::Retry(e), (reader, object)))
                             }
                         }
-                    }
-                }))
+                    },
+                ))
                 .await;
         }
 
-        // For larger files, use resumable upload with streaming
-        reader.set_max_recent_data_size(
-            u64::try_from(self.max_retry_buffer_size)
-                .err_tip(|| "Could not convert max_retry_buffer_size to u64")?,
-        );
-
+        // For larger files, we'll use resumable upload
+        // Resumable uploads are not optimal, we should find a way to upload smaller files
+        // with unknown sizes directly with simple upload itself.
         self.retrier
-            .retry(unfold(reader, move |mut reader| {
-                let client = Arc::clone(&self.client);
-                let object = object.clone();
-
-                async move {
-                    let (mut tx, rx) = make_buf_channel_pair();
-
-                    let result = {
-                        let reader_ref = &mut reader;
-                        let (upload_res, bind_res) = tokio::join!(
-                        async {
-                            client
-                                .resumable_upload(object.clone(), rx, max_size as i64)
-                                .await
-                                .map_err(|e| make_err!(Code::Aborted, "{:?}", e))
-                        },
-                        async {
-                            tx.bind_buffered(reader_ref).await
-                        }
-                    );
-
-                        upload_res
-                            .and(bind_res)
-                            .err_tip(|| "Failed to upload object using resumable upload")
+            .retry(unfold(
+                (reader, object.clone()),
+                move |(mut reader, object)| async move {
+                    // Start resumable upload
+                    let conn = match self.connection_pool.acquire().await {
+                        Ok(conn) => conn,
+                        Err(e) => return Some((RetryResult::Retry(e), (reader, object))),
                     };
 
-                    match result {
-                        Ok(()) => Some((RetryResult::Ok(()), reader)),
-                        Err(mut err) => {
-                            err.code = Code::Aborted;
-                            let bytes_received = reader.get_bytes_received();
+                    let upload_id = match conn.client.start_resumable_write(&object).await {
+                        Ok(id) => id,
+                        Err(e) => {
+                            return Some((
+                                RetryResult::Retry(make_err!(
+                                    Code::Aborted,
+                                    "Failed to start resumable upload: {:?}",
+                                    e
+                                )),
+                                (reader, object),
+                            ))
+                        }
+                    };
 
-                            if let Err(try_reset_err) = reader.try_reset_stream() {
-                                error!(
-                                ?bytes_received,
-                                err = ?try_reset_err,
-                                "Unable to reset stream after failed upload"
-                            );
-                                Some((
-                                    RetryResult::Err(err
-                                        .merge(try_reset_err)
-                                        .append(format!(
-                                            "Failed to retry upload with {bytes_received} bytes received"
-                                        ))),
-                                    reader,
-                                ))
-                            } else {
-                                let err = err.append(format!(
-                                    "Retry on upload happened with {bytes_received} bytes received"
+                    // Perform resumable upload
+                    match conn
+                        .client
+                        .resumable_upload(
+                            &object,
+                            &mut reader,
+                            &upload_id,
+                            max_size as i64,
+                            self.max_concurrent_uploads,
+                        )
+                        .await
+                    {
+                        Ok(()) => Some((RetryResult::Ok(()), (reader, object))),
+                        Err(e) => {
+                            if let Err(reset_err) = reader.try_reset_stream() {
+                                return Some((
+                                    RetryResult::Err(e.merge(reset_err)),
+                                    (reader, object),
                                 ));
-                                info!(?err, ?bytes_received, "Retryable GCS error");
-                                Some((RetryResult::Retry(err), reader))
                             }
+                            Some((RetryResult::Retry(e), (reader, object)))
                         }
                     }
-                }
-            }))
+                },
+            ))
             .await
     }
 
@@ -355,66 +312,76 @@ where
         length: Option<u64>,
     ) -> Result<(), Error> {
         if is_zero_digest(key.borrow()) {
-            writer
-                .send_eof()
-                .err_tip(|| "Failed to send zero EOF in GCS store get_part")?;
+            writer.send_eof()?;
             return Ok(());
         }
 
-        let object = ObjectPath::new(self.bucket.clone(), &self.make_object_path(&key));
-
-        let client = Arc::clone(&self.client);
+        let object = self.make_object_path(&key);
+        let conn = self.connection_pool.acquire().await?;
 
         self.retrier
-            .retry(unfold(writer, move |writer| {
-                let client = client.clone();
-                let object = object.clone();
-                async move {
-                    let result: Result<(), Error> = async {
-                        let data = client
-                            .read_object_content(
-                                object,
-                                offset as i64,
-                                length.map(|len| offset as i64 + len as i64),
-                            )
-                            .await?;
-
-                        if !data.is_empty() {
-                            writer.send(Bytes::from(data)).await.map_err(|e| {
-                                make_err!(Code::Aborted, "Failed to send data to writer: {:?}", e)
-                            })?;
-                        }
-
-                        writer.send_eof().map_err(|e| {
-                            make_err!(Code::Aborted, "Failed to send EOF to writer: {:?}", e)
-                        })?;
-                        Ok(())
-                    }
-                    .await;
-
-                    match result {
-                        Ok(()) => Some((RetryResult::Ok(()), writer)),
-                        Err(e) => {
-                            if e.code == Code::NotFound {
-                                Some((RetryResult::Err(e), writer))
-                            } else {
-                                Some((RetryResult::Retry(e), writer))
+            .retry(unfold(
+                (writer, conn, object),
+                move |(writer, conn, object)| async move {
+                    match conn
+                        .client
+                        .read_object_content(
+                            object.clone(),
+                            offset as i64,
+                            length.map(|len| offset as i64 + len as i64),
+                        )
+                        .await
+                    {
+                        Ok(data) => {
+                            if !data.is_empty() {
+                                if let Err(e) = writer.send(Bytes::from(data)).await {
+                                    return Some((
+                                        RetryResult::Err(make_err!(
+                                            Code::Internal,
+                                            "Failed to send data: {}",
+                                            e
+                                        )),
+                                        (writer, conn, object),
+                                    ));
+                                }
                             }
+
+                            if let Err(e) = writer.send_eof() {
+                                return Some((
+                                    RetryResult::Err(make_err!(
+                                        Code::Internal,
+                                        "Failed to send EOF: {}",
+                                        e
+                                    )),
+                                    (writer, conn, object),
+                                ));
+                            }
+
+                            Some((RetryResult::Ok(()), (writer, conn, object)))
                         }
+                        Err(e) if e.code == Code::NotFound => {
+                            Some((RetryResult::Err(e), (writer, conn, object)))
+                        }
+                        Err(e) => Some((RetryResult::Retry(e), (writer, conn, object))),
                     }
-                }
-            }))
-            .await
+                },
+            ))
+            .await?;
+
+        Ok(())
     }
 
+    #[inline]
     fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
         self
     }
 
+    #[inline]
     fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
         self
     }
 
+    #[inline]
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
     }

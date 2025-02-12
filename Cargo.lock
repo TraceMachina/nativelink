@@ -1327,9 +1327,9 @@ checksum = "9985c9503b412198aa4197559e9a318524ebc4519c229bfa05a535828c950b9d"
 
 [[package]]
 name = "googleapis-tonic-google-api"
-version = "0.12.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0fac8a714a790dacdbc09fd423079b9cfc85a754b225c6c4ece22ad4f277346"
+checksum = "3fa8bfc88f43fefb850e967d65297fa03b98ac12bf8f7e62670571481f1385be"
 dependencies = [
  "prost",
  "prost-types",
@@ -1338,9 +1338,9 @@ dependencies = [
 
 [[package]]
 name = "googleapis-tonic-google-iam-v1"
-version = "0.14.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa2de38058bcf2fcb512a441dd5f8ae0c5893475eb3cc4c9f2178ca3856451a6"
+checksum = "ddb05fb2fba7a327f61ab160478acc9b3326365276239256d5e0a9c2d8bdecf4"
 dependencies = [
  "googleapis-tonic-google-api",
  "googleapis-tonic-google-type",
@@ -1350,13 +1350,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "googleapis-tonic-google-storage-v2"
-version = "0.17.0"
+name = "googleapis-tonic-google-rpc"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ed06b3db0041d905c8f5f4b6e095d84fe64d4b426ffff3d383841a3115a4e51"
+checksum = "e3afa5177d0bcf0f2722d0aa09aa75e0188a9888ef719515a118d49e92210596"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
+]
+
+[[package]]
+name = "googleapis-tonic-google-storage-v2"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9277b7c0432dab5ffd00321f1c8dbad3e9531fb6497f56b71d5cb3da58a4cbbe"
 dependencies = [
  "googleapis-tonic-google-api",
  "googleapis-tonic-google-iam-v1",
+ "googleapis-tonic-google-rpc",
  "googleapis-tonic-google-type",
  "prost",
  "prost-types",
@@ -1834,11 +1846,11 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "9.3.0"
+version = "9.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9ae10193d25051e74945f1ea2d0b42e03cc3b890f7e4cc5faa44997d808193f"
+checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
 dependencies = [
- "base64 0.21.7",
+ "base64 0.22.1",
  "js-sys",
  "pem",
  "ring",
@@ -3300,13 +3312,13 @@ dependencies = [
 
 [[package]]
 name = "simple_asn1"
-version = "0.6.2"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adc4e5204eb1910f40f9cfa375f6f05b68c3abac4b6fd879c8ff5e7ae8a0a085"
+checksum = "297f631f50729c8c99b84667867963997ec0b50f32b2a7dbcab828ef0541e8bb"
 dependencies = [
  "num-bigint",
  "num-traits",
- "thiserror 1.0.69",
+ "thiserror 2.0.11",
  "time",
 ]
 
