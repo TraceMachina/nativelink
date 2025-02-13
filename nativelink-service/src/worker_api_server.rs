@@ -58,9 +58,8 @@ impl WorkerApiServer {
         schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
     ) -> Result<Self, Error> {
         let node_id = {
-            let mut rng = rand::thread_rng();
             let mut out = [0; 6];
-            rng.fill_bytes(&mut out);
+            rand::rng().fill_bytes(&mut out);
             out
         };
         for scheduler in schedulers.values() {

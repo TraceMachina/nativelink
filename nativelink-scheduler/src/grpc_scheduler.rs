@@ -41,7 +41,6 @@ use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
-use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::select;
 use tokio::sync::watch;
@@ -107,7 +106,7 @@ impl GrpcScheduler {
                 }
                 let min = 1. - (jitter_amt / 2.);
                 let max = 1. + (jitter_amt / 2.);
-                delay.mul_f32(OsRng.gen_range(min..max))
+                delay.mul_f32(rand::rng().random_range(min..max))
             }),
         )
     }

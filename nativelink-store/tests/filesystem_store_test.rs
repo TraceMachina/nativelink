@@ -42,7 +42,7 @@ use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
-use rand::{thread_rng, Rng};
+use rand::Rng;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Take};
 use tokio::sync::Barrier;
@@ -192,7 +192,7 @@ fn make_temp_path(data: &str) -> String {
     format!(
         "{}/{}/{}",
         env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
-        thread_rng().gen::<u64>(),
+        rand::rng().random::<u64>(),
         data
     )
 }

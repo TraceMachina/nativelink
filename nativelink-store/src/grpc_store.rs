@@ -51,7 +51,6 @@ use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::{default_health_status_indicator, tls_utils};
 use parking_lot::Mutex;
 use prost::Message;
-use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::time::sleep;
 use tonic::{IntoRequest, Request, Response, Status, Streaming};
@@ -81,7 +80,7 @@ impl GrpcStore {
                 }
                 let min = 1. - (jitter_amt / 2.);
                 let max = 1. + (jitter_amt / 2.);
-                delay.mul_f32(OsRng.gen_range(min..max))
+                delay.mul_f32(rand::rng().random_range(min..max))
             }),
         )
         .await
