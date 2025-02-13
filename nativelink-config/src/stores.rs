@@ -78,7 +78,7 @@ pub enum StoreSpec {
     ///
     experimental_s3_store(S3Spec),
 
-    /// GCS store will use Google's GCS service as a backend to store
+    /// GCS store uses Google's GCS service as a backend to store
     /// the files. This configuration can be used to share files
     /// across multiple instances.
     ///
@@ -850,7 +850,7 @@ pub struct GcsSpec {
     /// Size of chunks for resumeable uploads (in bytes).
     /// Must be a multiple of 256 KB.
     ///
-    /// Default: 8MB.
+    /// Default: ~2MB.
     pub resumable_chunk_size: Option<usize>,
 
     /// Maximum number of concurrent uploads for resumable operations
@@ -865,17 +865,33 @@ pub struct GcsSpec {
     #[serde(default)]
     pub endpoint: Option<String>,
 
-    /// Allow unencrypted HTTP connections. Only use this for local testing.
-    ///
-    /// Default: false
-    #[serde(default)]
-    pub insecure_allow_http: bool,
+    /// Authentication scope for the GCS service.
+    /// Default: `<https://www.googleapis.com/auth/cloud-platform>`
+    pub auth_scope: Option<String>,
 
-    /// Disable http/2 connections and only use http/1.1.
-    ///
-    /// Default: false
-    #[serde(default)]
-    pub disable_http2: bool,
+    /// Token audience for authentication.
+    /// Default: `<https://storage.googleapis.com>`
+    pub auth_audience: Option<String>,
+
+    /// Token lifetime in seconds.
+    /// Default: 3600 (1 hour)
+    pub token_lifetime_secs: Option<u64>,
+
+    /// Window before token expiry when refresh should be attempted, in seconds.
+    /// Default: 300 (5 minutes)
+    pub token_refresh_window_secs: Option<u64>,
+
+    /// Maximum delay between token refresh attempts, in seconds.
+    /// Default: 30 seconds
+    pub max_token_refresh_delay_secs: Option<u64>,
+
+    /// Maximum number of token refresh attempts before giving up.
+    /// Default: 5
+    pub max_token_refresh_attempts: Option<u32>,
+
+    /// Base delay for token refresh retry backoff, in seconds.
+    /// Default: 2 seconds
+    pub token_retry_delay_base_secs: Option<u64>,
 }
 
 #[allow(non_camel_case_types)]
