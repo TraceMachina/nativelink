@@ -26,7 +26,7 @@ use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{default_health_status_indicator, HealthRegistryBuilder, HealthStatusIndicator};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreKeyBorrow, UploadSizeInfo};
 
 use crate::cas_utils::is_zero_digest;
@@ -193,6 +193,10 @@ impl StoreDriver for MemoryStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
+        registry.register_indicator(self);
     }
 }
 
