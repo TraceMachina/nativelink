@@ -19,11 +19,10 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use async_lock::RwLock;
 use bytes::Bytes;
-use filetime::{set_file_atime, FileTime};
 use futures::executor::block_on;
 use futures::task::Poll;
 use futures::{poll, Future, FutureExt};
@@ -140,10 +139,6 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> LenEntry for TestFileEntry<H
 
     fn is_empty(&self) -> bool {
         self.inner.as_ref().unwrap().is_empty()
-    }
-
-    async fn touch(&self) -> bool {
-        self.inner.as_ref().unwrap().touch().await
     }
 
     async fn unref(&self) {
@@ -568,98 +563,6 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
 
     // Now ensure our temp file was cleaned up.
     check_temp_empty(&temp_path).await
-}
-
-#[nativelink_test]
-async fn atime_updates_on_get_part_test() -> Result<(), Error> {
-    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
-
-    let store = Box::pin(
-        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
-            content_path: make_temp_path("content_path"),
-            temp_path: make_temp_path("temp_path"),
-            eviction_policy: None,
-            ..Default::default()
-        })
-        .await?,
-    );
-    // Insert data into store.
-    store.update_oneshot(digest1, VALUE1.into()).await?;
-
-    let file_entry = store.get_file_entry_for_digest(&digest1).await?;
-    file_entry
-        .get_file_path_locked(move |path| async move {
-            // Set atime to along time ago.
-            set_file_atime(&path, FileTime::from_system_time(SystemTime::UNIX_EPOCH))?;
-
-            // Check to ensure it was set to zero from previous command.
-            assert_eq!(
-                fs::metadata(&path).await?.accessed()?,
-                SystemTime::UNIX_EPOCH
-            );
-            Ok(())
-        })
-        .await?;
-
-    // Now touch digest1.
-    let data = store.get_part_unchunked(digest1, 0, None).await?;
-    assert_eq!(data, VALUE1.as_bytes());
-
-    file_entry
-        .get_file_path_locked(move |path| async move {
-            // Ensure it was updated.
-            assert!(fs::metadata(&path).await?.accessed()? > SystemTime::UNIX_EPOCH);
-            Ok(())
-        })
-        .await?;
-
-    Ok(())
-}
-
-#[nativelink_test]
-async fn eviction_drops_file_test() -> Result<(), Error> {
-    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
-
-    let store = Box::pin(
-        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
-            content_path: make_temp_path("content_path"),
-            temp_path: make_temp_path("temp_path"),
-            eviction_policy: None,
-            ..Default::default()
-        })
-        .await?,
-    );
-    // Insert data into store.
-    store.update_oneshot(digest1, VALUE1.into()).await?;
-
-    let file_entry = store.get_file_entry_for_digest(&digest1).await?;
-    file_entry
-        .get_file_path_locked(move |path| async move {
-            // Set atime to along time ago.
-            set_file_atime(&path, FileTime::from_system_time(SystemTime::UNIX_EPOCH))?;
-
-            // Check to ensure it was set to zero from previous command.
-            assert_eq!(
-                fs::metadata(&path).await?.accessed()?,
-                SystemTime::UNIX_EPOCH
-            );
-            Ok(())
-        })
-        .await?;
-
-    // Now touch digest1.
-    let data = store.get_part_unchunked(digest1, 0, None).await?;
-    assert_eq!(data, VALUE1.as_bytes());
-
-    file_entry
-        .get_file_path_locked(move |path| async move {
-            // Ensure it was updated.
-            assert!(fs::metadata(&path).await?.accessed()? > SystemTime::UNIX_EPOCH);
-            Ok(())
-        })
-        .await?;
-
-    Ok(())
 }
 
 // Test to ensure that if we are holding a reference to `FileEntry` and the contents are
@@ -1150,11 +1053,8 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
     let stored_file_path = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
     std::fs::remove_file(stored_file_path)?;
 
-    let digest_result = store
-        .has(digest)
-        .await
-        .err_tip(|| "Failed to execute has")?;
-    assert!(digest_result.is_none());
+    let get_part_res = store.get_part_unchunked(digest, 0, None).await;
+    assert_eq!(get_part_res.unwrap_err().code, Code::NotFound);
 
     // Repeat with a string typed key.
 
@@ -1168,11 +1068,8 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
     let stored_file_path = OsString::from(format!("{content_path}/{STR_FOLDER}/{STRING_NAME}"));
     std::fs::remove_file(stored_file_path)?;
 
-    let string_result = store
-        .has(string_key)
-        .await
-        .err_tip(|| "Failed to execute has")?;
-    assert!(string_result.is_none());
+    let string_digest_get_part_res = store.get_part_unchunked(string_key, 0, None).await;
+    assert_eq!(string_digest_get_part_res.unwrap_err().code, Code::NotFound);
 
     Ok(())
 }
