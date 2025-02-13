@@ -1,6 +1,7 @@
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
       "verify": {
         "backend": {
           "dedup": {
@@ -11,15 +12,13 @@
                     "content_path": "/tmp/nativelink/data/content_path-index",
                     "temp_path": "/tmp/nativelink/data/tmp_path-index",
                     "eviction_policy": {
-                      // 500mb.
-                      "max_bytes": 500000000
+                      "max_bytes": 500000000  // 500mb
                     }
                   }
                 },
                 "slow": {
                   "experimental_gcs_store": {
                     "service_email": "nativelink-test-aman@inbound-entity-447014-k2.iam.gserviceaccount.com",
-                    // Name of the bucket to upload to.
                     "bucket": "test-bucket-aman-nativelink",
                     "key_prefix": "test-prefix-index/",
                     "retry": {
@@ -44,15 +43,13 @@
                         "content_path": "/tmp/nativelink/data/content_path-content",
                         "temp_path": "/tmp/nativelink/data/tmp_path-content",
                         "eviction_policy": {
-                          // 2gb.
-                          "max_bytes": 2000000000
+                          "max_bytes": 2000000000  // 2gb
                         }
                       }
                     },
                     "slow": {
                       "experimental_gcs_store": {
                         "service_email": "nativelink-test-aman@inbound-entity-447014-k2.iam.gserviceaccount.com",
-                        // Name of the bucket to upload to.
                         "bucket": "test-bucket-aman-nativelink",
                         "key_prefix": "test-prefix-dedup-cas/",
                         "retry": {
@@ -72,28 +69,21 @@
         "verify_size": true
       }
     },
-    "AC_MAIN_STORE": {
+    {
+      "name": "AC_MAIN_STORE",
       "fast_slow": {
         "fast": {
-          "memory": {
-            "eviction_policy": {
-              // 100mb.
-              "max_bytes": 100000000
-            }
-          },
           "filesystem": {
             "content_path": "/tmp/nativelink/data/content_path-ac",
             "temp_path": "/tmp/nativelink/data/tmp_path-ac",
             "eviction_policy": {
-              // 500mb.
-              "max_bytes": 500000000
+              "max_bytes": 500000000  // 500mb
             }
           }
         },
         "slow": {
           "experimental_gcs_store": {
             "service_email": "nativelink-test-aman@inbound-entity-447014-k2.iam.gserviceaccount.com",
-            // Name of the bucket to upload to.
             "bucket": "test-bucket-aman-nativelink",
             "key_prefix": "test-prefix-ac/",
             "retry": {
@@ -105,10 +95,11 @@
           }
         }
       }
-    },
-  },
-  "schedulers": {
-    "MAIN_SCHEDULER": {
+    }
+  ],
+  "schedulers": [
+    {
+      "name": "MAIN_SCHEDULER",
       "simple": {
         "supported_platform_properties": {
           "cpu_count": "minimum",
@@ -130,7 +121,7 @@
         }
       }
     }
-  },
+  ],
   "servers": [{
     "listener": {
       "http": {

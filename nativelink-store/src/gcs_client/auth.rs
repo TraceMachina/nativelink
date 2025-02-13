@@ -7,11 +7,13 @@ use rand::Rng;
 use serde::Serialize;
 use tokio::sync::{Mutex, RwLock};
 
+// If you update these values, please update the GcsSpec as well.
 const SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 const AUDIENCE: &str = "https://storage.googleapis.com/";
 const TOKEN_LIFETIME: Duration = Duration::from_secs(3600); // 1 hour
 const REFRESH_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
-const MAX_REFRESH_ATTEMPTS: u32 = 5; // Increased from 3 to 5
+const MAX_DELAY: Duration = Duration::from_secs(30);
+const MAX_REFRESH_ATTEMPTS: u32 = 5;
 const RETRY_DELAY_BASE: Duration = Duration::from_secs(2);
 
 const ENV_PRIVATE_KEY: &str = "GCS_PRIVATE_KEY";
@@ -38,6 +40,14 @@ pub struct GcsAuth {
     refresh_lock: Mutex<()>,
     service_email: String,
     private_key: String,
+    // Store configuration values
+    scope: String,
+    audience: String,
+    token_lifetime: Duration,
+    refresh_window: Duration,
+    max_delay: Duration,
+    max_refresh_attempts: u32,
+    retry_delay_base: Duration,
 }
 
 impl GcsAuth {
@@ -57,6 +67,13 @@ impl GcsAuth {
     pub async fn new(spec: &GcsSpec) -> Result<Self, Error> {
         // First try to get direct token from environment
         if let Ok(token) = std::env::var(ENV_AUTH_TOKEN) {
+            let token_lifetime = spec
+                .token_lifetime_secs
+                .map_or(TOKEN_LIFETIME, Duration::from_secs);
+            let refresh_window = spec
+                .token_refresh_window_secs
+                .map_or(REFRESH_WINDOW, Duration::from_secs);
+
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| make_err!(Code::Internal, "System time error: {}", e))?
@@ -65,11 +82,27 @@ impl GcsAuth {
             return Ok(Self {
                 token_cache: RwLock::new(Some(TokenInfo {
                     token,
-                    refresh_at: now + TOKEN_LIFETIME.as_secs() - REFRESH_WINDOW.as_secs(),
+                    refresh_at: now + token_lifetime.as_secs() - refresh_window.as_secs(),
                 })),
                 refresh_lock: Mutex::new(()),
                 service_email: String::new(),
                 private_key: String::new(),
+                scope: spec.auth_scope.clone().unwrap_or_else(|| SCOPE.to_string()),
+                audience: spec
+                    .auth_audience
+                    .clone()
+                    .unwrap_or_else(|| AUDIENCE.to_string()),
+                token_lifetime,
+                refresh_window,
+                max_delay: spec
+                    .max_token_refresh_delay_secs
+                    .map_or(MAX_DELAY, Duration::from_secs),
+                max_refresh_attempts: spec
+                    .max_token_refresh_attempts
+                    .unwrap_or(MAX_REFRESH_ATTEMPTS),
+                retry_delay_base: spec
+                    .token_retry_delay_base_secs
+                    .map_or(RETRY_DELAY_BASE, Duration::from_secs),
             });
         }
 
@@ -89,14 +122,32 @@ impl GcsAuth {
             refresh_lock: Mutex::new(()),
             service_email: spec.service_email.clone(),
             private_key,
+            scope: spec.auth_scope.clone().unwrap_or_else(|| SCOPE.to_string()),
+            audience: spec
+                .auth_audience
+                .clone()
+                .unwrap_or_else(|| AUDIENCE.to_string()),
+            token_lifetime: spec
+                .token_lifetime_secs
+                .map_or(TOKEN_LIFETIME, Duration::from_secs),
+            refresh_window: spec
+                .token_refresh_window_secs
+                .map_or(REFRESH_WINDOW, Duration::from_secs),
+            max_delay: spec
+                .max_token_refresh_delay_secs
+                .map_or(MAX_DELAY, Duration::from_secs),
+            max_refresh_attempts: spec
+                .max_token_refresh_attempts
+                .unwrap_or(MAX_REFRESH_ATTEMPTS),
+            retry_delay_base: spec
+                .token_retry_delay_base_secs
+                .map_or(RETRY_DELAY_BASE, Duration::from_secs),
         })
     }
 
-    fn calculate_retry_delay(attempt: u32) -> Duration {
-        let base = RETRY_DELAY_BASE;
-        let max_delay = Duration::from_secs(30); // Cap maximum delay
-        let delay = base * (2_u32.pow(attempt.saturating_sub(1)));
-        std::cmp::min(delay, max_delay)
+    fn calculate_retry_delay(&self, attempt: u32) -> Duration {
+        let delay = self.retry_delay_base * (2_u32.pow(attempt.saturating_sub(1)));
+        std::cmp::min(delay, self.max_delay)
     }
 
     fn add_jitter(duration: Duration) -> Duration {
@@ -111,16 +162,16 @@ impl GcsAuth {
             .map_err(|e| make_err!(Code::Internal, "System time error: {}", e))?
             .as_secs();
 
-        let expiry = now + TOKEN_LIFETIME.as_secs();
-        let refresh_at = expiry - REFRESH_WINDOW.as_secs();
+        let expiry = now + self.token_lifetime.as_secs();
+        let refresh_at = expiry - self.refresh_window.as_secs();
 
         let claims = JwtClaims {
             iss: self.service_email.clone(),
             sub: self.service_email.clone(),
-            aud: AUDIENCE.to_string(),
+            aud: self.audience.clone(),
             iat: now,
             exp: expiry,
-            scope: SCOPE.to_string(),
+            scope: self.scope.clone(),
         };
 
         let header = Header::new(Algorithm::RS256);
@@ -138,15 +189,18 @@ impl GcsAuth {
         let mut attempt = 1;
         let mut last_error = None;
 
-        while attempt <= MAX_REFRESH_ATTEMPTS {
+        while attempt <= self.max_refresh_attempts {
             match self.generate_token().await {
                 Ok(token_info) => return Ok(token_info),
                 Err(e) => {
-                    println!("Token refresh attempt {attempt}/{MAX_REFRESH_ATTEMPTS} failed: {e}");
+                    println!(
+                        "Token refresh attempt {attempt}/{} failed: {e}",
+                        self.max_refresh_attempts
+                    );
                     last_error = Some(e);
 
-                    if attempt < MAX_REFRESH_ATTEMPTS {
-                        let delay = Self::add_jitter(Self::calculate_retry_delay(attempt));
+                    if attempt < self.max_refresh_attempts {
+                        let delay = Self::add_jitter(self.calculate_retry_delay(attempt));
                         tokio::time::sleep(delay).await;
                     }
 
@@ -158,7 +212,7 @@ impl GcsAuth {
         Err(make_err!(
             Code::Internal,
             "Token refresh failed after {} attempts: {}",
-            MAX_REFRESH_ATTEMPTS,
+            self.max_refresh_attempts,
             last_error.unwrap()
         ))
     }
@@ -203,7 +257,7 @@ impl GcsAuth {
 
                 TokenInfo {
                     token,
-                    refresh_at: now + TOKEN_LIFETIME.as_secs() - REFRESH_WINDOW.as_secs(),
+                    refresh_at: now + self.token_lifetime.as_secs() - self.refresh_window.as_secs(),
                 }
             } else {
                 return Err(make_err!(
