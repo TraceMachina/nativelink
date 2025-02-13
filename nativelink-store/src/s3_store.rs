@@ -51,7 +51,7 @@ use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
 use nativelink_util::fs;
-use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
@@ -779,6 +779,10 @@ where
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
+        registry.register_indicator(self);
     }
 }
 
