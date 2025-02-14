@@ -28,7 +28,6 @@ byteorder = { version = "1.5.0", default-features = false }
 bytes = { version = "1.9.0", default-features = false }
 bytes-utils = { version = "0.1.4", default-features = false }
 const_format = { version = "0.2.34", default-features = false }
-filetime = "0.2.25"
 fred = { version = "10.0.3", default-features = false, features = [
   "i-std",
   "i-scripts",
