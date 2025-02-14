@@ -584,11 +584,18 @@ impl StoreDriver for GrpcStore {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
 
+        let digest_function = ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
+            .err_tip(|| "In GrpcStore::update()")?
+            .map_or_else(default_digest_hasher_func, |v| *v)
+            .proto_digest_func()
+            .as_str_name()
+            .to_ascii_lowercase();
         let mut buf = Uuid::encode_buffer();
         let resource_name = format!(
-            "{}/uploads/{}/blobs/{}/{}",
+            "{}/uploads/{}/blobs/{}/{}/{}",
             &self.instance_name,
             Uuid::new_v4().hyphenated().encode_lower(&mut buf),
+            digest_function,
             digest.packed_hash(),
             digest.size_bytes(),
         );
@@ -675,10 +682,16 @@ impl StoreDriver for GrpcStore {
         if digest.size_bytes() == 0 {
             return writer.send_eof();
         }
-
+        let digest_function = ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
+            .err_tip(|| "In GrpcStore::update()")?
+            .map_or_else(default_digest_hasher_func, |v| *v)
+            .proto_digest_func()
+            .as_str_name()
+            .to_ascii_lowercase();
         let resource_name = format!(
-            "{}/blobs/{}/{}",
+            "{}/blobs/{}/{}/{}",
             &self.instance_name,
+            digest_function,
             digest.packed_hash(),
             digest.size_bytes(),
         );
