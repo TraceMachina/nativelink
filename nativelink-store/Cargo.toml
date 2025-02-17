@@ -9,6 +9,8 @@ nativelink-config = { path = "../nativelink-config" }
 nativelink-util = { path = "../nativelink-util" }
 nativelink-proto = { path = "../nativelink-proto" }
 nativelink-metric = { path = "../nativelink-metric" }
+alloc-bytes = { path = "../external-crates/alloc-bytes" }
+heap-allocator = { path = "../external-crates/heap-allocator", features = ["mutex"] }
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 async-trait = "0.1.85"
 aws-config = { version = "1.5.14", default-features = false, features = [

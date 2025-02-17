@@ -1,0 +1,32 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+)
+
+rust_library(
+    name = "heap-allocator",
+    srcs = [
+        "src/lib.rs",
+    ],
+    crate_features = ["mutex"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crates//:ouroboros",
+        "@crates//:parking_lot",
+        "@crates//:rlsf",
+    ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":heap-allocator",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":heap-allocator",
+)

@@ -46,6 +46,8 @@ nativelink-util = { path = "nativelink-util" }
 nativelink-worker = { path = "nativelink-worker" }
 nativelink-metric = { path = "nativelink-metric" }
 nativelink-metric-collector = { path = "nativelink-metric-collector" }
+alloc-bytes = { path = "external-crates/alloc-bytes" }
+heap-allocator = { path = "external-crates/heap-allocator" }
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 axum = { version = "0.7.9", default-features = false }
 clap = { version = "4.5.26", features = ["derive"] }
