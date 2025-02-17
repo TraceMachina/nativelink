@@ -196,6 +196,11 @@ where
         }
     }
 
+    /// Returns the maximum number of bytes that can be stored in the cache.
+    pub fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+
     fn rebuild_btree_index(state: &mut State<K, T>) {
         state.btree = Some(state.lru.iter().map(|(k, _)| k).cloned().collect());
     }
@@ -235,6 +240,14 @@ where
         self.state.lock().await.lru.len()
     }
 
+    /// Forces items to be evicted until at least `evict_bytes` bytes are freed.
+    /// Returns the number of items evicted.
+    #[must_use]
+    pub async fn force_eviction_bytes(&self, evict_bytes: u64) -> usize {
+        let mut state = self.state.lock().await;
+        self.evict_items(&mut state, evict_bytes).await
+    }
+
     fn should_evict(
         &self,
         lru_len: usize,
@@ -254,24 +267,26 @@ where
         is_over_size || old_item_exists || is_over_count
     }
 
-    async fn evict_items(&self, state: &mut State<K, T>) {
+    async fn evict_items(&self, state: &mut State<K, T>, evict_bytes: u64) -> usize {
         let Some((_, mut peek_entry)) = state.lru.peek_lru() else {
-            return;
+            return 0;
         };
-
-        let max_bytes = if self.max_bytes != 0
+        let mut items_evicted = 0;
+        let max_bytes = if evict_bytes > 0 {
+            state
+                .sum_store_size
+                .saturating_sub(self.evict_bytes.max(evict_bytes))
+                .max(1)
+        } else if self.max_bytes != 0
             && self.evict_bytes != 0
             && self.should_evict(
                 state.lru.len(),
                 peek_entry,
                 state.sum_store_size,
                 self.max_bytes,
-            ) {
-            if self.max_bytes > self.evict_bytes {
-                self.max_bytes - self.evict_bytes
-            } else {
-                0
-            }
+            )
+        {
+            self.max_bytes.saturating_sub(self.evict_bytes)
         } else {
             self.max_bytes
         };
@@ -281,15 +296,17 @@ where
                 .lru
                 .pop_lru()
                 .expect("Tried to peek() then pop() but failed");
-            event!(Level::INFO, ?key, "Evicting",);
+            event!(Level::INFO, ?key, "Evicting");
             state.remove(&key, &eviction_item, false).await;
+            items_evicted += 1;
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
                 entry
             } else {
-                return;
+                return items_evicted;
             };
         }
+        items_evicted
     }
 
     /// Return the size of a `key`, if not found `None` is returned.
@@ -363,7 +380,7 @@ where
         Q: Ord + Hash + Eq + Debug + Sync,
     {
         let mut state = self.state.lock().await;
-        self.evict_items(&mut *state).await;
+        self.evict_items(&mut *state, 0).await;
 
         let entry = state.lru.get_mut(key.borrow())?;
 
@@ -430,7 +447,7 @@ where
             }
             state.sum_store_size += new_item_size;
             state.lifetime_inserted_bytes.add(new_item_size);
-            self.evict_items(state).await;
+            self.evict_items(state, 0).await;
         }
         replaced_items
     }
@@ -449,7 +466,7 @@ where
         K: Borrow<Q>,
         Q: Ord + Hash + Eq + Debug + Sync,
     {
-        self.evict_items(state).await;
+        self.evict_items(state, 0).await;
         if let Some(entry) = state.lru.pop(key.borrow()) {
             state.remove(key, &entry, false).await;
             return true;
