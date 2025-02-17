@@ -36,6 +36,8 @@ crate.from_cargo(
     cargo_lockfile = "//:Cargo.lock",
     manifests = [
         "//:Cargo.toml",
+        "//external-crates/alloc-bytes:Cargo.toml",
+        "//external-crates/heap-allocator:Cargo.toml",
         "//nativelink-config:Cargo.toml",
         "//nativelink-error:Cargo.toml",
         "//nativelink-macro:Cargo.toml",

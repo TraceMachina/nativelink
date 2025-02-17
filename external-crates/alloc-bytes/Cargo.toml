@@ -1,0 +1,25 @@
+[package]
+name = "alloc-bytes"
+version = "0.0.1"
+edition = "2018"
+authors = [
+  "Nativelink Authors",
+  "Nathan (Blaise) Bruer <alloc-bytes.blaise@allada.com>"
+]
+license = "Apache-2.0"
+repository = "https://github.com/TraceMachina/nativelink/external-crates/alloc-bytes"
+description = "A lightweight crate offering custom-allocated byte buffers with user-specified allocators for efficient, fine-tuned memory management."
+keywords = ["bytes", "allocator", "buffers"]
+categories = ["network-programming", "data-structures"]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+bytes = { version = "1.10.0", optional = true, default-features = false }
+heap-allocator = { path = "../heap-allocator", optional = true }
+
+[features]
+default = []
+
+bytes = ["dep:bytes"]

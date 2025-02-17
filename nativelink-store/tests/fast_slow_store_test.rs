@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use nativelink_config::stores::{FastSlowSpec, MemorySpec, NoopSpec, StoreSpec};
+use nativelink_config::stores::{EvictionPolicy, FastSlowSpec, MemorySpec, NoopSpec, StoreSpec};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
@@ -35,13 +35,19 @@ use rand::{Rng, SeedableRng};
 
 const MEGABYTE_SZ: usize = 1024 * 1024;
 
-fn make_stores() -> (Store, Store, Store) {
-    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
-    let slow_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+fn make_stores(max_bytes: usize) -> (Store, Store, Store) {
+    let store_spec = MemorySpec {
+        eviction_policy: Some(EvictionPolicy {
+            max_bytes,
+            ..Default::default()
+        }),
+    };
+    let fast_store = Store::new(MemoryStore::new(&store_spec));
+    let slow_store = Store::new(MemoryStore::new(&store_spec));
     let fast_slow_store = Store::new(FastSlowStore::new(
         &FastSlowSpec {
-            fast: StoreSpec::memory(MemorySpec::default()),
-            slow: StoreSpec::memory(MemorySpec::default()),
+            fast: StoreSpec::memory(store_spec.clone()),
+            slow: StoreSpec::memory(store_spec),
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -79,9 +85,10 @@ const VALID_HASH: &str = "0123456789abcdef00000000000000000001000000000000012345
 
 #[nativelink_test]
 async fn write_large_amount_to_both_stores_test() -> Result<(), Error> {
-    let (store, fast_store, slow_store) = make_stores();
+    const DATA_SIZE: usize = 20 * MEGABYTE_SZ;
+    let (store, fast_store, slow_store) = make_stores(DATA_SIZE + MEGABYTE_SZ);
 
-    let original_data = make_random_data(20 * MEGABYTE_SZ);
+    let original_data = make_random_data(DATA_SIZE);
     let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
     store
         .update_oneshot(digest, original_data.clone().into())
@@ -96,7 +103,7 @@ async fn write_large_amount_to_both_stores_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn fetch_slow_store_puts_in_fast_store_test() -> Result<(), Error> {
-    let (fast_slow_store, fast_store, slow_store) = make_stores();
+    let (fast_slow_store, fast_store, slow_store) = make_stores(8 * MEGABYTE_SZ);
 
     let original_data = make_random_data(MEGABYTE_SZ);
     let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
@@ -126,7 +133,7 @@ async fn fetch_slow_store_puts_in_fast_store_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn partial_reads_copy_full_to_fast_store_test() -> Result<(), Error> {
-    let (fast_slow_store, fast_store, slow_store) = make_stores();
+    let (fast_slow_store, fast_store, slow_store) = make_stores(8 * MEGABYTE_SZ);
 
     let original_data = make_random_data(MEGABYTE_SZ);
     let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
