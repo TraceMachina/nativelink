@@ -1,0 +1,27 @@
+[package]
+name = "heap-allocator"
+version = "0.0.1"
+edition = "2018"
+authors = [
+  "Nativelink Authors",
+  "Nathan (Blaise) Bruer <heap-allocator.blaise@allada.com>"
+]
+license = "Apache-2.0"
+repository = "https://github.com/TraceMachina/nativelink/external-crates/heap-allocator"
+description = "A fixed heap allocator based on TLSF for no_std"
+keywords = ["tlsf", "malloc", "allocator", "heap", "no_std", "embedded", "real-time", "memory-management", "mimalloc", "jemalloc", "glibc"]
+categories = ["memory-management", "api-bindings", "embedded", "performance"]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+rlsf = { version = "0.2.1", default-features = false }
+ouroboros = { version = "0.18.5", default-features = false }
+parking_lot = { version = "0.12.3", default-features = false, optional = true }
+
+[features]
+default = []
+
+mutex = ["std", "dep:parking_lot"]
+std = []
