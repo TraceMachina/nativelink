@@ -25,7 +25,16 @@ ARG ADDITIONAL_SETUP_WORKER_CMD=
 FROM ubuntu:${OS_VERSION} AS dependencies
 ARG OS_VERSION
 RUN apt-get update \
-    && if [ "${OS_VERSION}" = "22.04" ]; then \
+    && if [ "${OS_VERSION}" = "24.04" ]; then \
+        DEBIAN_FRONTEND=noninteractive \
+        apt-get install --no-install-recommends -y \
+            npm=9.2.0~ds1-2 \
+            git=1:2.43.0-1ubuntu7.2 \
+            gcc=4:13.2.0-7ubuntu1 \
+            g++=4:13.2.0-7ubuntu1 \
+            python3=3.12.3-0ubuntu2 \
+            ca-certificates=20240203; \
+    elif [ "${OS_VERSION}" = "22.04" ]; then \
         DEBIAN_FRONTEND=noninteractive \
         apt-get install --no-install-recommends -y \
             npm=8.5.1~ds-1 \
@@ -34,22 +43,13 @@ RUN apt-get update \
             g++=4:11.2.0-1ubuntu1 \
             python3=3.10.6-1~22.04.1 \
             ca-certificates=20240203~22.04.1; \
-    elif [ "${OS_VERSION}" = "20.04" ]; then \
-        DEBIAN_FRONTEND=noninteractive \
-        apt-get install --no-install-recommends -y \
-            npm=6.14.4+ds-1ubuntu2 \
-            git=1:2.25.1-1ubuntu3.13 \
-            gcc=4:9.3.0-1ubuntu2 \
-            g++=4:9.3.0-1ubuntu2 \
-            python3=3.8.2-0ubuntu2 \
-            ca-certificates=20240203~20.04.1; \
     else \
         echo "Unsupported OS version: ${OS_VERSION}" >&2; \
         exit 1; \
     fi \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @bazel/bazelisk@1.19.0
+    && npm install -g @bazel/bazelisk@1.25.0
 
 # Build the binary.
 FROM dependencies AS builder
