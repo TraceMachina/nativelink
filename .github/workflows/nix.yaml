@@ -20,40 +20,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-13, macos-14]
+        os: [ubuntu-24.04, macos-15]
     name: Bazel Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: >- # v4.1.1
-          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Install Nix
-        uses: >- # v10
-          DeterminateSystems/nix-installer-action@de22e16c4711fca50c816cc9081563429d1cf563
-
-      - name: Free disk space
-        uses: >- # v2.0.0
-          endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
-        with:
-          remove_android: true
-          remove_dotnet: true
-          remove_haskell: true
-          remove_tool_cache: false
-
-      - name: Cache Nix derivations
-        uses: >- # v4
-          DeterminateSystems/magic-nix-cache-action@fc6aaceb40b9845a02b91e059ec147e78d1b4e41
-
-      # TODO(aaronmondal): Figure out why this cache breaks CI.
-      # See: https://github.com/TraceMachina/nativelink/issues/772
-      # - name: Mount bazel cache
-      #   uses: >- # v4.0.1
-      #     actions/cache@ab5e6d0c87105b4c9c2047343972218f562e4319
-      #   with:
-      #     path: "~/.cache/bazel"
-      #     key: ${{ runner.os }}-bazel-nix
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
 
       - name: Invoke Bazel build in Nix shell
         run: |
@@ -73,41 +50,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-13]
+        os: [ubuntu-24.04, macos-15]
     name: Cargo Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: >- # v4.1.1
-          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Install Nix
-        uses: >- # v10
-          DeterminateSystems/nix-installer-action@de22e16c4711fca50c816cc9081563429d1cf563
-
-      - name: Free disk space
-        uses: >- # v2.0.0
-          endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
-        with:
-          remove_android: true
-          remove_dotnet: true
-          remove_haskell: true
-          remove_tool_cache: false
-
-      - name: Delete Applications and Simulators to free up disk space
-        if: contains(matrix.os, 'macos')
-        run: |
-          echo "Deleting Applications"
-          sudo rm -rf ~/Applications/*
-          echo "Deleting all iOS simulators"
-          xcrun simctl delete all
-          echo "Deleting iOS Simulator caches"
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/*
-
-      - name: Cache Nix derivations
-        uses: >- # v4
-          DeterminateSystems/magic-nix-cache-action@fc6aaceb40b9845a02b91e059ec147e78d1b4e41
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
 
       - name: Invoke Cargo build in Nix shell
         run: >
@@ -118,41 +71,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-13, macos-14]
+        os:
+          - ubuntu-22.04
+          - ubuntu-24.04
+          - macos-13
+          - macos-14
+          - macos-15
     name: Installation / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: >- # v4.1.1
-          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Install Nix
-        uses: >- # v10
-          DeterminateSystems/nix-installer-action@de22e16c4711fca50c816cc9081563429d1cf563
-
-      - name: Free disk space
-        uses: >- # v2.0.0
-          endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
-        with:
-          remove_android: true
-          remove_dotnet: true
-          remove_haskell: true
-          remove_tool_cache: false
-
-      - name: Delete Applications and Simulators to free up disk space
-        if: contains(matrix.os, 'macos')
-        run: |
-          echo "Deleting Applications"
-          sudo rm -rf ~/Applications/*
-          echo "Deleting all iOS simulators"
-          xcrun simctl delete all
-          echo "Deleting iOS Simulator caches"
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/*
-
-      - name: Cache Nix derivations
-        uses: >- # v4
-          DeterminateSystems/magic-nix-cache-action@fc6aaceb40b9845a02b91e059ec147e78d1b4e41
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
 
       - name: Test nix run
         run: |

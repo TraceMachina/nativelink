@@ -23,8 +23,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: >- # v4.1.7
-          actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
 
@@ -37,15 +37,15 @@ jobs:
           publish_results: true
 
       - name: Upload artifact
-        uses: >- # v4.4.0
-          actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874
+        uses: >- # v4.6.0
+          actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
         with:
           name: SARIF file
           path: results.sarif
           retention-days: 5
 
       - name: Upload to code-scanning
-        uses: >- # v3.26.6
-          github/codeql-action/upload-sarif@4dd16135b69a43b6c8efb853346f8437d92d3c93
+        uses: >- # v3.28.9
+          github/codeql-action/upload-sarif@9e8d0789d4a0fa9ceb6b1738f7e269594bdd67f0
         with:
           sarif_file: results.sarif
