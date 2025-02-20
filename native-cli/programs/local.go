@@ -50,21 +50,6 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		},
 	))
 
-	tektonOperator, err := components.AddComponent(
-		ctx,
-		"tekton-operator",
-		&components.TektonOperator{
-			Version: "0.72.0",
-			Dependencies: slices.Concat(
-				cilium,
-			),
-		},
-	)
-	if err != nil {
-		log.Println(err)
-		os.Exit(1)
-	}
-
 	flux, err := components.AddComponent(
 		ctx,
 		"flux",
@@ -92,7 +77,6 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 			Dependencies: slices.Concat(
 				cilium,
 				flux,
-				tektonOperator,
 			),
 		},
 	)

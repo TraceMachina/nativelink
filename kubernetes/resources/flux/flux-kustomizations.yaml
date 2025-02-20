@@ -2,11 +2,11 @@
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: provider
+  name: tekton-operator
   namespace: default
 spec:
   interval: 2m
-  path: "./kubernetes/resources/provider"
+  path: "./kubernetes/vendor/tekton-operator"
   prune: true
   force: true
   retryInterval: 20s
@@ -16,8 +16,25 @@ spec:
     kind: GitRepository
     name: nativelink
     namespace: default
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: tekton-config
+  namespace: default
+spec:
+  interval: 2m
+  path: "./kubernetes/resources/tekton-config"
+  prune: true
+  force: true
+  retryInterval: 20s
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: nativelink
+    namespace: default
   dependsOn:
-    - name: nativelink-tekton-resources
+    - name: tekton-operator
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -36,3 +53,25 @@ spec:
     kind: GitRepository
     name: nativelink
     namespace: default
+  dependsOn:
+    - name: tekton-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: provider
+  namespace: default
+spec:
+  interval: 2m
+  path: "./kubernetes/resources/provider"
+  prune: true
+  force: true
+  retryInterval: 20s
+  targetNamespace: default
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: nativelink
+    namespace: default
+  dependsOn:
+    - name: nativelink-tekton-resources
