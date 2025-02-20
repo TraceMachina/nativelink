@@ -257,7 +257,7 @@ impl Worker {
         }
     }
 
-    pub fn can_accept_work(&self) -> bool {
+    pub const fn can_accept_work(&self) -> bool {
         !self.is_paused && !self.is_draining
     }
 }
