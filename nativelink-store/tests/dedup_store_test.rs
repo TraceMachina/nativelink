@@ -281,7 +281,9 @@ async fn has_checks_content_store() -> Result<(), Error> {
     let index_store = MemoryStore::new(&MemorySpec::default());
     let content_store = MemoryStore::new(&MemorySpec {
         eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
-            max_bytes: DATA_SIZE + 1,
+            // Make enough room for our data and add 10% more to ensure
+            // it'll all fit.
+            max_bytes: DATA_SIZE + DATA_SIZE / 10,
             ..Default::default()
         }),
     });
@@ -308,10 +310,10 @@ async fn has_checks_content_store() -> Result<(), Error> {
     {
         // We now add one more item to the store, which will trigger eviction of one of
         // the existing items because max_bytes will be exceeded.
-        const DATA2: &str = "1234";
-        let digest2 = DigestInfo::try_new(VALID_HASH2, DATA2.len()).unwrap();
+        let data2 = make_random_data(DATA_SIZE / 5);
+        let digest2 = DigestInfo::try_new(VALID_HASH2, data2.len()).unwrap();
         store
-            .update_oneshot(digest2, DATA2.into())
+            .update_oneshot(digest2, data2.clone().into())
             .await
             .err_tip(|| "Failed to write data to dedup store")?;
 
@@ -320,7 +322,7 @@ async fn has_checks_content_store() -> Result<(), Error> {
             let size_info = store.has(digest2).await.err_tip(|| "Failed to run .has")?;
             assert_eq!(
                 size_info,
-                Some(DATA2.len() as u64),
+                Some(data2.len() as u64),
                 "Expected sizes to match"
             );
         }

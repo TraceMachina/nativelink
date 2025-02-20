@@ -37,6 +37,8 @@ rust_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//external-crates/alloc-bytes",
+        "//external-crates/heap-allocator",
         "//nativelink-config",
         "//nativelink-error",
         "//nativelink-metric",

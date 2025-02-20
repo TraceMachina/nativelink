@@ -1,0 +1,45 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+    "rust_test_suite",
+)
+
+rust_library(
+    name = "alloc-bytes",
+    srcs = [
+        "src/lib.rs",
+    ],
+    crate_features = ["bytes"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//external-crates/heap-allocator",
+        "@crates//:bytes",
+    ],
+)
+
+rust_test_suite(
+    name = "integration",
+    timeout = "short",
+    srcs = [
+        "tests/alloc_bytes_test.rs",
+    ],
+    crate_features = ["bytes"],
+    deps = [
+        ":alloc-bytes",
+        "//external-crates/heap-allocator",
+    ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":alloc-bytes",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":alloc-bytes",
+)

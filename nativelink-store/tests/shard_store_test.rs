@@ -26,7 +26,7 @@ use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-const MEGABYTE_SZ: usize = 1024 * 1024;
+const KILOBYTE_SZ: usize = 1024;
 
 fn make_stores(weights: &[u32]) -> (Arc<ShardStore>, Vec<Arc<MemoryStore>>) {
     let memory_store_config = MemorySpec::default();
@@ -69,7 +69,7 @@ async fn verify_weights(
     print_results: bool,
 ) -> Result<(), Error> {
     let (shard_store, stores) = make_stores(weights);
-    let data = make_random_data(MEGABYTE_SZ);
+    let data = make_random_data(KILOBYTE_SZ);
 
     for counter in 0..rounds {
         let mut hasher = DigestHasherFunc::Blake3.hasher();
@@ -101,13 +101,13 @@ const STORE1_HASH: &str = "00000000EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
 async fn has_with_one_digest() -> Result<(), Error> {
     let (shard_store, stores) = make_stores(&[1, 1]);
 
-    let original_data = make_random_data(MEGABYTE_SZ);
+    let original_data = make_random_data(KILOBYTE_SZ);
     let digest1 = DigestInfo::try_new(STORE0_HASH, 100).unwrap();
     stores[0]
         .update_oneshot(digest1, original_data.clone().into())
         .await?;
 
-    assert_eq!(shard_store.has(digest1).await, Ok(Some(MEGABYTE_SZ as u64)));
+    assert_eq!(shard_store.has(digest1).await, Ok(Some(KILOBYTE_SZ as u64)));
     Ok(())
 }
 
@@ -131,7 +131,7 @@ async fn has_with_many_digests_both_missing() -> Result<(), Error> {
 async fn has_with_many_digests_one_missing() -> Result<(), Error> {
     let (shard_store, stores) = make_stores(&[1, 1]);
 
-    let original_data = make_random_data(MEGABYTE_SZ);
+    let original_data = make_random_data(KILOBYTE_SZ);
     let digest1 = DigestInfo::try_new(STORE0_HASH, 100).unwrap();
     let missing_digest = DigestInfo::try_new(STORE1_HASH, 100).unwrap();
     stores[0]
@@ -142,7 +142,7 @@ async fn has_with_many_digests_one_missing() -> Result<(), Error> {
         shard_store
             .has_many(&[digest1.into(), missing_digest.into()])
             .await,
-        Ok(vec![Some(MEGABYTE_SZ as u64), None])
+        Ok(vec![Some(KILOBYTE_SZ as u64), None])
     );
     Ok(())
 }
@@ -151,8 +151,8 @@ async fn has_with_many_digests_one_missing() -> Result<(), Error> {
 async fn has_with_many_digests_both_exist() -> Result<(), Error> {
     let (shard_store, stores) = make_stores(&[1, 1]);
 
-    let original_data1 = make_random_data(MEGABYTE_SZ);
-    let original_data2 = make_random_data(2 * MEGABYTE_SZ);
+    let original_data1 = make_random_data(KILOBYTE_SZ);
+    let original_data2 = make_random_data(2 * KILOBYTE_SZ);
     let digest1 = DigestInfo::try_new(STORE0_HASH, 100).unwrap();
     let digest2 = DigestInfo::try_new(STORE1_HASH, 100).unwrap();
     stores[0]
@@ -178,7 +178,7 @@ async fn has_with_many_digests_both_exist() -> Result<(), Error> {
 async fn get_part_reads_store0() -> Result<(), Error> {
     let (shard_store, stores) = make_stores(&[1, 1]);
 
-    let original_data1 = make_random_data(MEGABYTE_SZ);
+    let original_data1 = make_random_data(KILOBYTE_SZ);
     let digest1 = DigestInfo::try_new(STORE0_HASH, 100).unwrap();
     stores[0]
         .update_oneshot(digest1, original_data1.clone().into())
@@ -195,7 +195,7 @@ async fn get_part_reads_store0() -> Result<(), Error> {
 async fn get_part_reads_store1() -> Result<(), Error> {
     let (shard_store, stores) = make_stores(&[1, 1]);
 
-    let original_data1 = make_random_data(MEGABYTE_SZ);
+    let original_data1 = make_random_data(KILOBYTE_SZ);
     let digest1 = DigestInfo::try_new(STORE1_HASH, 100).unwrap();
     stores[1]
         .update_oneshot(digest1, original_data1.clone().into())
@@ -212,7 +212,7 @@ async fn get_part_reads_store1() -> Result<(), Error> {
 async fn upload_store0() -> Result<(), Error> {
     let (shard_store, stores) = make_stores(&[1, 1]);
 
-    let original_data1 = make_random_data(MEGABYTE_SZ);
+    let original_data1 = make_random_data(KILOBYTE_SZ);
     let digest1 = DigestInfo::try_new(STORE0_HASH, 100).unwrap();
     shard_store
         .update_oneshot(digest1, original_data1.clone().into())
@@ -229,7 +229,7 @@ async fn upload_store0() -> Result<(), Error> {
 async fn upload_store1() -> Result<(), Error> {
     let (shard_store, stores) = make_stores(&[1, 1]);
 
-    let original_data1 = make_random_data(MEGABYTE_SZ);
+    let original_data1 = make_random_data(KILOBYTE_SZ);
     let digest1 = DigestInfo::try_new(STORE1_HASH, 100).unwrap();
     shard_store
         .update_oneshot(digest1, original_data1.clone().into())
@@ -246,7 +246,7 @@ async fn upload_store1() -> Result<(), Error> {
 async fn upload_download_has_check() -> Result<(), Error> {
     let (shard_store, _stores) = make_stores(&[1, 1]);
 
-    let original_data1 = make_random_data(MEGABYTE_SZ);
+    let original_data1 = make_random_data(KILOBYTE_SZ);
     let digest1 = DigestInfo::try_new(STORE1_HASH, 100).unwrap();
 
     assert_eq!(shard_store.has(digest1).await, Ok(None));
@@ -257,7 +257,7 @@ async fn upload_download_has_check() -> Result<(), Error> {
         shard_store.get_part_unchunked(digest1, 0, None).await,
         Ok(original_data1.into())
     );
-    assert_eq!(shard_store.has(digest1).await, Ok(Some(MEGABYTE_SZ as u64)));
+    assert_eq!(shard_store.has(digest1).await, Ok(Some(KILOBYTE_SZ as u64)));
     Ok(())
 }
 
@@ -266,13 +266,13 @@ async fn weights_send_to_proper_store() -> Result<(), Error> {
     // Very low chance anything will ever go to second store due to weights being so much diff.
     let (shard_store, stores) = make_stores(&[100_000, 1]);
 
-    let original_data1 = make_random_data(MEGABYTE_SZ);
+    let original_data1 = make_random_data(KILOBYTE_SZ);
     let digest1 = DigestInfo::try_new(STORE1_HASH, 100).unwrap();
     shard_store
         .update_oneshot(digest1, original_data1.clone().into())
         .await?;
 
-    assert_eq!(stores[0].has(digest1).await, Ok(Some(MEGABYTE_SZ as u64)));
+    assert_eq!(stores[0].has(digest1).await, Ok(Some(KILOBYTE_SZ as u64)));
     assert_eq!(stores[1].has(digest1).await, Ok(None));
     Ok(())
 }
