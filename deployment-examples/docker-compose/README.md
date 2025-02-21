@@ -83,7 +83,7 @@ NativeLink system. It's configured in the `docker-compose.yml` file under the
 The scheduler is currently the only single point of failure in the system. We
 currently only support one scheduler at a time. The scheduler service is
 responsible for scheduling tasks in the NativeLink system. It's configured in
-the `docker-compose.yml` file under the nativelink_scheduler service.
+the `docker-compose.yml` file under the `nativelink_scheduler` service.
 
 ```yml
   nativelink_scheduler:
@@ -109,7 +109,7 @@ the `docker-compose.yml` file under the nativelink_scheduler service.
 ### Workers
 
 Worker instances are responsible for executing tasks. They're configured in the
-`docker-compose.yml` file under the nativelink_executor service.
+`docker-compose.yml` file under the `nativelink_executor` service.
 
 ```yml
   nativelink_executor:

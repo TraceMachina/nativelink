@@ -49,7 +49,7 @@
     "dotenv": "^16.4.5",
     "framer-motion": "^11.5.4",
     "motion": "^10.18.0",
-    "playwright": "1.47.0",
+    "playwright": "1.50.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "rehype-autolink-headings": "^7.1.0",

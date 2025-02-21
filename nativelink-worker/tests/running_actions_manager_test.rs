@@ -2156,6 +2156,7 @@ async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn std::e
                 upload_historical_results_strategy: Some(
                     nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
                 ),
+                #[allow(clippy::literal_string_with_formatting_args)]
                 success_message_template: "{historical_results_hash}-{historical_results_size}"
                     .to_string(),
                 ..Default::default()
@@ -2256,6 +2257,7 @@ async fn failure_does_not_cache_in_historical_results() -> Result<(), Box<dyn st
                 upload_historical_results_strategy: Some(
                     nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
                 ),
+                #[allow(clippy::literal_string_with_formatting_args)]
                 success_message_template: "{historical_results_hash}-{historical_results_size}"
                     .to_string(),
                 ..Default::default()
@@ -2297,6 +2299,7 @@ async fn infra_failure_does_cache_in_historical_results() -> Result<(), Box<dyn 
                 upload_historical_results_strategy: Some(
                     nativelink_config::cas_server::UploadCacheResultsStrategy::failures_only,
                 ),
+                #[allow(clippy::literal_string_with_formatting_args)]
                 failure_message_template: "{historical_results_hash}-{historical_results_size}"
                     .to_string(),
                 ..Default::default()
@@ -2364,6 +2367,7 @@ async fn action_result_has_used_in_message() -> Result<(), Box<dyn std::error::E
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
                     nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
+                #[allow(clippy::literal_string_with_formatting_args)]
                 success_message_template: "{action_digest_hash}-{action_digest_size}".to_string(),
                 ..Default::default()
             },

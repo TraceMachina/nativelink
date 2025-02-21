@@ -6,10 +6,10 @@ edition = "2021"
 [dependencies]
 byte-unit = { version = "5.1.6", default-features = false, features = ["byte"] }
 humantime = "2.1.0"
-serde = { version = "1.0.217", default-features = false, features = ["derive"] }
+serde = { version = "1.0.218", default-features = false, features = ["derive"] }
 serde_json5 = "0.1.0"
 shellexpand = { version = "3.1.0", default-features = false, features = ["base-0"] }
 
 [dev-dependencies]
 pretty_assertions = { version = "1.4.1", features = ["std"] }
-serde_json = { version = "1.0.138", default-features = false }
+serde_json = { version = "1.0.139", default-features = false }
