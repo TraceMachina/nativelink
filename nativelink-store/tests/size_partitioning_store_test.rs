@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use nativelink_config::stores::{MemorySpec, SizePartitioningSpec, StoreSpec};
+use nativelink_config::stores::{MemorySpec, SizePartitioningSpec, StoreRef};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
@@ -44,8 +44,8 @@ fn setup_stores(
     let size_part_store = SizePartitioningStore::new(
         &SizePartitioningSpec {
             size,
-            lower_store: StoreSpec::memory(MemorySpec::default()),
-            upper_store: StoreSpec::memory(MemorySpec::default()),
+            lower_store: StoreRef::new("lower", MemorySpec::default()),
+            upper_store: StoreRef::new("upper", MemorySpec::default()),
         },
         Store::new(lower_memory_store.clone()),
         Store::new(upper_memory_store.clone()),

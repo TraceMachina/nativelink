@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use nativelink_config::stores::{DedupSpec, MemorySpec, StoreSpec};
+use nativelink_config::stores::{DedupSpec, MemorySpec, StoreRef};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
@@ -26,8 +26,8 @@ use rand::{Rng, SeedableRng};
 
 fn make_default_config() -> DedupSpec {
     DedupSpec {
-        index_store: StoreSpec::memory(MemorySpec::default()),
-        content_store: StoreSpec::memory(MemorySpec::default()),
+        index_store: StoreRef::new("index", MemorySpec::default()),
+        content_store: StoreRef::new("content", MemorySpec::default()),
         min_size: 8 * 1024,
         normal_size: 32 * 1024,
         max_size: 128 * 1024,
@@ -161,8 +161,8 @@ async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test
 
     let store = DedupStore::new(
         &DedupSpec {
-            index_store: StoreSpec::memory(MemorySpec::default()),
-            content_store: StoreSpec::memory(MemorySpec::default()),
+            index_store: StoreRef::new("index", MemorySpec::default()),
+            content_store: StoreRef::new("index", MemorySpec::default()),
             min_size: 5,
             normal_size: 6,
             max_size: 7,
@@ -206,8 +206,8 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
 
     let store = DedupStore::new(
         &DedupSpec {
-            index_store: StoreSpec::memory(MemorySpec::default()),
-            content_store: StoreSpec::memory(MemorySpec::default()),
+            index_store: StoreRef::new("index", MemorySpec::default()),
+            content_store: StoreRef::new("content", MemorySpec::default()),
             min_size: 5,
             normal_size: 6,
             max_size: 7,
