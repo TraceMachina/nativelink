@@ -1,8 +1,8 @@
 {
   "stores": [
     {
-      "name": "GRPC_LOCAL_STORE",
       // Note: This file is used to test GRPC store.
+      "name": "GRPC_LOCAL_STORE",
       "grpc": {
         "instance_name": "",
         "endpoints": [
@@ -11,8 +11,8 @@
         "store_type": "cas"
       }
     }, {
-      "name": "GRPC_LOCAL_AC_STORE",
       // Note: This file is used to test GRPC store.
+      "name": "GRPC_LOCAL_AC_STORE",
       "grpc": {
         "instance_name": "",
         "endpoints": [

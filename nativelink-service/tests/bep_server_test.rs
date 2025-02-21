@@ -18,7 +18,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use hyper::body::Frame;
 use nativelink_config::cas_server::BepConfig;
-use nativelink_config::stores::{MemorySpec, StoreSpec};
+use nativelink_config::stores::{MemorySpec, StoreRef};
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::com::github::trace_machina::nativelink::events::{bep_event, BepEvent};
@@ -55,7 +55,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         BEP_STORE_NAME,
         store_factory(
-            &StoreSpec::memory(MemorySpec::default()),
+            &StoreRef::new("memory", MemorySpec::default()),
             &store_manager,
             None,
         )

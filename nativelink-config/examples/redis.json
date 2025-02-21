@@ -2,40 +2,44 @@
   "stores": [
     {
       "name": "CAS_FAST_SLOW_STORE",
-      "redis_store": {
+      "redis": {
         "addresses": ["redis://127.0.0.1:6379/"],
         "mode": "cluster"
       }
     }, {
       "name": "AC_FAST_SLOW_STORE",
-      "redis_store": {
+      "redis": {
         "addresses": ["redis://127.0.0.1:6379/"],
         "mode": "cluster"
       }
     }, {
       "name": "AC_MAIN_STORE",
-      "completeness_checking": {
+      "completenessChecking": {
         "backend": {
-          "ref_store": {
+          "name": "ac-ref",
+          "ref": {
             "name": "AC_FAST_SLOW_STORE"
           }
         },
         "cas_store": {
-          "ref_store": {
+          "name": "cas-ref",
+          "ref": {
             "name": "CAS_MAIN_STORE"
           }
         }
       }
     }, {
       "name": "CAS_MAIN_STORE",
-      "existence_cache": {
+      "existenceCache": {
         "backend": {
+          "name": "cas-compression",
           "compression": {
             "compression_algorithm": {
               "lz4": {}
             },
             "backend": {
-              "ref_store": {
+              "name": "cas-compression-ref",
+              "ref": {
                 "name": "CAS_FAST_SLOW_STORE"
               }
             }

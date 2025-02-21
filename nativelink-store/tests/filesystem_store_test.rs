@@ -26,7 +26,7 @@ use bytes::Bytes;
 use futures::executor::block_on;
 use futures::task::Poll;
 use futures::{poll, Future, FutureExt};
-use nativelink_config::stores::FilesystemSpec;
+use nativelink_config::stores::{EvictionPolicy, FilesystemSpec};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
@@ -317,7 +317,7 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
         FilesystemStore::<TestFileEntry<LocalHooks>>::new(&FilesystemSpec {
             content_path: content_path.clone(),
             temp_path: temp_path.clone(),
-            eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+            eviction_policy: Some(EvictionPolicy {
                 max_count: 3,
                 ..Default::default()
             }),
@@ -383,7 +383,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
         FilesystemStore::<TestFileEntry<LocalHooks>>::new(&FilesystemSpec {
             content_path: content_path.clone(),
             temp_path: temp_path.clone(),
-            eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+            eviction_policy: Some(EvictionPolicy {
                 max_count: 3,
                 ..Default::default()
             }),
@@ -491,7 +491,7 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
         FilesystemStore::<TestFileEntry<LocalHooks>>::new(&FilesystemSpec {
             content_path: content_path.clone(),
             temp_path: temp_path.clone(),
-            eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+            eviction_policy: Some(EvictionPolicy {
                 max_count: 1,
                 ..Default::default()
             }),
@@ -637,7 +637,7 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
         FilesystemStore::<TestFileEntry<LocalHooks>>::new(&FilesystemSpec {
             content_path: make_temp_path("content_path"),
             temp_path: make_temp_path("temp_path"),
-            eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+            eviction_policy: Some(EvictionPolicy {
                 max_bytes: 5,
                 ..Default::default()
             }),
