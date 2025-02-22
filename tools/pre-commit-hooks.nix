@@ -57,14 +57,8 @@ in {
   };
   forbid-binary-files = {
     excludes = [
-      # Landing page image for the website.
-      "nativelink-docs/static/img/hero-dark.png"
-
       # Testdata for fastcdc.
       "nativelink-util/tests/data/SekienAkashita.jpg"
-
-      # Bun binary lockfile
-      "web/platform/bun.lockb"
     ];
     enable = true;
     types = ["binary"];

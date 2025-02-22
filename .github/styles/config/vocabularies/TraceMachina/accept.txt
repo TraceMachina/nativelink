@@ -2,16 +2,20 @@ Ansys
 AMI
 Astro
 Bazel
+Bazelisk
 Cloudflare
 ELB
 FFI
+FFIs
 GPUs
 Goma
 [Hh]ermeticity
 JDK
 Kustomization
+Kustomizations
 LLD
 LLM
+LLMs
 LLVM
 Machina
 [Mm]etamaterials
@@ -29,6 +33,7 @@ Starlark
 Tokio
 TraceMachina
 [Tt]oolchain
+[Tt]oolchains
 Qwik
 Verilator
 Verilog
@@ -48,6 +53,7 @@ namespace
 Pulumi
 Tekton
 async
+asynchronicity
 API
 APIs
 Dedup

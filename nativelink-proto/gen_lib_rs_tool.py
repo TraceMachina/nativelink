@@ -41,7 +41,6 @@ _HEADER = """\
     clippy::default_trait_access,
     clippy::doc_lazy_continuation,
     clippy::doc_markdown,
-    clippy::doc_markdown,
     clippy::large_enum_variant,
     clippy::missing_const_for_fn,
     rustdoc::invalid_html_tags

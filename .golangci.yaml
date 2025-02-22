@@ -3,7 +3,7 @@ linters:
   enable-all: true
   disable:
     # Deprecated.
-    - exportloopref
+    - tenv
 
     # Allow all packages for now.
     - depguard
