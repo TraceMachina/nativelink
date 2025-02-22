@@ -11,7 +11,7 @@
         "@astrojs/sitemap": "^3.1.6",
         "@astrojs/starlight": "^0.28.2",
         "@bazel/bazelisk": "^1.19.0",
-        "@beoe/pan-zoom": "^0.0.3",
+        "@beoe/pan-zoom": "^0.0.4",
         "@beoe/rehype-mermaid": "^0.0.1",
         "@biomejs/biome": "1.8.3",
         "@builder.io/qwik": "1.9.0",
@@ -118,7 +118,7 @@
 
     "@bazel/bazelisk": ["@bazel/bazelisk@1.25.0", "", { "bin": { "bazelisk": "bazelisk.js", "bazel": "bazelisk.js" } }, "sha512-IgesSUh9EwwLI9+Vs5rb/sx7vh6cI97CRLPqw9+/egFzeZlB5S2fTsKwbdDxtTVPjQMGS3GY64tTNsgejVFeKg=="],
 
-    "@beoe/pan-zoom": ["@beoe/pan-zoom@0.0.3", "", {}, "sha512-IWHMf0CzRwQawENVpnbkxLMicWdzgFMst8IPVe3qFgXyIn2PDDTzJE1avMhuwUPWchJuQFgXwzuc820gPJ/K+A=="],
+    "@beoe/pan-zoom": ["@beoe/pan-zoom@0.0.4", "", {}, "sha512-WsJBfvrnKNdoHiMQztF5/aUfEc5d5PhrVy0mcrufsV77HuBlG4bcEMZlIEKsfVXCJROkKEcdTEphHhZHu/xCDQ=="],
 
     "@beoe/rehype-code-hook": ["@beoe/rehype-code-hook@0.0.1", "", { "dependencies": { "@types/hast": "^3.0.4", "hast-util-from-html-isomorphic": "^2.0.0", "hast-util-to-text": "^4.0.2", "unified": "^11.0.4", "unist-util-visit": "^5.0.0" } }, "sha512-mH7HZIqOXL+PrfcbXwl1o+TjuFC8qIGZrKa0yMItvEo/R4peaU76x+AmtK+SkEwJDAtqHcmnLjIvATTv79ofEw=="],
 

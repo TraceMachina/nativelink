@@ -33,7 +33,7 @@
     "@astrojs/sitemap": "^3.1.6",
     "@astrojs/starlight": "^0.28.2",
     "@bazel/bazelisk": "^1.19.0",
-    "@beoe/pan-zoom": "^0.0.3",
+    "@beoe/pan-zoom": "^0.0.4",
     "@beoe/rehype-mermaid": "^0.0.1",
     "@biomejs/biome": "1.8.3",
     "@builder.io/qwik": "1.9.0",
