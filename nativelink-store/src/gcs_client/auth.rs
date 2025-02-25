@@ -151,8 +151,8 @@ impl GcsAuth {
     }
 
     fn add_jitter(duration: Duration) -> Duration {
-        let mut rng = rand::thread_rng();
-        let jitter_factor = rng.gen_range(0.8..1.2);
+        let mut rng = rand::rng();
+        let jitter_factor = rng.random_range(0.8..1.2);
         duration.mul_f64(jitter_factor)
     }
 

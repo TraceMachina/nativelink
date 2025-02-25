@@ -57,11 +57,11 @@ impl GcsConnector {
 
         let channel = Channel::from_shared(endpoint)
             .map_err(|e| make_err!(Code::InvalidArgument, "Invalid GCS endpoint: {e:?}"))?
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(90))
             .tcp_nodelay(true)
             .http2_adaptive_window(true)
-            .http2_keep_alive_interval(Duration::from_secs(30))
+            .http2_keep_alive_interval(Duration::from_secs(90))
             .tls_config(ClientTlsConfig::new().with_native_roots())
             .map_err(|e| make_err!(Code::InvalidArgument, "Failed to configure TLS: {e:?}"))?;
 
