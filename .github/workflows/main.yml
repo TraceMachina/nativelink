@@ -55,14 +55,13 @@ jobs:
       # remove digest_function when #1325 is resolved
       run: |
         bazel --digest_function=sha256 test \
-          --remote_cache=grpcs://cas-tracemachina-shared.build-faster.nativelink.net \
+          --remote_cache=grpcs://tm-ci-cas.build-faster.nativelink.net \
           --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-          --remote_instance_name=main \
-          --bes_backend=grpcs://bes-tracemachina-shared.build-faster.nativelink.net \
+          --bes_backend=grpcs://tm-ci-bep.build-faster.nativelink.net \
           --bes_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-          --bes_results_url=https://app.nativelink.com/a/e3b1e0e0-4b73-45d6-85bc-5cb7b02edea5/build \
+          --bes_results_url=https://tm-ci-web.build-faster.nativelink.net/ \
           --remote_header=x-nativelink-project=nativelink-ci \
-          --remote_executor=grpcs://scheduler-tracemachina-shared.build-faster.nativelink.net:443 \
+          --remote_executor=grpcs://tm-ci-cas.build-faster.nativelink.net \
           --remote_default_exec_properties="container-image=docker://$RBE_IMAGE" \
           --jobs=200 \
           //...
@@ -90,9 +89,9 @@ jobs:
           nix develop --impure --command
           bash -c "bazel test \
             --remote_header=x-nativelink-api-key=$NL_COM_API_KEY \
-            --bes_backend=grpcs://bes-tracemachina-shared.build-faster.nativelink.net \
+            --bes_backend=grpcs://tm-ci-bep.build-faster.nativelink.net \
             --bes_header=x-nativelink-api-key=$NL_COM_API_KEY \
-            --bes_results_url=https://app.nativelink.com/a/e3b1e0e0-4b73-45d6-85bc-5cb7b02edea5/build \
+            --bes_results_url=https://tm-ci-web.build-faster.nativelink.net/ \
             ${{ github.ref == 'refs/heads/main' && '--remote_upload_local_results=true' || '--nogenerate_json_trace_profile --remote_upload_local_results=false' }} \
             //..."
 
