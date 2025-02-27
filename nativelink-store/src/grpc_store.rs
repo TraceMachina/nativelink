@@ -40,7 +40,7 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
 use nativelink_util::digest_hasher::{default_digest_hasher_func, ACTIVE_HASHER_FUNC};
-use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatusIndicator};
+use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::proto_stream_utils::{
     FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
@@ -777,10 +777,6 @@ impl StoreDriver for GrpcStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
-    }
-
-    fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
-        registry.register_indicator(self);
     }
 }
 
