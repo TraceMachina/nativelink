@@ -3,7 +3,49 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.5.4](https://github.com/TraceMachina/nativelink/compare/v0.5.3..v0.5.4) - 2025-01-29
+## [0.6.0](https://github.com/TraceMachina/nativelink/compare/v0.5.4..0.6.0) - 2025-02-28
+
+
+
+### ❌️  Breaking Changes
+
+- [Breaking] Remove ResumableFileSlot and rely on high ulimits ([#1582](https://github.com/TraceMachina/nativelink/issues/1582)) - ([8b89c31](https://github.com/TraceMachina/nativelink/commit/8b89c311f5c0a64bc9a755fdb9937b4ed54ba9c6))
+
+### ⛰️  Features
+
+- Add Grpc, Memory & S3 store to health checker registry ([#1586](https://github.com/TraceMachina/nativelink/issues/1586)) - ([44d8db1](https://github.com/TraceMachina/nativelink/commit/44d8db10259aafa622c26d6f27ce312a53edcfc0))
+- Add ability to prefix worker_id in config ([#1578](https://github.com/TraceMachina/nativelink/issues/1578)) - ([e753b8d](https://github.com/TraceMachina/nativelink/commit/e753b8d4dc84711fe8b656690ce9890ccc2e85c9))
+- Add OriginEvent for scheduler scheduling action ([#1574](https://github.com/TraceMachina/nativelink/issues/1574)) - ([60b0049](https://github.com/TraceMachina/nativelink/commit/60b0049e505481fbfc8a2644bf25a9dca37d3258))
+
+### 🐛 Bug Fixes
+
+- Move Tekton from Pulumi to Flux ([#1593](https://github.com/TraceMachina/nativelink/issues/1593)) - ([96adea4](https://github.com/TraceMachina/nativelink/commit/96adea4479431ecb9b77cc517b07a51a6b1e2d63))
+
+### 📚 Documentation
+
+- Remove unused document file ([#1388](https://github.com/TraceMachina/nativelink/issues/1388)) - ([48c12b9](https://github.com/TraceMachina/nativelink/commit/48c12b9aa0ec55af371ef6f0af30a198e1d6e1a6))
+
+### 🧪 Testing & CI
+
+- Chage remote exec CI to new endpoints ([#1601](https://github.com/TraceMachina/nativelink/issues/1601)) - ([d755d30](https://github.com/TraceMachina/nativelink/commit/d755d301121ecf50ee748e5ef4bc26310655a1d2))
+- Upgrade rand crate version and stabilize test rand generation ([#1583](https://github.com/TraceMachina/nativelink/issues/1583)) - ([79c2357](https://github.com/TraceMachina/nativelink/commit/79c2357fd2732b6fe6d0bee2aa49486f8758d43e))
+- ClientKeepAlive update action ClientKeepAlive ([#1580](https://github.com/TraceMachina/nativelink/issues/1580)) - ([7afe286](https://github.com/TraceMachina/nativelink/commit/7afe2868313395d844ea6751667d1e0fd4987fc9))
+
+### ⚙️ Miscellaneous
+
+- Remove GrpcStore from health checker registry ([#1602](https://github.com/TraceMachina/nativelink/issues/1602)) - ([cba7359](https://github.com/TraceMachina/nativelink/commit/cba7359cc03d43789e2fa0b9cea634bc3d2c4900))
+- Mark functions `const` where possible ([#1573](https://github.com/TraceMachina/nativelink/issues/1573)) - ([8b9824f](https://github.com/TraceMachina/nativelink/commit/8b9824fea7b77b5e45838649ceff5d2aaa46c365))
+- GrpcStore now sends digest function from context ([#1587](https://github.com/TraceMachina/nativelink/issues/1587)) - ([fc85156](https://github.com/TraceMachina/nativelink/commit/fc851567305d9b20837ecb7b27ea8212ff4a2061))
+- Remove atime references to FilesystemStore ([#1584](https://github.com/TraceMachina/nativelink/issues/1584)) - ([0d6cbed](https://github.com/TraceMachina/nativelink/commit/0d6cbedeae514224c710fd736b9d6a03b571a5d2))
+- ensuring everything is scrubbed. ([#1576](https://github.com/TraceMachina/nativelink/issues/1576)) - ([a8c7339](https://github.com/TraceMachina/nativelink/commit/a8c73395e95619cb07c8506c7f29c95a8ac7f7d1))
+
+### ⬆️ Bumps & Version Updates
+
+- Bump Go deps - ([bc2b12a](https://github.com/TraceMachina/nativelink/commit/bc2b12a346901f6bf7074d684e77059b24b9fac1))
+- Bump flake ([#1596](https://github.com/TraceMachina/nativelink/issues/1596)) - ([34f1c94](https://github.com/TraceMachina/nativelink/commit/34f1c94e9cd2b4340b08b397805efd30a564574b))
+- Refactor GitHub actions ([#1589](https://github.com/TraceMachina/nativelink/issues/1589)) - ([f11c88b](https://github.com/TraceMachina/nativelink/commit/f11c88b01356c27a140a52ca6d8419a0524e1b9b))
+
+## [0.5.4](https://github.com/TraceMachina/nativelink/compare/v0.5.3..v0.5.4) - 2025-01-30
 
 
 
@@ -111,7 +153,7 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release NativeLink v0.5.4 - ([026762d](https://github.com/TraceMachina/nativelink/commit/026762dfcb0cc3708d4c908de11a74519662b2b7))
+- Release NativeLink v0.5.4 ([#1572](https://github.com/TraceMachina/nativelink/issues/1572)) - ([dcba3f5](https://github.com/TraceMachina/nativelink/commit/dcba3f5ef11ffb153437df105789213740dd9692))
 - Make stores and schedulers lists of named specs ([#1496](https://github.com/TraceMachina/nativelink/issues/1496)) - ([c99dca6](https://github.com/TraceMachina/nativelink/commit/c99dca6d85a23a524102a3e9c7b4cab688fcd6ec))
 - Ensure that EvictingMap is threadsafe ([#1564](https://github.com/TraceMachina/nativelink/issues/1564)) - ([4b5fe2e](https://github.com/TraceMachina/nativelink/commit/4b5fe2eef13e4c6322800cc583a13c777c0b4a7b))
 - Minor fix to BEP key encoding ([#1539](https://github.com/TraceMachina/nativelink/issues/1539)) - ([c742302](https://github.com/TraceMachina/nativelink/commit/c742302eee9d720d14b0839e684c081fb437182d))
