@@ -7,7 +7,7 @@
 }:
 buildGoModule {
   pname = "native-cli";
-  version = "0.5.4";
+  version = "0.6.0";
   src = ./.;
   vendorHash = "sha256-gnGQDpHzElk1Efbkqwia86PNd9LwF8dtS8eNPJc/3L0=";
   buildInputs = [makeWrapper];

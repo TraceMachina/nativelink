@@ -1982,7 +1982,7 @@ checksum = "defc4c55412d89136f966bbb339008b474350e5e6e78d2714439c386b3137a03"
 
 [[package]]
 name = "nativelink"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "async-lock",
  "axum",
@@ -2019,7 +2019,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -2032,7 +2032,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "fred",
  "hex",
@@ -2047,7 +2047,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2056,7 +2056,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -2067,7 +2067,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-collector"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "nativelink-error",
  "nativelink-metric",
@@ -2084,7 +2084,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2093,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -2104,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2137,7 +2137,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2173,7 +2173,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2224,7 +2224,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2268,7 +2268,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "async-lock",
  "bytes",
