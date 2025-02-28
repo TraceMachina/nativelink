@@ -1,6 +1,6 @@
 [package]
 name = "nativelink-error"
-version = "0.5.4"
+version = "0.6.0"
 edition = "2021"
 autobins = false
 autoexamples = false
