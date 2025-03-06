@@ -79,3 +79,11 @@ Gert
 Bruer
 Eagan
 Mondal
+Gallaher
+Thirdwave
+Norwest
+Databricks
+Datadog
+Brex
+Citrix
+Menlo
