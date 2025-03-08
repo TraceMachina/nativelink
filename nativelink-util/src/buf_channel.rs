@@ -268,7 +268,7 @@ impl DropCloserReadHalf {
     /// Sets the maximum size of the `recent_data` buffer. If the number of bytes
     /// received exceeds this size, the `recent_data` buffer will be cleared and
     /// no longer populated.
-    pub fn set_max_recent_data_size(&mut self, size: u64) {
+    pub const fn set_max_recent_data_size(&mut self, size: u64) {
         self.max_recent_data_size = size;
     }
 
@@ -327,7 +327,7 @@ impl DropCloserReadHalf {
     }
 
     /// The number of bytes received over this stream so far.
-    pub fn get_bytes_received(&self) -> u64 {
+    pub const fn get_bytes_received(&self) -> u64 {
         self.bytes_received
     }
 

@@ -13,7 +13,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/pulumi/pulumi-docker/sdk/v3/go/docker"
+	"github.com/pulumi/pulumi-docker/sdk/v4/go/docker"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	apiv1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"

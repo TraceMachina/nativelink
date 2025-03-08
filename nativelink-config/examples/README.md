@@ -8,9 +8,9 @@ Configuration JSON objects should begin with the `stores` key, followed by `work
 
 ```json5
 {
-  "stores": {},
+  "stores": [],
   "workers": [],
-  "schedulers": {},
+  "schedulers": [],
   "servers": [],
   "global": {}
 }
@@ -24,15 +24,17 @@ This is the scaffolding for a NativeLink deployment configuration.
 
 ### Store Name
 
-The value of `stores` includes top-level keys, which are user supplied names stores. The following example, defines the `AC_MAIN_STORE`.
+The value of `stores` is an array where each element defines a store. Each should have a user supplied name. The following example, defines the `AC_MAIN_STORE`.
 
 ```json5
 {
-  "stores": {
-    "AC_MAIN_STORE": {}
-  },
+  "stores": [
+    {
+      "name": "AC_MAIN_STORE",
+    }
+  ],
   "workers": [],
-  "schedulers": {},
+  "schedulers": [],
   "servers": [],
   "global": {},
 }
@@ -41,17 +43,18 @@ The value of `stores` includes top-level keys, which are user supplied names sto
 ### Store Type
 
 Once the store has been named and its object exists,
-the next key is the type of store. The options are `filesystem`, `memory`, `compression`, `dedup`, `fast_slow`, `verify`, and `experimental_s3_store`.
+the next key to add is the type of store. The options are `filesystem`, `memory`, `compression`, `dedup`, `fast_slow`, `verify`, and `experimental_s3_store`.
 
 ```json5
 {
-  "stores": {
-    "AC_MAIN_STORE": {
-        "filesystem": {}
+  "stores": [
+    {
+      "name": "AC_MAIN_STORE",
+      "filesystem": {}
     }
-  },
+  ],
   "workers": [],
-  "schedulers": {},
+  "schedulers": [],
   "servers": [],
   "global": {},
 }
@@ -63,8 +66,9 @@ The contents of the object here must include `content_path`, `temp_path`, and an
 
 ```json5
 {
-  "stores": {
-    "AC_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "AC_MAIN_STORE",
       "filesystem": {
         "content_path": "/tmp/nativelink/data/content_path-index",
         "temp_path": "/tmp/nativelink/data/tmp_path-index",
@@ -74,9 +78,9 @@ The contents of the object here must include `content_path`, `temp_path`, and an
         }
       }
     }
-  },
+  ],
   "workers": [],
-  "schedulers": {},
+  "schedulers": [],
   "servers": [],
   "global": {},
 }
@@ -93,11 +97,11 @@ The value of `workers` includes a top level array that embeds the worker metadat
 
 ```json5
 {
-  "stores": {},
+  "stores": [],
   "workers": [{
     "local": {}
   }],
-  "schedulers": {},
+  "schedulers": [],
   "servers": [],
   "global": {},
 }
@@ -109,7 +113,7 @@ The Local object has five components, `worker_api_endpoint`, `cas_fast_slow_stor
 
 ```json5
 {
-  "stores": {},
+  "stores": [],
   "workers": [{
     "local": {
       "worker_api_endpoint": {
@@ -142,7 +146,7 @@ The Local object has five components, `worker_api_endpoint`, `cas_fast_slow_stor
       }
     }
   }],
-  "schedulers": {},
+  "schedulers": [],
   "servers": [],
   "global": {},
 }
@@ -153,17 +157,20 @@ The Local object has five components, `worker_api_endpoint`, `cas_fast_slow_stor
 <details>
   <summary>Configuring Schedulers </summary>
 
-  ### Scheduler Name
+### Scheduler Name
+The value of `stores` is an array where each element defines a store. Each should have a user supplied name. The following example, defines the `AC_MAIN_STORE`.
 
-The value of `schedulers` includes top-level keys, which are the user-supplied names of the schedulers. The following example, defines the `MAIN_SCHEDULER`.
+The value of `schedulers` is an array where each element defines a scheduler. Each scheduler must have a user-supplied name. The following example, defines the `MAIN_SCHEDULER`.
 
 ```json5
 {
-  "stores": {},
-  "workers": {},
-  "schedulers": {
-    "MAIN_SCHEDULER": {}
-  },
+  "stores": [],
+  "workers": [],
+  "schedulers": [
+    {
+      name: "MAIN_SCHEDULER"
+    }
+  ],
   "servers": [],
   "global": {},
 }
@@ -176,13 +183,14 @@ the next key is the type of scheduler. The options are `simple`, `action_schedul
 
 ```json5
 {
-  "stores": {},
-  "workers": {},
-  "schedulers": {
-    "MAIN_SCHEDULER": {
-      "simple": {}
-    },
-  }
+  "stores": [],
+  "workers": [],
+  "schedulers": [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {}
+    }
+  ],
 }
 ```
 
@@ -192,11 +200,12 @@ The contents of the scheduler type object defines the options. For a list of opt
 
 ```json5
 {
-  "stores": {},
-  "workers": {},
-  "schedulers": {
-    "MAIN_SCHEDULER": {
-      "simple": {
+  "stores": [],
+  "workers": [],
+  "schedulers": [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
         "supported_platform_properties": {
           "cpu_count": "minimum",
           "memory_kb": "minimum",
@@ -217,7 +226,7 @@ The contents of the scheduler type object defines the options. For a list of opt
         }
       }
     }
-  },
+  ],
   "servers": [],
   "global": {},
 }
@@ -228,15 +237,15 @@ The contents of the scheduler type object defines the options. For a list of opt
 <details>
   <summary>Configuring Servers</summary>
 
-  ### Servers
+### Servers
 
 The `servers` configuration object is an array, with two objects, `public`, and `private_workers_servers`.
 
 ```json5
 {
-  "stores": {},
-  "workers": {},
-  "schedulers": {},
+  "stores": [],
+  "workers": [],
+  "schedulers": [],
   "servers": [{
     "name": "public"
   },{
@@ -246,15 +255,15 @@ The `servers` configuration object is an array, with two objects, `public`, and 
 }
 ```
 
- ### Public Server
+### Public Server
 
 The `public` server consists of a `listener` object and a `services` object. The `listener` object is one level of depth and includes an `http` with a `socket address`. The `services` server consists of a `cas`, an `ac`, the `execution`, `capabilities`, and `bytestream`.
 
 ```json5
 {
-  "stores": {},
-  "workers": {},
-  "schedulers": {},
+  "stores": [],
+  "workers": [],
+  "schedulers": [],
   "servers": [{
     "name": "public",
     "listener": {
@@ -299,17 +308,17 @@ The `public` server consists of a `listener` object and a `services` object. The
 }
 ```
 
- ### Private Server
+### Private Server
 
- > ⚠️ _WARNING_: A private server shouldn't be exposed to the public. ⚠️
+> ⚠️ _WARNING_: A private server shouldn't be exposed to the public. ⚠️
 
- The `private` server consists of a `listener` object and a `services` object. The `listener` object is one level and includes an `http` with a `socket address`. The `services` server consists of an `experimental_prometheus` object with a `path` field, a `worker_api` object with `scheduler_field`, and an `admin` object.
+The `private` server consists of a `listener` object and a `services` object. The `listener` object is one level and includes an `http` with a `socket address`. The `services` server consists of an `experimental_prometheus` object with a `path` field, a `worker_api` object with `scheduler_field`, and an `admin` object.
 
 ```json5
  {
-  "stores": {},
-  "workers": {},
-  "schedulers": {},
+  "stores": [],
+  "workers": [],
+  "schedulers": [],
   "servers": [{
     "name": "public",
     "listener": {
@@ -386,13 +395,14 @@ The `public` server consists of a `listener` object and a `services` object. The
 <details>
   <summary>Complete Example </summary>
 
-  Below, you will find a fully tested example that you can also find in [basic_cas.json](basic_cas.json)
+Below, you will find a fully tested example that you can also find in [basic_cas.json](basic_cas.json)
 
 ```json5
 
 {
-  "stores": {
-    "AC_MAIN_STORE": {
+  "stores": [
+    {
+      name: "AC_MAIN_STORE",
       "filesystem": {
         "content_path": "/tmp/nativelink/data-worker-test/content_path-ac",
         "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-ac",
@@ -402,7 +412,8 @@ The `public` server consists of a `listener` object and a `services` object. The
         }
       }
     },
-    "WORKER_FAST_SLOW_STORE": {
+    {
+      name: "WORKER_FAST_SLOW_STORE",
       "fast_slow": {
         // "fast" must be a "filesystem" store because the worker uses it to make
         // hardlinks on disk to a directory where the jobs are running.
@@ -426,9 +437,10 @@ The `public` server consists of a `listener` object and a `services` object. The
         }
       }
     }
-  },
-  "schedulers": {
-    "MAIN_SCHEDULER": {
+  ],
+  "schedulers": [
+    {
+      name: "MAIN_SCHEDULER",
       "simple": {
         "supported_platform_properties": {
           "cpu_count": "minimum",
@@ -453,7 +465,7 @@ The `public` server consists of a `listener` object and a `services` object. The
         }
       }
     }
-  },
+  ],
   "workers": [{
     "local": {
       "worker_api_endpoint": {

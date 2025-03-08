@@ -30,7 +30,7 @@ pin_project! {
 }
 
 impl<T: AsyncWrite> WriteCounter<T> {
-    pub fn new(inner: T) -> Self {
+    pub const fn new(inner: T) -> Self {
         WriteCounter {
             inner,
             bytes_written: 0,
@@ -38,20 +38,20 @@ impl<T: AsyncWrite> WriteCounter<T> {
         }
     }
 
-    pub fn inner_ref(&self) -> &T {
+    pub const fn inner_ref(&self) -> &T {
         &self.inner
     }
 
-    pub fn inner_mut(&mut self) -> &mut T {
+    pub const fn inner_mut(&mut self) -> &mut T {
         &mut self.inner
     }
 
     /// Returns the number of bytes written.
-    pub fn get_bytes_written(&self) -> u64 {
+    pub const fn get_bytes_written(&self) -> u64 {
         self.bytes_written
     }
 
-    pub fn did_fail(&self) -> bool {
+    pub const fn did_fail(&self) -> bool {
         self.failed
     }
 }

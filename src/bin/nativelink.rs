@@ -176,7 +176,7 @@ async fn inner_main(
     server_start_timestamp: u64,
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
 ) -> Result<(), Error> {
-    fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
+    const fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
             HttpCompressionAlgorithm::gzip => Some(CompressionEncoding::Gzip),
             HttpCompressionAlgorithm::none => None,
@@ -650,7 +650,7 @@ async fn inner_main(
                                             Code::Internal,
                                             "{} is neither 0 nor 1",
                                             is_draining
-                                        ))
+                                        ));
                                     }
                                 };
                                 worker_schedulers
@@ -711,7 +711,7 @@ async fn inner_main(
                         Code::Internal,
                         "No keys found in file {}",
                         tls_config.key_file
-                    ))
+                    ));
                 }
             };
             if let Ok(Some(_)) = rustls_pemfile::read_one(&mut key_reader) {

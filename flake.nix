@@ -490,11 +490,15 @@
               export PATH=$HOME/.deno/bin:$PATH
               deno types > web/platform/utils/deno.d.ts
             ''
-            + (pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+            + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
               # On Darwin generate darwin.bazelrc which configures
               # darwin libs & frameworks when running in the nix environment.
               ${config.darwin.installationScript}
-            '');
+            ''
+            # TODO(aaronmondal): Generalize this.
+            + pkgs.lib.optionalString (system == "x86_64-linux") ''
+              export CC_x86_64_unknown_linux_gnu=customClang
+            '';
         };
       };
     }

@@ -85,6 +85,7 @@ commit_parsers = [
   { message = "Migrate to callPackage syntax", group = "<!-- 6 -->⚙️ Miscellaneous" },
   { message = "Remove nativelink-proto as build dependency", group = "<!-- 4 -->🧪 Testing & CI" },
   { message = "Add rt-tokio feature to aws-sdk-s3", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "GrpcStore now sends digest function from context", group = "<!-- 2 -->🐛 Bug Fixes" },
 
   # Get all breaking changes first.
   { message = "Breaking", group = "<!-- 0 -->❌️  Breaking Changes" },
