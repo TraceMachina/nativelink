@@ -104,6 +104,59 @@ pub enum StoreSpec {
     ///
     ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
 
+    /// `NetApp` ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
+    /// to store files. This store is specifically configured for ONTAP's S3 requirements
+    /// including custom TLS configuration, credentials management, and proper vserver
+    /// configuration.
+    ///
+    /// This store uses AWS environment variables for credentials:
+    /// - `AWS_ACCESS_KEY_ID`
+    /// - `AWS_SECRET_ACCESS_KEY`
+    /// - `AWS_DEFAULT_REGION`
+    ///
+    /// Example JSON Config:
+    /// ```json
+    /// "ontap_s3_store": {
+    ///   "endpoint": "https://ontap-s3-endpoint:443",
+    ///   "vserver_name": "your-vserver",
+    ///   "bucket": "your-bucket",
+    ///   "root_certificates": "/path/to/certs.pem",  // Optional
+    ///   "key_prefix": "test-prefix/",               // Optional
+    ///   "retry": {
+    ///     "max_retries": 6,
+    ///     "delay": 0.3,
+    ///     "jitter": 0.5
+    ///   },
+    ///   "multipart_max_concurrent_uploads": 10
+    /// }
+    /// ```
+    ontap_s3_store(OntapS3Spec),
+
+    /// ONTAP S3 Existence Cache provides a caching layer on top of the ONTAP S3 store
+    /// to optimize repeated existence checks. It maintains an in-memory cache of object
+    /// digests and periodically syncs this cache to disk for persistence.
+    ///
+    /// The cache helps reduce latency for repeated calls to check object existence,
+    /// while still ensuring eventual consistency with the underlying ONTAP S3 store.
+    ///
+    /// Example JSON Config:
+    /// ```json
+    /// "ontap_s3_existence_cache": {
+    ///   "index_path": "/path/to/cache/index.json",
+    ///   "sync_interval_seconds": 300,
+    ///   "backend": {
+    ///     "ontap_s3_store": {
+    ///       "endpoint": "https://ontap-s3-endpoint:443",
+    ///       "vserver_name": "your-vserver",
+    ///       "bucket": "your-bucket",
+    ///       "key_prefix": "test-prefix/"
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    ontap_s3_existence_cache(Box<OntapS3ExistenceCacheSpec>),
+
     /// Verify store is used to apply verifications to an underlying
     /// store implementation. It is strongly encouraged to validate
     /// as much data as you can before accepting data from a client,
@@ -557,6 +610,42 @@ pub struct FilesystemSpec {
     /// Default: 4096
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub block_size: u64,
+}
+
+// NetApp ONTAP S3 Spec
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct OntapS3Spec {
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub endpoint: String,
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub vserver_name: String,
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+    #[serde(default)]
+    pub root_certificates: Option<String>,
+    #[serde(default)]
+    pub key_prefix: Option<String>,
+    #[serde(default)]
+    pub retry: Retry,
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub consider_expired_after_s: u32,
+    pub max_retry_buffer_per_request: Option<usize>,
+    pub multipart_max_concurrent_uploads: Option<usize>,
+    #[serde(default)]
+    pub insecure_allow_http: bool,
+    #[serde(default)]
+    pub disable_http2: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct OntapS3ExistenceCacheSpec {
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub index_path: String,
+    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    pub sync_interval_seconds: u32,
+    pub backend: Box<StoreSpec>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
