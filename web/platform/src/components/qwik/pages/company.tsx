@@ -16,19 +16,9 @@ const team = [
     title: "Chief Technology Officer",
   },
   {
-    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/brian_clark.webp",
-    name: "Brian Clark",
-    title: "Software Engineer",
-  },
-  {
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/tyrone_greenfield.webp",
     name: "Tyrone Greenfield",
     title: "Chief of Staff",
-  },
-  {
-    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/blake_hatch.webp",
-    name: "Blake Hatch",
-    title: "Business Engineer",
   },
   {
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/marcus_eagan.webp",
@@ -106,7 +96,7 @@ const CompanyHero = component$(() => {
 const CompanyTeam = component$(() => {
   return (
     <div class="flex px-6 w-full md:w-[1300px] flex-col justify-center items-center gap-5">
-      <Label text="meet our team" class="w-1/2 md:w-1/5" />
+      <Label text="Leadership Team" class="w-1/2 md:w-1/5" />
       <div class="flex justify-center items-center flex-col">
         <span class="text-center px-4 text-primary">
           Our team consists of engineers and product leaders from Apple, Google,
