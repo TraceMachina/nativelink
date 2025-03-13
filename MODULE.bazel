@@ -7,7 +7,7 @@ module(
 bazel_dep(name = "rules_cc", version = "0.0.17")
 bazel_dep(name = "platforms", version = "0.0.11")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
-bazel_dep(name = "rules_python", version = "1.0.0")
+bazel_dep(name = "rules_python", version = "1.2.0")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(
@@ -19,14 +19,14 @@ python.toolchain(
 )
 use_repo(python, python = "python_versions")
 
-bazel_dep(name = "rules_rust", version = "0.57.1")
+bazel_dep(name = "rules_rust", version = "0.59.0")
 archive_override(
     module_name = "rules_rust",
-    integrity = "sha256-4qOr06EWg6BTBbv9M8xJTfebNkE9VMBXsa17RZD071I=",
+    integrity = "sha256-5r/V1RM4MrwTyaV9c+Zs9el3XGbjJOjni6Bg8XWWs/4=",
     patch_strip = 1,
     patches = ["//tools:rules_rust-musl-platforms.diff"],
     urls = [
-        "https://github.com/bazelbuild/rules_rust/releases/download/0.57.1/rules_rust-0.57.1.tar.gz",
+        "https://github.com/bazelbuild/rules_rust/releases/download/0.59.0/rules_rust-0.59.0.tar.gz",
     ],
 )
 
@@ -105,12 +105,12 @@ rust.toolchain(
 )
 use_repo(rust, "rust_toolchains")
 
-bazel_dep(name = "toolchains_protoc", version = "0.3.6")
+bazel_dep(name = "toolchains_protoc", version = "0.3.7")
 
 protoc = use_extension("@toolchains_protoc//protoc:extensions.bzl", "protoc")
 protoc.toolchain(
     google_protobuf = "com_google_protobuf",
-    version = "v28.0",
+    version = "v29.3",
 )
 
 # Local remote execution.
