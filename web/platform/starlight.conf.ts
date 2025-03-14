@@ -214,6 +214,10 @@ export const starlightConfig = {
           link: `${docsRoot}/contribute/docs`,
         },
         {
+          label: "Working on the native CLI",
+          link: `${docsRoot}/contribute/native-cli`,
+        },
+        {
           label: "Develop with Nix",
           link: `${docsRoot}/contribute/nix`,
         },

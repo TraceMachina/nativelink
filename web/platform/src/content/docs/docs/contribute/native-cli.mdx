@@ -1,0 +1,105 @@
+---
+title: "The native CLI"
+description: "Contribution docs for the native CLI"
+pagefind: true
+---
+
+This executable sets up a local development cluster with a pass-through
+container registry, mount-through nix store and external load balancer. It's
+automatically accessible as a tool in the `nativelink` development flake and
+self contained to be usable in external projects.
+
+:::danger
+Make sure that you don't have an existing Pulumi stack or `kubectl` context
+active. Otherwise you might accidentally deploy into clusters other than the
+local kind cluster that the native CLI creates.
+:::
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+<Tabs syncKey="deployment">
+  <TabItem label="NativeLink nix flake">
+    To run the cluster:
+
+    ```bash
+    native up
+    ```
+
+    To shut the cluster down:
+
+    ```bash
+    native down
+    ```
+  </TabItem>
+  <TabItem label="Standalone invocation">
+    To run the cluster from outside of the development flake:
+
+    ```bash
+    nix run github:TraceMachina/nativelink#native up
+    ```
+
+    To shut the cluster down from outside of the development flake:
+
+    ```bash
+    nix run github:TraceMachina/nativelink#native down
+    ```
+  </TabItem>
+</Tabs>
+
+:::note
+The containers for the container registry and the load balancer are currently
+not cleaned up and need to be deleted manually:
+
+```bash
+# Get the container IDs for the registry and load balancer
+docker container ls
+```
+```bash
+# Delete the images
+docker container stop SOME_CONTAINER_ID
+docker container rm SOME_CONTAINER_ID
+```
+:::
+
+## Updating dependencies
+
+From within the Nix flake:
+
+```bash
+go get -u ./...
+go mod tidy
+```
+
+Then go to [`default.nix`](https://github.com/TraceMachina/nativelink/blob/main/native-cli/default.nix)
+and adjust the `vendorHash` field:
+
+import { Steps } from "@astrojs/starlight/components";
+
+<Steps>
+
+1. Change one character in the hash to invalidate it. Otherwise nix would
+   wrongly reuse locally cached go modules the package updates.
+2. Run `nix develop`
+3. You should see an error message like:
+
+    ```txt
+    error: hash mismatch in fixed-output derivation ...
+             specified: XXX
+                got:    YYY
+    ```
+
+4. Substitute the old `vendorHash` value with `YYY`.
+5. Re-run `nix develop`. It should now build.
+
+</Steps>
+
+## Making code changes
+
+Ensure that the entire application remains self-contained. This means that no
+dynamic paths should point into the `nativelink` repository. Instead, use the
+[`//go:embed`](https://pkg.go.dev/embed) directive to embed for example
+templates into the executable rather than reading them disk at runtime.
+
+The same applies to the packaging logic in [`default.nix`](https://github.com/TraceMachina/nativelink/blob/main/native-cli/default.nix).
+Pulumi should be bundled via a nix wrapper so that we don't rely on a user's
+local Pulumi installation.
