@@ -19,6 +19,7 @@ use aws_sdk_s3::config::{BehaviorVersion, Builder, Region};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_smithy_runtime::client::http::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
+use aws_smithy_types::checksum_config::{RequestChecksumCalculation, ResponseChecksumValidation};
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::join;
 use futures::task::Poll;
@@ -201,6 +202,10 @@ async fn simple_update_ac() -> Result<(), Error> {
         ));
     let test_config = Builder::new()
         .behavior_version(BehaviorVersion::v2024_03_28())
+        // TODO(aaronmondal): Flip these to the default "WhenSupported".
+        //                    See: https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-01-15
+        .request_checksum_calculation(RequestChecksumCalculation::WhenRequired)
+        .response_checksum_validation(ResponseChecksumValidation::WhenRequired)
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();

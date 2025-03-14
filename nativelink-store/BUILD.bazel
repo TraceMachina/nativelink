@@ -46,6 +46,7 @@ rust_library(
         "@crates//:aws-config",
         "@crates//:aws-sdk-s3",
         "@crates//:aws-smithy-runtime",
+        "@crates//:aws-smithy-types",
         "@crates//:bincode",
         "@crates//:blake3",
         "@crates//:byteorder",

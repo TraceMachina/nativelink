@@ -11,17 +11,18 @@ nativelink-proto = { path = "../nativelink-proto" }
 nativelink-metric = { path = "../nativelink-metric" }
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 async-trait = "0.1.86"
-aws-config = { version = "1.5.16", default-features = false, features = [
+aws-config = { version = "1.5.18", default-features = false, features = [
   "rustls",
 ] }
 # TODO(aaronmondal): The latest version pulls in crc64fast-nvme which contains
 #                    nonhermetic bindgen deps that break Bazel sandboxes.
 # See: https://github.com/awesomized/crc64fast-nvme/issues/5
 #      https://github.com/awslabs/aws-sdk-rust/issues/1240#issuecomment-2597294295
-aws-sdk-s3 = { version = "=1.68.0", features = [
+aws-sdk-s3 = { version = "=1.78.0", features = [
   "rt-tokio",
 ], default-features = false }
-aws-smithy-runtime = { version = "1.7.8" }
+aws-smithy-runtime = { version = "=1.7.8" }
+aws-smithy-types = "=1.2.13"
 bincode = "1.3.3"
 blake3 = { version = "1.6.0", default-features = false }
 byteorder = { version = "1.5.0", default-features = false }
@@ -41,7 +42,7 @@ fred = { version = "10.0.4", default-features = false, features = [
   "sentinel-auth",
   "subscriber-client",
 ] }
-patricia_tree = { version = "0.8.0", default-features = false }
+patricia_tree = { version = "0.9.0", default-features = false }
 futures = { version = "0.3.31", default-features = false }
 hex = { version = "0.4.3", default-features = false }
 http-body = "1.0.1"
@@ -69,14 +70,14 @@ memory-stats = "1.2.0"
 mock_instant = "0.5.2"
 sha2 = { version = "0.10.8", default-features = false }
 http = { version = "1.2.0", default-features = false }
-aws-smithy-types = "1.2.13"
-aws-smithy-runtime = { version = "1.7.8", features = [
+aws-smithy-types = "=1.2.13"
+aws-smithy-runtime = { version = "=1.7.8", features = [
   "test-util",
 ], default-features = false }
-aws-sdk-s3 = { version = "=1.68.0", features = [
+aws-sdk-s3 = { version = "=1.78.0", features = [
   "rt-tokio",
 ], default-features = false }
-aws-smithy-runtime-api = "1.7.3"
+aws-smithy-runtime-api = "=1.7.3"
 rand = { version = "0.9.0", default-features = false, features = ["thread_rng", "small_rng"] }
 serde_json = "1.0.139"
 fred = { version = "10.0.4", default-features = false, features = ["mocks"] }

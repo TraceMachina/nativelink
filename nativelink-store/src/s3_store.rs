@@ -31,6 +31,7 @@ use aws_sdk_s3::primitives::{ByteStream, SdkBody};
 use aws_sdk_s3::types::builders::{CompletedMultipartUploadBuilder, CompletedPartBuilder};
 use aws_sdk_s3::Client;
 use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
+use aws_smithy_types::checksum_config::{RequestChecksumCalculation, ResponseChecksumValidation};
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::stream::{unfold, FuturesUnordered};
@@ -272,6 +273,10 @@ where
                 HyperClientBuilder::new().build(TlsConnector::new(spec, jitter_fn.clone()));
             let credential_provider = credentials::default_provider().await;
             let mut config_builder = aws_config::defaults(BehaviorVersion::v2024_03_28())
+                // TODO(aaronmondal): Flip these to the default "WhenSupported".
+                //                    See: https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-01-15
+                .request_checksum_calculation(RequestChecksumCalculation::WhenRequired)
+                .response_checksum_validation(ResponseChecksumValidation::WhenRequired)
                 .credentials_provider(credential_provider)
                 .app_name(AppName::new("nativelink").expect("valid app name"))
                 .timeout_config(

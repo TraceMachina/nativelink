@@ -17,7 +17,7 @@ http-body = "1.0.1"
 http-body-util = "0.1.2"
 hyper = { version = "1.6.0" }
 rand = { version = "0.9.0", default-features = false, features = ["thread_rng"] }
-serde_json5 = "0.1.0"
+serde_json5 = "0.2.1"
 parking_lot = "0.12.3"
 prost = { version = "0.13.5", default-features = false }
 tokio = { version = "1.43.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
