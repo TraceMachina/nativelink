@@ -20,7 +20,7 @@
     "--remote_header=x-nativelink-project=nativelink-ci"
     "--nogenerate_json_trace_profile"
     "--remote_upload_local_results=false"
-    "--experimental_remote_cache_async"
+    "--remote_cache_async"
   ];
 
   # If the `nativelink.settings.prefix` is set to a nonempty string,

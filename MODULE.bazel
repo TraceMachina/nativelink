@@ -4,7 +4,7 @@ module(
     compatibility_level = 0,
 )
 
-bazel_dep(name = "rules_cc", version = "0.0.17")
+bazel_dep(name = "rules_cc", version = "0.1.1")
 bazel_dep(name = "platforms", version = "0.0.11")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
 bazel_dep(name = "rules_python", version = "1.2.0")
@@ -19,14 +19,14 @@ python.toolchain(
 )
 use_repo(python, python = "python_versions")
 
-bazel_dep(name = "rules_rust", version = "0.59.0")
+bazel_dep(name = "rules_rust", version = "0.59.1")
 archive_override(
     module_name = "rules_rust",
-    integrity = "sha256-5r/V1RM4MrwTyaV9c+Zs9el3XGbjJOjni6Bg8XWWs/4=",
+    integrity = "sha256-N37buXa2l1U9N3VmNH3Qv/xd8PxX6TsdLBCM9F497Ac=",
     patch_strip = 1,
     patches = ["//tools:rules_rust-musl-platforms.diff"],
     urls = [
-        "https://github.com/bazelbuild/rules_rust/releases/download/0.59.0/rules_rust-0.59.0.tar.gz",
+        "https://github.com/bazelbuild/rules_rust/releases/download/0.59.1/rules_rust-0.59.1.tar.gz",
     ],
 )
 
