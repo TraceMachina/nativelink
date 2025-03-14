@@ -58,7 +58,7 @@
       ${" "}           "lib/rustlib/${target}/codegen-backends/*.so",
       ${" "}           "lib/rustlib/${target}/bin/rust-lld",
       ${" "}           "lib/rustlib/${target}/lib/*.so",
-      ${" "}       ]),'';
+      ${" "}       ], allow_empty = True),'';
 
     # Generate stdlib select entry for a target
     mkStdlibSelectEntry = target:
@@ -69,7 +69,7 @@
         ${" "}           "lib/rustlib/${target}/lib/*.a",''
       + (lib.optionalString (builtins.match ".*-musl" target != null)
         ''${"\n "}           "lib/rustlib/${target}/lib/self-contained/**",'')
-      + ''${"\n "}       ]),'';
+      + ''${"\n "}       ], allow_empty = True),'';
 
     selectEntries = builtins.concatStringsSep "\n" (map mkSelectEntry rustTargets);
     stdlibSelectEntries = builtins.concatStringsSep "\n" (map mkStdlibSelectEntry rustTargets);
