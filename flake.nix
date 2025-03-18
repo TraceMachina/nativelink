@@ -299,7 +299,6 @@
           inherit system;
           overlays = [
             self.overlays.lre
-            (import ./tools/nixpkgs-disable-ratehammering-pulumi-tests.nix)
             self.overlays.tools
             (import rust-overlay)
             (import ./tools/rust-overlay-cut-libsecret.nix)
