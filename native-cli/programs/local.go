@@ -25,7 +25,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 	cilium, err := components.AddComponent(
 		ctx,
 		"cilium",
-		&components.Cilium{Version: "1.16.0-pre.2"},
+		&components.Cilium{Version: "1.17.2"},
 	)
 	if err != nil {
 		log.Println(err)
