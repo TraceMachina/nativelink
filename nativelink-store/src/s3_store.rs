@@ -30,17 +30,21 @@ use aws_sdk_s3::operation::head_object::HeadObjectError;
 use aws_sdk_s3::primitives::{ByteStream, SdkBody};
 use aws_sdk_s3::types::builders::{CompletedMultipartUploadBuilder, CompletedPartBuilder};
 use aws_sdk_s3::Client;
-use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
+// use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
+use aws_smithy_http_client::Builder;
+use aws_smithy_http_client::tls::rustls_provider::CryptoMode;
+use aws_smithy_http_client::tls::Provider;
 use aws_smithy_types::checksum_config::{RequestChecksumCalculation, ResponseChecksumValidation};
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::stream::{unfold, FuturesUnordered};
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use http_body::{Frame, SizeHint};
-use hyper::client::connect::{Connected, Connection, HttpConnector};
+use hyper_util::client::legacy::connect::{Connected, Connection, HttpConnector};
 use hyper::service::Service;
 use hyper::Uri;
 use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
+
 use nativelink_config::stores::S3Spec;
 // Note: S3 store should be very careful about the error codes it returns
 // when in a retryable wrapper. Always prefer Code::Aborted or another
@@ -134,83 +138,83 @@ impl<T: Connection + AsyncWrite + AsyncRead + Unpin> AsyncWrite for ConnectionWi
     }
 }
 
-#[derive(Clone)]
-pub struct TlsConnector {
-    connector: HttpsConnector<HttpConnector>,
-    retrier: Retrier,
-}
-
-impl TlsConnector {
-    #[must_use]
-    pub fn new(spec: &S3Spec, jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>) -> Self {
-        let connector_with_roots = hyper_rustls::HttpsConnectorBuilder::new().with_webpki_roots();
-
-        let connector_with_schemes = if spec.insecure_allow_http {
-            connector_with_roots.https_or_http()
-        } else {
-            connector_with_roots.https_only()
-        };
-
-        let connector = if spec.disable_http2 {
-            connector_with_schemes.enable_http1().build()
-        } else {
-            connector_with_schemes.enable_http1().enable_http2().build()
-        };
-
-        Self {
-            connector,
-            retrier: Retrier::new(
-                Arc::new(|duration| Box::pin(sleep(duration))),
-                jitter_fn,
-                spec.retry.clone(),
-            ),
-        }
-    }
-
-    async fn call_with_retry(
-        &self,
-        req: &Uri,
-    ) -> Result<ConnectionWithPermit<MaybeHttpsStream<TcpStream>>, Error> {
-        let retry_stream_fn = unfold(self.connector.clone(), move |mut connector| async move {
-            let _permit = fs::get_permit().await.unwrap();
-            match connector.call(req.clone()).await {
-                Ok(connection) => Some((
-                    RetryResult::Ok(ConnectionWithPermit {
-                        connection,
-                        _permit,
-                    }),
-                    connector,
-                )),
-                Err(e) => Some((
-                    RetryResult::Retry(make_err!(
-                        Code::Unavailable,
-                        "Failed to call S3 connector: {e:?}"
-                    )),
-                    connector,
-                )),
-            }
-        });
-        self.retrier.retry(retry_stream_fn).await
-    }
-}
-
-impl Service<Uri> for TlsConnector {
-    type Response = ConnectionWithPermit<MaybeHttpsStream<TcpStream>>;
-    type Error = Error;
-    type Future =
-        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.connector
-            .poll_ready(cx)
-            .map_err(|e| make_err!(Code::Unavailable, "Failed poll in S3: {e}"))
-    }
-
-    fn call(&mut self, req: Uri) -> Self::Future {
-        let connector_clone = self.clone();
-        Box::pin(async move { connector_clone.call_with_retry(&req).await })
-    }
-}
+// #[derive(Clone)]
+// pub struct TlsConnector {
+//     connector: HttpsConnector<HttpConnector>,
+//     retrier: Retrier,
+// }
+//
+// impl TlsConnector {
+//     #[must_use]
+//     pub fn new(spec: &S3Spec, jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>) -> Self {
+//         let connector_with_roots = hyper_rustls::HttpsConnectorBuilder::new().with_webpki_roots();
+//
+//         let connector_with_schemes = if spec.insecure_allow_http {
+//             connector_with_roots.https_or_http()
+//         } else {
+//             connector_with_roots.https_only()
+//         };
+//
+//         let connector = if spec.disable_http2 {
+//             connector_with_schemes.enable_http1().build()
+//         } else {
+//             connector_with_schemes.enable_http1().enable_http2().build()
+//         };
+//
+//         Self {
+//             connector,
+//             retrier: Retrier::new(
+//                 Arc::new(|duration| Box::pin(sleep(duration))),
+//                 jitter_fn,
+//                 spec.retry.clone(),
+//             ),
+//         }
+//     }
+//
+//     async fn call_with_retry(
+//         &self,
+//         req: &Uri,
+//     ) -> Result<ConnectionWithPermit<MaybeHttpsStream<TcpStream>>, Error> {
+//         let retry_stream_fn = unfold(self.connector.clone(), move |mut connector| async move {
+//             let _permit = fs::get_permit().await.unwrap();
+//             match connector.call(req.clone()).await {
+//                 Ok(connection) => Some((
+//                     RetryResult::Ok(ConnectionWithPermit {
+//                         connection,
+//                         _permit,
+//                     }),
+//                     connector,
+//                 )),
+//                 Err(e) => Some((
+//                     RetryResult::Retry(make_err!(
+//                         Code::Unavailable,
+//                         "Failed to call S3 connector: {e:?}"
+//                     )),
+//                     connector,
+//                 )),
+//             }
+//         });
+//         self.retrier.retry(retry_stream_fn).await
+//     }
+// }
+//
+// impl Service<Uri> for TlsConnector {
+//     type Response = ConnectionWithPermit<MaybeHttpsStream<TcpStream>>;
+//     type Error = Error;
+//     type Future =
+//         Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
+//
+//     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+//         self.connector
+//             .poll_ready(cx)
+//             .map_err(|e| make_err!(Code::Unavailable, "Failed poll in S3: {e}"))
+//     }
+//
+//     fn call(&mut self, req: Uri) -> Self::Future {
+//         let connector_clone = self.clone();
+//         Box::pin(async move { connector_clone.call_with_retry(&req).await })
+//     }
+// }
 
 pub struct BodyWrapper {
     reader: DropCloserReadHalf,
@@ -269,10 +273,16 @@ where
             delay.mul_f32(rand::rng().random_range(min..max))
         });
         let s3_client = {
-            let http_client =
-                HyperClientBuilder::new().build(TlsConnector::new(spec, jitter_fn.clone()));
-            let credential_provider = credentials::default_provider().await;
-            let mut config_builder = aws_config::defaults(BehaviorVersion::v2024_03_28())
+            let http_client = Builder::new()
+                .tls_provider(Provider::Rustls(CryptoMode::Ring))
+                .build_https();
+            // let http_client =
+            //     Builder::new().build() // TlsConnector::new(spec, jitter_fn.clone()));
+            let credential_provider = credentials::DefaultCredentialsChain::builder()
+                .build()
+                .await;
+            let mut config_builder = aws_config::defaults(BehaviorVersion::v2025_01_17())
+                // v2024_03_28())
                 // TODO(aaronmondal): Flip these to the default "WhenSupported".
                 //                    See: https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-01-15
                 .request_checksum_calculation(RequestChecksumCalculation::WhenRequired)
