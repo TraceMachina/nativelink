@@ -3,31 +3,35 @@
     {
       "name": "CAS_MAIN_STORE",
       "verify": {
+        "verify_size": true,
         "backend": {
           "dedup": {
             "index_store": {
               "fast_slow": {
                 "fast": {
-                  "filesystem": {
-                    "content_path": "/tmp/nativelink/data/content_path-index",
-                    "temp_path": "/tmp/nativelink/data/tmp_path-index",
+                  "memory": {
                     "eviction_policy": {
-                      // 500mb.
-                      "max_bytes": 500000000
+                      "max_bytes": "100mb"
                     }
                   }
+                  // "filesystem": {
+                  //   "content_path": "/tmp/nativelink/data/content_path-index",
+                  //   "temp_path": "/tmp/nativelink/data/tmp_path-index",
+                  //   "eviction_policy": {
+                  //     "max_bytes": "500mb"
+                  //   }
+                  // }
                 },
                 "slow": {
                   "experimental_s3_store": {
-                    "region": "eu-north-1",
-                    "bucket": "crossplane-bucket-af79aeca9",
+                    "region": "eu-central-1",
+                    "bucket": "mybucket-1b19581ba67b64d50b4325d1727205756",
                     "key_prefix": "test-prefix-index/",
                     "retry": {
                       "max_retries": 6,
                       "delay": 0.3,
                       "jitter": 0.5
-                    },
-                    "additional_max_concurrent_requests": 10
+                    }
                   }
                 }
               }
@@ -40,26 +44,29 @@
                 "backend": {
                   "fast_slow": {
                     "fast": {
-                      "filesystem": {
-                        "content_path": "/tmp/nativelink/data/content_path-content",
-                        "temp_path": "/tmp/nativelink/data/tmp_path-content",
+                      "memory": {
                         "eviction_policy": {
-                          // 2gb.
-                          "max_bytes": 2000000000
+                          "max_bytes": "100mb"
                         }
                       }
+                      // "filesystem": {
+                      //   "content_path": "/tmp/nativelink/data/content_path-content",
+                      //   "temp_path": "/tmp/nativelink/data/tmp_path-content",
+                      //   "eviction_policy": {
+                      //     "max_bytes": "2gb"
+                      //   }
+                      // }
                     },
                     "slow": {
                       "experimental_s3_store": {
-                        "region": "eu-north-1",
-                        "bucket": "crossplane-bucket-af79aeca9",
+                        "region": "eu-central-1",
+                        "bucket": "mybucket-1b19581ba67b64d50b4325d1727205756",
                         "key_prefix": "test-prefix-dedup-cas/",
                         "retry": {
                           "max_retries": 6,
                           "delay": 0.3,
                           "jitter": 0.5
-                        },
-                        "additional_max_concurrent_requests": 10
+                        }
                       }
                     }
                   }
@@ -67,40 +74,37 @@
               }
             }
           }
-        },
-        "verify_size": true,
-        "hash_verification_function": "sha256"
+        }
       }
-    }, {
+    },
+    {
       "name": "AC_MAIN_STORE",
       "fast_slow": {
         "fast": {
           "memory": {
             "eviction_policy": {
-              // 100mb.
-              "max_bytes": 100000000
+              "max_bytes": "100mb"
             }
           },
-          "filesystem": {
-            "content_path": "/tmp/nativelink/data/content_path-ac",
-            "temp_path": "/tmp/nativelink/data/tmp_path-ac",
-            "eviction_policy": {
-              // 500mb.
-              "max_bytes": 500000000
-            }
-          }
+          // "filesystem": {
+          //   "content_path": "/tmp/nativelink/data/content_path-ac",
+          //   "temp_path": "/tmp/nativelink/data/tmp_path-ac",
+          //   "eviction_policy": {
+          //     "max_bytes": "500mb"
+          //   }
+          // }
         },
         "slow": {
           "experimental_s3_store": {
-            "region": "eu-north-1",
-            "bucket": "crossplane-bucket-af79aeca9",
+            "region": "eu-central-1",
+            "bucket": "mybucket-1b19581ba67b64d50b4325d1727205756",
             "key_prefix": "test-prefix-ac/",
             "retry": {
               "max_retries": 6,
               "delay": 0.3,
-              "jitter": 0.5
-            },
-            "additional_max_concurrent_requests": 10
+              "jitter": 0.5,
+            }
+            // "additional_max_concurrent_requests": 10,
           }
         }
       }
