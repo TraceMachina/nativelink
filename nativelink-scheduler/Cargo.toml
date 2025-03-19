@@ -14,27 +14,27 @@ nativelink-metric = { path = "../nativelink-metric" }
 #                    files somewhere else.
 nativelink-store = { path = "../nativelink-store" }
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
-async-trait = "0.1.86"
-bytes = { version = "1.10.0", default-features = false }
+async-trait = "0.1.88"
+bytes = { version = "1.10.1", default-features = false }
 prost = { version = "0.13.5", default-features = false }
-uuid = { version = "1.14.0", default-features = false, features = ["v4", "serde"] }
+uuid = { version = "1.16.0", default-features = false, features = ["v4", "serde"] }
 futures = { version = "0.3.31", default-features = false }
 lru = { version = "0.13.0", default-features = false }
-mock_instant = "0.5.2"
+mock_instant = "0.5.3"
 parking_lot = "0.12.3"
 rand = { version = "0.9.0", default-features = false, features = ["thread_rng"] }
 scopeguard = { version = "1.2.0", default-features = false }
-tokio = { version = "1.43.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
+tokio = { version = "1.44.1", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
 tokio-stream = { version = "0.1.17", features = ["fs"], default-features = false }
 tonic = { version = "0.12.3", features = ["transport", "tls"], default-features = false }
 tracing = { version = "0.1.41", default-features = false }
-serde = { version = "1.0.218", features = ["rc"] }
-serde_json = "1.0.139"
+serde = { version = "1.0.219", features = ["rc"] }
+serde_json = "1.0.140"
 static_assertions = "1.1.0"
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 pretty_assertions = { version = "1.4.1", features = ["std"] }
-fred = { version = "10.0.4", default-features = false, features = [
+fred = { version = "10.1.0", default-features = false, features = [
   "mocks",
 ] }
