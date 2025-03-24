@@ -9,6 +9,7 @@ load(
 )
 
 PROTO_NAMES = [
+    "build.bazel.remote.asset.v1",
     "build.bazel.remote.execution.v2",
     "build.bazel.semver",
     "com.github.trace_machina.nativelink.remote_execution",
@@ -78,6 +79,7 @@ genrule(
     name = "gen_rs_protos",
     srcs = [
         "build/bazel/remote/execution/v2/remote_execution.proto",
+        "build/bazel/remote/asset/v1/remote_asset.proto",
         "build/bazel/semver/semver.proto",
         "com/github/trace_machina/nativelink/remote_execution/events.proto",
         "com/github/trace_machina/nativelink/remote_execution/worker_api.proto",
