@@ -12,16 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::convert::Into;
+
 use nativelink_config::cas_server::RemoteAssetConfig;
-use nativelink_error::Error;
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::asset::v1::fetch_server::{Fetch, FetchServer};
 use nativelink_proto::build::bazel::remote::asset::v1::push_server::Push;
 use nativelink_proto::build::bazel::remote::asset::v1::{
     FetchBlobRequest, FetchBlobResponse, FetchDirectoryRequest, FetchDirectoryResponse,
 };
+use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::digest_hasher::{default_digest_hasher_func, make_ctx_for_hash_func};
+use nativelink_util::origin_event::OriginEventContext;
 use tonic::{Request, Response, Status};
-use tracing::{instrument, Level};
+use tracing::{error_span, instrument, Level};
 
 pub struct RemoteAssetServer {}
 
@@ -32,6 +37,20 @@ impl RemoteAssetServer {
 
     pub fn into_service(self) -> FetchServer<RemoteAssetServer> {
         FetchServer::new(self)
+    }
+
+    async fn inner_fetch_blob(
+        &self,
+        request: FetchBlobRequest,
+    ) -> Result<Response<FetchBlobResponse>, Error> {
+        Ok(Response::new(FetchBlobResponse {
+            status: Some(make_err!(Code::NotFound, "No item found").into()),
+            uri: request.uris.first().cloned().unwrap_or(String::from("")),
+            qualifiers: vec![],
+            expires_at: None,
+            blob_digest: None,
+            digest_function: default_digest_hasher_func().proto_digest_func().into(),
+        }))
     }
 }
 
@@ -49,7 +68,20 @@ impl Fetch for RemoteAssetServer {
         &self,
         grpc_request: Request<FetchBlobRequest>,
     ) -> Result<Response<FetchBlobResponse>, Status> {
-        todo!()
+        let request = grpc_request.into_inner();
+        let ctx = OriginEventContext::new(|| &request).await;
+        let resp: Result<Response<FetchBlobResponse>, Status> =
+            make_ctx_for_hash_func(request.digest_function)
+                .err_tip(|| "In RemoteAssetServer::fetch_blob")?
+                .wrap_async(
+                    error_span!("remote_asset_server_fetch_blob"),
+                    self.inner_fetch_blob(request),
+                )
+                .await
+                .err_tip(|| "Failed on batch_update_blobs() command")
+                .map_err(Into::into);
+        ctx.emit(|| &resp).await;
+        resp
     }
 
     #[allow(clippy::blocks_in_conditions)]
