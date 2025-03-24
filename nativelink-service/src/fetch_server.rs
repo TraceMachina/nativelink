@@ -16,9 +16,11 @@ use std::convert::Into;
 
 use nativelink_config::cas_server::FetchConfig;
 use nativelink_error::{make_err, Code, Error, ResultExt};
-use nativelink_proto::build::bazel::remote::asset::v1::fetch_server::{Fetch, FetchServer as Server};
+use nativelink_proto::build::bazel::remote::asset::v1::fetch_server::{
+    Fetch, FetchServer as Server,
+};
 use nativelink_proto::build::bazel::remote::asset::v1::{
-    FetchBlobRequest, FetchBlobResponse, FetchDirectoryRequest, FetchDirectoryResponse
+    FetchBlobRequest, FetchBlobResponse, FetchDirectoryRequest, FetchDirectoryResponse,
 };
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::digest_hasher::{default_digest_hasher_func, make_ctx_for_hash_func};
@@ -72,11 +74,11 @@ impl Fetch for FetchServer {
             make_ctx_for_hash_func(request.digest_function)
                 .err_tip(|| "In FetchServer::fetch_blob")?
                 .wrap_async(
-                    error_span!("remote_asset_server_fetch_blob"),
+                    error_span!("fetch_server_fetch_blob"),
                     self.inner_fetch_blob(request),
                 )
                 .await
-                .err_tip(|| "Failed on batch_update_blobs() command")
+                .err_tip(|| "Failed on fetch_blob() command")
                 .map_err(Into::into);
         ctx.emit(|| &resp).await;
         resp
