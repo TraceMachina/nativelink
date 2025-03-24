@@ -9,7 +9,17 @@ humantime = "2.1.0"
 serde = { version = "1.0.218", default-features = false, features = ["derive"] }
 serde_json5 = "0.2.1"
 shellexpand = { version = "3.1.0", default-features = false, features = ["base-0"] }
+schemars = { version = "0.8.22", features = ["derive"], optional = true }
+serde_json = { version = "1.0.139", default-features = false, optional = true }
 
 [dev-dependencies]
 pretty_assertions = { version = "1.4.1", features = ["std"] }
 serde_json = { version = "1.0.139", default-features = false }
+
+[features]
+dev-schema = ["schemars", "serde_json"]
+
+[[bin]]
+name = "build-schema"
+path = "src/bin/build_schema.rs"
+required-features=["dev-schema"]

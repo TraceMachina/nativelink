@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "dev-schema")]
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
@@ -26,6 +28,7 @@ pub type StoreRefName = String;
 
 #[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum ConfigDigestHashFunction {
     /// Use the sha256 hash function.
     /// <https://en.wikipedia.org/wiki/SHA-2>
@@ -38,6 +41,7 @@ pub enum ConfigDigestHashFunction {
 
 #[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum StoreSpec {
     /// Memory store will store all data in a hashmap in memory.
     ///
@@ -433,6 +437,7 @@ pub enum StoreSpec {
 /// Configuration for an individual shard of the store.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ShardConfig {
     /// Store to shard the data to.
     pub store: StoreSpec,
@@ -447,6 +452,7 @@ pub struct ShardConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ShardSpec {
     /// Stores to shard the data to.
     pub stores: Vec<ShardConfig>,
@@ -454,6 +460,7 @@ pub struct ShardSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct SizePartitioningSpec {
     /// Size to partition the data on.
     #[serde(deserialize_with = "convert_data_size_with_shellexpand")]
@@ -468,6 +475,7 @@ pub struct SizePartitioningSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct RefSpec {
     /// Name of the store under the root "stores" config object.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -476,6 +484,7 @@ pub struct RefSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct FilesystemSpec {
     /// Path on the system where to store the actual content. This is where
     /// the bulk of the data will be placed.
@@ -514,6 +523,7 @@ pub struct FilesystemSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct FastSlowSpec {
     /// Fast store that will be attempted to be contacted before reaching
     /// out to the `slow` store.
@@ -526,6 +536,7 @@ pub struct FastSlowSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct MemorySpec {
     /// Policy used to evict items out of the store. Failure to set this
     /// value will cause items to never be removed from the store causing
@@ -535,6 +546,7 @@ pub struct MemorySpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct DedupSpec {
     /// Store used to store the index of each dedup slice. This store
     /// should generally be fast and small.
@@ -590,6 +602,7 @@ pub struct DedupSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExistenceCacheSpec {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -606,6 +619,7 @@ pub struct ExistenceCacheSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct VerifySpec {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -632,6 +646,7 @@ pub struct VerifySpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CompletenessCheckingSpec {
     /// The underlying store that will have it's results validated before sending to client.
     pub backend: StoreSpec,
@@ -643,6 +658,7 @@ pub struct CompletenessCheckingSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct Lz4Config {
     /// Size of the blocks to compress.
     /// Higher values require more ram, but might yield slightly better
@@ -666,6 +682,7 @@ pub struct Lz4Config {
 
 #[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum CompressionAlgorithm {
     /// LZ4 compression algorithm is extremely fast for compression and
     /// decompression, however does not perform very well in compression
@@ -679,6 +696,7 @@ pub enum CompressionAlgorithm {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CompressionSpec {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -697,6 +715,7 @@ pub struct CompressionSpec {
 /// until the store size becomes smaller than `max_bytes`.
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct EvictionPolicy {
     /// Maximum number of bytes before eviction takes place.
     /// Default: 0. Zero means never evict based on size.
@@ -724,6 +743,7 @@ pub struct EvictionPolicy {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct S3Spec {
     /// S3 region. Usually us-east-1, us-west-2, af-south-1, exc...
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
@@ -787,6 +807,7 @@ pub struct S3Spec {
 
 #[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum StoreType {
     /// The store is content addressable storage.
     cas,
@@ -795,6 +816,7 @@ pub enum StoreType {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ClientTlsConfig {
     /// Path to the certificate authority to use to validate the remote.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -811,6 +833,7 @@ pub struct ClientTlsConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GrpcEndpoint {
     /// The endpoint address (i.e. grpc(s)://example.com:443).
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -823,6 +846,7 @@ pub struct GrpcEndpoint {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GrpcSpec {
     /// Instance name for GRPC calls. Proxy calls will have the `instance_name` changed to this.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
@@ -852,6 +876,7 @@ pub struct GrpcSpec {
 
 /// The possible error codes that might occur on an upstream request.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum ErrorCode {
     Cancelled = 1,
     Unknown = 2,
@@ -873,6 +898,7 @@ pub enum ErrorCode {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct RedisSpec {
     /// The hostname or IP address of the Redis server.
     /// Ex: `["redis://username:password@redis-server-url:6380/99"]`
@@ -993,6 +1019,7 @@ pub struct RedisSpec {
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum RedisMode {
     Cluster,
     Sentinel,
@@ -1001,6 +1028,7 @@ pub enum RedisMode {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct NoopSpec {}
 
 /// Retry configuration. This configuration is exponential and each iteration
@@ -1026,6 +1054,7 @@ pub struct NoopSpec {}
 /// would mean a single request would have a total delay of 9.525s - 15.875s.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct Retry {
     /// Maximum number of retries until retrying stops.
     /// Setting this to zero will always attempt 1 time, but not retry.
