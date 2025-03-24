@@ -707,12 +707,12 @@ pub struct GlobalConfig {
     /// This value is not strictly enforced, it is a best effort. Some internal libraries
     /// open files or read metadata from a files which do not obey this limit, however
     /// the vast majority of cases will have this limit be honored.
-    /// As a rule of thumb this value should be less than half the value of `ulimit -n`.
+    /// This value must be larger than `ulimit -n` to have any effect.
     /// Any network open file descriptors is not counted in this limit, but is counted
     /// in the kernel limit. It is a good idea to set a very large `ulimit -n`.
     /// Note: This value must be greater than 10.
     ///
-    /// Default: 512
+    /// Default: 24576 (= 24 * 1024)
     #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_open_files: usize,
 

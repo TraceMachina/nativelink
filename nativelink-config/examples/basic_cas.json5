@@ -157,6 +157,6 @@
     }
   }],
   "global": {
-    "max_open_files": 512
+    "max_open_files": 24576
   }
 }

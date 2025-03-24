@@ -1012,7 +1012,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut metrics_enabled = {
         let global_cfg = if let Some(global_cfg) = &mut cfg.global {
             if global_cfg.max_open_files == 0 {
-                global_cfg.max_open_files = fs::DEFAULT_OPEN_FILE_PERMITS;
+                global_cfg.max_open_files = fs::DEFAULT_OPEN_FILE_LIMIT;
             }
             if global_cfg.default_digest_size_health_check == 0 {
                 global_cfg.default_digest_size_health_check = DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG;
@@ -1021,7 +1021,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             *global_cfg
         } else {
             GlobalConfig {
-                max_open_files: fs::DEFAULT_OPEN_FILE_PERMITS,
+                max_open_files: fs::DEFAULT_OPEN_FILE_LIMIT,
                 disable_metrics: cfg.servers.iter().all(|v| {
                     let Some(service) = &v.services else {
                         return true;
