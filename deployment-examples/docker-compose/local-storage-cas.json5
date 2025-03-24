@@ -56,7 +56,9 @@
         "cas_stores": {
           "": "CAS_MAIN_STORE"
         }
-      }
+      },
+      "fetch": {},
+      "push": {},
     }
   }, {
     "listener": {

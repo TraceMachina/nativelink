@@ -21,6 +21,9 @@ use base64::prelude::BASE64_STANDARD_NO_PAD;
 use futures::future::ready;
 use futures::task::{Context, Poll};
 use futures::{Future, FutureExt, Stream, StreamExt};
+use nativelink_proto::build::bazel::remote::asset::v1::{
+    FetchBlobRequest, FetchBlobResponse, PushBlobRequest, PushBlobResponse,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, ExecuteRequest, FindMissingBlobsRequest, FindMissingBlobsResponse,
@@ -80,6 +83,8 @@ pub const fn get_id_for_event(event: &Event) -> [u8; 2] {
             Some(request_event::Event::ExecuteRequest(_)) => [0x01, 0x0B],
             Some(request_event::Event::WaitExecutionRequest(_)) => [0x01, 0x0C],
             Some(request_event::Event::SchedulerStartExecute(_)) => [0x01, 0x0D],
+            Some(request_event::Event::FetchBlobRequest(_)) => [0x01, 0x0E],
+            Some(request_event::Event::PushBlobRequest(_)) => [0x01, 0x0F],
         },
         Some(event::Event::Response(res)) => match res.event {
             None => [0x02, 0x00],
@@ -92,6 +97,8 @@ pub const fn get_id_for_event(event: &Event) -> [u8; 2] {
             Some(response_event::Event::WriteResponse(_)) => [0x02, 0x07],
             Some(response_event::Event::QueryWriteStatusResponse(_)) => [0x02, 0x08],
             Some(response_event::Event::Empty(())) => [0x02, 0x09],
+            Some(response_event::Event::FetchBlobResponse(_)) => [0x02, 0x0A],
+            Some(response_event::Event::PushBlobResponse(_)) => [0x02, 0x0B],
         },
         Some(event::Event::Stream(stream)) => match stream.event {
             None => [0x03, 0x00],
@@ -562,6 +569,8 @@ impl_as_event! {Request, (), UpdateActionResultRequest}
 impl_as_event! {Request, (), FindMissingBlobsRequest}
 impl_as_event! {Request, (), BatchReadBlobsRequest}
 impl_as_event! {Request, (), BatchUpdateBlobsRequest, BatchUpdateBlobsRequest, to_batch_update_blobs_request_override}
+impl_as_event! {Request, (), FetchBlobRequest}
+impl_as_event! {Request, (), PushBlobRequest}
 impl_as_event! {Request, (), GetTreeRequest}
 impl_as_event! {Request, (), ReadRequest}
 impl_as_event! {Request, (), Streaming<WriteRequest>, WriteRequest, to_empty_write_request}
@@ -580,6 +589,8 @@ impl_as_event! {Response, ReadRequest, Pin<Box<dyn Stream<Item = Result<ReadResp
 impl_as_event! {Response, QueryWriteStatusRequest, QueryWriteStatusResponse}
 impl_as_event! {Response, FindMissingBlobsRequest, FindMissingBlobsResponse}
 impl_as_event! {Response, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse}
+impl_as_event! {Response, FetchBlobRequest, FetchBlobResponse}
+impl_as_event! {Response, PushBlobRequest, PushBlobResponse}
 impl_as_event! {Response, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchReadBlobsResponseOverride, to_batch_read_blobs_response_override}
 impl_as_event! {Response, GetTreeRequest, Pin<Box<dyn Stream<Item = Result<GetTreeResponse, TonicStatus>> + Send + '_>>, Empty, to_empty_response}
 impl_as_event! {Response, ExecuteRequest, Pin<Box<dyn Stream<Item = Result<Operation, TonicStatus>> + Send + '_>>, Empty, to_empty_response}
