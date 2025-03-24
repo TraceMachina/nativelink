@@ -18,7 +18,8 @@ use nativelink_config::cas_server::PushConfig;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::asset::v1::push_server::{Push, PushServer as Server};
 use nativelink_proto::build::bazel::remote::asset::v1::{
-    FetchBlobRequest, FetchBlobResponse, PushBlobRequest, PushBlobResponse, PushDirectoryRequest, PushDirectoryResponse,
+    FetchBlobRequest, FetchBlobResponse, PushBlobRequest, PushBlobResponse, PushDirectoryRequest,
+    PushDirectoryResponse,
 };
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::digest_hasher::{default_digest_hasher_func, make_ctx_for_hash_func};
@@ -37,18 +38,11 @@ impl PushServer {
         Server::new(self)
     }
 
-    async fn inner_fetch_blob(
+    async fn inner_push_blob(
         &self,
-        request: FetchBlobRequest,
-    ) -> Result<Response<FetchBlobResponse>, Error> {
-        Ok(Response::new(FetchBlobResponse {
-            status: Some(make_err!(Code::NotFound, "No item found").into()),
-            uri: request.uris.first().cloned().unwrap_or(String::from("")),
-            qualifiers: vec![],
-            expires_at: None,
-            blob_digest: None,
-            digest_function: default_digest_hasher_func().proto_digest_func().into(),
-        }))
+        request: PushBlobRequest,
+    ) -> Result<Response<PushBlobResponse>, Error> {
+        Ok(Response::new(PushBlobResponse {}))
     }
 }
 
@@ -66,7 +60,17 @@ impl Push for PushServer {
         &self,
         grpc_request: Request<PushBlobRequest>,
     ) -> Result<Response<PushBlobResponse>, Status> {
-        todo!()
+        let request = grpc_request.into_inner();
+        let ctx = OriginEventContext::new(|| &request).await;
+        let resp: Result<Response<PushBlobResponse>, Status> =
+            make_ctx_for_hash_func(request.digest_function)
+                .err_tip(|| "In PushServer::push_blob")?
+                .wrap_async(error_span!("push_push_blob"), self.inner_push_blob(request))
+                .await
+                .err_tip(|| "Failed on push_blob() command")
+                .map_err(Into::into);
+        ctx.emit(|| &resp).await;
+        resp
     }
 
     #[allow(clippy::blocks_in_conditions)]

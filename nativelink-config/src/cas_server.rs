@@ -137,7 +137,6 @@ pub struct FetchConfig {}
 #[serde(deny_unknown_fields)]
 pub struct PushConfig {}
 
-
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ByteStreamConfig {
