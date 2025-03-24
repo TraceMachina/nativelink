@@ -106,23 +106,33 @@
     },
     "services": {
       "cas": {
-        "main": {
+        "": {
           "cas_store": "WORKER_FAST_SLOW_STORE"
         }
       },
       "ac": {
-        "main": {
+        "": {
           "ac_store": "AC_MAIN_STORE"
         }
       },
       "execution": {
-        "main": {
+        "": {
           "cas_store": "WORKER_FAST_SLOW_STORE",
           "scheduler": "MAIN_SCHEDULER"
         }
       },
+      "fetch": {
+        // "": {
+        //   "cas_store": "WORKER_FAST_SLOW_STORE",
+        // }
+      },
+      "push": {
+        // "": {
+        //   "cas_store": "WORKER_FAST_SLOW_STORE",
+        // }
+      },
       "capabilities": {
-        "main": {
+        "": {
           "remote_execution": {
             "scheduler": "MAIN_SCHEDULER"
           }
@@ -130,7 +140,7 @@
       },
       "bytestream": {
         "cas_stores": {
-          "main": "WORKER_FAST_SLOW_STORE"
+          "": "WORKER_FAST_SLOW_STORE"
         }
       }
     }

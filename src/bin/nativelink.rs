@@ -44,8 +44,9 @@ use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_service::capabilities_server::CapabilitiesServer;
 use nativelink_service::cas_server::CasServer;
 use nativelink_service::execution_server::ExecutionServer;
+use nativelink_service::fetch_server::FetchServer;
 use nativelink_service::health_server::HealthServer;
-use nativelink_service::remote_asset_server::RemoteAssetServer;
+use nativelink_service::push_server::PushServer;
 use nativelink_service::worker_api_server::WorkerApiServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
@@ -363,9 +364,9 @@ async fn inner_main(
             )
             .add_optional_service(
                 services
-                    .remoteasset
+                    .fetch
                     .map_or(Ok(None), |cfg| {
-                        RemoteAssetServer::new(&cfg, &store_manager).map(|v| {
+                        FetchServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
@@ -385,7 +386,33 @@ async fn inner_main(
                             Some(service)
                         })
                     })
-                    .err_tip(|| "Could not create ByteStream service")?,
+                    .err_tip(|| "Could not create Fetch service")?,
+            )
+            .add_optional_service(
+                services
+                    .push
+                    .map_or(Ok(None), |cfg| {
+                        PushServer::new(&cfg, &store_manager).map(|v| {
+                            let mut service = v.into_service();
+                            let send_algo = &http_config.compression.send_compression_algorithm;
+                            if let Some(encoding) =
+                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::none))
+                            {
+                                service = service.send_compressed(encoding);
+                            }
+                            for encoding in http_config
+                                .compression
+                                .accepted_compression_algorithms
+                                .iter()
+                                // Filter None values.
+                                .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
+                            {
+                                service = service.accept_compressed(encoding);
+                            }
+                            Some(service)
+                        })
+                    })
+                    .err_tip(|| "Could not create Push service")?,
             )
             .add_optional_service(
                 services
