@@ -16,6 +16,8 @@ use std::collections::HashMap;
 
 use nativelink_error::{Error, ResultExt};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "dev-schema")]
+use schemars::JsonSchema;
 
 use crate::schedulers::SchedulerSpec;
 use crate::serde_utils::{
@@ -58,6 +60,7 @@ pub struct NamedConfig<Spec> {
 
 #[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum HttpCompressionAlgorithm {
     /// No compression.
     #[default]
@@ -78,6 +81,7 @@ pub enum HttpCompressionAlgorithm {
 /// and cloud-clients to use another.
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HttpCompressionConfig {
     /// The compression algorithm that the server will use when sending
     /// responses to clients. Enabling this will likely save a lot of
@@ -101,6 +105,7 @@ pub struct HttpCompressionConfig {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct AcStoreConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
@@ -115,6 +120,7 @@ pub struct AcStoreConfig {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CasStoreConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
@@ -124,6 +130,7 @@ pub struct CasStoreConfig {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CapabilitiesRemoteExecutionConfig {
     /// Scheduler used to configure the capabilities of remote execution.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -132,6 +139,7 @@ pub struct CapabilitiesRemoteExecutionConfig {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CapabilitiesConfig {
     /// Configuration for remote execution capabilities.
     /// If not set the capabilities service will inform the client that remote
@@ -141,6 +149,7 @@ pub struct CapabilitiesConfig {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExecutionConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
@@ -183,6 +192,7 @@ fn default<T: Default + PartialEq>(t: &T) -> bool {
 
 #[derive(Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
     pub cas_store: StoreRefName,
@@ -243,14 +253,29 @@ pub struct OldByteStreamConfig {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct WorkerApiConfig {
     /// The scheduler name referenced in the `schedulers` map in the main config.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub scheduler: SchedulerRefName,
 }
 
-#[derive(Deserialize, Serialize, Debug, Default)]
+#[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct PrometheusConfig {
+    /// Path to register prometheus metrics. If path is "/metrics", and your
+    /// domain is "example.com", you can reach the endpoint with:
+    /// <http://example.com/metrics>.
+    ///
+    /// Default: "/metrics"
+    #[serde(default)]
+    pub path: String,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct AdminConfig {
     /// Path to register the admin API. If path is "/admin", and your
     /// domain is "example.com", you can reach the endpoint with:
@@ -263,6 +288,7 @@ pub struct AdminConfig {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HealthConfig {
     /// Path to register the health status check. If path is "/status", and your
     /// domain is "example.com", you can reach the endpoint with:
@@ -278,6 +304,7 @@ pub struct HealthConfig {
 }
 
 #[derive(Deserialize, Serialize, Debug)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct BepConfig {
     /// The store to publish build events to.
     /// The store name referenced in the `stores` map in the main config.
@@ -286,6 +313,7 @@ pub struct BepConfig {
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct IdentityHeaderSpec {
     /// The name of the header to look for the identity in.
     /// Default: "x-identity"
@@ -298,6 +326,7 @@ pub struct IdentityHeaderSpec {
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct OriginEventsPublisherSpec {
     /// The store to publish nativelink events to.
     /// The store name referenced in the `stores` map in the main config.
@@ -306,6 +335,7 @@ pub struct OriginEventsPublisherSpec {
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct OriginEventsSpec {
     /// The publisher configuration for origin events.
     pub publisher: OriginEventsPublisherSpec,
@@ -321,6 +351,7 @@ pub struct OriginEventsSpec {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ServicesConfig {
     /// The Content Addressable Storage (CAS) backend config.
     /// The key is the `instance_name` used in the protocol and the
@@ -402,6 +433,7 @@ pub struct ServicesConfig {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct TlsConfig {
     /// Path to the certificate file.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -430,6 +462,7 @@ pub struct TlsConfig {
 /// specified.
 #[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HttpServerConfig {
     /// Interval to send keep-alive pings via HTTP2.
     /// Note: This is in seconds.
@@ -497,6 +530,7 @@ pub struct HttpServerConfig {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum ListenerConfig {
     /// Listener for HTTP/HTTPS/HTTP2 sockets.
     Http(HttpListener),
@@ -504,6 +538,7 @@ pub enum ListenerConfig {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HttpListener {
     /// Address to listen on. Example: `127.0.0.1:8080` or `:8080` to listen
     /// to all IPs.
@@ -533,6 +568,7 @@ pub struct HttpListener {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ServerConfig {
     /// Name of the server. This is used to help identify the service
     /// for telemetry and logs.
@@ -555,6 +591,7 @@ pub struct ServerConfig {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum WorkerProperty {
     /// List of static values.
     /// Note: Generally there should only ever be 1 value, but if the platform
@@ -570,6 +607,7 @@ pub enum WorkerProperty {
 /// Generic config for an endpoint and associated configs.
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct EndpointConfig {
     /// URI of the endpoint.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -585,6 +623,7 @@ pub struct EndpointConfig {
 
 #[derive(Copy, Clone, Deserialize, Serialize, Debug, Default)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum UploadCacheResultsStrategy {
     /// Only upload action results with an exit code of 0.
     #[default]
@@ -602,6 +641,7 @@ pub enum UploadCacheResultsStrategy {
 
 #[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum EnvironmentSource {
     /// The name of the platform property in the action to get the value from.
     Property(String),
@@ -652,6 +692,7 @@ pub enum EnvironmentSource {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct UploadActionResultConfig {
     /// Underlying AC store that the worker will use to publish execution results
     /// into. Objects placed in this store should be reachable from the
@@ -712,6 +753,7 @@ pub struct UploadActionResultConfig {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct LocalWorkerConfig {
     /// Name of the worker. This is give a more friendly name to a worker for logging
     /// and metric publishing. This is also the prefix of the worker id
@@ -855,6 +897,7 @@ const fn default_directory_cache_max_size_bytes() -> u64 {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum WorkerConfig {
     /// A worker type that executes jobs locally on this machine.
     Local(LocalWorkerConfig),
@@ -862,6 +905,7 @@ pub enum WorkerConfig {
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GlobalConfig {
     /// Maximum number of open files that can be opened at one time.
     /// This value is not strictly enforced, it is a best effort. Some internal libraries
@@ -897,6 +941,7 @@ pub type SchedulerConfig = NamedConfig<SchedulerSpec>;
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CasConfig {
     /// List of stores available to use in this config.
     /// The keys can be used in other configs when needing to reference a store.

@@ -14,6 +14,8 @@
 
 use std::collections::HashMap;
 
+#[cfg(feature = "dev-schema")]
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
@@ -22,8 +24,9 @@ use crate::serde_utils::{
 };
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
-#[derive(Deserialize, Serialize, Debug)]
-#[serde(rename_all = "snake_case")]
+#[allow(non_camel_case_types)]
+#[derive(Deserialize, Debug)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum SchedulerSpec {
     Simple(SimpleSpec),
     Grpc(GrpcSpec),
@@ -35,6 +38,7 @@ pub enum SchedulerSpec {
 /// the task, this value will be used to determine how the property is treated.
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, Hash, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum PropertyType {
     /// Requires the platform property to be a u64 and when the scheduler looks
     /// for appropriate worker nodes that are capable of executing the task,
@@ -64,6 +68,7 @@ pub enum PropertyType {
 /// workers are able to run the task.
 #[derive(Copy, Clone, Deserialize, Serialize, Debug, Default)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum WorkerAllocationStrategy {
     /// Prefer workers that have been least recently used to run a job.
     #[default]
@@ -79,6 +84,7 @@ const fn default_worker_match_logging_interval_s() -> i64 {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct SimpleSpec {
     /// A list of supported platform properties mapped to how these properties
     /// are used when the scheduler looks for worker nodes capable of running
@@ -164,6 +170,7 @@ pub struct SimpleSpec {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum ExperimentalSimpleSchedulerBackend {
     /// Use an in-memory store for the scheduler.
     Memory,
@@ -173,6 +180,7 @@ pub enum ExperimentalSimpleSchedulerBackend {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalRedisSchedulerBackend {
     /// A reference to the redis store to use for the scheduler.
     /// Note: This MUST resolve to a `RedisSpec`.
@@ -185,6 +193,7 @@ pub struct ExperimentalRedisSchedulerBackend {
 /// build at the main scheduler directly though.
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GrpcSpec {
     /// The upstream scheduler to forward requests to.
     pub endpoint: GrpcEndpoint,
@@ -207,6 +216,7 @@ pub struct GrpcSpec {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CacheLookupSpec {
     /// The reference to the action cache store used to return cached
     /// actions from rather than running them again.
@@ -219,6 +229,7 @@ pub struct CacheLookupSpec {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct PlatformPropertyAddition {
     /// The name of the property to add.
     pub name: String,
@@ -254,6 +265,7 @@ pub enum PropertyModification {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct PropertyModifierSpec {
     /// A list of modifications to perform to incoming actions for the nested
     /// scheduler.  These are performed in order and blindly, so removing a
