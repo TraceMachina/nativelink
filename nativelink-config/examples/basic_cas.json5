@@ -121,6 +121,11 @@
           "scheduler": "MAIN_SCHEDULER"
         }
       },
+      "remoteasset": {
+        // "main": {
+        //   "cas_store": "WORKER_FAST_SLOW_STORE",
+        // }
+      },
       "capabilities": {
         "main": {
           "remote_execution": {

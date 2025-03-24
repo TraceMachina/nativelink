@@ -129,6 +129,10 @@ pub struct ExecutionConfig {
     pub scheduler: SchedulerRefName,
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteAssetConfig {}
+
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ByteStreamConfig {
@@ -272,6 +276,8 @@ pub struct ServicesConfig {
     /// Bazel's protocol strongly encourages users to use this streaming
     /// interface to interact with the CAS when the data is large.
     pub bytestream: Option<ByteStreamConfig>,
+
+    pub remoteasset: Option<RemoteAssetConfig>,
 
     /// This is the service used for workers to connect and communicate
     /// through.
