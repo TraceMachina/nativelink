@@ -18,6 +18,7 @@ package com.github.trace_machina.nativelink.events;
 
 import "com/github/trace_machina/nativelink/remote_execution/worker_api.proto";
 import "build/bazel/remote/execution/v2/remote_execution.proto";
+import "build/bazel/remote/asset/v1/remote_asset.proto";
 import "google/bytestream/bytestream.proto";
 import "google/devtools/build/v1/publish_build_event.proto";
 import "google/longrunning/operations.proto";
@@ -84,8 +85,10 @@ message RequestEvent {
         build.bazel.remote.execution.v2.WaitExecutionRequest wait_execution_request = 12;
 
         com.github.trace_machina.nativelink.remote_execution.StartExecute scheduler_start_execute = 13;
+
+        build.bazel.remote.asset.v1.FetchBlobRequest fetch_blob_request = 14;
     }
-    reserved 14; // NextId.
+    reserved 15; // NextId.
 }
 
 message ResponseEvent {
@@ -100,9 +103,11 @@ message ResponseEvent {
         google.bytestream.QueryWriteStatusResponse query_write_status_response = 8;
 
         google.protobuf.Empty empty = 9;
+
+        build.bazel.remote.asset.v1.FetchBlobResponse fetch_blob_response = 10;
     }
 
-    reserved 10; // NextId.
+    reserved 11; // NextId.
 }
 
 message StreamEvent {

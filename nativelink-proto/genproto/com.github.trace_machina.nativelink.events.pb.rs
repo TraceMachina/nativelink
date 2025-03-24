@@ -100,7 +100,7 @@ pub struct WriteRequestOverride {
 pub struct RequestEvent {
     #[prost(
         oneof = "request_event::Event",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
     )]
     pub event: ::core::option::Option<request_event::Event>,
 }
@@ -154,11 +154,15 @@ pub mod request_event {
         ),
         #[prost(message, tag = "13")]
         SchedulerStartExecute(super::super::remote_execution::StartExecute),
+        #[prost(message, tag = "14")]
+        FetchBlobRequest(
+            super::super::super::super::super::super::build::bazel::remote::asset::v1::FetchBlobRequest,
+        ),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResponseEvent {
-    #[prost(oneof = "response_event::Event", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
+    #[prost(oneof = "response_event::Event", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
     pub event: ::core::option::Option<response_event::Event>,
 }
 /// Nested message and enum types in `ResponseEvent`.
@@ -195,6 +199,10 @@ pub mod response_event {
         ),
         #[prost(message, tag = "9")]
         Empty(()),
+        #[prost(message, tag = "10")]
+        FetchBlobResponse(
+            super::super::super::super::super::super::build::bazel::remote::asset::v1::FetchBlobResponse,
+        ),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
