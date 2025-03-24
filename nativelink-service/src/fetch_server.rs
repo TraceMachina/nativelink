@@ -14,29 +14,27 @@
 
 use std::convert::Into;
 
-use nativelink_config::cas_server::RemoteAssetConfig;
+use nativelink_config::cas_server::FetchConfig;
 use nativelink_error::{make_err, Code, Error, ResultExt};
-use nativelink_proto::build::bazel::remote::asset::v1::fetch_server::{Fetch, FetchServer};
-use nativelink_proto::build::bazel::remote::asset::v1::push_server::Push;
+use nativelink_proto::build::bazel::remote::asset::v1::fetch_server::{Fetch, FetchServer as Server};
 use nativelink_proto::build::bazel::remote::asset::v1::{
-    FetchBlobRequest, FetchBlobResponse, FetchDirectoryRequest, FetchDirectoryResponse,
+    FetchBlobRequest, FetchBlobResponse, FetchDirectoryRequest, FetchDirectoryResponse
 };
-use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::digest_hasher::{default_digest_hasher_func, make_ctx_for_hash_func};
 use nativelink_util::origin_event::OriginEventContext;
 use tonic::{Request, Response, Status};
 use tracing::{error_span, instrument, Level};
 
-pub struct RemoteAssetServer {}
+pub struct FetchServer {}
 
-impl RemoteAssetServer {
-    pub fn new(config: &RemoteAssetConfig, store_manager: &StoreManager) -> Result<Self, Error> {
-        Ok(RemoteAssetServer {})
+impl FetchServer {
+    pub fn new(config: &FetchConfig, store_manager: &StoreManager) -> Result<Self, Error> {
+        Ok(FetchServer {})
     }
 
-    pub fn into_service(self) -> FetchServer<RemoteAssetServer> {
-        FetchServer::new(self)
+    pub fn into_service(self) -> Server<FetchServer> {
+        Server::new(self)
     }
 
     async fn inner_fetch_blob(
@@ -55,7 +53,7 @@ impl RemoteAssetServer {
 }
 
 #[tonic::async_trait]
-impl Fetch for RemoteAssetServer {
+impl Fetch for FetchServer {
     #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
@@ -72,7 +70,7 @@ impl Fetch for RemoteAssetServer {
         let ctx = OriginEventContext::new(|| &request).await;
         let resp: Result<Response<FetchBlobResponse>, Status> =
             make_ctx_for_hash_func(request.digest_function)
-                .err_tip(|| "In RemoteAssetServer::fetch_blob")?
+                .err_tip(|| "In FetchServer::fetch_blob")?
                 .wrap_async(
                     error_span!("remote_asset_server_fetch_blob"),
                     self.inner_fetch_blob(request),
