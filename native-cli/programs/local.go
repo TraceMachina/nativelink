@@ -65,6 +65,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		"capacitor",
 		&components.Capacitor{
 			Dependencies: slices.Concat(
+				cilium,
 				flux,
 			),
 		},
