@@ -15,14 +15,13 @@
 use std::convert::Into;
 
 use nativelink_config::cas_server::PushConfig;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Error, ResultExt};
 use nativelink_proto::build::bazel::remote::asset::v1::push_server::{Push, PushServer as Server};
 use nativelink_proto::build::bazel::remote::asset::v1::{
-    PushBlobRequest, PushBlobResponse, PushDirectoryRequest,
-    PushDirectoryResponse,
+    PushBlobRequest, PushBlobResponse, PushDirectoryRequest, PushDirectoryResponse,
 };
 use nativelink_store::store_manager::StoreManager;
-use nativelink_util::digest_hasher::{default_digest_hasher_func, make_ctx_for_hash_func};
+use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::origin_event::OriginEventContext;
 use tonic::{Request, Response, Status};
 use tracing::{error_span, instrument, Level};
