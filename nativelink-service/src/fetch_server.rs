@@ -31,7 +31,7 @@ use tracing::{error_span, instrument, Level};
 pub struct FetchServer {}
 
 impl FetchServer {
-    pub fn new(config: &FetchConfig, store_manager: &StoreManager) -> Result<Self, Error> {
+    pub const fn new(_config: &FetchConfig, _store_manager: &StoreManager) -> Result<Self, Error> {
         Ok(FetchServer {})
     }
 
@@ -45,7 +45,7 @@ impl FetchServer {
     ) -> Result<Response<FetchBlobResponse>, Error> {
         Ok(Response::new(FetchBlobResponse {
             status: Some(make_err!(Code::NotFound, "No item found").into()),
-            uri: request.uris.first().cloned().unwrap_or(String::from("")),
+            uri: request.uris.first().cloned().unwrap_or(String::new()),
             qualifiers: vec![],
             expires_at: None,
             blob_digest: None,
@@ -90,11 +90,11 @@ impl Fetch for FetchServer {
         ret(level = Level::INFO),
         level = Level::ERROR,
         skip_all,
-        fields(request = ?grpc_request.get_ref())
+        fields(request = ?_grpc_request.get_ref())
     )]
     async fn fetch_directory(
         &self,
-        grpc_request: Request<FetchDirectoryRequest>,
+        _grpc_request: Request<FetchDirectoryRequest>,
     ) -> Result<Response<FetchDirectoryResponse>, Status> {
         todo!()
     }
