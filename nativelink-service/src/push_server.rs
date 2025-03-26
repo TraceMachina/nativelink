@@ -29,7 +29,7 @@ use tracing::{error_span, instrument, Level};
 pub struct PushServer {}
 
 impl PushServer {
-    pub fn new(config: &PushConfig, store_manager: &StoreManager) -> Result<Self, Error> {
+    pub const fn new(_config: &PushConfig, _store_manager: &StoreManager) -> Result<Self, Error> {
         Ok(PushServer {})
     }
 
@@ -39,7 +39,7 @@ impl PushServer {
 
     async fn inner_push_blob(
         &self,
-        request: PushBlobRequest,
+        _request: PushBlobRequest,
     ) -> Result<Response<PushBlobResponse>, Error> {
         Ok(Response::new(PushBlobResponse {}))
     }
@@ -78,11 +78,11 @@ impl Push for PushServer {
         ret(level = Level::INFO),
         level = Level::ERROR,
         skip_all,
-        fields(request = ?grpc_request.get_ref())
+        fields(request = ?_grpc_request.get_ref())
     )]
     async fn push_directory(
         &self,
-        grpc_request: Request<PushDirectoryRequest>,
+        _grpc_request: Request<PushDirectoryRequest>,
     ) -> Result<Response<PushDirectoryResponse>, Status> {
         todo!()
     }
