@@ -29,6 +29,7 @@ use crate::dedup_store::DedupStore;
 use crate::existence_cache_store::ExistenceCacheStore;
 use crate::fast_slow_store::FastSlowStore;
 use crate::filesystem_store::FilesystemStore;
+use crate::gcs_store::GcsStore;
 use crate::grpc_store::GrpcStore;
 use crate::memory_store::MemoryStore;
 use crate::noop_store::NoopStore;
@@ -51,6 +52,7 @@ pub fn store_factory<'a>(
         let store: Arc<dyn StoreDriver> = match backend {
             StoreSpec::Memory(spec) => MemoryStore::new(spec),
             StoreSpec::ExperimentalS3Store(spec) => S3Store::new(spec, SystemTime::now).await?,
+            StoreSpec::experimental_gcs_store(spec) => GcsStore::new(spec, SystemTime::now).await?,
             StoreSpec::RedisStore(spec) => RedisStore::new(spec.clone())?,
             StoreSpec::Verify(spec) => VerifyStore::new(
                 spec,
