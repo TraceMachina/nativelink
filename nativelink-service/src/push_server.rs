@@ -18,7 +18,7 @@ use nativelink_config::cas_server::PushConfig;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::asset::v1::push_server::{Push, PushServer as Server};
 use nativelink_proto::build::bazel::remote::asset::v1::{
-    FetchBlobRequest, FetchBlobResponse, PushBlobRequest, PushBlobResponse, PushDirectoryRequest,
+    PushBlobRequest, PushBlobResponse, PushDirectoryRequest,
     PushDirectoryResponse,
 };
 use nativelink_store::store_manager::StoreManager;
