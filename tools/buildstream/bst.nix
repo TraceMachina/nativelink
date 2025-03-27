@@ -26,6 +26,7 @@ pythonPkgs.buildPythonApplication rec {
     pythonPkgs.ruamel-yaml
     pythonPkgs.ruamel-yaml-clib
     pythonPkgs.ujson
+    pkgs.buildbox
   ];
 
   build-system = [

@@ -346,6 +346,9 @@
               inherit pkgs pyroaring;
               pythonPkgs = pkgs.python312Packages;
             };
+            buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
+              inherit nativelink bst;
+            };
           }
           // (
             # It's not possible to crosscompile to darwin, not even between
