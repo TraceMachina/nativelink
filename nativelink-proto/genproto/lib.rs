@@ -28,6 +28,11 @@
 pub mod build {
     pub mod bazel {
         pub mod remote {
+            pub mod asset {
+                pub mod v1 {
+                    include!("build.bazel.remote.asset.v1.pb.rs");
+                }
+            }
             pub mod execution {
                 pub mod v2 {
                     include!("build.bazel.remote.execution.v2.pb.rs");
