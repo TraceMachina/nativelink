@@ -22,10 +22,12 @@ use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
 
+#[cfg(feature = "dev-schema")]
+use schemars::JsonSchema;
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct NamedConfig<Spec> {
     pub name: String,
     #[serde(flatten)]
@@ -41,6 +43,7 @@ pub type StoreConfigs = NamedConfigs<crate::stores::StoreSpec>;
 pub type SchedulerConfigs = NamedConfigs<crate::schedulers::SchedulerSpec>;
 
 #[derive(Debug)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct NamedConfigs<T>(pub Vec<NamedConfig<T>>);
 
 impl<T> NamedConfigs<T> {
