@@ -43,7 +43,7 @@ The value of `stores` is an array where each element defines a store. Each shoul
 ### Store Type
 
 Once the store has been named and its object exists,
-the next key to add is the type of store. The options are `filesystem`, `memory`, `compression`, `dedup`, `fast_slow`, `verify`, and `experimental_s3_store`.
+the next key to add is the type of store. The options are `filesystem`, `memory`, `compression`, `dedup`, `fast_slow`, `verify`, and `experimental_s3_store` and `experimental_gcs_store`.
 
 ```json5
 {
