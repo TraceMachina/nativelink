@@ -19,19 +19,19 @@ use aws_sdk_s3::config::{BehaviorVersion, Builder, Region};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_smithy_runtime::client::http::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
-use aws_smithy_types::checksum_config::{RequestChecksumCalculation, ResponseChecksumValidation};
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::join;
 use futures::task::Poll;
 use http::header;
 use http::status::StatusCode;
-use hyper::Body;
+use http_body::Frame;
 use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::S3Spec;
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::s3_store::S3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::spawn;
@@ -55,7 +55,7 @@ async fn simple_has_object_found() -> Result<(), Error> {
             .unwrap(),
     )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -90,7 +90,7 @@ async fn simple_has_object_not_found() -> Result<(), Error> {
             .unwrap(),
     )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -148,7 +148,7 @@ async fn simple_has_retries() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -181,6 +181,20 @@ async fn simple_has_retries() -> Result<(), Error> {
     Ok(())
 }
 
+// As of `BehaviorVersion::v2025_01_17` responses contain checksums. This helper
+// function removes them for easier comparison.
+fn extract_payload_from_chunked_data(chunked_data: &[u8]) -> Result<Bytes, Error> {
+    let data_str = std::str::from_utf8(chunked_data)
+        .map_err(|e| make_input_err!("Invalid UTF-8 in chunked data: {e:?}"))?;
+    let parts: Vec<&str> = data_str.split("\r\n").collect();
+    if parts.len() > 1 {
+        return Ok(Bytes::from(parts[1].to_string()));
+    }
+    Ok(Bytes::from(chunked_data.to_vec()))
+}
+
+/// This function mutates the request to insert a Content-MD5 header and remove
+/// any existing flexible checksum headers
 #[nativelink_test]
 async fn simple_update_ac() -> Result<(), Error> {
     const AC_ENTRY_SIZE: u64 = 199;
@@ -201,11 +215,7 @@ async fn simple_update_ac() -> Result<(), Error> {
             .unwrap(),
         ));
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
-        // TODO(aaronmondal): Flip these to the default "WhenSupported".
-        //                    See: https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-01-15
-        .request_checksum_calculation(RequestChecksumCalculation::WhenRequired)
-        .response_checksum_validation(ResponseChecksumValidation::WhenRequired)
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -266,11 +276,11 @@ async fn simple_update_ac() -> Result<(), Error> {
         .collect()
         .await
         .map_err(|e| make_input_err!("{e:?}"))?;
-    assert_eq!(
-        send_data,
-        data_sent_to_s3.into_bytes(),
-        "Expected data to match"
-    );
+
+    let chunked_bytes = data_sent_to_s3.into_bytes();
+    let actual_payload = extract_payload_from_chunked_data(&chunked_bytes)?;
+
+    assert_eq!(send_data, actual_payload, "Expected data to match");
 
     // Collect our spawn future to ensure it completes without error.
     spawn_fut
@@ -293,7 +303,7 @@ async fn simple_get_ac() -> Result<(), Error> {
             .unwrap(),
     )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -338,7 +348,7 @@ async fn smoke_test_get_part() -> Result<(), Error> {
                 .unwrap(),
         )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(REGION))
         .http_client(mock_client.clone())
         .build();
@@ -398,7 +408,7 @@ async fn get_part_simple_retries() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -530,7 +540,7 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
             ),
         ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(REGION))
         .http_client(mock_client.clone())
         .build();
@@ -555,7 +565,10 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
 #[nativelink_test]
 async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
     const CAS_ENTRY_SIZE: usize = 10; // Length of "helloworld".
-    let (mut tx, channel_body) = Body::channel();
+
+    let (tx, channel_body) = ChannelBody::new();
+    let sdk_body = SdkBody::from_body_1_x(channel_body);
+
     let mock_client = StaticReplayClient::new(vec![ReplayEvent::new(
             http::Request::builder()
                 .uri(format!(
@@ -566,11 +579,11 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
                 .unwrap(),
             http::Response::builder()
                 .status(StatusCode::OK)
-                .body(SdkBody::from_body_0_4(channel_body))
+                .body(sdk_body)
                 .unwrap(),
         )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(REGION))
         .http_client(mock_client.clone())
         .build();
@@ -585,12 +598,18 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
         MockInstantWrapped::default,
     )?;
 
-    let (_, get_part_result) = join!(
+    let (send_result, get_part_result) = join!(
         async move {
-            tx.send_data(Bytes::from_static(b"hello")).await?;
-            tx.send_data(Bytes::from_static(b"")).await?;
-            tx.send_data(Bytes::from_static(b"world")).await?;
-            Result::<(), hyper::Error>::Ok(())
+            tx.send(Frame::data(Bytes::from_static(b"hello")))
+                .await
+                .map_err(|_| "send error")?;
+            tx.send(Frame::data(Bytes::from_static(b"")))
+                .await
+                .map_err(|_| "send error")?;
+            tx.send(Frame::data(Bytes::from_static(b"world")))
+                .await
+                .map_err(|_| "send error")?;
+            Result::<(), &'static str>::Ok(())
         },
         store.get_part_unchunked(
             DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE)?,
@@ -598,6 +617,11 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
             Some(CAS_ENTRY_SIZE as u64),
         )
     );
+
+    if let Err(e) = send_result {
+        return Err(make_err!(Code::Internal, "Failed to send data: {}", e));
+    }
+
     assert_eq!(
         get_part_result.err_tip(|| "Expected get_part_result to pass")?,
         "helloworld".as_bytes()
@@ -613,7 +637,7 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
 
     let mock_client = StaticReplayClient::new(vec![]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -655,7 +679,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
 
     let mock_client = StaticReplayClient::new(vec![]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -698,7 +722,7 @@ async fn has_with_expired_result() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
