@@ -129,6 +129,14 @@ pub struct ExecutionConfig {
     pub scheduler: SchedulerRefName,
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct FetchConfig {}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct PushConfig {}
+
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ByteStreamConfig {
@@ -272,6 +280,9 @@ pub struct ServicesConfig {
     /// Bazel's protocol strongly encourages users to use this streaming
     /// interface to interact with the CAS when the data is large.
     pub bytestream: Option<ByteStreamConfig>,
+
+    pub fetch: Option<FetchConfig>,
+    pub push: Option<PushConfig>,
 
     /// This is the service used for workers to connect and communicate
     /// through.

@@ -16,7 +16,6 @@
 
 import argparse
 import os
-from pathlib import Path
 
 _HEADER = """\
 // Copyright 2022 The NativeLink Authors. All rights reserved.
