@@ -32,6 +32,8 @@ use crate::filesystem_store::FilesystemStore;
 use crate::grpc_store::GrpcStore;
 use crate::memory_store::MemoryStore;
 use crate::noop_store::NoopStore;
+use crate::ontap_s3_existence_cache_store::OntapS3ExistenceCache;
+use crate::ontap_s3_store::OntapS3Store;
 use crate::redis_store::RedisStore;
 use crate::ref_store::RefStore;
 use crate::s3_store::S3Store;
@@ -51,6 +53,10 @@ pub fn store_factory<'a>(
         let store: Arc<dyn StoreDriver> = match backend {
             StoreSpec::memory(spec) => MemoryStore::new(spec),
             StoreSpec::experimental_s3_store(spec) => S3Store::new(spec, SystemTime::now).await?,
+            StoreSpec::ontap_s3_store(spec) => OntapS3Store::new(spec, SystemTime::now).await?,
+            StoreSpec::ontap_s3_existence_cache(spec) => {
+                OntapS3ExistenceCache::new(spec, SystemTime::now).await?
+            }
             StoreSpec::redis_store(spec) => RedisStore::new(spec.clone())?,
             StoreSpec::verify(spec) => VerifyStore::new(
                 spec,
