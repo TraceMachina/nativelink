@@ -17,6 +17,22 @@ run some Bazel builds against it.
 This example doesn't work on Mac yet.
 :::
 
+:::note
+On modern systems you might need to enable some backwards-compatibility kernel
+modules.
+
+For instance, on NixOS:
+
+```nix
+boot.kernelModules = [
+  "iptable_filter"
+  "iptable_mangle"
+  "iptable_nat"
+  "iptable_raw"
+  "xt_socket"
+];
+```
+:::
 
 ## ☁️ Prepare the cluster
 

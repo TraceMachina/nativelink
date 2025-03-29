@@ -53,7 +53,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 	flux, err := components.AddComponent(
 		ctx,
 		"flux",
-		&components.Flux{Version: "2.3.0"},
+		&components.Flux{Version: "2.5.1"},
 	)
 	if err != nil {
 		log.Println(err)
@@ -159,6 +159,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		ctx,
 		"kind-loadbalancer",
 		&components.Loadbalancer{
+			Version: "1.33.2",
 			Gateways: []components.Gateway{
 				capacitorGateway,
 				nativelinkGateway,
