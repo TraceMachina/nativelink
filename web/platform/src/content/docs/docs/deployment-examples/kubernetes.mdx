@@ -17,6 +17,22 @@ run some Bazel builds against it.
 This example doesn't work on Mac yet.
 :::
 
+:::note
+On modern systems you might need to enable some backwards-compatibility kernel
+modules.
+
+For instance, on NixOS:
+
+```nix
+boot.kernelModules = [
+  "ip_tables_nft"
+  "iptable_nat_nft"
+  "iptable_mangle_nft"
+  "iptable_raw_nft"
+  "iptable_filter_nft"
+];
+```
+:::
 
 ## ☁️ Prepare the cluster
 
