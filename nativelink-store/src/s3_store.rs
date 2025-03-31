@@ -57,6 +57,10 @@ use tracing::{error, info};
 use crate::cas_utils::is_zero_digest;
 use crate::common_s3_utils::{BodyWrapper, TlsClient};
 
+// S3 object cannot be larger than this number. See:
+// https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
+const MAX_UPLOAD_SIZE: u64 = 5 * 1024 * 1024 * 1024 * 1024; // 5TB.
+
 // S3 parts cannot be smaller than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
 const MIN_MULTIPART_SIZE: u64 = 5 * 1024 * 1024; // 5MB.
@@ -67,7 +71,8 @@ const MAX_MULTIPART_SIZE: u64 = 5 * 1024 * 1024 * 1024; // 5GB.
 
 // S3 parts cannot be more than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
-const MAX_UPLOAD_PARTS: usize = 10_000;
+// Note: Type 'u64' chosen to simplify calculations
+const MAX_UPLOAD_PARTS: u64 = 10_000;
 
 // Default max buffer size for retrying upload requests.
 // Note: If you change this, adjust the docs in the config.
@@ -278,6 +283,14 @@ where
             UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
         };
 
+        // Sanity check S3 maximum upload size.
+        if max_size > MAX_UPLOAD_SIZE {
+            return Err(make_err!(
+                Code::FailedPrecondition,
+                "File size exceeds max of {MAX_UPLOAD_SIZE}"
+            ));
+        }
+
         // Note(aaronmondal) It might be more optimal to use a different
         // heuristic here, but for simplicity we use a hard coded value.
         // Anything going down this if-statement will have the advantage of only
@@ -386,9 +399,24 @@ where
             .await?;
 
         // S3 requires us to upload in parts if the size is greater than 5GB. The part size must be at least
-        // 5mb (except last part) and can have up to 10,000 parts.
+        // 5MB (except last part) and can have up to 10,000 parts.
+
+        // Calculate of number of chunks if we upload in 5MB chucks (min chunk size), clamping to
+        // 10,000 parts and correcting for lossy integer division. This provides the
+        let chunk_count = (max_size / MIN_MULTIPART_SIZE).clamp(0, MAX_UPLOAD_PARTS - 1) + 1;
+
+        // Using clamped first approximation of number of chunks, calculate byte count of each
+        // chunk, excluding last chunk, clamping to min/max upload size 5MB, 5GB.
         let bytes_per_upload_part =
-            (max_size / (MIN_MULTIPART_SIZE - 1)).clamp(MIN_MULTIPART_SIZE, MAX_MULTIPART_SIZE);
+            (max_size / chunk_count).clamp(MIN_MULTIPART_SIZE, MAX_MULTIPART_SIZE);
+
+        // Sanity check before continuing.
+        if !(MIN_MULTIPART_SIZE..MAX_MULTIPART_SIZE).contains(&bytes_per_upload_part) {
+            return Err(make_err!(
+                Code::FailedPrecondition,
+                "Failed to calculate file chuck size (min, max, calc): {MIN_MULTIPART_SIZE}, {MAX_MULTIPART_SIZE}, {bytes_per_upload_part}",
+            ));
+        }
 
         let upload_parts = move || async move {
             // This will ensure we only have `multipart_max_concurrent_uploads` * `bytes_per_upload_part`
@@ -455,11 +483,8 @@ where
             let mut upload_futures = FuturesUnordered::new();
 
             let mut completed_parts = Vec::with_capacity(
-                usize::try_from(cmp::min(
-                    MAX_UPLOAD_PARTS as u64,
-                    (max_size / bytes_per_upload_part) + 1,
-                ))
-                .err_tip(|| "Could not convert u64 to usize")?,
+                usize::try_from(cmp::min(MAX_UPLOAD_PARTS, chunk_count))
+                    .err_tip(|| "Could not convert u64 to usize")?,
             );
             tokio::pin!(read_stream_fut);
             loop {
