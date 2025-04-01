@@ -3,7 +3,7 @@ module github.com/TraceMachina/nativelink/native-cli
 go 1.23.5
 
 require (
-	github.com/docker/docker v28.0.1+incompatible
+	github.com/docker/docker v28.0.4+incompatible
 	github.com/go-git/go-git/v5 v5.14.0
 	github.com/pulumi/pulumi-docker/sdk/v4 v4.6.1
 	github.com/pulumi/pulumi-kubernetes/sdk/v4 v4.22.1
