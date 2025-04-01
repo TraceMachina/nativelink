@@ -47,7 +47,7 @@ nativelink-worker = { path = "nativelink-worker" }
 nativelink-metric = { path = "nativelink-metric" }
 nativelink-metric-collector = { path = "nativelink-metric-collector" }
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
-axum = { version = "0.7.9", default-features = false }
+axum = { version = "0.8.0", default-features = false }
 clap = { version = "4.5.34", features = ["derive"] }
 futures = { version = "0.3.31", default-features = false }
 hyper = "1.6.0"
