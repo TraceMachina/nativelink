@@ -1,3 +1,4 @@
+# FIXME: replace with upstream once https://github.com/NixOS/nixpkgs/pull/394749 gets merged
 {pythonPkgs}:
 pythonPkgs.buildPythonPackage rec {
   pname = "pyroaring";
