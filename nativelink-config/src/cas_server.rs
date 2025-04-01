@@ -281,6 +281,8 @@ pub struct ServicesConfig {
     /// interface to interact with the CAS when the data is large.
     pub bytestream: Option<ByteStreamConfig>,
 
+    /// These two are collectively the Remote Asset protocol, but it's
+    /// defined as two separate services
     pub fetch: Option<FetchConfig>,
     pub push: Option<PushConfig>,
 
