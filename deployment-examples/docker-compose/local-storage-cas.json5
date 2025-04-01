@@ -57,16 +57,8 @@
           "": "CAS_MAIN_STORE"
         }
       },
-      "fetch": {
-        // "": {
-        //   "cas_store": "WORKER_FAST_SLOW_STORE",
-        // }
-      },
-      "push": {
-        // "": {
-        //   "cas_store": "WORKER_FAST_SLOW_STORE",
-        // }
-      },
+      "fetch": {},
+      "push": {},
     }
   }, {
     // Only publish metrics on a private port.
