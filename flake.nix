@@ -95,10 +95,10 @@
         in
           {
             inherit src;
-            stdenv =
-              if isLinuxTarget
-              then p.pkgsMusl.stdenv
-              else p.stdenv;
+            stdenv = q:
+              if q.stdenv.targetPlatform.isLinux
+              then q.pkgsMusl.stdenv
+              else q.stdenv;
             strictDeps = true;
             buildInputs =
               [p.cacert]
