@@ -9,13 +9,6 @@ rust-version = "1.85.0"
 
 [profile.release]
 lto = true
-opt-level = 3
-
-[profile.dev]
-lto = false
-opt-level = 0
-strip = false
-debug = true
 
 # Prefer this profile in CI, for instance via `cargo test --all --profile=smol`.
 # It reduces the size of the `target` directory from ~12GB to ~1GB.
