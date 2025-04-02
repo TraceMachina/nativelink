@@ -88,7 +88,10 @@ const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 10_000;
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "must match method signature expected"
+)]
 fn to_hex(value: &u32) -> String {
     format!("{value:08x}")
 }

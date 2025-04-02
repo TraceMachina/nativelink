@@ -305,7 +305,6 @@ impl CasServer {
 impl ContentAddressableStorage for CasServer {
     type GetTreeStream = GetTreeStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -332,7 +331,6 @@ impl ContentAddressableStorage for CasServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -359,7 +357,6 @@ impl ContentAddressableStorage for CasServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -386,7 +383,6 @@ impl ContentAddressableStorage for CasServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,

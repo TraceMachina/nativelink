@@ -87,15 +87,15 @@ const EXIT_CODE_FOR_SIGNAL: i32 = 9;
 /// Note: If this value changes the config documentation
 /// should reflect it.
 const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
-    UploadCacheResultsStrategy::failures_only;
+    UploadCacheResultsStrategy::FailuresOnly;
 
 /// Valid string reasons for a failure.
 /// Note: If these change, the documentation should be updated.
-#[allow(non_camel_case_types)]
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum SideChannelFailureReason {
     /// Task should be considered timed out.
-    timeout,
+    Timeout,
 }
 
 /// This represents the json data that can be passed from the running process
@@ -507,7 +507,7 @@ async fn process_side_channel_file(
             )
         })?;
     Ok(side_channel_info.failure.map(|failure| match failure {
-        SideChannelFailureReason::timeout => Error::new(
+        SideChannelFailureReason::Timeout => Error::new(
             Code::DeadlineExceeded,
             format!(
                 "Command '{}' timed out after {} seconds",
@@ -795,22 +795,22 @@ impl RunningActionImpl {
         {
             for (name, source) in additional_environment {
                 let value = match source {
-                    EnvironmentSource::property(property) => self
+                    EnvironmentSource::Property(property) => self
                         .action_info
                         .platform_properties
                         .get(property)
                         .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.as_str())),
-                    EnvironmentSource::value(value) => Cow::Borrowed(value.as_str()),
-                    EnvironmentSource::timeout_millis => {
+                    EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                    EnvironmentSource::TimeoutMillis => {
                         Cow::Owned(requested_timeout.as_millis().to_string())
                     }
-                    EnvironmentSource::side_channel_file => {
+                    EnvironmentSource::SideChannelFile => {
                         let file_cow =
                             format!("{}/{}", self.action_directory, Uuid::new_v4().simple());
                         maybe_side_channel_file = Some(Cow::Owned(file_cow.clone().into()));
                         Cow::Owned(file_cow)
                     }
-                    EnvironmentSource::action_directory => {
+                    EnvironmentSource::ActionDirectory => {
                         Cow::Borrowed(self.action_directory.as_str())
                     }
                 };
@@ -1398,7 +1398,7 @@ impl UploadActionResults {
             .unwrap_or(DEFAULT_HISTORICAL_RESULTS_STRATEGY);
         if !matches!(
             config.upload_ac_results_strategy,
-            UploadCacheResultsStrategy::never
+            UploadCacheResultsStrategy::Never
         ) && ac_store.is_none()
         {
             return Err(make_input_err!(
@@ -1439,13 +1439,13 @@ impl UploadActionResults {
             did_fail = true;
         }
         match strategy {
-            UploadCacheResultsStrategy::success_only => !did_fail,
-            UploadCacheResultsStrategy::never => false,
+            UploadCacheResultsStrategy::SuccessOnly => !did_fail,
+            UploadCacheResultsStrategy::Never => false,
             // Never cache internal errors or timeouts.
-            UploadCacheResultsStrategy::everything => {
+            UploadCacheResultsStrategy::Everything => {
                 treat_infra_error_as_failure || action_result.error.is_none()
             }
-            UploadCacheResultsStrategy::failures_only => did_fail,
+            UploadCacheResultsStrategy::FailuresOnly => did_fail,
         }
     }
 

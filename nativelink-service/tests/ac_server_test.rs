@@ -56,7 +56,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_cas",
         store_factory(
-            &StoreSpec::memory(MemorySpec::default()),
+            &StoreSpec::Memory(MemorySpec::default()),
             &store_manager,
             None,
         )
@@ -65,7 +65,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_ac",
         store_factory(
-            &StoreSpec::memory(MemorySpec::default()),
+            &StoreSpec::Memory(MemorySpec::default()),
             &store_manager,
             None,
         )

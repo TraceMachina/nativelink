@@ -221,7 +221,7 @@ pub struct CompressionStore {
 impl CompressionStore {
     pub fn new(spec: &CompressionSpec, inner_store: Store) -> Result<Arc<Self>, Error> {
         let lz4_config = match spec.compression_algorithm {
-            nativelink_config::stores::CompressionAlgorithm::lz4(mut lz4_config) => {
+            nativelink_config::stores::CompressionAlgorithm::Lz4(mut lz4_config) => {
                 if lz4_config.block_size == 0 {
                     lz4_config.block_size = DEFAULT_BLOCK_SIZE;
                 }

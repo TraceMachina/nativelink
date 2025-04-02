@@ -178,8 +178,8 @@ async fn inner_main(
 ) -> Result<(), Error> {
     const fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
-            HttpCompressionAlgorithm::gzip => Some(CompressionEncoding::Gzip),
-            HttpCompressionAlgorithm::none => None,
+            HttpCompressionAlgorithm::Gzip => Some(CompressionEncoding::Gzip),
+            HttpCompressionAlgorithm::None => None,
         }
     }
 
@@ -279,7 +279,7 @@ async fn inner_main(
             .err_tip(|| "'services' must be configured")?;
 
         // Currently we only support http as our socket type.
-        let ListenerConfig::http(http_config) = server_cfg.listener;
+        let ListenerConfig::Http(http_config) = server_cfg.listener;
 
         let tonic_services = TonicServer::builder()
             .add_optional_service(
@@ -290,7 +290,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::none))
+                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -316,7 +316,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::none))
+                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -342,7 +342,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::none))
+                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -368,7 +368,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::none))
+                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -408,7 +408,7 @@ async fn inner_main(
                     let mut service = v.into_service();
                     let send_algo = &http_config.compression.send_compression_algorithm;
                     if let Some(encoding) =
-                        into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::none))
+                        into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
                     {
                         service = service.send_compressed(encoding);
                     }
@@ -432,7 +432,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::none))
+                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -458,7 +458,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::none))
+                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -921,7 +921,7 @@ async fn inner_main(
         let mut worker_metrics: HashMap<String, Arc<dyn RootMetricsComponent>> = HashMap::new();
         for (i, worker_cfg) in worker_cfgs.into_iter().enumerate() {
             let spawn_fut = match worker_cfg {
-                WorkerConfig::local(local_worker_cfg) => {
+                WorkerConfig::Local(local_worker_cfg) => {
                     let fast_slow_store = store_manager
                         .get_store(&local_worker_cfg.cas_fast_slow_store)
                         .err_tip(|| {
@@ -1036,7 +1036,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         set_default_digest_hasher_func(DigestHasherFunc::from(
             global_cfg
                 .default_digest_hash_function
-                .unwrap_or(ConfigDigestHashFunction::sha256),
+                .unwrap_or(ConfigDigestHashFunction::Sha256),
         ))?;
         set_default_digest_size_health_check(global_cfg.default_digest_size_health_check)?;
         !global_cfg.disable_metrics
@@ -1049,49 +1049,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    #[allow(clippy::disallowed_methods)]
-    {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
-            .build()?;
 
-        // Initiates the shutdown process by broadcasting the shutdown signal via the `oneshot::Sender` to all listeners.
-        // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.
-        // Once all `oneshot::Sender` instances are dropped, the worker knows it can safely terminate.
-        let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
-        let shutdown_tx_clone = shutdown_tx.clone();
-        let mut shutdown_guard = ShutdownGuard::default();
+    #[expect(clippy::disallowed_methods, reason = "starting main runtime")]
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
+        .build()?;
 
-        runtime.spawn(async move {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to listen to SIGINT");
-            eprintln!("User terminated process via SIGINT");
-            std::process::exit(130);
-        });
+    // Initiates the shutdown process by broadcasting the shutdown signal via the `oneshot::Sender` to all listeners.
+    // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.
+    // Once all `oneshot::Sender` instances are dropped, the worker knows it can safely terminate.
+    let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
+    let shutdown_tx_clone = shutdown_tx.clone();
+    let mut shutdown_guard = ShutdownGuard::default();
 
-        #[cfg(target_family = "unix")]
-        {
-            runtime.spawn(async move {
-                signal(SignalKind::terminate())
-                    .expect("Failed to listen to SIGTERM")
-                    .recv()
-                    .await;
-                event!(Level::WARN, "Process terminated via SIGTERM",);
-                let _ = shutdown_tx_clone.send(shutdown_guard.clone());
-                let () = shutdown_guard.wait_for(Priority::P0).await;
-                event!(Level::WARN, "Successfully shut down nativelink.",);
-                std::process::exit(143);
-            });
-        }
+    #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
+    runtime.spawn(async move {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen to SIGINT");
+        eprintln!("User terminated process via SIGINT");
+        std::process::exit(130);
+    });
 
-        runtime
-            .block_on(Arc::new(OriginContext::new()).wrap_async(
-                trace_span!("main"),
-                inner_main(cfg, server_start_time, shutdown_tx),
-            ))
-            .err_tip(|| "main() function failed")?;
-    }
+    #[cfg(target_family = "unix")]
+    #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
+    runtime.spawn(async move {
+        signal(SignalKind::terminate())
+            .expect("Failed to listen to SIGTERM")
+            .recv()
+            .await;
+        event!(Level::WARN, "Process terminated via SIGTERM",);
+        let _ = shutdown_tx_clone.send(shutdown_guard.clone());
+        let () = shutdown_guard.wait_for(Priority::P0).await;
+        event!(Level::WARN, "Successfully shut down nativelink.",);
+        std::process::exit(143);
+    });
+
+    #[expect(clippy::disallowed_methods, reason = "waiting on everything to finish")]
+    runtime
+        .block_on(Arc::new(OriginContext::new()).wrap_async(
+            trace_span!("main"),
+            inner_main(cfg, server_start_time, shutdown_tx),
+        ))
+        .err_tip(|| "main() function failed")?;
     Ok(())
 }

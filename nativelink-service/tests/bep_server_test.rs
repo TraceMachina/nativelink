@@ -55,7 +55,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         BEP_STORE_NAME,
         store_factory(
-            &StoreSpec::memory(MemorySpec::default()),
+            &StoreSpec::Memory(MemorySpec::default()),
             &store_manager,
             None,
         )

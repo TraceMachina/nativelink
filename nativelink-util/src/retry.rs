@@ -127,13 +127,11 @@ impl Retrier {
             .take(self.config.max_retries) // Remember this is number of retries, so will run max_retries + 1.
     }
 
-    // Clippy complains that this function can be `async fn`, but this is not true.
-    // If we use `async fn`, other places in our code will fail to compile stating
-    // something about the async blocks not matching.
-    // This appears to happen due to a compiler bug while inlining, because the
-    // function that it complained about was calling another function that called
-    // this one.
-    #[allow(clippy::manual_async_fn)]
+    #[expect(
+        clippy::manual_async_fn,
+        reason = "making an `async fn` results in a potential compiler bug in seemingly unrelated \
+            code"
+    )]
     pub fn retry<'a, T: Send>(
         &'a self,
         operation: impl futures::stream::Stream<Item = RetryResult<T>> + Send + 'a,
