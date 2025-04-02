@@ -25,11 +25,6 @@ const team = [
     name: "Marcus Eagan",
     title: "Co-Founder",
   },
-  {
-    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/blaise_bruer.webp",
-    name: "Blaise Bruer",
-    title: "Co-Founder",
-  },
 ];
 
 const _cards = [

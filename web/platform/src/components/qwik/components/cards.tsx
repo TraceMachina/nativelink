@@ -59,8 +59,8 @@ const pricing = [
   {
     title: "Free Preview",
     items: [
-      "100GB of Cache Transfer",
-      "80 cores of remote builds",
+      "1 TB of Cache Transfer",
+      "100 cores of remote builds",
       "Community Support",
     ],
     cta: {
