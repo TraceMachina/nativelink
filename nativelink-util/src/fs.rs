@@ -114,9 +114,9 @@ impl AsyncWrite for FileSlot {
 
 // Note: If the default changes make sure you update the documentation in
 // `config/cas_server.rs`.
-pub const DEFAULT_OPEN_FILE_PERMITS: usize = 24 * 1024; // 24k.
-static TOTAL_FILE_SEMAPHORES: AtomicUsize = AtomicUsize::new(DEFAULT_OPEN_FILE_PERMITS);
-pub static OPEN_FILE_SEMAPHORE: Semaphore = Semaphore::const_new(DEFAULT_OPEN_FILE_PERMITS);
+pub const DEFAULT_OPEN_FILE_LIMIT: usize = 24 * 1024; // 24k.
+static OPEN_FILE_LIMIT: AtomicUsize = AtomicUsize::new(DEFAULT_OPEN_FILE_LIMIT);
+pub static OPEN_FILE_SEMAPHORE: Semaphore = Semaphore::const_new(DEFAULT_OPEN_FILE_LIMIT);
 
 /// Try to acquire a permit from the open file semaphore.
 #[inline]
@@ -139,59 +139,75 @@ where
         .unwrap_or_else(|e| Err(make_err!(Code::Internal, "background task failed: {e:?}")))
 }
 
-pub fn set_open_file_limit(limit: usize) {
-    let new_limit = {
-        // We increase the limit by 20% to give extra
-        // room for other file descriptors like sockets,
-        // pipes, and other things.
-        let fs_ulimit =
-            u64::try_from(limit.saturating_add(limit / 5)).expect("set_open_file_limit too large");
-        match increase_nofile_limit(fs_ulimit) {
-            Ok(new_fs_ulimit) => {
+/// Sets the soft nofile limit to `desired_open_file_limit` and adjusts
+/// `OPEN_FILE_SEMAPHORE` accordingly.
+///
+/// # Panics
+///
+/// If any type conversion fails. This can't happen if `usize` is smaller than
+/// `u64`.
+pub fn set_open_file_limit(desired_open_file_limit: usize) {
+    let new_open_file_limit = {
+        match increase_nofile_limit(
+            u64::try_from(desired_open_file_limit)
+                .expect("desired_open_file_limit is too large to convert to u64."),
+        ) {
+            Ok(open_file_limit) => {
                 event!(
                     Level::INFO,
-                    "set_open_file_limit({limit})::ulimit success. New fs.ulimit: {fs_ulimit} (20% increase of {limit}).",
+                    "set_open_file_limit() assigns new open file limit {open_file_limit}.",
                 );
-                usize::try_from(new_fs_ulimit).expect("new_fs_ulimit too large")
+                usize::try_from(open_file_limit)
+                    .expect("open_file_limit is too large to convert to usize.")
             }
             Err(e) => {
                 event!(
                     Level::ERROR,
-                    "set_open_file_limit({limit})::ulimit failed. Maybe system does not have ulimits, continuing anyway. - {e:?}",
+                    "set_open_file_limit() failed to assign open file limit. Maybe system does not have ulimits, continuing anyway. - {e:?}",
                 );
-                limit
+                DEFAULT_OPEN_FILE_LIMIT
             }
         }
     };
-    if new_limit < DEFAULT_OPEN_FILE_PERMITS {
+    // TODO(jaroeichler): Can we give a better estimate?
+    if new_open_file_limit < DEFAULT_OPEN_FILE_LIMIT {
         event!(
             Level::WARN,
-            "set_open_file_limit({limit}) succeeded, but this is below the default limit of {DEFAULT_OPEN_FILE_PERMITS}. Will continue, but we recommend increasing the limit to at least the default.",
-        );
-    }
-    if new_limit < limit {
-        event!(
-            Level::WARN,
-            "set_open_file_limit({limit}) succeeded, but new open file limit is {new_limit}. Will continue, but likely a config or system options (ie: ulimit) needs updated.",
+            "The new open file limit ({new_open_file_limit}) is below the recommended value of {DEFAULT_OPEN_FILE_LIMIT}. Consider raising max_open_files.",
         );
     }
 
-    let current_total = TOTAL_FILE_SEMAPHORES.load(Ordering::Acquire);
-    if limit < current_total {
+    // Use only 80% of the open file limit for permits from OPEN_FILE_SEMAPHORE
+    // to give extra room for other file descriptors like sockets, pipes, and
+    // other things.
+    let reduced_open_file_limit = new_open_file_limit.saturating_sub(new_open_file_limit / 5);
+    let previous_open_file_limit = OPEN_FILE_LIMIT.load(Ordering::Acquire);
+    // No permit should be aquired yet, so this warning should not occur.
+    if (OPEN_FILE_SEMAPHORE.available_permits() + reduced_open_file_limit)
+        < previous_open_file_limit
+    {
         event!(
-            Level::ERROR,
-            "set_open_file_limit({}) must be greater than {}",
-            limit,
-            current_total
+            Level::WARN,
+            "There are not enough available permits to remove {previous_open_file_limit} - {reduced_open_file_limit} permits.",
         );
-        return;
     }
-    TOTAL_FILE_SEMAPHORES.fetch_add(limit - current_total, Ordering::Release);
-    OPEN_FILE_SEMAPHORE.add_permits(limit - current_total);
+    if previous_open_file_limit <= reduced_open_file_limit {
+        OPEN_FILE_LIMIT.fetch_add(
+            reduced_open_file_limit - previous_open_file_limit,
+            Ordering::Release,
+        );
+        OPEN_FILE_SEMAPHORE.add_permits(reduced_open_file_limit - previous_open_file_limit);
+    } else {
+        OPEN_FILE_LIMIT.fetch_sub(
+            previous_open_file_limit - reduced_open_file_limit,
+            Ordering::Release,
+        );
+        OPEN_FILE_SEMAPHORE.forget_permits(previous_open_file_limit - reduced_open_file_limit);
+    }
 }
 
 pub fn get_open_files_for_test() -> usize {
-    TOTAL_FILE_SEMAPHORES.load(Ordering::Acquire) - OPEN_FILE_SEMAPHORE.available_permits()
+    OPEN_FILE_LIMIT.load(Ordering::Acquire) - OPEN_FILE_SEMAPHORE.available_permits()
 }
 
 pub async fn open_file(

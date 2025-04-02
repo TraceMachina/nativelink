@@ -141,6 +141,7 @@
     }
   }],
   "global": {
-    "max_open_files": 512
+    // Defaults to 24576 = 24 * 1024.
+    "max_open_files": 24576
   }
 }

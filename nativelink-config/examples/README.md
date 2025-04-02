@@ -386,7 +386,7 @@ The `private` server consists of a `listener` object and a `services` object. Th
 
 ```json5
  "global": {
-    "max_open_files": 512
+    "max_open_files": 24576
   }
 ```
 
@@ -562,7 +562,7 @@ Below, you will find a fully tested example that you can also find in [basic_cas
     }
   }],
   "global": {
-    "max_open_files": 512
+    "max_open_files": 24576
   }
 }
 ```
