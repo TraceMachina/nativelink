@@ -79,15 +79,15 @@ async fn platform_properties_smoke_test() -> Result<(), Error> {
     let mut platform_properties = HashMap::new();
     platform_properties.insert(
         "foo".to_string(),
-        WorkerProperty::values(vec!["bar1".to_string(), "bar2".to_string()]),
+        WorkerProperty::Values(vec!["bar1".to_string(), "bar2".to_string()]),
     );
     platform_properties.insert(
         "baz".to_string(),
         // Note: new lines will result in two entries for same key.
         #[cfg(target_family = "unix")]
-        WorkerProperty::query_cmd("printf 'hello\ngoodbye'".to_string()),
+        WorkerProperty::QueryCmd("printf 'hello\ngoodbye'".to_string()),
         #[cfg(target_family = "windows")]
-        WorkerProperty::query_cmd("cmd /C \"echo hello && echo goodbye\"".to_string()),
+        WorkerProperty::QueryCmd("cmd /C \"echo hello && echo goodbye\"".to_string()),
     );
     let mut test_context = setup_local_worker(platform_properties).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
@@ -428,8 +428,8 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Error> {
     let cas_store = Store::new(FastSlowStore::new(
         &FastSlowSpec {
             // Note: These are not needed for this test, so we put dummy memory stores here.
-            fast: StoreSpec::memory(MemorySpec::default()),
-            slow: StoreSpec::memory(MemorySpec::default()),
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -467,8 +467,8 @@ async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(
     let cas_store = Store::new(FastSlowStore::new(
         &FastSlowSpec {
             // Note: These are not needed for this test, so we put dummy memory stores here.
-            fast: StoreSpec::memory(MemorySpec::default()),
-            slow: StoreSpec::memory(MemorySpec::default()),
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
