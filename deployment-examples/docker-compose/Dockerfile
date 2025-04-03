@@ -61,7 +61,7 @@ RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} nativelink && \
     cp ./bazel-bin/nativelink /root/nativelink-bin
 
 # Go back to a fresh ubuntu container and copy only the compiled binary.
-FROM ubuntu:${OS_VERSION} as final
+FROM ubuntu:${OS_VERSION} AS final
 ARG OS_VERSION
 COPY --from=builder /root/nativelink-bin /usr/local/bin/nativelink
 
