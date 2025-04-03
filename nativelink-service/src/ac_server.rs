@@ -169,7 +169,6 @@ impl AcServer {
 
 #[tonic::async_trait]
 impl ActionCache for AcServer {
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         ret(level = Level::INFO),
         level = Level::ERROR,
@@ -199,7 +198,6 @@ impl ActionCache for AcServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),

@@ -56,9 +56,7 @@ pub struct TokioWatchActionStateResult {
 }
 
 impl TokioWatchActionStateResult {
-    // Note: This function is only used in tests, but for some reason
-    // rust doesn't detect it as used.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
     pub const fn new(
         client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,

@@ -190,7 +190,7 @@ impl CompletenessCheckingStore {
                         }
                         state
                             .digests_to_check_idxs
-                            .extend(iter::repeat(i).take(rep_len));
+                            .extend(iter::repeat_n(i, rep_len));
                         state.notify.notify_one();
                     }
 
@@ -209,7 +209,7 @@ impl CompletenessCheckingStore {
                             state.digests_to_check.extend(digest_infos);
                             state
                                 .digests_to_check_idxs
-                                .extend(iter::repeat(i).take(rep_len));
+                                .extend(iter::repeat_n(i, rep_len));
                             state.notify.notify_one();
                         },
                     )

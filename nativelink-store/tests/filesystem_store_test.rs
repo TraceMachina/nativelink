@@ -166,7 +166,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
             }
             .instrument(tracing::error_span!("test_file_entry_drop")),
         );
-        #[allow(clippy::disallowed_methods)]
+        #[expect(clippy::disallowed_methods, reason = "testing implementation")]
         let thread_handle = {
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
@@ -454,7 +454,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
 
     assert_eq!(
         &remaining_file_data,
-        VALUE1[1..].as_bytes(),
+        &VALUE1.as_bytes()[1..],
         "Expected file content to match"
     );
 
@@ -667,7 +667,6 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-#[allow(clippy::await_holding_refcell_ref)]
 async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens() -> Result<(), Error>
 {
     const INITIAL_CONTENT: &str = "hello";

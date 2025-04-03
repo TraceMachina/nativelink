@@ -38,11 +38,13 @@ _HEADER = """\
 // `bazel run nativelink-proto:update_protos`
 
 #![allow(
+    unknown_lints,
     clippy::default_trait_access,
     clippy::doc_lazy_continuation,
     clippy::doc_markdown,
     clippy::large_enum_variant,
     clippy::missing_const_for_fn,
+    clippy::doc_overindented_list_items,
     rustdoc::invalid_html_tags
 )]
 """
