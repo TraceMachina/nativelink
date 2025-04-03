@@ -322,7 +322,7 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
         tx.send(VALUE.into()).await?;
         pending::<()>().await;
         panic!("Should not reach here");
-        #[allow(unreachable_code)]
+        #[expect(unreachable_code, reason = "needed to avoid inference errors")]
         Ok(())
     };
     let result = try_join!(

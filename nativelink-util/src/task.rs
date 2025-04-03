@@ -34,7 +34,7 @@ where
     T: Send + 'static,
     F: Future<Output = T> + Send + 'static,
 {
-    #[allow(clippy::disallowed_methods)]
+    #[expect(clippy::disallowed_methods, reason = "purpose of the method")]
     tokio::spawn(ContextAwareFuture::new(ctx, f.instrument(span)))
 }
 
@@ -51,7 +51,7 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    #[allow(clippy::disallowed_methods)]
+    #[expect(clippy::disallowed_methods, reason = "purpose of the method")]
     spawn_blocking(move || span.in_scope(f))
 }
 

@@ -202,7 +202,6 @@ type PublishBuildToolEventStreamStream = Pin<
 impl PublishBuildEvent for BepServer {
     type PublishBuildToolEventStreamStream = PublishBuildToolEventStreamStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -219,7 +218,6 @@ impl PublishBuildEvent for BepServer {
             .map_err(Error::into)
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
       err,
       level = Level::ERROR,

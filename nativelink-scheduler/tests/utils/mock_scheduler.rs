@@ -24,15 +24,18 @@ use nativelink_util::operation_state_manager::{
 };
 use tokio::sync::{mpsc, Mutex};
 
-#[allow(clippy::large_enum_variant)]
-#[allow(dead_code)] // See https://github.com/rust-lang/rust/issues/46379
+#[expect(
+    clippy::large_enum_variant,
+    reason = "testing, so this doesn't really matter"
+)]
+#[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
 enum ActionSchedulerCalls {
     GetGetKnownProperties(String),
     AddAction((OperationId, ActionInfo)),
     FilterOperations(OperationFilter),
 }
 
-#[allow(dead_code)] // See https://github.com/rust-lang/rust/issues/46379
+#[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
 enum ActionSchedulerReturns {
     GetGetKnownProperties(Result<Vec<String>, Error>),
     AddAction(Result<Box<dyn ActionStateResult>, Error>),
@@ -66,7 +69,7 @@ impl MockActionScheduler {
         }
     }
 
-    #[allow(dead_code)] // See https://github.com/rust-lang/rust/issues/46379
+    #[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
     pub async fn expect_get_known_properties(&self, result: Result<Vec<String>, Error>) -> String {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::GetGetKnownProperties(req) = rx_call_lock

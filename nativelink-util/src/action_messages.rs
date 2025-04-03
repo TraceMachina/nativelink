@@ -727,11 +727,12 @@ impl Default for ActionResult {
     }
 }
 
-// TODO(allada) Remove the need for clippy argument by making the ActionResult and ProtoActionResult
-// a Box.
 /// The execution status/stage. This should match `ExecutionStage::Value` in `remote_execution.proto`.
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "TODO box the two relevant variants in a breaking release"
+)]
 pub enum ActionStage {
     /// Stage is unknown.
     Unknown,
