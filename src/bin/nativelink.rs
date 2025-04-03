@@ -403,7 +403,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::none))
+                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -429,7 +429,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::none))
+                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
                             {
                                 service = service.send_compressed(encoding);
                             }
