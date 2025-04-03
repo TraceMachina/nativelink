@@ -701,8 +701,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store"))
     }
 
-    async fn update_file<'a>(
-        self: Pin<&'a Self>,
+    async fn update_file(
+        self: Pin<&Self>,
         mut entry: Fe,
         mut temp_file: fs::FileSlot,
         final_key: StoreKey<'static>,

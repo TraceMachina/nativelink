@@ -140,10 +140,10 @@ async fn read_partial() -> Result<(), Error> {
     let store_data = store.get_part_unchunked(digest, 1, Some(2)).await?;
 
     assert_eq!(
-        VALUE1[1..3].as_bytes(),
+        &VALUE1.as_bytes()[1..3],
         store_data,
         "Expected partial data to match, expected '{:#x?}' got: {:#x?}'",
-        VALUE1[1..3].as_bytes(),
+        &VALUE1.as_bytes()[1..3],
         store_data,
     );
     Ok(())

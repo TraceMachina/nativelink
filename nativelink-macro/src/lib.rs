@@ -31,7 +31,10 @@ pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         #(#fn_attr)*
-        #[allow(clippy::disallowed_methods)]
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "`tokio::test` uses `tokio::runtime::Runtime::block_on`"
+        )]
         #[tokio::test(#attr)]
         async fn #fn_name(#fn_inputs) #fn_output {
             // Error means already initialized, which is ok.

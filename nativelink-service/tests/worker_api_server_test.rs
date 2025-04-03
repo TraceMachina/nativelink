@@ -132,7 +132,10 @@ struct TestContext {
     worker_id: WorkerId,
 }
 
-#[allow(clippy::unnecessary_wraps)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "`setup_api_server` requires a method that returns a `Result`"
+)]
 const fn static_now_fn() -> Result<Duration, Error> {
     Ok(Duration::from_secs(BASE_NOW_S))
 }

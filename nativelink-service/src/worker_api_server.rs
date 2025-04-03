@@ -256,7 +256,6 @@ impl WorkerApiServer {
 impl WorkerApi for WorkerApiServer {
     type ConnectWorkerStream = ConnectWorkerStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,
@@ -277,7 +276,6 @@ impl WorkerApi for WorkerApiServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -294,7 +292,6 @@ impl WorkerApi for WorkerApiServer {
             .map_err(Into::into)
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -311,7 +308,6 @@ impl WorkerApi for WorkerApiServer {
             .map_err(Into::into)
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),

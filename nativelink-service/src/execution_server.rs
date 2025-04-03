@@ -321,7 +321,6 @@ impl Execution for ExecutionServer {
     type ExecuteStream = ExecuteStream;
     type WaitExecutionStream = ExecuteStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,
@@ -349,7 +348,6 @@ impl Execution for ExecutionServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,

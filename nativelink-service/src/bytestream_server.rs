@@ -580,7 +580,6 @@ impl ByteStreamServer {
 impl ByteStream for ByteStreamServer {
     type ReadStream = ReadStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,
@@ -637,7 +636,6 @@ impl ByteStream for ByteStreamServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,
@@ -697,7 +695,6 @@ impl ByteStream for ByteStreamServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),

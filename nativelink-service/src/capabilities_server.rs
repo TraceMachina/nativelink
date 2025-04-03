@@ -91,7 +91,6 @@ impl CapabilitiesServer {
 
 #[tonic::async_trait]
 impl Capabilities for CapabilitiesServer {
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
