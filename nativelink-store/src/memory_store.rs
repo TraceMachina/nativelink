@@ -98,7 +98,7 @@ impl StoreDriver for MemoryStore {
         keys.iter()
             .zip(results.iter_mut())
             .for_each(|(key, result)| {
-                if is_zero_digest(key.borrow()) {
+                if is_zero_digest(key) {
                     *result = Some(0);
                 }
             });
@@ -157,7 +157,7 @@ impl StoreDriver for MemoryStore {
             .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
             .transpose()?;
 
-        if is_zero_digest(key.borrow()) {
+        if is_zero_digest(&key) {
             writer
                 .send_eof()
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;

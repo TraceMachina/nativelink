@@ -81,34 +81,42 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
     file: &mut fs::FileSlot,
     upload_size: UploadSizeInfo,
 ) -> Result<(), Error> {
-    file.rewind()
-        .await
-        .err_tip(|| "Failed to rewind in upload_file_to_store")?;
-    let (mut tx, rx) = make_buf_channel_pair();
+    async fn slow_update_store_with_file_inner<S: StoreDriver + ?Sized>(
+        store: Pin<&S>,
+        digest: StoreKey<'_>,
+        file: &mut fs::FileSlot,
+        upload_size: UploadSizeInfo,
+    ) -> Result<(), Error> {
+        file.rewind()
+            .await
+            .err_tip(|| "Failed to rewind in upload_file_to_store")?;
+        let (mut tx, rx) = make_buf_channel_pair();
 
-    let update_fut = store
-        .update(digest.into(), rx, upload_size)
-        .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
-    let read_data_fut = async move {
-        loop {
-            let mut buf = BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE);
-            let read = file
-                .read_buf(&mut buf)
-                .await
-                .err_tip(|| "Failed to read in upload_file_to_store")?;
-            if read == 0 {
-                break;
+        let update_fut = store
+            .update(digest, rx, upload_size)
+            .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
+        let read_data_fut = async move {
+            loop {
+                let mut buf = BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE);
+                let read = file
+                    .read_buf(&mut buf)
+                    .await
+                    .err_tip(|| "Failed to read in upload_file_to_store")?;
+                if read == 0 {
+                    break;
+                }
+                tx.send(buf.freeze())
+                    .await
+                    .err_tip(|| "Failed to send in upload_file_to_store")?;
             }
-            tx.send(buf.freeze())
-                .await
-                .err_tip(|| "Failed to send in upload_file_to_store")?;
-        }
-        tx.send_eof()
-            .err_tip(|| "Could not send EOF to store in upload_file_to_store")
-    };
-    tokio::pin!(read_data_fut);
-    let (update_res, read_res) = tokio::join!(update_fut, read_data_fut);
-    update_res.merge(read_res)
+            tx.send_eof()
+                .err_tip(|| "Could not send EOF to store in upload_file_to_store")
+        };
+        tokio::pin!(read_data_fut);
+        let (update_res, read_res) = tokio::join!(update_fut, read_data_fut);
+        update_res.merge(read_res)
+    }
+    slow_update_store_with_file_inner(store, digest.into(), file, upload_size).await
 }
 
 /// Optimizations that stores may want to expose to the callers.

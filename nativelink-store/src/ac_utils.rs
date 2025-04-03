@@ -51,35 +51,40 @@ pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
     store: &impl StoreLike,
     key: impl Into<StoreKey<'_>>,
 ) -> Result<(T, u64), Error> {
-    let key = key.into();
-    // Note: For unknown reasons we appear to be hitting:
-    // https://github.com/rust-lang/rust/issues/92096
-    // or a smiliar issue if we try to use the non-store driver function, so we
-    // are using the store driver function here.
-    let mut store_data_resp = store
-        .as_store_driver_pin()
-        .get_part_unchunked(key.borrow(), 0, Some(MAX_ACTION_MSG_SIZE as u64))
-        .await;
-    if let Err(err) = &mut store_data_resp {
-        if err.code == Code::NotFound {
-            // Trim the error code. Not Found is quite common and we don't want to send a large
-            // error (debug) message for something that is common. We resize to just the last
-            // message as it will be the most relevant.
-            err.messages.resize_with(1, String::new);
+    async fn get_size_and_decode_digest_inner<T: Message + Default + 'static>(
+        store: &impl StoreLike,
+        key: StoreKey<'_>,
+    ) -> Result<(T, u64), Error> {
+        // Note: For unknown reasons we appear to be hitting:
+        // https://github.com/rust-lang/rust/issues/92096
+        // or a smiliar issue if we try to use the non-store driver function, so we
+        // are using the store driver function here.
+        let mut store_data_resp = store
+            .as_store_driver_pin()
+            .get_part_unchunked(key.borrow(), 0, Some(MAX_ACTION_MSG_SIZE as u64))
+            .await;
+        if let Err(err) = &mut store_data_resp {
+            if err.code == Code::NotFound {
+                // Trim the error code. Not Found is quite common and we don't want to send a large
+                // error (debug) message for something that is common. We resize to just the last
+                // message as it will be the most relevant.
+                err.messages.resize_with(1, String::new);
+            }
         }
-    }
-    let store_data = store_data_resp?;
-    let store_data_len =
-        u64::try_from(store_data.len()).err_tip(|| "Could not convert store_data.len() to u64")?;
+        let store_data = store_data_resp?;
+        let store_data_len = u64::try_from(store_data.len())
+            .err_tip(|| "Could not convert store_data.len() to u64")?;
 
-    T::decode(store_data)
-        .err_tip_with_code(|e| {
-            (
-                Code::NotFound,
-                format!("Stored value appears to be corrupt: {e} - {key:?}"),
-            )
-        })
-        .map(|v| (v, store_data_len))
+        T::decode(store_data)
+            .err_tip_with_code(|e| {
+                (
+                    Code::NotFound,
+                    format!("Stored value appears to be corrupt: {e} - {key:?}"),
+                )
+            })
+            .map(|v| (v, store_data_len))
+    }
+    get_size_and_decode_digest_inner(store, key.into()).await
 }
 
 /// Computes the digest of a message.

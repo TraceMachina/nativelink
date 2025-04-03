@@ -162,7 +162,7 @@ impl StoreDriver for DedupStore {
             .iter()
             .zip(results.iter_mut())
             .map(|(key, result)| async move {
-                if is_zero_digest(key.borrow()) {
+                if is_zero_digest(key) {
                     *result = Some(0);
                     return Ok(());
                 }

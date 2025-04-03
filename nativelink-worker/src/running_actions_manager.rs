@@ -241,25 +241,25 @@ pub fn download_to_directory<'a>(
 }
 
 #[cfg(target_family = "windows")]
-fn is_executable(_metadata: &std::fs::Metadata, full_path: &impl AsRef<Path>) -> bool {
+fn is_executable(_metadata: &std::fs::Metadata, full_path: &Path) -> bool {
     static EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "bat", "com"];
     EXECUTABLE_EXTENSIONS
         .iter()
-        .any(|ext| full_path.as_ref().extension().map_or(false, |v| v == *ext))
+        .any(|ext| full_path.extension().map_or(false, |v| v == *ext))
 }
 
 #[cfg(target_family = "unix")]
-fn is_executable(metadata: &std::fs::Metadata, _full_path: &impl AsRef<Path>) -> bool {
+fn is_executable(metadata: &std::fs::Metadata, _full_path: &Path) -> bool {
     (metadata.mode() & 0o111) != 0
 }
 
 async fn upload_file(
     cas_store: Pin<&impl StoreLike>,
-    full_path: impl AsRef<Path> + Debug,
+    full_path: &Path,
     hasher: DigestHasherFunc,
     metadata: std::fs::Metadata,
 ) -> Result<FileInfo, Error> {
-    let is_executable = is_executable(&metadata, &full_path);
+    let is_executable = is_executable(&metadata, full_path);
     let file_size = metadata.len();
     let file = fs::open_file(&full_path, 0, u64::MAX)
         .await
@@ -281,7 +281,7 @@ async fn upload_file(
         .as_store_driver_pin()
         .update_with_whole_file(
             digest.into(),
-            full_path.as_ref().into(),
+            full_path.into(),
             file,
             UploadSizeInfo::ExactSize(digest.size_bytes()),
         )
@@ -289,7 +289,6 @@ async fn upload_file(
         .err_tip(|| format!("for {full_path:?}"))?;
 
     let name = full_path
-        .as_ref()
         .file_name()
         .err_tip(|| format!("Expected file_name to exist on {full_path:?}"))?
         .to_str()
@@ -310,54 +309,60 @@ async fn upload_file(
 }
 
 async fn upload_symlink(
-    full_path: impl AsRef<Path> + Debug,
+    full_path: impl AsRef<Path>,
     full_work_directory_path: impl AsRef<Path>,
 ) -> Result<SymlinkInfo, Error> {
-    let full_target_path = fs::read_link(full_path.as_ref())
-        .await
-        .err_tip(|| format!("Could not get read_link path of {full_path:?}"))?;
+    async fn upload_symlink_inner(
+        full_path: &Path,
+        full_work_directory_path: &Path,
+    ) -> Result<SymlinkInfo, Error> {
+        let full_target_path = fs::read_link(full_path)
+            .await
+            .err_tip(|| format!("Could not get read_link path of {full_path:?}"))?;
 
-    // Detect if our symlink is inside our work directory, if it is find the
-    // relative path otherwise use the absolute path.
-    let target = if full_target_path.starts_with(full_work_directory_path.as_ref()) {
-        let full_target_path = RelativePath::from_path(&full_target_path)
-            .map_err(|v| make_err!(Code::Internal, "Could not convert {} to RelativePath", v))?;
-        RelativePath::from_path(full_work_directory_path.as_ref())
-            .map_err(|v| make_err!(Code::Internal, "Could not convert {} to RelativePath", v))?
-            .relative(full_target_path)
-            .normalize()
-            .into_string()
-    } else {
-        full_target_path
+        // Detect if our symlink is inside our work directory, if it is find the
+        // relative path otherwise use the absolute path.
+        let target = if full_target_path.starts_with(full_work_directory_path) {
+            let full_target_path = RelativePath::from_path(&full_target_path).map_err(|v| {
+                make_err!(Code::Internal, "Could not convert {} to RelativePath", v)
+            })?;
+            RelativePath::from_path(full_work_directory_path)
+                .map_err(|v| make_err!(Code::Internal, "Could not convert {} to RelativePath", v))?
+                .relative(full_target_path)
+                .normalize()
+                .into_string()
+        } else {
+            full_target_path
+                .to_str()
+                .err_tip(|| {
+                    make_err!(
+                        Code::Internal,
+                        "Could not convert '{:?}' to string",
+                        full_target_path
+                    )
+                })?
+                .to_string()
+        };
+
+        let name = full_path
+            .file_name()
+            .err_tip(|| format!("Expected file_name to exist on {full_path:?}"))?
             .to_str()
             .err_tip(|| {
                 make_err!(
                     Code::Internal,
-                    "Could not convert '{:?}' to string",
-                    full_target_path
+                    "Could not convert {:?} to string",
+                    full_path
                 )
             })?
-            .to_string()
-    };
+            .to_string();
 
-    let name = full_path
-        .as_ref()
-        .file_name()
-        .err_tip(|| format!("Expected file_name to exist on {full_path:?}"))?
-        .to_str()
-        .err_tip(|| {
-            make_err!(
-                Code::Internal,
-                "Could not convert {:?} to string",
-                full_path
-            )
-        })?
-        .to_string();
-
-    Ok(SymlinkInfo {
-        name_or_path: NameOrPath::Name(name),
-        target,
-    })
+        Ok(SymlinkInfo {
+            name_or_path: NameOrPath::Name(name),
+            target,
+        })
+    }
+    upload_symlink_inner(full_path.as_ref(), full_work_directory_path.as_ref()).await
 }
 
 fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
@@ -1062,7 +1067,7 @@ impl RunningActionImpl {
 
                     if metadata.is_file() {
                         return Ok(OutputType::File(
-                            upload_file(cas_store.as_pin(), &full_path, hasher, metadata)
+                            upload_file(cas_store.as_pin(), full_path.as_ref(), hasher, metadata)
                                 .await
                                 .map(|mut file_info| {
                                     file_info.name_or_path = NameOrPath::Path(entry);
