@@ -32,15 +32,15 @@ pub type SchedulerRefName = String;
 /// Used when the config references `instance_name` in the protocol.
 pub type InstanceName = String;
 
-#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug, Default, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
 pub enum HttpCompressionAlgorithm {
     /// No compression.
     #[default]
-    none,
+    None,
 
     /// Zlib compression.
-    gzip,
+    Gzip,
 }
 
 /// Note: Compressing data in the cloud rarely has a benefit, since most
@@ -61,7 +61,7 @@ pub struct HttpCompressionConfig {
     /// latency.
     /// see: <https://github.com/tracemachina/nativelink/issues/109>
     ///
-    /// Default: `HttpCompressionAlgorithm::none`
+    /// Default: `HttpCompressionAlgorithm::None`
     pub send_compression_algorithm: Option<HttpCompressionAlgorithm>,
 
     /// The compression algorithm that the server will accept from clients.
@@ -394,11 +394,11 @@ pub struct HttpServerConfig {
     pub experimental_http2_max_header_list_size: Option<u32>,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
 pub enum ListenerConfig {
     /// Listener for HTTP/HTTPS/HTTP2 sockets.
-    http(HttpListener),
+    Http(HttpListener),
 }
 
 #[derive(Deserialize, Debug)]
@@ -447,18 +447,18 @@ pub struct ServerConfig {
     pub experimental_identity_header: IdentityHeaderSpec,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
 pub enum WorkerProperty {
     /// List of static values.
     /// Note: Generally there should only ever be 1 value, but if the platform
     /// property key is `PropertyType::Priority` it may have more than one value.
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
-    values(Vec<String>),
+    Values(Vec<String>),
 
     /// A dynamic configuration. The string will be executed as a command
     /// (not sell) and will be split by "\n" (new line character).
-    query_cmd(String),
+    QueryCmd(String),
 }
 
 /// Generic config for an endpoint and associated configs.
@@ -477,35 +477,35 @@ pub struct EndpointConfig {
     pub tls_config: Option<ClientTlsConfig>,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Deserialize, Debug, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum UploadCacheResultsStrategy {
     /// Only upload action results with an exit code of 0.
     #[default]
-    success_only,
+    SuccessOnly,
 
     /// Don't upload any action results.
-    never,
+    Never,
 
     /// Upload all action results that complete.
-    everything,
+    Everything,
 
     /// Only upload action results that fail.
-    failures_only,
+    FailuresOnly,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvironmentSource {
     /// The name of the platform property in the action to get the value from.
-    property(String),
+    Property(String),
 
     /// The raw value to set.
-    value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
+    Value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
 
     /// The max amount of time in milliseconds the command is allowed to run
     /// (requested by the client).
-    timeout_millis,
+    TimeoutMillis,
 
     /// A special file path will be provided that can be used to communicate
     /// with the parent process about out-of-band information. This file
@@ -523,7 +523,7 @@ pub enum EnvironmentSource {
     ///
     /// All fields are optional, file does not need to be created and may be
     /// empty.
-    side_channel_file,
+    SideChannelFile,
 
     /// A "root" directory for the action. This directory can be used to
     /// store temporary files that are not needed after the action has
@@ -538,7 +538,7 @@ pub enum EnvironmentSource {
     /// variable, `mkdir $ENV_VAR_NAME/tmp` and `export TMPDIR=$ENV_VAR_NAME/tmp`.
     /// Another example might be to bind-mount the `/tmp` path in a container to
     /// this path in `entrypoint`.
-    action_directory,
+    ActionDirectory,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -693,11 +693,11 @@ pub struct LocalWorkerConfig {
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
 pub enum WorkerConfig {
     /// A worker type that executes jobs locally on this machine.
-    local(LocalWorkerConfig),
+    Local(LocalWorkerConfig),
 }
 
 #[derive(Deserialize, Debug, Clone, Copy)]

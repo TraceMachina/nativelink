@@ -44,8 +44,8 @@ fn setup_stores(
     let size_part_store = SizePartitioningStore::new(
         &SizePartitioningSpec {
             size,
-            lower_store: StoreSpec::memory(MemorySpec::default()),
-            upper_store: StoreSpec::memory(MemorySpec::default()),
+            lower_store: StoreSpec::Memory(MemorySpec::default()),
+            upper_store: StoreSpec::Memory(MemorySpec::default()),
         },
         Store::new(lower_memory_store.clone()),
         Store::new(upper_memory_store.clone()),
