@@ -29,7 +29,7 @@ use aws_sdk_s3::config::Region;
 use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
 use aws_sdk_s3::operation::get_object::GetObjectError;
 use aws_sdk_s3::operation::head_object::HeadObjectError;
-use aws_sdk_s3::primitives::{ByteStream /* SdkBody */};
+use aws_sdk_s3::primitives::ByteStream; // SdkBody
 use aws_sdk_s3::types::builders::{CompletedMultipartUploadBuilder, CompletedPartBuilder};
 use aws_sdk_s3::Client;
 use aws_smithy_runtime_api::client::http::{
@@ -389,6 +389,7 @@ impl SmithyHttpConnector for TlsClient {
     }
 }
 
+#[derive(Debug)]
 pub struct BodyWrapper {
     reader: DropCloserReadHalf,
     size: u64,
@@ -413,7 +414,7 @@ impl http_body::Body for BodyWrapper {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct S3Store<NowFn> {
     s3_client: Arc<Client>,
     now_fn: NowFn,
@@ -470,7 +471,7 @@ where
                 .load()
                 .await;
 
-            aws_sdk_s3::Client::new(&config)
+            Client::new(&config)
         };
         Self::new_with_client_and_jitter(spec, s3_client, jitter_fn, now_fn)
     }

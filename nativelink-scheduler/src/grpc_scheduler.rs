@@ -87,7 +87,7 @@ impl ActionStateResult for GrpcActionStateResult {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct GrpcScheduler {
     #[metric(group = "property_managers")]
     supported_props: Mutex<HashMap<String, Vec<String>>>,

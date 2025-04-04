@@ -67,6 +67,14 @@ pub struct CacheLookupScheduler {
     inflight_cache_checks: Arc<Mutex<CheckActions>>,
 }
 
+impl std::fmt::Debug for CacheLookupScheduler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CacheLookupScheduler")
+            .field("ac_store", &self.ac_store)
+            .finish_non_exhaustive()
+    }
+}
+
 async fn get_action_from_store(
     ac_store: &Store,
     action_digest: DigestInfo,
@@ -268,11 +276,11 @@ impl CacheLookupScheduler {
                     for (client_operation_id, pending_tx) in pending_txs {
                         action_state.client_operation_id = client_operation_id;
                         // Ignore errors here, as the other end may have hung up.
-                        let _ = pending_tx.send(Ok(Box::new(CacheLookupActionStateResult {
+                        drop(pending_tx.send(Ok(Box::new(CacheLookupActionStateResult {
                             action_state: Arc::new(action_state.clone()),
                             maybe_origin_metadata: maybe_origin_metadata.clone(),
                             change_called: false,
-                        })));
+                        }))));
                     }
                     return;
                 }
@@ -291,7 +299,7 @@ impl CacheLookupScheduler {
                         };
                         for (_client_operation_id, pending_tx) in pending_txs {
                             // Ignore errors here, as the other end may have hung up.
-                            let _ = pending_tx.send(Err(err.clone()));
+                            drop(pending_tx.send(Err(err.clone())));
                         }
                         return;
                     }
@@ -308,10 +316,12 @@ impl CacheLookupScheduler {
 
             for (client_operation_id, pending_tx) in pending_txs {
                 // Ignore errors here, as the other end may have hung up.
-                let _ = pending_tx.send(
-                    action_scheduler
-                        .add_action(client_operation_id, action_info.clone())
-                        .await,
+                drop(
+                    pending_tx.send(
+                        action_scheduler
+                            .add_action(client_operation_id, action_info.clone())
+                            .await,
+                    ),
                 );
             }
         });

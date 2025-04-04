@@ -59,6 +59,7 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
 }
 
 /// Writer half of the pair.
+#[derive(Debug)]
 pub struct DropCloserWriteHalf {
     tx: Option<mpsc::Sender<Bytes>>,
     bytes_written: u64,
@@ -129,10 +130,12 @@ impl DropCloserWriteHalf {
             // we forward it on to the reader.
             if reader.peek().await.is_err() {
                 // Read our next message for good book keeping.
-                let _ = reader
-                    .recv()
-                    .await
-                    .err_tip(|| "In DropCloserWriteHalf::bind_buffered::peek::eof")?;
+                drop(
+                    reader
+                        .recv()
+                        .await
+                        .err_tip(|| "In DropCloserWriteHalf::bind_buffered::peek::eof")?,
+                );
                 return Err(make_err!(
                     Code::Internal,
                     "DropCloserReadHalf::peek() said error, but when data received said Ok. This should never happen."
@@ -184,6 +187,7 @@ impl DropCloserWriteHalf {
 }
 
 /// Reader half of the pair.
+#[derive(Debug)]
 pub struct DropCloserReadHalf {
     rx: mpsc::Receiver<Bytes>,
     /// Number of bytes received over the stream.

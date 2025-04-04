@@ -222,11 +222,11 @@ async fn download_to_directory_file_download_test() -> Result<(), Box<dyn std::e
     {
         // Now ensure that our download_dir has the files.
         let file1_content = fs::read(format!("{download_dir}/{FILE1_NAME}")).await?;
-        assert_eq!(std::str::from_utf8(&file1_content)?, FILE1_CONTENT);
+        assert_eq!(from_utf8(&file1_content)?, FILE1_CONTENT);
 
         let file2_path = format!("{download_dir}/{FILE2_NAME}");
         let file2_content = fs::read(&file2_path).await?;
-        assert_eq!(std::str::from_utf8(&file2_content)?, FILE2_CONTENT);
+        assert_eq!(from_utf8(&file2_content)?, FILE2_CONTENT);
 
         let file2_metadata = fs::metadata(&file2_path).await?;
         // Note: We sent 0o710, but because is_executable was set it turns into 0o711.
@@ -329,7 +329,7 @@ async fn download_to_directory_folder_download_test() -> Result<(), Box<dyn std:
         let file1_content = fs::read(format!("{download_dir}/{DIRECTORY1_NAME}/{FILE1_NAME}"))
             .await
             .err_tip(|| "On file_1 read")?;
-        assert_eq!(std::str::from_utf8(&file1_content)?, FILE1_CONTENT);
+        assert_eq!(from_utf8(&file1_content)?, FILE1_CONTENT);
 
         let folder2_path = format!("{download_dir}/{DIRECTORY2_NAME}");
         let folder2_metadata = fs::metadata(&folder2_path)
@@ -404,7 +404,7 @@ async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std
         let symlink_content = fs::read(&symlink_path)
             .await
             .err_tip(|| "On symlink read")?;
-        assert_eq!(std::str::from_utf8(&symlink_content)?, FILE_CONTENT);
+        assert_eq!(from_utf8(&symlink_content)?, FILE_CONTENT);
 
         let symlink_metadata = fs::symlink_metadata(&symlink_path)
             .await
@@ -455,7 +455,7 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
             output_files: vec!["some/path/test.txt".to_string()],
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -579,7 +579,7 @@ async fn ensure_output_files_full_directories_are_created_test(
             working_directory: working_directory.to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -718,7 +718,7 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
             working_directory: working_directory.to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -898,7 +898,7 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
             working_directory: working_directory.to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -1075,7 +1075,7 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
             working_directory: ".".to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -1277,7 +1277,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
             working_directory: ".".to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -1424,7 +1424,7 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -1602,7 +1602,7 @@ exit 0
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -1752,7 +1752,7 @@ exit 0
                     ),
                     (
                         "PATH".to_string(),
-                        EnvironmentSource::Value(std::env::var("PATH").unwrap()),
+                        EnvironmentSource::Value(env::var("PATH").unwrap()),
                     ),
                 ])),
             },
@@ -1776,7 +1776,7 @@ exit 0
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -1848,11 +1848,11 @@ exit 0
         .compute_from_reader(Cursor::new(expected_stderr))
         .await?;
 
-    let actual_stderr: prost::bytes::Bytes = cas_store
+    let actual_stderr: bytes::Bytes = cas_store
         .as_ref()
         .get_part_unchunked(result.stderr_digest, 0, None)
         .await?;
-    let actual_stderr_decoded = std::str::from_utf8(&actual_stderr)?;
+    let actual_stderr_decoded = from_utf8(&actual_stderr)?;
     assert_eq!(expected_stderr, actual_stderr_decoded);
     assert_eq!(expected_stdout, result.stdout_digest);
     assert_eq!(expected_stderr_digest, result.stderr_digest);
@@ -1939,7 +1939,7 @@ exit 1
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -2439,7 +2439,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -2769,7 +2769,7 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -2895,7 +2895,7 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -3054,7 +3054,7 @@ async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
             working_directory: ".".to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -3148,7 +3148,7 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -3267,7 +3267,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
             working_directory: working_directory.to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -3451,7 +3451,7 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };

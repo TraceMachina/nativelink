@@ -247,10 +247,12 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     let (mut writer, mut reader) = make_buf_channel_pair();
 
     let _drop_guard = spawn!("get_part_is_zero_digest", async move {
-        let _ = Pin::new(store_clone.as_ref())
-            .get_part(digest, &mut writer, 0, None)
-            .await
-            .err_tip(|| "Failed to get_part");
+        drop(
+            Pin::new(store_clone.as_ref())
+                .get_part(digest, &mut writer, 0, None)
+                .await
+                .err_tip(|| "Failed to get_part"),
+        );
     });
 
     let file_data = reader
@@ -273,11 +275,13 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
     let store_owned = MemoryStore::new(&MemorySpec::default());
     let store = Pin::new(&store_owned);
 
-    let _ = store
-        .as_ref()
-        .has_with_results(&keys, &mut results)
-        .await
-        .err_tip(|| "Failed to get_part");
+    drop(
+        store
+            .as_ref()
+            .has_with_results(&keys, &mut results)
+            .await
+            .err_tip(|| "Failed to get_part"),
+    );
     assert_eq!(results, vec!(Some(0)));
 
     Ok(())

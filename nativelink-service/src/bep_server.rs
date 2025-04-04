@@ -45,6 +45,7 @@ fn get_identity() -> Result<Option<String>, Status> {
         .map_or_else(|e| Err(e.into()), |v| Ok(v.map(|v| v.as_ref().clone())))
 }
 
+#[derive(Debug)]
 pub struct BepServer {
     store: Store,
 }

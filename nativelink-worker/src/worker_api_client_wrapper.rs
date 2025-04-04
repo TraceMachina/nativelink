@@ -46,7 +46,7 @@ pub trait WorkerApiClientTrait: Clone + Sync + Send + Sized + Unpin {
     ) -> impl Future<Output = Result<Response<()>, Status>> + Send;
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct WorkerApiClientWrapper {
     inner: WorkerApiClient<Channel>,
 }

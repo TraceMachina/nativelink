@@ -34,7 +34,7 @@ use tracing::error_span;
 /// Content type header value for JSON.
 const JSON_CONTENT_TYPE: &str = "application/json; charset=utf-8";
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct HealthServer {
     health_registry: HealthRegistry,
 }

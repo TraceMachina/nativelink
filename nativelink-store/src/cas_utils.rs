@@ -36,6 +36,7 @@ pub const ZERO_BYTE_DIGESTS: [DigestInfo; 2] = [
     ),
 ];
 
+#[expect(single_use_lifetimes, reason = "false positive")]
 #[inline]
 pub fn is_zero_digest<'a>(digest: impl Into<StoreKey<'a>>) -> bool {
     match digest.into() {

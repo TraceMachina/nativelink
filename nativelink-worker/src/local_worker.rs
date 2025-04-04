@@ -383,6 +383,18 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
     metrics: Arc<Metrics>,
 }
 
+impl<T: WorkerApiClientTrait + std::fmt::Debug, U: RunningActionsManager + std::fmt::Debug>
+    std::fmt::Debug for LocalWorker<T, U>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalWorker")
+            .field("config", &self.config)
+            .field("running_actions_manager", &self.running_actions_manager)
+            .field("metrics", &self.metrics)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Creates a new `LocalWorker`. The `cas_store` must be an instance of
 /// `FastSlowStore` and will be checked at runtime.
 pub async fn new_local_worker(
@@ -607,7 +619,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct Metrics {
     #[metric(
         help = "Total number of actions sent to this worker to process. This does not mean it started them, it just means it received a request to execute it."

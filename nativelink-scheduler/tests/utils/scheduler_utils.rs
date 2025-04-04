@@ -27,9 +27,9 @@ use nativelink_util::operation_state_manager::ActionStateResult;
 use nativelink_util::origin_event::OriginMetadata;
 use tokio::sync::watch;
 
-pub const INSTANCE_NAME: &str = "foobar_instance_name";
+pub(crate) const INSTANCE_NAME: &str = "foobar_instance_name";
 
-pub fn make_base_action_info(
+pub(crate) fn make_base_action_info(
     insert_timestamp: SystemTime,
     action_digest: DigestInfo,
 ) -> Arc<ActionInfo> {
@@ -49,7 +49,7 @@ pub fn make_base_action_info(
     })
 }
 
-pub struct TokioWatchActionStateResult {
+pub(crate) struct TokioWatchActionStateResult {
     client_operation_id: OperationId,
     action_info: Arc<ActionInfo>,
     rx: watch::Receiver<Arc<ActionState>>,
@@ -57,7 +57,7 @@ pub struct TokioWatchActionStateResult {
 
 impl TokioWatchActionStateResult {
     #[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
-    pub const fn new(
+    pub(crate) const fn new(
         client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
         rx: watch::Receiver<Arc<ActionState>>,

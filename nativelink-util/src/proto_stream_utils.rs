@@ -141,6 +141,7 @@ where
 /// to allow the first read to occur within the retry loop.  That means that if
 /// the connection establishes fine, but reading the first byte of the file
 /// fails we have the ability to retry before returning to the caller.
+#[derive(Debug)]
 pub struct FirstStream {
     /// Contains the first response from the stream (which could be an EOF,
     /// hence the nested Option).  This should be populated on creation and
@@ -166,12 +167,9 @@ impl FirstStream {
 impl Stream for FirstStream {
     type Item = Result<ReadResponse, Status>;
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Some(first_response) = self.first_response.take() {
-            return std::task::Poll::Ready(first_response.map(Ok));
+            return Poll::Ready(first_response.map(Ok));
         }
         Pin::new(&mut self.stream).poll_next(cx)
     }
@@ -180,6 +178,7 @@ impl Stream for FirstStream {
 /// This structure wraps all of the information required to perform a write
 /// request on the `GrpcStore`.  It stores the last message retrieved which allows
 /// the write to resume since the UUID allows upload resume at the server.
+#[derive(Debug)]
 pub struct WriteState<T, E>
 where
     T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
@@ -251,6 +250,7 @@ where
 
 /// A wrapper around `WriteState` to allow it to be reclaimed from the underlying
 /// write call in the case of failure.
+#[derive(Debug)]
 pub struct WriteStateWrapper<T, E>
 where
     T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,

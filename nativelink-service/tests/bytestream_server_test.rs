@@ -74,7 +74,7 @@ fn make_bytestream_server(
     store_manager: &StoreManager,
     config: Option<ByteStreamConfig>,
 ) -> Result<ByteStreamServer, Error> {
-    let config = config.unwrap_or(nativelink_config::cas_server::ByteStreamConfig {
+    let config = config.unwrap_or(ByteStreamConfig {
         cas_stores: hashmap! {
             "foo_instance_name".to_string() => "main_cas".to_string(),
         },
@@ -910,7 +910,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
 
     {
         // Check to see if our request is active.
-        tokio::task::yield_now().await;
+        yield_now().await;
         let data = bs_server
             .query_write_status(Request::new(QueryWriteStatusRequest {
                 resource_name: resource_name.clone(),
@@ -934,7 +934,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
 
     {
         // Now that it's done uploading, ensure it returns a success when requested again.
-        tokio::task::yield_now().await;
+        yield_now().await;
         let data = bs_server
             .query_write_status(Request::new(QueryWriteStatusRequest { resource_name }))
             .await?;
