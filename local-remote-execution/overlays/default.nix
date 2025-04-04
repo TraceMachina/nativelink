@@ -10,7 +10,7 @@
   lre =
     {
       stdenv = final.callPackage ./stdenv.nix {
-        llvmPackages = final.llvmPackages_19;
+        llvmPackages = final.llvmPackages_20;
         targetPackages = final;
       };
 

@@ -20,7 +20,7 @@ buildGoModule {
   postInstall = let
     pulumiPath = lib.makeBinPath [
       pulumi
-      pulumiPackages.pulumi-language-go
+      pulumiPackages.pulumi-go
     ];
   in ''
     wrapProgram $out/bin/native --prefix PATH : ${pulumiPath}

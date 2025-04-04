@@ -24,9 +24,9 @@ use nativelink_util::operation_state_manager::{
 };
 use tokio::sync::{mpsc, Mutex};
 
-#[expect(
+#[allow(
     clippy::large_enum_variant,
-    reason = "testing, so this doesn't really matter"
+    reason = "Testing, so this doesn't really matter. Doesn't trigger on nightly"
 )]
 #[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
 enum ActionSchedulerCalls {

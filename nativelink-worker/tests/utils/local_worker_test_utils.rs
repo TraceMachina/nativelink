@@ -46,12 +46,20 @@ use super::mock_running_actions_manager::MockRunningActionsManager;
 const BROADCAST_CAPACITY: usize = 1;
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "TODO Fix thix. Triggers on nightly"
+)]
 enum WorkerClientApiCalls {
     ConnectWorker(ConnectWorkerRequest),
     ExecutionResponse(ExecuteResult),
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "TODO Fix thix. Triggers on nightly"
+)]
 enum WorkerClientApiReturns {
     ConnectWorker(Result<Response<Streaming<UpdateForWorker>>, Status>),
     ExecutionResponse(Result<Response<()>, Status>),

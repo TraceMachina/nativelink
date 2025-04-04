@@ -185,6 +185,10 @@ impl<'a> StoreKey<'a> {
     /// This is extremely cheap and should be used when clone
     /// is needed but the key is not going to be modified.
     #[must_use]
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "False positive on stable, but not on nightly"
+    )]
     pub fn borrow(&'a self) -> StoreKey<'a> {
         match self {
             StoreKey::Str(Cow::Owned(s)) => StoreKey::Str(Cow::Borrowed(s)),

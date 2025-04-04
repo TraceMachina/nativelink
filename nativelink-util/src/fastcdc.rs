@@ -13,7 +13,7 @@ struct State {
 }
 
 impl State {
-    fn reset(&mut self) {
+    const fn reset(&mut self) {
         self.hash = 0;
         self.position = 0;
     }
