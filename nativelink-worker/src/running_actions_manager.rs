@@ -641,6 +641,10 @@ impl RunningActionImpl {
         }
     }
 
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "False positive on stable, but not on nightly"
+    )]
     fn metrics(&self) -> &Arc<Metrics> {
         &self.running_actions_manager.metrics
     }

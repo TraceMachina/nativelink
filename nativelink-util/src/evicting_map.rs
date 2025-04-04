@@ -267,11 +267,7 @@ where
                 state.sum_store_size,
                 self.max_bytes,
             ) {
-            if self.max_bytes > self.evict_bytes {
-                self.max_bytes - self.evict_bytes
-            } else {
-                0
-            }
+            self.max_bytes.saturating_sub(self.evict_bytes)
         } else {
             self.max_bytes
         };

@@ -232,7 +232,7 @@ struct SortedAwaitedActions {
 }
 
 impl SortedAwaitedActions {
-    fn btree_for_state(&mut self, state: &ActionStage) -> &mut BTreeSet<SortedAwaitedAction> {
+    const fn btree_for_state(&mut self, state: &ActionStage) -> &mut BTreeSet<SortedAwaitedAction> {
         match state {
             ActionStage::Unknown => &mut self.unknown,
             ActionStage::CacheCheck => &mut self.cache_check,

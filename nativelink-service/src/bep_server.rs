@@ -38,6 +38,7 @@ use tracing::{instrument, Level};
 /// there is a breaking change in the BEP event format.
 const BEP_EVENT_VERSION: u32 = 0;
 
+#[allow(clippy::result_large_err, reason = "TODO Fix this. Breaks on nightly")]
 fn get_identity() -> Result<Option<String>, Status> {
     ActiveOriginContext::get()
         .map_or(Ok(None), |ctx| ctx.get_value(&ORIGIN_IDENTITY))

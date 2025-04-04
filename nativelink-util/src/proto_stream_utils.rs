@@ -219,7 +219,7 @@ where
         self.cached_messages[0] = Some(message);
     }
 
-    fn resumed_message(&mut self) -> Option<WriteRequest> {
+    const fn resumed_message(&mut self) -> Option<WriteRequest> {
         if self.is_resumed {
             // The resume_queue is a circular buffer, that we have to shift,
             // since its only got two elements its a trivial swap.
@@ -244,7 +244,7 @@ where
         self.is_resumed = true;
     }
 
-    pub fn take_read_stream_error(&mut self) -> Option<Error> {
+    pub const fn take_read_stream_error(&mut self) -> Option<Error> {
         self.read_stream_error.take()
     }
 }

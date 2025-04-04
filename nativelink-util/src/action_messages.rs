@@ -729,9 +729,9 @@ impl Default for ActionResult {
 
 /// The execution status/stage. This should match `ExecutionStage::Value` in `remote_execution.proto`.
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
-#[expect(
+#[allow(
     clippy::large_enum_variant,
-    reason = "TODO box the two relevant variants in a breaking release"
+    reason = "TODO box the two relevant variants in a breaking release. Unfulfilled on nightly"
 )]
 pub enum ActionStage {
     /// Stage is unknown.

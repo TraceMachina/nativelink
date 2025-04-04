@@ -325,7 +325,7 @@ impl ConnectionManagerWorker {
         // it is Dropped and therefore increment this again.
         self.available_connections -= 1;
         let _ = tx.send(Connection {
-            connection_tx: self.connection_tx.clone(),
+            tx: self.connection_tx.clone(),
             pending_channel: Some(channel.channel.clone()),
             channel,
         });
@@ -390,12 +390,12 @@ impl ConnectionManagerWorker {
 pub struct Connection {
     /// Communication with `ConnectionManagerWorker` to inform about transport
     /// errors and when the Connection is dropped.
-    connection_tx: mpsc::UnboundedSender<ConnectionRequest>,
+    tx: mpsc::UnboundedSender<ConnectionRequest>,
     /// If set, the Channel that will be returned to the worker when connection
     /// completes (success or failure) or when the Connection is dropped if that
     /// happens before connection completes.
     pending_channel: Option<Channel>,
-    /// The identifier to send to `connection_tx`.
+    /// The identifier to send to `tx`.
     channel: EstablishedChannel,
 }
 
@@ -408,14 +408,11 @@ impl Drop for Connection {
                 channel,
                 identifier: self.channel.identifier,
             });
-        let _ = self
-            .connection_tx
-            .send(ConnectionRequest::Dropped(pending_channel));
+        let _ = self.tx.send(ConnectionRequest::Dropped(pending_channel));
     }
 }
 
-/// A wrapper around the `channel::ResponseFuture` that forwards errors to the
-/// `connection_tx`.
+/// A wrapper around the `channel::ResponseFuture` that forwards errors to the `tx`.
 pub struct ResponseFuture {
     /// The wrapped future that actually does the work.
     inner: channel::ResponseFuture,
@@ -439,12 +436,12 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>
             match result {
                 Ok(()) => {
                     if let Some(pending_channel) = self.pending_channel.take() {
-                        let _ = self.connection_tx.send(ConnectionRequest::Connected(
-                            EstablishedChannel {
+                        let _ = self
+                            .tx
+                            .send(ConnectionRequest::Connected(EstablishedChannel {
                                 channel: pending_channel,
                                 identifier: self.channel.identifier,
-                            },
-                        ));
+                            }));
                     }
                 }
                 Err(err) => {
@@ -453,7 +450,7 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>
                         ?err,
                         "Error while creating connection on channel"
                     );
-                    let _ = self.connection_tx.send(ConnectionRequest::Error((
+                    let _ = self.tx.send(ConnectionRequest::Error((
                         self.channel.identifier,
                         self.pending_channel.take().is_some(),
                     )));
@@ -469,7 +466,7 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>
     ) -> Self::Future {
         ResponseFuture {
             inner: self.channel.channel.call(request),
-            connection_tx: self.connection_tx.clone(),
+            connection_tx: self.tx.clone(),
             identifier: self.channel.identifier,
         }
     }

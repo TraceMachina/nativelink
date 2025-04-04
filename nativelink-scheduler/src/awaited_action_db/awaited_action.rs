@@ -128,11 +128,11 @@ impl AwaitedAction {
         self.version.0
     }
 
-    pub(crate) fn set_version(&mut self, version: u64) {
+    pub(crate) const fn set_version(&mut self, version: u64) {
         self.version = AwaitedActionVersion(version);
     }
 
-    pub(crate) fn increment_version(&mut self) {
+    pub(crate) const fn increment_version(&mut self) {
         self.version = AwaitedActionVersion(self.version.0 + 1);
     }
 
@@ -164,7 +164,7 @@ impl AwaitedAction {
         self.last_worker_updated_timestamp
     }
 
-    pub(crate) fn worker_keep_alive(&mut self, now: SystemTime) {
+    pub(crate) const fn worker_keep_alive(&mut self, now: SystemTime) {
         self.last_worker_updated_timestamp = now;
     }
 
@@ -172,7 +172,7 @@ impl AwaitedAction {
         self.last_client_keepalive_timestamp
     }
 
-    pub(crate) fn update_client_keep_alive(&mut self, now: SystemTime) {
+    pub(crate) const fn update_client_keep_alive(&mut self, now: SystemTime) {
         self.last_client_keepalive_timestamp = now;
     }
 

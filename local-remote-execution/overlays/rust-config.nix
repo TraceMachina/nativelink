@@ -1,8 +1,6 @@
 let
-  defaultStableVersion = "1.85.0";
-  # TODO(aaronmondal): Bump again after:
-  #                    https://github.com/rust-lang/rust-clippy/issues/14020
-  defaultNightlyVersion = "2025-01-15";
+  defaultStableVersion = "1.86.0";
+  defaultNightlyVersion = "2025-04-03";
 in rec {
   # This map translates execution platforms to sensible targets that can
   # be built on such a platform. For instance, an x86_64-linux execution

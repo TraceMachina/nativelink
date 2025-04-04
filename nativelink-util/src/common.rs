@@ -96,7 +96,7 @@ impl DigestInfo {
         &self.packed_hash
     }
 
-    pub fn set_packed_hash(&mut self, packed_hash: [u8; 32]) {
+    pub const fn set_packed_hash(&mut self, packed_hash: [u8; 32]) {
         self.packed_hash = PackedHash(packed_hash);
     }
 

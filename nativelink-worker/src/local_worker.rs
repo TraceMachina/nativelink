@@ -491,6 +491,10 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         }
     }
 
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "False positive on stable, but not on nightly"
+    )]
     pub fn name(&self) -> &String {
         &self.config.name
     }
@@ -622,6 +626,10 @@ pub struct Metrics {
     )]
     preconditions: AsyncCounterWrapper,
     #[metric]
+    #[allow(
+        clippy::struct_field_names,
+        reason = "TODO Fix this. Triggers on nightly"
+    )]
     running_actions_manager_metrics: Weak<RunningActionManagerMetrics>,
 }
 

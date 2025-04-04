@@ -164,7 +164,7 @@ impl From<&DigestHasherFunc> for DigestHasherImpl {
     fn from(value: &DigestHasherFunc) -> Self {
         let hash_func_impl = match value {
             DigestHasherFunc::Sha256 => DigestHasherFuncImpl::Sha256(Sha256::new()),
-            DigestHasherFunc::Blake3 => DigestHasherFuncImpl::Blake3(Box::new(Blake3Hasher::new())),
+            DigestHasherFunc::Blake3 => DigestHasherFuncImpl::Blake3(Box::default()),
         };
         Self {
             hashed_size: 0,

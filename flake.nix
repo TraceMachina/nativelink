@@ -89,7 +89,7 @@
           linkerPath =
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
-            else "${pkgs.llvmPackages_19.lld}/bin/ld.lld";
+            else "${pkgs.llvmPackages_20.lld}/bin/ld.lld";
 
           linkerEnvVar = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER";
         in
@@ -110,7 +110,7 @@
               (
                 if isLinuxBuild
                 then [pkgs.mold]
-                else [pkgs.llvmPackages_19.lld]
+                else [pkgs.llvmPackages_20.lld]
               )
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
                 p.darwin.apple_sdk.frameworks.Security
@@ -424,7 +424,7 @@
               pkgs.kind
               pkgs.tektoncd-cli
               pkgs.pulumi
-              pkgs.pulumiPackages.pulumi-language-go
+              pkgs.pulumiPackages.pulumi-go
               pkgs.fluxcd
               pkgs.go
               pkgs.kustomize

@@ -124,6 +124,10 @@ pub trait ClientStateManager: Sync + Send + Unpin + MetricsComponent + 'static {
 
 /// The type of update to perform on an operation.
 #[derive(Debug, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "TODO Fix this. Breaks on stable, but not on nightly"
+)]
 pub enum UpdateOperationType {
     /// Notification that the operation is still alive.
     KeepAlive,
