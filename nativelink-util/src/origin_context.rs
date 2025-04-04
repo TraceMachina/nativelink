@@ -57,6 +57,7 @@ macro_rules! make_symbol {
 // See: IdentityHeaderSpec for details.
 make_symbol!(ORIGIN_IDENTITY, String);
 
+#[derive(Debug)]
 pub struct NLSymbol<T: Send + Sync + 'static> {
     pub name: &'static str,
     pub _phantom: std::marker::PhantomData<T>,
@@ -87,7 +88,7 @@ pub trait Symbol {
 /// Simple wrapper around a raw symbol pointer.
 /// This allows us to bypass the unsafe undefined behavior check
 /// when using raw pointers by manually implementing Send and Sync.
-#[derive(Eq, PartialEq, Hash, Clone)]
+#[derive(Debug, Eq, PartialEq, Hash, Clone)]
 #[repr(transparent)]
 pub struct RawSymbolWrapper(pub *const RawSymbol);
 
@@ -95,7 +96,7 @@ unsafe impl Send for RawSymbolWrapper {}
 unsafe impl Sync for RawSymbolWrapper {}
 
 /// Context used to store data about the origin of a request.
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct OriginContext {
     data: HashMap<RawSymbolWrapper, Arc<dyn Any + Send + Sync + 'static>>,
 }
@@ -211,6 +212,7 @@ impl OriginContext {
 }
 
 /// Static struct to interact with the active global context.
+#[derive(Debug, Clone, Copy)]
 pub struct ActiveOriginContext;
 
 impl ActiveOriginContext {

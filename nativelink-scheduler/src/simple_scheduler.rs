@@ -138,6 +138,20 @@ pub struct SimpleScheduler {
     _task_worker_matching_spawn: JoinHandleDropGuard<()>,
 }
 
+impl std::fmt::Debug for SimpleScheduler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimpleScheduler")
+            .field("platform_property_manager", &self.platform_property_manager)
+            .field("worker_scheduler", &self.worker_scheduler)
+            .field("maybe_origin_event_tx", &self.maybe_origin_event_tx)
+            .field(
+                "_task_worker_matching_spawn",
+                &self._task_worker_matching_spawn,
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 impl SimpleScheduler {
     /// Attempts to find a worker to execute an action and begins executing it.
     /// If an action is already running that is cacheable it may merge this

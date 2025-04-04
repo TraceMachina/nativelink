@@ -59,6 +59,14 @@ pub struct Retrier {
     config: Retry,
 }
 
+impl std::fmt::Debug for Retrier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Retrier")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
 const fn to_error_code(code: Code) -> ErrorCode {
     match code {
         Code::Cancelled => ErrorCode::Cancelled,

@@ -104,7 +104,7 @@ async fn check_output_directories<'a>(
     Ok(())
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct CompletenessCheckingStore {
     cas_store: Store,
     ac_store: Store,

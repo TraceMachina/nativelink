@@ -37,6 +37,7 @@ use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
 
+#[derive(Debug)]
 struct Workers(LruCache<WorkerId, Worker>);
 
 impl Deref for Workers {
@@ -86,6 +87,17 @@ struct ApiWorkerSchedulerImpl {
     worker_change_notify: Arc<Notify>,
     /// A channel to notify that an operation is still alive.
     operation_keep_alive_tx: UnboundedSender<(OperationId, WorkerId)>,
+}
+
+impl std::fmt::Debug for ApiWorkerSchedulerImpl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiWorkerSchedulerImpl")
+            .field("workers", &self.workers)
+            .field("allocation_strategy", &self.allocation_strategy)
+            .field("worker_change_notify", &self.worker_change_notify)
+            .field("operation_keep_alive_tx", &self.operation_keep_alive_tx)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ApiWorkerSchedulerImpl {
@@ -315,7 +327,7 @@ impl ApiWorkerSchedulerImpl {
         let mut result = Ok(());
         if let Some(mut worker) = self.remove_worker(worker_id) {
             // We don't care if we fail to send message to worker, this is only a best attempt.
-            let _ = worker.notify_update(WorkerUpdate::Disconnect).await;
+            drop(worker.notify_update(WorkerUpdate::Disconnect).await);
             for (operation_id, _) in worker.running_action_infos.drain() {
                 result = result.merge(
                     self.worker_state_manager
@@ -335,7 +347,7 @@ impl ApiWorkerSchedulerImpl {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct ApiWorkerScheduler {
     #[metric]
     inner: Mutex<ApiWorkerSchedulerImpl>,

@@ -40,6 +40,7 @@ use nativelink_util::store_trait::{Store, StoreLike};
 use tonic::{Request, Response, Status};
 use tracing::{error_span, event, instrument, Level};
 
+#[derive(Debug)]
 pub struct CasServer {
     stores: HashMap<String, Store>,
 }
