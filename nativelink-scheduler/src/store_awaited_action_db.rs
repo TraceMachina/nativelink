@@ -61,6 +61,25 @@ pub struct OperationSubscriber<S: SchedulerStore, I: InstantWrapper, NowFn: Fn()
     last_known_keepalive_ts: AtomicU64,
     now_fn: NowFn,
 }
+
+impl<S: SchedulerStore, I: InstantWrapper, NowFn: Fn() -> I + std::fmt::Debug> std::fmt::Debug
+    for OperationSubscriber<S, I, NowFn>
+where
+    OperationSubscriberState<
+        <S::SubscriptionManager as SchedulerSubscriptionManager>::Subscription,
+    >: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OperationSubscriber")
+            .field("maybe_client_operation_id", &self.maybe_client_operation_id)
+            .field("subscription_key", &self.subscription_key)
+            .field("weak_store", &self.weak_store)
+            .field("state", &self.state)
+            .field("last_known_keepalive_ts", &self.last_known_keepalive_ts)
+            .field("now_fn", &self.now_fn)
+            .finish()
+    }
+}
 impl<S, I, NowFn> OperationSubscriber<S, I, NowFn>
 where
     S: SchedulerStore,
@@ -399,7 +418,7 @@ async fn inner_update_awaited_action(
     Ok(())
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct StoreAwaitedActionDb<S, F, I, NowFn>
 where
     S: SchedulerStore,

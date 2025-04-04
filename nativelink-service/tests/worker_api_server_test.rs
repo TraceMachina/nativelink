@@ -72,7 +72,7 @@ struct MockWorkerStateManager {
 }
 
 impl MockWorkerStateManager {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
         Self {
@@ -83,7 +83,7 @@ impl MockWorkerStateManager {
         }
     }
 
-    pub async fn expect_update_operation(
+    pub(crate) async fn expect_update_operation(
         &self,
         result: Result<(), Error>,
     ) -> (OperationId, WorkerId, UpdateOperationType) {

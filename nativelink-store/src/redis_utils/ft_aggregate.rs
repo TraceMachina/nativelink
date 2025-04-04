@@ -22,7 +22,7 @@ use futures::Stream;
 
 /// Calls `FT_AGGREGATE` in redis. Fred does not properly support this command
 /// so we have to manually handle it.
-pub async fn ft_aggregate<C, I, Q>(
+pub(crate) async fn ft_aggregate<C, I, Q>(
     client: C,
     index: I,
     query: Q,

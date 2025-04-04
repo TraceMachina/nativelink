@@ -63,7 +63,7 @@ impl DigestInfo {
 
     pub fn try_new<T>(hash: &str, size_bytes: T) -> Result<Self, Error>
     where
-        T: TryInto<u64> + std::fmt::Display + Copy,
+        T: TryInto<u64> + fmt::Display + Copy,
     {
         let packed_hash =
             PackedHash::from_hex(hash).err_tip(|| format!("Invalid sha256 hash: {hash}"))?;
@@ -129,14 +129,14 @@ struct DigestStackStringifier<'a> {
     /// - Hex is '2 * sizeof(PackedHash)'.
     /// - Digits can be at most `count_digits(u64::MAX)`.
     /// - We also have a hyphen separator.
-    buf: [u8; std::mem::size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
+    buf: [u8; size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
 }
 
 impl<'a> DigestStackStringifier<'a> {
     const fn new(digest: &'a DigestInfo) -> Self {
         DigestStackStringifier {
             digest,
-            buf: [b'-'; std::mem::size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
+            buf: [b'-'; size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
         }
     }
 
@@ -344,7 +344,9 @@ impl From<&DigestInfo> for Digest {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord,
+)]
 pub struct PackedHash([u8; 32]);
 
 const SIZE_OF_PACKED_HASH: usize = 32;
@@ -407,14 +409,14 @@ pub trait VecExt<T> {
     fn try_map<F, U>(self, f: F) -> Result<Vec<U>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized;
+        F: (Fn(T) -> Result<U, Error>) + Sized;
 }
 
 impl<T> VecExt<T> for Vec<T> {
     fn try_map<F, U>(self, f: F) -> Result<Vec<U>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized,
+        F: (Fn(T) -> Result<U, Error>) + Sized,
     {
         let mut output = Vec::with_capacity(self.len());
         for item in self {
@@ -431,14 +433,14 @@ pub trait HashMapExt<K: Eq + Hash, T, S: BuildHasher> {
     fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U, S>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized;
+        F: (Fn(T) -> Result<U, Error>) + Sized;
 }
 
 impl<K: Eq + Hash, T, S: BuildHasher + Clone> HashMapExt<K, T, S> for HashMap<K, T, S> {
     fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U, S>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized,
+        F: (Fn(T) -> Result<U, Error>) + Sized,
     {
         let mut output = HashMap::with_capacity_and_hasher(self.len(), (*self.hasher()).clone());
         for (k, v) in self {
