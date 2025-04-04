@@ -43,7 +43,7 @@ pub const CURRENT_STREAM_FORMAT_VERSION: u8 = 1;
 // Default block size that will be used to slice stream into.
 pub const DEFAULT_BLOCK_SIZE: u32 = 64 * 1024;
 
-const U32_SZ: u64 = std::mem::size_of::<u8>() as u64;
+const U32_SZ: u64 = size_of::<u8>() as u64;
 
 type BincodeOptions = WithOtherIntEncoding<DefaultOptions, FixintEncoding>;
 
@@ -122,7 +122,7 @@ pub struct Lz4Config {
     pub block_size: u32,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Copy)]
 pub struct Header {
     pub version: u8,
     pub config: Lz4Config,
@@ -158,7 +158,10 @@ struct UploadState {
 }
 
 impl UploadState {
-    pub fn new(store: &CompressionStore, upload_size: UploadSizeInfo) -> Result<Self, Error> {
+    pub(crate) fn new(
+        store: &CompressionStore,
+        upload_size: UploadSizeInfo,
+    ) -> Result<Self, Error> {
         let input_max_size = match upload_size {
             UploadSizeInfo::MaxSize(sz) | UploadSizeInfo::ExactSize(sz) => sz,
         };
@@ -216,6 +219,15 @@ pub struct CompressionStore {
     inner_store: Store,
     config: nativelink_config::stores::Lz4Config,
     bincode_options: BincodeOptions,
+}
+
+impl std::fmt::Debug for CompressionStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompressionStore")
+            .field("inner_store", &self.inner_store)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CompressionStore {

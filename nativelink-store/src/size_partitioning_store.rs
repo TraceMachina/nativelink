@@ -24,7 +24,7 @@ use nativelink_util::health_utils::{default_health_status_indicator, HealthStatu
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use tokio::join;
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct SizePartitioningStore {
     #[metric(help = "Size to partition our data")]
     partition_size: u64,

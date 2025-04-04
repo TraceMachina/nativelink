@@ -215,12 +215,18 @@ pub trait DigestHasher {
     }
 }
 
+#[expect(
+    variant_size_differences,
+    reason = "some variants are already boxed; this is acceptable"
+)]
+#[derive(Debug)]
 pub enum DigestHasherFuncImpl {
     Sha256(Sha256),
     Blake3(Box<Blake3Hasher>), // Box because Blake3Hasher is 1.3kb in size.
 }
 
 /// The individual implementation of the hash function.
+#[derive(Debug)]
 pub struct DigestHasherImpl {
     hashed_size: u64,
     hash_func_impl: DigestHasherFuncImpl,

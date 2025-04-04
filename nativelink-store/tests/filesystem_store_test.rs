@@ -694,7 +694,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
                         .await
                         .err_tip(|| "Failed to open temp file")?;
                     // We don't care if it fails, this is only best attempt.
-                    let _ = file_handle.get_ref().as_ref().sync_all().await;
+                    drop(file_handle.get_ref().as_ref().sync_all().await);
                 }
                 // Ensure we have written to the file too. This ensures we have an open file handle.
                 // Failing to do this may result in the file existing, but the `update_fut` not actually
@@ -862,10 +862,12 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     let (mut writer, mut reader) = make_buf_channel_pair();
 
     let _drop_guard = spawn!("get_part_is_zero_digest_get_part", async move {
-        let _ = store_clone
-            .get_part(digest, &mut writer, 0, None)
-            .await
-            .err_tip(|| "Failed to get_part");
+        drop(
+            store_clone
+                .get_part(digest, &mut writer, 0, None)
+                .await
+                .err_tip(|| "Failed to get_part"),
+        );
     });
 
     let file_data = reader
@@ -926,10 +928,12 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
 
     let keys = vec![digest.into()];
     let mut results = vec![None];
-    let _ = store
-        .has_with_results(&keys, &mut results)
-        .await
-        .err_tip(|| "Failed to get_part");
+    drop(
+        store
+            .has_with_results(&keys, &mut results)
+            .await
+            .err_tip(|| "Failed to get_part"),
+    );
     assert_eq!(results, vec!(Some(0)));
 
     wait_for_empty_content_file(&content_path, digest, || async move {

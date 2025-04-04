@@ -163,6 +163,7 @@ pub struct OriginMetadata {
     pub bazel_metadata: Option<RequestMetadata>,
 }
 
+#[derive(Debug)]
 pub struct OriginEventCollector {
     sender: mpsc::Sender<OriginEvent>,
     pub metadata: OriginMetadata,
@@ -192,17 +193,18 @@ impl OriginEventCollector {
         let parent_event_id =
             parent_event_id.map_or_else(String::new, |id| id.as_hyphenated().to_string());
         // Ignore cases when channel is dropped.
-        let _ = self
-            .sender
-            .send(OriginEvent {
-                version: ORIGIN_EVENT_VERSION,
-                event_id: event_id.as_hyphenated().to_string(),
-                parent_event_id,
-                bazel_request_metadata: self.metadata.bazel_metadata.clone(),
-                identity: self.metadata.identity.clone(),
-                event: Some(event),
-            })
-            .await;
+        drop(
+            self.sender
+                .send(OriginEvent {
+                    version: ORIGIN_EVENT_VERSION,
+                    event_id: event_id.as_hyphenated().to_string(),
+                    parent_event_id,
+                    bazel_request_metadata: self.metadata.bazel_metadata.clone(),
+                    identity: self.metadata.identity.clone(),
+                    event: Some(event),
+                })
+                .await,
+        );
         event_id
     }
 
@@ -229,7 +231,7 @@ impl OriginEventCollector {
                         let sender = self.sender.clone();
                         background_spawn!("send_end_stream_origin_event", async move {
                             // Ignore cases when channel is dropped.
-                            let _ = sender.send(event).await;
+                            drop(sender.send(event).await);
                         });
                     }
                     // Ignore cases when channel is dropped.
@@ -284,6 +286,15 @@ make_symbol!(ORIGIN_EVENT_COLLECTOR, OriginEventCollector);
 pub struct OriginEventContext<T> {
     inner: Option<OriginEventContextImpl>,
     _phantom: PhantomData<T>,
+}
+
+impl<T> std::fmt::Debug for OriginEventContext<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OriginEventContext")
+            .field("inner", &self.inner)
+            .field("_phantom", &self._phantom)
+            .finish()
+    }
 }
 
 impl<T> Clone for OriginEventContext<T> {
@@ -366,7 +377,7 @@ impl<U> OriginEventContext<U> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct OriginEventContextImpl {
     origin_event_collector: Arc<OriginEventCollector>,
     parent_event_id: Uuid,

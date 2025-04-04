@@ -38,7 +38,7 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Holds metadata about the field that is being published.
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct MetricFieldData<'a> {
     pub name: Cow<'a, str>,
     pub help: Cow<'a, str>,

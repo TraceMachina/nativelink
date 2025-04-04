@@ -85,7 +85,7 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 struct State<K: Ord + Hash + Eq + Clone + Debug + Send, T: LenEntry + Debug + Send> {
     lru: LruCache<K, EvictionItem<T>>,
     btree: Option<BTreeSet<K>>,
@@ -142,7 +142,7 @@ impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Syn
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct EvictingMap<
     K: Ord + Hash + Eq + Clone + Debug + Send,
     T: LenEntry + Debug + Send,
