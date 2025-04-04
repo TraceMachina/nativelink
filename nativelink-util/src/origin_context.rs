@@ -20,7 +20,6 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::pin::Pin;
-use std::ptr::from_ref;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -70,34 +69,33 @@ impl<T: Send + Sync + 'static> Symbol for NLSymbol<T> {
     }
 }
 
-pub type RawSymbol = std::os::raw::c_void;
-
 pub trait Symbol {
     type Type: 'static;
 
     fn name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
-
-    fn as_ptr(&'static self) -> *const RawSymbol {
-        from_ref::<Self>(self).cast::<RawSymbol>()
-    }
 }
 
-/// Simple wrapper around a raw symbol pointer.
-/// This allows us to bypass the unsafe undefined behavior check
-/// when using raw pointers by manually implementing Send and Sync.
+/// Simple wrapper around a symbol address.
+///
+/// By using an address rather than a pointer, we can ensure that the struct
+/// is thread-safe and avoids any potential unsoundness from dereferencing a
+/// pointer.
 #[derive(Eq, PartialEq, Hash, Clone)]
 #[repr(transparent)]
-pub struct RawSymbolWrapper(pub *const RawSymbol);
+pub struct SymbolAddress(usize);
 
-unsafe impl Send for RawSymbolWrapper {}
-unsafe impl Sync for RawSymbolWrapper {}
+impl SymbolAddress {
+    pub fn from_ptr<T: ?Sized>(ptr: *const T) -> Self {
+        Self(ptr.addr())
+    }
+}
 
 /// Context used to store data about the origin of a request.
 #[derive(Default, Clone)]
 pub struct OriginContext {
-    data: HashMap<RawSymbolWrapper, Arc<dyn Any + Send + Sync + 'static>>,
+    data: HashMap<SymbolAddress, Arc<dyn Any + Send + Sync + 'static>>,
 }
 
 impl OriginContext {
@@ -112,7 +110,7 @@ impl OriginContext {
         symbol: &'static impl Symbol<Type = T>,
         cb: impl FnOnce(Option<Arc<T>>) -> Option<Arc<T>>,
     ) {
-        let entry = self.data.entry(RawSymbolWrapper(symbol.as_ptr()));
+        let entry = self.data.entry(SymbolAddress::from_ptr(symbol));
         let old_value = match &entry {
             Entry::Occupied(data) => Arc::downcast(data.get().clone()).ok(),
             Entry::Vacant(_) => None,
@@ -135,7 +133,7 @@ impl OriginContext {
         symbol: &'static impl Symbol<Type = T>,
         value: Arc<T>,
     ) -> Option<Arc<dyn Any + Send + Sync + 'static>> {
-        self.data.insert(RawSymbolWrapper(symbol.as_ptr()), value)
+        self.data.insert(SymbolAddress::from_ptr(symbol), value)
     }
 
     /// Gets the value current set for a given symbol on the context.
@@ -145,7 +143,7 @@ impl OriginContext {
         symbol: &'static impl Symbol<Type = T>,
     ) -> Result<Option<Arc<T>>, Error> {
         self.data
-            .get(&RawSymbolWrapper(symbol.as_ptr()))
+            .get(&SymbolAddress::from_ptr(symbol))
             .map_or(Ok(None), |value| {
                 Arc::downcast::<T>(value.clone()).map_or_else(
                     |_| {
