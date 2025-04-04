@@ -18,4 +18,4 @@ prost = { version = "0.13.5", default-features = false }
 prost-types = { version = "0.13.5", default-features = false }
 serde = { version = "1.0.219", default-features = false }
 tokio = { version = "1.44.1", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
-tonic = { version = "0.12.3", features = ["transport", "tls"], default-features = false }
+tonic = { version = "0.13.0", features = ["transport", "tls-ring"], default-features = false }

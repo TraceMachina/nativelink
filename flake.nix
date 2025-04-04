@@ -408,6 +408,7 @@
               bazel
               pkgs.lre.stable-rust
               pkgs.lre.lre-rs.lre-rs-configs-gen
+              pkgs.rust-analyzer
 
               ## Infrastructure
               pkgs.awscli2
