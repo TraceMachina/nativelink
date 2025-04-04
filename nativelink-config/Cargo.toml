@@ -1,3 +1,5 @@
+lints.workspace = true
+
 [package]
 name = "nativelink-config"
 version = "0.6.0"

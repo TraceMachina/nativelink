@@ -51,7 +51,7 @@ pub fn set_metrics_enabled_for_this_thread(enabled: bool) {
     METRICS_ENABLED.with(|v| v.store(enabled, Ordering::Release));
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct FuncCounterWrapper {
     pub successes: AtomicU64,
     pub failures: AtomicU64,
@@ -105,13 +105,14 @@ impl MetricsComponent for FuncCounterWrapper {
 /// This is a utility that will only increment the referenced counter when it is dropped.
 /// This struct is zero cost and has a runtime cost only when it is dropped.
 /// This struct is very useful for tracking when futures are dropped.
+#[derive(Debug)]
 struct DropCounter<'a> {
     counter: &'a AtomicU64,
 }
 
 impl<'a> DropCounter<'a> {
     #[inline]
-    pub const fn new(counter: &'a AtomicU64) -> Self {
+    pub(crate) const fn new(counter: &'a AtomicU64) -> Self {
         Self { counter }
     }
 }
@@ -126,6 +127,7 @@ impl Drop for DropCounter<'_> {
     }
 }
 
+#[derive(Debug)]
 pub struct AsyncTimer<'a> {
     start: Instant,
     drop_counter: DropCounter<'a>,
@@ -151,7 +153,7 @@ impl AsyncTimer<'_> {
 /// Tracks the number of calls, successes, failures, and drops of an async function.
 /// call `.wrap(future)` to wrap a future and stats about the future are automatically
 /// tracked and can be published to a `CollectorState`.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct AsyncCounterWrapper {
     pub calls: AtomicU64,
     pub successes: AtomicU64,
@@ -279,7 +281,7 @@ impl AsyncCounterWrapper {
 }
 
 /// Tracks a number.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Counter(AtomicU64);
 
 impl Counter {
@@ -316,7 +318,7 @@ impl MetricsComponent for Counter {
 }
 
 /// Tracks an counter through time and the last time the counter was changed.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct CounterWithTime {
     pub counter: AtomicU64,
     pub last_time: AtomicU64,

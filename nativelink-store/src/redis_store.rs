@@ -97,7 +97,7 @@ fn to_hex(value: &u32) -> String {
 }
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct RedisStore {
     /// The client pool connecting to the backing Redis instance(s).
     client_pool: RedisPool,
@@ -723,6 +723,7 @@ const fn try_sanitize(s: &str) -> Option<&str> {
 }
 
 /// An individual subscription to a key in Redis.
+#[derive(Debug)]
 pub struct RedisSubscription {
     receiver: Option<tokio::sync::watch::Receiver<String>>,
     weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
@@ -775,6 +776,7 @@ impl Drop for RedisSubscription {
 }
 
 /// A publisher for a key in Redis.
+#[derive(Debug)]
 struct RedisSubscriptionPublisher {
     sender: Mutex<tokio::sync::watch::Sender<String>>,
 }
@@ -817,6 +819,7 @@ impl RedisSubscriptionPublisher {
     }
 }
 
+#[derive(Debug)]
 pub struct RedisSubscriptionManager {
     subscribed_keys: Arc<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
     tx_for_test: tokio::sync::mpsc::UnboundedSender<String>,

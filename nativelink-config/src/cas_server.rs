@@ -327,7 +327,7 @@ pub struct TlsConfig {
 ///
 /// Note: All of these default to hyper's default values unless otherwise
 /// specified.
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 pub struct HttpServerConfig {
     /// Interval to send keep-alive pings via HTTP2.

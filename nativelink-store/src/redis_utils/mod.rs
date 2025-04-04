@@ -13,4 +13,4 @@
 // limitations under the License.
 
 mod ft_aggregate;
-pub use ft_aggregate::ft_aggregate;
+pub(crate) use ft_aggregate::ft_aggregate;

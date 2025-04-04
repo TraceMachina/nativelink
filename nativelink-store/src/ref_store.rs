@@ -28,8 +28,10 @@ use tracing::{event, Level};
 use crate::store_manager::StoreManager;
 
 #[repr(C, align(8))]
+#[derive(Debug)]
 struct AlignedStoreCell(UnsafeCell<Option<Store>>);
 
+#[derive(Debug)]
 struct StoreReference {
     cell: AlignedStoreCell,
     mux: Mutex<()>,
@@ -37,7 +39,7 @@ struct StoreReference {
 
 unsafe impl Sync for StoreReference {}
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct RefStore {
     #[metric(help = "The store we are referencing")]
     name: String,
