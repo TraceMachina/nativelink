@@ -39,6 +39,7 @@ _HEADER = """\
 
 #![allow(
     unknown_lints,
+    unused_qualifications,
     clippy::default_trait_access,
     clippy::doc_lazy_continuation,
     clippy::doc_markdown,

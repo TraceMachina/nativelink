@@ -221,7 +221,7 @@ pub async fn open_file(
             std::fs::File::open(&path).err_tip(|| format!("Could not open {path:?}"))?;
         if start > 0 {
             os_file
-                .seek(std::io::SeekFrom::Start(start))
+                .seek(SeekFrom::Start(start))
                 .err_tip(|| format!("Could not seek to {start} in {path:?}"))?;
         }
         Ok((permit, os_file))
@@ -292,11 +292,12 @@ pub async fn symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(),
     .await
 }
 
-pub async fn read_link(path: impl AsRef<Path>) -> Result<std::path::PathBuf, Error> {
+pub async fn read_link(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
     let path = path.as_ref().to_owned();
     call_with_permit(move |_| std::fs::read_link(path).map_err(Into::<Error>::into)).await
 }
 
+#[derive(Debug)]
 pub struct ReadDir {
     // We hold the permit because once it is dropped it goes back into the queue.
     permit: SemaphorePermit<'static>,

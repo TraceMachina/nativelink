@@ -166,6 +166,17 @@ pub struct ByteStreamServer {
     sleep_fn: SleepFn,
 }
 
+impl Debug for ByteStreamServer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ByteStreamServer")
+            .field("stores", &self.stores)
+            .field("max_bytes_per_stream", &self.max_bytes_per_stream)
+            .field("max_decoding_message_size", &self.max_decoding_message_size)
+            .field("active_uploads", &self.active_uploads)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ByteStreamServer {
     pub fn new(config: &ByteStreamConfig, store_manager: &StoreManager) -> Result<Self, Error> {
         let mut persist_stream_on_disconnect_timeout =

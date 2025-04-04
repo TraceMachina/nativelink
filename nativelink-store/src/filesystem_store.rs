@@ -84,6 +84,7 @@ enum PathType {
 /// The whole [`StoreKey`] is stored as opposed to solely
 /// the [`DigestInfo`] so that it is more usable for things
 /// such as BEP -see Issue #1108
+#[derive(Debug)]
 pub struct EncodedFilePath {
     shared_context: Arc<SharedContext>,
     path_type: PathType,
@@ -559,7 +560,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
                     "Failed to add file to eviction cache",
                 );
                 // Ignore result.
-                let _ = fs::remove_file(format!("{path_root}/{file_name}")).await;
+                drop(fs::remove_file(format!("{path_root}/{file_name}")).await);
             }
         }
         Ok(())
@@ -611,7 +612,7 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     Ok(())
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
     shared_context: Arc<SharedContext>,

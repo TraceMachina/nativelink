@@ -59,6 +59,7 @@ macro_rules! unsafe_make_symbol {
 // Safety: There is no other symbol named `ORIGIN_IDENTITY`.
 unsafe_make_symbol!(ORIGIN_IDENTITY, String);
 
+#[derive(Debug)]
 pub struct NLSymbol<T: Send + Sync + 'static> {
     pub name: &'static str,
     pub _phantom: std::marker::PhantomData<T>,
@@ -85,7 +86,7 @@ pub trait Symbol {
 /// By using an address rather than a pointer, we can ensure that the struct
 /// is thread-safe and avoids any potential unsoundness from dereferencing a
 /// pointer.
-#[derive(Eq, PartialEq, Hash, Clone)]
+#[derive(Debug, Eq, PartialEq, Hash, Clone, Copy)]
 #[repr(transparent)]
 pub struct SymbolAddress(usize);
 
@@ -96,7 +97,7 @@ impl SymbolAddress {
 }
 
 /// Context used to store data about the origin of a request.
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct OriginContext {
     data: HashMap<SymbolAddress, Arc<dyn Any + Send + Sync + 'static>>,
 }
@@ -212,6 +213,7 @@ impl OriginContext {
 }
 
 /// Static struct to interact with the active global context.
+#[derive(Debug, Clone, Copy)]
 pub struct ActiveOriginContext;
 
 impl ActiveOriginContext {
