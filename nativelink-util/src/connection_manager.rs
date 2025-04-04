@@ -425,8 +425,8 @@ pub struct ResponseFuture {
 
 /// This is mostly copied from `tonic::transport::channel` except it wraps it
 /// to allow messaging about connection success and failure.
-impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>> for Connection {
-    type Response = tonic::codegen::http::Response<tonic::body::BoxBody>;
+impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> for Connection {
+    type Response = tonic::codegen::http::Response<tonic::body::Body>;
     type Error = tonic::transport::Error;
     type Future = ResponseFuture;
 
@@ -460,10 +460,7 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>
         result
     }
 
-    fn call(
-        &mut self,
-        request: tonic::codegen::http::Request<tonic::body::BoxBody>,
-    ) -> Self::Future {
+    fn call(&mut self, request: tonic::codegen::http::Request<tonic::body::Body>) -> Self::Future {
         ResponseFuture {
             inner: self.channel.channel.call(request),
             connection_tx: self.tx.clone(),
@@ -476,7 +473,7 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>
 /// to allow messaging about connection failure.
 impl Future for ResponseFuture {
     type Output =
-        Result<tonic::codegen::http::Response<tonic::body::BoxBody>, tonic::transport::Error>;
+        Result<tonic::codegen::http::Response<tonic::body::Body>, tonic::transport::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let result = Pin::new(&mut self.inner).poll(cx);

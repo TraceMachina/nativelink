@@ -79,7 +79,7 @@ use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
 use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
-use tonic::transport::Server as TonicServer;
+use tonic::service::Routes;
 use tracing::{error_span, event, trace_span, Level};
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -170,6 +170,38 @@ struct ConnectedClientsMetrics {
 }
 
 impl RootMetricsComponent for ConnectedClientsMetrics {}
+
+trait RoutesExt {
+    fn add_optional_service<S>(self, svc: Option<S>) -> Self
+    where
+        S: tower::Service<axum::http::Request<tonic::body::Body>, Error = std::convert::Infallible>
+            + tonic::server::NamedService
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        S::Response: axum::response::IntoResponse,
+        S::Future: Send + 'static;
+}
+
+impl RoutesExt for Routes {
+    fn add_optional_service<S>(mut self, svc: Option<S>) -> Self
+    where
+        S: tower::Service<axum::http::Request<tonic::body::Body>, Error = std::convert::Infallible>
+            + tonic::server::NamedService
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        S::Response: axum::response::IntoResponse,
+        S::Future: Send + 'static,
+    {
+        if let Some(svc) = svc {
+            self = self.add_service(svc);
+        }
+        self
+    }
+}
 
 async fn inner_main(
     cfg: CasConfig,
@@ -281,7 +313,8 @@ async fn inner_main(
         // Currently we only support http as our socket type.
         let ListenerConfig::Http(http_config) = server_cfg.listener;
 
-        let tonic_services = TonicServer::builder()
+        let tonic_services = Routes::builder()
+            .routes()
             .add_optional_service(
                 services
                     .ac
@@ -479,12 +512,12 @@ async fn inner_main(
 
         let health_registry = health_registry_builder.lock().await.build();
 
-        let mut svc = Router::new().merge(tonic_services.into_service().into_axum_router().layer(
-            OriginEventMiddlewareLayer::new(
+        let mut svc = tonic_services
+            .into_axum_router()
+            .layer(OriginEventMiddlewareLayer::new(
                 maybe_origin_event_tx.clone(),
                 server_cfg.experimental_identity_header.clone(),
-            ),
-        ));
+            ));
 
         if let Some(health_cfg) = services.health {
             let path = if health_cfg.path.is_empty() {
