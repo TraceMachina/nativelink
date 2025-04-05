@@ -96,7 +96,7 @@ export NATIVELINK_DIR="$CACHE_DIR/nativelink"
 mkdir -p "$NATIVELINK_DIR"
 
 for pattern in "${TEST_PATTERNS[@]}"; do
-  find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | while IFS= read -r -d $'\0' fullpath; do
+  find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | grep -v buildstream | while IFS= read -r -d $'\0' fullpath; do
     # Cleanup.
     echo "Cleaning up cache directories NATIVELINK_DIR: $NATIVELINK_DIR"
     echo "Checking for existince of the NATIVELINK_DIR"
