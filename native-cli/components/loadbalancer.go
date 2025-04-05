@@ -42,6 +42,7 @@ type Gateway struct {
 
 // A local loadbalancer.
 type Loadbalancer struct {
+	Version      string
 	Gateways     []Gateway
 	Dependencies []pulumi.Resource
 }
@@ -328,7 +329,7 @@ func (component *Loadbalancer) Install(
 	loadbalancer, err := createDockerContainer(
 		ctx,
 		name,
-		"envoyproxy/envoy:v1.19.1",
+		fmt.Sprintf("envoyproxy/envoy:v%s", component.Version),
 		absolutePath,
 		dockerContainerPorts(component.Gateways),
 		component.Dependencies,
