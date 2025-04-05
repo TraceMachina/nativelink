@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 #[test]
 fn sha256_is_zero_digest() {
     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
-    assert!(is_zero_digest(digest));
+    assert!(is_zero_digest(&digest.into()));
 }
 
 #[test]
@@ -28,13 +28,13 @@ fn sha256_is_non_zero_digest() {
     let mut hasher = Sha256::new();
     hasher.update(b"a");
     let digest = DigestInfo::new(hasher.finalize().into(), 1);
-    assert!(!is_zero_digest(digest));
+    assert!(!is_zero_digest(&digest.into()));
 }
 
 #[test]
 fn blake_is_zero_digest() {
     let digest = DigestInfo::new(Blake3::new().finalize().into(), 0);
-    assert!(is_zero_digest(digest));
+    assert!(is_zero_digest(&digest.into()));
 }
 
 #[test]
@@ -42,5 +42,5 @@ fn blake_is_non_zero_digest() {
     let mut hasher = Blake3::new();
     hasher.update(b"a");
     let digest = DigestInfo::new(hasher.finalize().into(), 1);
-    assert!(!is_zero_digest(digest));
+    assert!(!is_zero_digest(&digest.into()));
 }

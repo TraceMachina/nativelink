@@ -326,7 +326,7 @@ impl StoreDriver for RedisStore {
             .zip(results.iter_mut())
             .map(|(key, result)| async move {
                 // We need to do a special pass to ensure our zero key exist.
-                if is_zero_digest(key.borrow()) {
+                if is_zero_digest(key) {
                     *result = Some(0);
                     return Ok::<_, Error>(());
                 }
@@ -384,7 +384,7 @@ impl StoreDriver for RedisStore {
             &final_key
         );
 
-        if is_zero_digest(key.borrow()) {
+        if is_zero_digest(&key) {
             let chunk = reader
                 .peek()
                 .await
@@ -485,7 +485,7 @@ impl StoreDriver for RedisStore {
 
         // To follow RBE spec we need to consider any digest's with
         // zero size to be existing.
-        if is_zero_digest(key.borrow()) {
+        if is_zero_digest(&key) {
             return writer
                 .send_eof()
                 .err_tip(|| "Failed to send zero EOF in redis store get_part");

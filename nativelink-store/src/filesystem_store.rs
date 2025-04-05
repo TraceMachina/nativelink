@@ -829,7 +829,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // If our results failed and the result was a zero file, we need to
         // create the file by spec.
         for (key, result) in keys.iter().zip(results.iter_mut()) {
-            if result.is_some() || !is_zero_digest(key.borrow()) {
+            if result.is_some() || !is_zero_digest(key) {
                 continue;
             }
             let (mut tx, rx) = make_buf_channel_pair();
@@ -914,7 +914,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        if is_zero_digest(key.borrow()) {
+        if is_zero_digest(&key) {
             self.has(key.borrow())
                 .await
                 .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;

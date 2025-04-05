@@ -571,7 +571,7 @@ where
             .zip(results.iter_mut())
             .map(|(key, result)| async move {
                 // We need to do a special pass to ensure our zero key exist.
-                if is_zero_digest(key.borrow()) {
+                if is_zero_digest(key) {
                     *result = Some(0);
                     return Ok::<_, Error>(());
                 }
@@ -857,7 +857,7 @@ where
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        if is_zero_digest(key.borrow()) {
+        if is_zero_digest(&key) {
             writer
                 .send_eof()
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;

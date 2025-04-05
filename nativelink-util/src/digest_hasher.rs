@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use blake3::Hasher as Blake3Hasher;
@@ -262,41 +263,49 @@ impl DigestHasher for DigestHasherImpl {
     }
 
     async fn digest_for_file(
-        mut self,
+        self,
         file_path: impl AsRef<std::path::Path>,
-        mut file: fs::FileSlot,
+        file: fs::FileSlot,
         size_hint: Option<u64>,
     ) -> Result<(DigestInfo, fs::FileSlot), Error> {
-        let file_position = file
-            .stream_position()
-            .await
-            .err_tip(|| "Couldn't get stream position in digest_for_file")?;
-        if file_position != 0 {
-            return self.hash_file(file).await;
-        }
-        // If we are a small file, it's faster to just do it the "slow" way.
-        // Great read: https://github.com/david-slatinek/c-read-vs.-mmap
-        if let Some(size_hint) = size_hint {
-            if size_hint <= fs::DEFAULT_READ_BUFF_SIZE as u64 {
-                return self.hash_file(file).await;
-            }
-        }
-        let file_path = file_path.as_ref().to_path_buf();
-        match self.hash_func_impl {
-            DigestHasherFuncImpl::Sha256(_) => self.hash_file(file).await,
-            DigestHasherFuncImpl::Blake3(mut hasher) => {
-                spawn_blocking!("digest_for_file", move || {
-                    hasher.update_mmap(file_path).map_err(|e| {
-                        make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}")
-                    })?;
-                    Result::<_, Error>::Ok((
-                        DigestInfo::new(hasher.finalize().into(), hasher.count()),
-                        file,
-                    ))
-                })
+        async fn digest_for_file_inner(
+            mut this: DigestHasherImpl,
+            file_path: &Path,
+            mut file: fs::FileSlot,
+            size_hint: Option<u64>,
+        ) -> Result<(DigestInfo, fs::FileSlot), Error> {
+            let file_position = file
+                .stream_position()
                 .await
-                .err_tip(|| "Could not spawn blocking task in digest_for_file")?
+                .err_tip(|| "Couldn't get stream position in digest_for_file")?;
+            if file_position != 0 {
+                return this.hash_file(file).await;
+            }
+            // If we are a small file, it's faster to just do it the "slow" way.
+            // Great read: https://github.com/david-slatinek/c-read-vs.-mmap
+            if let Some(size_hint) = size_hint {
+                if size_hint <= fs::DEFAULT_READ_BUFF_SIZE as u64 {
+                    return this.hash_file(file).await;
+                }
+            }
+            let file_path = file_path.to_path_buf();
+            match this.hash_func_impl {
+                DigestHasherFuncImpl::Sha256(_) => this.hash_file(file).await,
+                DigestHasherFuncImpl::Blake3(mut hasher) => {
+                    spawn_blocking!("digest_for_file", move || {
+                        hasher.update_mmap(file_path).map_err(|e| {
+                            make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}")
+                        })?;
+                        Result::<_, Error>::Ok((
+                            DigestInfo::new(hasher.finalize().into(), hasher.count()),
+                            file,
+                        ))
+                    })
+                    .await
+                    .err_tip(|| "Could not spawn blocking task in digest_for_file")?
+                }
             }
         }
+        digest_for_file_inner(self, file_path.as_ref(), file, size_hint).await
     }
 }

@@ -275,16 +275,22 @@ impl GrpcStore {
         &self,
         grpc_request: impl IntoRequest<ReadRequest>,
     ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
-        error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
-            "CAS operation on AC store"
-        );
+        async fn read_inner(
+            this: &GrpcStore,
+            grpc_request: Request<ReadRequest>,
+        ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
+            error_if!(
+                matches!(this.store_type, nativelink_config::stores::StoreType::Ac),
+                "CAS operation on AC store"
+            );
 
-        let request = self.get_read_request(grpc_request.into_request().into_inner())?;
-        self.perform_request(request, |request| async move {
-            self.read_internal(request).await
-        })
-        .await
+            let request = this.get_read_request(grpc_request.into_request().into_inner())?;
+            this.perform_request(request, |request| async move {
+                this.read_internal(request).await
+            })
+            .await
+        }
+        read_inner(self, grpc_request.into_request()).await
     }
 
     pub async fn write<T, E>(
