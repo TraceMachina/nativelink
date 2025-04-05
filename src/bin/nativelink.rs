@@ -670,7 +670,7 @@ async fn inner_main(
             svc = svc.nest_service(
                 path,
                 Router::new().route(
-                    "/scheduler/:instance_name/set_drain_worker/:worker_id/:is_draining",
+                    "/scheduler/{instance_name}/set_drain_worker/{worker_id}/{is_draining}",
                     axum::routing::post(
                         move |params: axum::extract::Path<(String, String, String)>| async move {
                             let (instance_name, worker_id, is_draining) = params.0;
