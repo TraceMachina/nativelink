@@ -18,20 +18,20 @@ use std::sync::Arc;
 use async_lock::Mutex;
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
-use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_metric::{
-    group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
-    RootMetricsComponent,
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    RootMetricsComponent, group,
 };
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::Notify;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tonic::async_trait;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
@@ -390,7 +390,11 @@ impl ApiWorkerScheduler {
                                 )
                                 .await;
                             if let Err(err) = update_operation_res {
-                                event!(Level::WARN, ?err, "Error while running worker_keep_alive_received, maybe job is done?");
+                                event!(
+                                    Level::WARN,
+                                    ?err,
+                                    "Error while running worker_keep_alive_received, maybe job is done?"
+                                );
                             }
                         }
                     }

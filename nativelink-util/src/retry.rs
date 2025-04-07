@@ -19,8 +19,8 @@ use std::time::Duration;
 use futures::future::Future;
 use futures::stream::StreamExt;
 use nativelink_config::stores::{ErrorCode, Retry};
-use nativelink_error::{make_err, Code, Error};
-use tracing::{event, Level};
+use nativelink_error::{Code, Error, make_err};
+use tracing::{Level, event};
 
 struct ExponentialBackoff {
     current: Duration,
@@ -147,7 +147,7 @@ impl Retrier {
                         return Err(make_err!(
                             Code::Internal,
                             "Retry stream ended abruptly on attempt {attempt}",
-                        ))
+                        ));
                     }
                     Some(RetryResult::Ok(value)) => return Ok(value),
                     Some(RetryResult::Err(e)) => {

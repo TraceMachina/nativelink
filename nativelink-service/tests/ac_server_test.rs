@@ -22,7 +22,7 @@ use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function, ActionResult, Digest, GetActionResultRequest, UpdateActionResultRequest,
+    ActionResult, Digest, GetActionResultRequest, UpdateActionResultRequest, digest_function,
 };
 use nativelink_service::ac_server::AcServer;
 use nativelink_store::default_store_factory::store_factory;

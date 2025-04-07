@@ -25,16 +25,16 @@ use async_lock::RwLock;
 use bytes::Bytes;
 use futures::executor::block_on;
 use futures::task::Poll;
-use futures::{poll, Future, FutureExt};
+use futures::{Future, FutureExt, poll};
 use nativelink_config::stores::FilesystemSpec;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
-    key_from_file, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
-    DIGEST_FOLDER, STR_FOLDER,
+    DIGEST_FOLDER, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
+    STR_FOLDER, key_from_file,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::origin_context::ContextAwareFuture;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
@@ -46,8 +46,8 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Take};
 use tokio::sync::Barrier;
 use tokio::time::sleep;
-use tokio_stream::wrappers::ReadDirStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReadDirStream;
 use tracing::Instrument;
 
 trait FileEntryHooks {
@@ -713,7 +713,10 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
     struct LocalHooks {}
     impl FileEntryHooks for LocalHooks {
         fn on_drop<Fe: FileEntry>(_file_entry: &Fe) {
-            background_spawn!("rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens_local_hooks_on_drop", FILE_DELETED_BARRIER.wait());
+            background_spawn!(
+                "rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens_local_hooks_on_drop",
+                FILE_DELETED_BARRIER.wait()
+            );
         }
     }
 

@@ -25,13 +25,13 @@ use aws_config::default_provider::credentials;
 use aws_config::provider_config::ProviderConfig;
 use aws_config::retry::ErrorKind::TransientError;
 use aws_config::{AppName, BehaviorVersion};
+use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
 use aws_sdk_s3::operation::get_object::GetObjectError;
 use aws_sdk_s3::operation::head_object::HeadObjectError;
 use aws_sdk_s3::primitives::{ByteStream /* SdkBody */};
 use aws_sdk_s3::types::builders::{CompletedMultipartUploadBuilder, CompletedPartBuilder};
-use aws_sdk_s3::Client;
 use aws_smithy_runtime_api::client::http::{
     HttpClient as SmithyHttpClient, HttpConnector as SmithyHttpConnector, HttpConnectorFuture,
     HttpConnectorSettings, SharedHttpConnector,
@@ -43,24 +43,24 @@ use aws_smithy_runtime_api::http::Response;
 use aws_smithy_types::body::SdkBody;
 use bytes::{Bytes, BytesMut};
 use futures::future::FusedFuture;
-use futures::stream::{unfold, FuturesUnordered};
+use futures::stream::{FuturesUnordered, unfold};
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use http_body::{Frame, SizeHint};
 use http_body_util::BodyExt;
 use hyper::{Method, Request};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
-use hyper_util::client::legacy::connect::HttpConnector as LegacyHttpConnector;
 use hyper_util::client::legacy::Client as LegacyClient;
+use hyper_util::client::legacy::connect::HttpConnector as LegacyHttpConnector;
 use hyper_util::rt::TokioExecutor;
 use nativelink_config::stores::S3Spec;
 // Note: S3 store should be very careful about the error codes it returns
 // when in a retryable wrapper. Always prefer Code::Aborted or another
 // retryable code over Code::InvalidArgument or make_input_err!().
 // ie: Don't import make_input_err!() to help prevent this.
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
@@ -70,7 +70,7 @@ use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use rand::Rng;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -194,13 +194,13 @@ struct RequestComponents {
 
 mod conversions {
     use super::{
-        body_processing, BufferedBodyState, ConnectorError, Future, HttpRequest, Method,
-        RequestComponents, Response, SdkBody, TransientError,
+        BufferedBodyState, ConnectorError, Future, HttpRequest, Method, RequestComponents,
+        Response, SdkBody, TransientError, body_processing,
     };
 
     pub(crate) trait RequestExt {
         fn into_components(self)
-            -> impl Future<Output = Result<RequestComponents, ConnectorError>>;
+        -> impl Future<Output = Result<RequestComponents, ConnectorError>>;
     }
 
     impl RequestExt for HttpRequest {
@@ -297,13 +297,11 @@ impl<'a> RequestBuilder<'a> {
         }
 
         match &self.components.body_data {
-            BufferedBodyState::Cloneable(ref body) => {
+            BufferedBodyState::Cloneable(body) => {
                 let cloned_body = body.try_clone().expect("Body should be cloneable");
                 req_builder.body(cloned_body)
             }
-            BufferedBodyState::Buffered(ref bytes) => {
-                req_builder.body(SdkBody::from(bytes.clone()))
-            }
+            BufferedBodyState::Buffered(bytes) => req_builder.body(SdkBody::from(bytes.clone())),
             BufferedBodyState::Empty => req_builder.body(SdkBody::empty()),
         }
     }
@@ -312,8 +310,8 @@ impl<'a> RequestBuilder<'a> {
 mod execution {
     use super::conversions::ResponseExt;
     use super::{
-        fs, make_err, Code, HttpsConnector, LegacyClient, LegacyHttpConnector, RequestBuilder,
-        RequestComponents, Response, RetryResult, SdkBody,
+        Code, HttpsConnector, LegacyClient, LegacyHttpConnector, RequestBuilder, RequestComponents,
+        Response, RetryResult, SdkBody, fs, make_err,
     };
 
     #[inline]
@@ -719,53 +717,57 @@ where
                 // Note: Our break condition is when we reach EOF.
                 for part_number in 1..i32::MAX {
                     let write_buf = reader
-                        .consume(Some(usize::try_from(bytes_per_upload_part).err_tip(|| "Could not convert bytes_per_upload_part to usize")?))
+                        .consume(Some(usize::try_from(bytes_per_upload_part).err_tip(
+                            || "Could not convert bytes_per_upload_part to usize",
+                        )?))
                         .await
                         .err_tip(|| "Failed to read chunk in s3_store")?;
                     if write_buf.is_empty() {
                         break; // Reached EOF.
                     }
 
-                    tx.send(retrier.retry(unfold(
-                        write_buf,
-                        move |write_buf| {
-                            async move {
-                                let retry_result = self
-                                    .s3_client
-                                    .upload_part()
-                                    .bucket(&self.bucket)
-                                    .key(s3_path)
-                                    .upload_id(upload_id)
-                                    .body(ByteStream::new(SdkBody::from(write_buf.clone())))
-                                    .part_number(part_number)
-                                    .send()
-                                    .await
-                                    .map_or_else(
-                                        |e| {
-                                            RetryResult::Retry(make_err!(
-                                                Code::Aborted,
-                                                "Failed to upload part {part_number} in S3 store: {e:?}"
-                                            ))
-                                        },
-                                        |mut response| {
-                                            RetryResult::Ok(
-                                                CompletedPartBuilder::default()
-                                                    // Only set an entity tag if it exists. This saves
-                                                    // 13 bytes per part on the final request if it can
-                                                    // omit the `<ETAG><ETAG/>` string.
-                                                    .set_e_tag(response.e_tag.take())
-                                                    .part_number(part_number)
-                                                    .build(),
-                                            )
-                                        },
-                                    );
-                                Some((retry_result, write_buf))
-                            }
+                    tx.send(retrier.retry(unfold(write_buf, move |write_buf| {
+                        async move {
+                            let retry_result = self
+                                .s3_client
+                                .upload_part()
+                                .bucket(&self.bucket)
+                                .key(s3_path)
+                                .upload_id(upload_id)
+                                .body(ByteStream::new(SdkBody::from(write_buf.clone())))
+                                .part_number(part_number)
+                                .send()
+                                .await
+                                .map_or_else(
+                                    |e| {
+                                        RetryResult::Retry(make_err!(
+                                            Code::Aborted,
+                                            "Failed to upload part {part_number} in S3 store: {e:?}"
+                                        ))
+                                    },
+                                    |mut response| {
+                                        RetryResult::Ok(
+                                            CompletedPartBuilder::default()
+                                                // Only set an entity tag if it exists. This saves
+                                                // 13 bytes per part on the final request if it can
+                                                // omit the `<ETAG><ETAG/>` string.
+                                                .set_e_tag(response.e_tag.take())
+                                                .part_number(part_number)
+                                                .build(),
+                                        )
+                                    },
+                                );
+                            Some((retry_result, write_buf))
                         }
-                    ))).await.map_err(|_| make_err!(Code::Internal, "Failed to send part to channel in s3_store"))?;
+                    })))
+                    .await
+                    .map_err(|_| {
+                        make_err!(Code::Internal, "Failed to send part to channel in s3_store")
+                    })?;
                 }
                 Result::<_, Error>::Ok(())
-            }.fuse();
+            }
+            .fuse();
 
             let mut upload_futures = FuturesUnordered::new();
 

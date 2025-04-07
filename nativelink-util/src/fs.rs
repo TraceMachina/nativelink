@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use rlimit::increase_nofile_limit;
 /// We wrap all `tokio::fs` items in our own wrapper so we can limit the number of outstanding
 /// open files at any given time. This will greatly reduce the chance we'll hit open file limit
@@ -27,7 +27,7 @@ use rlimit::increase_nofile_limit;
 pub use tokio::fs::DirEntry;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncWrite, ReadBuf, SeekFrom, Take};
 use tokio::sync::{Semaphore, SemaphorePermit};
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::spawn_blocking;
 

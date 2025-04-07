@@ -27,7 +27,7 @@ use http::status::StatusCode;
 use http_body::Frame;
 use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::S3Spec;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::s3_store::S3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
@@ -249,7 +249,12 @@ async fn simple_update_ac() -> Result<(), Error> {
         assert_eq!(Poll::Pending, futures::poll!(&mut update_fut));
         let sent_request = request_receiver.expect_request();
         assert_eq!(sent_request.method(), "PUT");
-        assert_eq!(sent_request.uri(), format!("https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=PutObject"));
+        assert_eq!(
+            sent_request.uri(),
+            format!(
+                "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=PutObject"
+            )
+        );
         ByteStream::from_body_0_4(sent_request.into_body())
     };
 
@@ -322,10 +327,10 @@ async fn simple_get_ac() -> Result<(), Error> {
         .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?, 0, None)
         .await?;
     assert_eq!(
-            store_data,
-            VALUE.as_bytes(),
-            "Hash for key: {VALID_HASH1} did not insert. Expected: {VALUE:#x?}, but got: {store_data:#x?}",
-        );
+        store_data,
+        VALUE.as_bytes(),
+        "Hash for key: {VALID_HASH1} did not insert. Expected: {VALUE:#x?}, but got: {store_data:#x?}",
+    );
     Ok(())
 }
 
@@ -742,7 +747,7 @@ async fn has_with_expired_result() -> Result<(), Error> {
     let digest = DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE).unwrap();
     {
         MockClock::advance(Duration::from_secs(24 * 60 * 60)); // 1 day.
-                                                               // Date is now 1970-01-02 00:00:00.
+        // Date is now 1970-01-02 00:00:00.
         let mut results = vec![None];
         store
             .has_with_results(&[digest.into()], &mut results)
@@ -752,7 +757,7 @@ async fn has_with_expired_result() -> Result<(), Error> {
     }
     {
         MockClock::advance(Duration::from_secs(24 * 60 * 60)); // 1 day.
-                                                               // Date is now 1970-01-03 00:00:00.
+        // Date is now 1970-01-03 00:00:00.
         let mut results = vec![None];
         store
             .has_with_results(&[digest.into()], &mut results)

@@ -21,18 +21,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use futures::{join, FutureExt};
+use futures::{FutureExt, join};
 use nativelink_config::stores::FastSlowSpec;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::fs;
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    slow_update_store_with_file, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
-    UploadSizeInfo,
+    Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
+    slow_update_store_with_file,
 };
 
 // TODO(blaise.bruer) This store needs to be evaluated for more efficient memory usage,
@@ -176,9 +176,9 @@ impl StoreDriver for FastSlowStore {
                     .err_tip(|| "Failed to read buffer in fastslow store")?;
                 if buffer.is_empty() {
                     // EOF received.
-                    fast_tx.send_eof().err_tip(|| {
-                        "Failed to write eof to fast store in fast_slow store update"
-                    })?;
+                    fast_tx.send_eof().err_tip(
+                        || "Failed to write eof to fast store in fast_slow store update",
+                    )?;
                     slow_tx
                         .send_eof()
                         .err_tip(|| "Failed to write eof to writer in fast_slow store update")?;

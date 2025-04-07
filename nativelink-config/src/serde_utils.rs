@@ -19,7 +19,7 @@ use std::marker::PhantomData;
 use byte_unit::Byte;
 use humantime::parse_duration;
 use serde::de::Visitor;
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
 
 /// Helper for serde macro so you can use shellexpand variables in the json configuration
 /// files when the number is a numeric type.

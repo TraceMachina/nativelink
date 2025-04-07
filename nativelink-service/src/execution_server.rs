@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::stream::unfold;
 use futures::{Stream, StreamExt};
 use nativelink_config::cas_server::{ExecutionConfig, InstanceName};
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{
     Execution, ExecutionServer as Server,
 };
@@ -33,17 +33,17 @@ use nativelink_proto::google::longrunning::Operation;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, OperationId, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, DEFAULT_EXECUTION_PRIORITY, OperationId,
 };
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
+use nativelink_util::digest_hasher::{DigestHasherFunc, make_ctx_for_hash_func};
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, OperationFilter,
 };
 use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::Store;
 use tonic::{Request, Response, Status};
-use tracing::{error_span, event, instrument, Level};
+use tracing::{Level, error_span, event, instrument};
 
 type InstanceInfoName = String;
 
@@ -156,7 +156,7 @@ pub struct ExecutionServer {
     instance_infos: HashMap<InstanceName, InstanceInfo>,
 }
 
-type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + 'static>>;
+type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send>>;
 
 impl ExecutionServer {
     pub fn new(
@@ -199,7 +199,7 @@ impl ExecutionServer {
     fn to_execute_stream(
         nl_client_operation_id: &NativelinkOperationId,
         action_listener: Box<dyn ActionStateResult>,
-    ) -> impl Stream<Item = Result<Operation, Status>> + Send + 'static {
+    ) -> impl Stream<Item = Result<Operation, Status>> + Send + use<> {
         let client_operation_id = OperationId::from(nl_client_operation_id.to_string());
         unfold(Some(action_listener), move |maybe_action_listener| {
             let client_operation_id = client_operation_id.clone();
@@ -231,7 +231,7 @@ impl ExecutionServer {
     async fn inner_execute(
         &self,
         request: ExecuteRequest,
-    ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + 'static, Error> {
+    ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + use<>, Error> {
         let instance_name = request.instance_name;
 
         let instance_info = self
@@ -290,7 +290,7 @@ impl ExecutionServer {
     async fn inner_wait_execution(
         &self,
         request: WaitExecutionRequest,
-    ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + 'static, Status> {
+    ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + use<>, Status> {
         let nl_operation_id = NativelinkOperationId::from_name(&request.name)
             .err_tip(|| "Failed to parse operation_id in ExecutionServer::wait_execution")?;
         let Some(instance_info) = self.instance_infos.get(&nl_operation_id.instance_name) else {

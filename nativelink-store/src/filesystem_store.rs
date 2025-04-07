@@ -26,13 +26,13 @@ use bytes::BytesMut;
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{
@@ -40,7 +40,7 @@ use nativelink_util::store_trait::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -591,9 +591,9 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     async fn prune_temp_inner(temp_path: &str, subpath: &str) -> Result<(), Error> {
         let (_permit, dir_handle) = fs::read_dir(format!("{temp_path}/{subpath}"))
             .await
-            .err_tip(|| {
-                "Failed opening temp directory to prune partial downloads in filesystem store"
-            })?
+            .err_tip(
+                || "Failed opening temp directory to prune partial downloads in filesystem store",
+            )?
             .into_inner();
 
         let mut read_dir_stream = ReadDirStream::new(dir_handle);

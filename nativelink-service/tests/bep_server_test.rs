@@ -21,7 +21,7 @@ use nativelink_config::cas_server::BepConfig;
 use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
-use nativelink_proto::com::github::trace_machina::nativelink::events::{bep_event, BepEvent};
+use nativelink_proto::com::github::trace_machina::nativelink::events::{BepEvent, bep_event};
 use nativelink_proto::google::devtools::build::v1::build_event::console_output::Output;
 use nativelink_proto::google::devtools::build::v1::build_event::{
     BuildEnqueued, BuildFinished, ConsoleOutput, Event, InvocationAttemptFinished,
@@ -31,8 +31,8 @@ use nativelink_proto::google::devtools::build::v1::publish_build_event_server::P
 use nativelink_proto::google::devtools::build::v1::publish_lifecycle_event_request::ServiceLevel;
 use nativelink_proto::google::devtools::build::v1::stream_id::BuildComponent;
 use nativelink_proto::google::devtools::build::v1::{
-    build_status, BuildEvent, BuildStatus, ConsoleOutputStream, OrderedBuildEvent,
-    PublishBuildToolEventStreamRequest, PublishLifecycleEventRequest, StreamId,
+    BuildEvent, BuildStatus, ConsoleOutputStream, OrderedBuildEvent,
+    PublishBuildToolEventStreamRequest, PublishLifecycleEventRequest, StreamId, build_status,
 };
 use nativelink_service::bep_server::BepServer;
 use nativelink_store::default_store_factory::store_factory;

@@ -30,14 +30,14 @@ mod utils {
 use hyper::body::Frame;
 use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
 use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
-use nativelink_error::{make_err, make_input_err, Code, Error};
+use nativelink_error::{Code, Error, make_err, make_input_err};
 use nativelink_macro::nativelink_test;
-use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::build::bazel::remote::execution::v2::Platform;
+use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest,
-    StartExecute, UpdateForWorker,
+    ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest, StartExecute,
+    UpdateForWorker, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
@@ -46,7 +46,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionUniqueKey, ActionUniqueQualifier,
     ExecutionMetadata, OperationId,
 };
-use nativelink_util::common::{encode_stream_proto, fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, encode_stream_proto, fs};
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::Store;
 use nativelink_worker::local_worker::new_local_worker;

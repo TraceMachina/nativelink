@@ -16,8 +16,8 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-use base64::prelude::BASE64_STANDARD_NO_PAD;
 use base64::Engine;
+use base64::prelude::BASE64_STANDARD_NO_PAD;
 use futures::future::ready;
 use futures::task::{Context, Poll};
 use futures::{Future, FutureExt, Stream, StreamExt};
@@ -28,9 +28,10 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     RequestMetadata, ServerCapabilities, UpdateActionResultRequest, WaitExecutionRequest,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
+    BatchReadBlobsResponseOverride, BatchUpdateBlobsRequestOverride, Event, OriginEvent,
+    RequestEvent, ResponseEvent, StreamEvent, WriteRequestOverride,
     batch_read_blobs_response_override, batch_update_blobs_request_override, event, request_event,
-    response_event, stream_event, BatchReadBlobsResponseOverride, BatchUpdateBlobsRequestOverride,
-    Event, OriginEvent, RequestEvent, ResponseEvent, StreamEvent, WriteRequestOverride,
+    response_event, stream_event,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use nativelink_proto::google::bytestream::{
@@ -49,7 +50,7 @@ use tonic::{Response, Status as TonicStatus, Streaming};
 use uuid::Uuid;
 
 use crate::origin_context::ActiveOriginContext;
-use crate::{background_spawn, make_symbol};
+use crate::{background_spawn, unsafe_make_symbol};
 
 const ORIGIN_EVENT_VERSION: u32 = 0;
 
@@ -279,7 +280,8 @@ where
     }
 }
 
-make_symbol!(ORIGIN_EVENT_COLLECTOR, OriginEventCollector);
+// Safety: There is no other symbol named `ORIGIN_EVENT_COLLECTOR`.
+unsafe_make_symbol!(ORIGIN_EVENT_COLLECTOR, OriginEventCollector);
 
 pub struct OriginEventContext<T> {
     inner: Option<OriginEventContextImpl>,

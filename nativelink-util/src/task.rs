@@ -19,7 +19,7 @@ use std::task::{Context, Poll};
 use futures::Future;
 use hyper::rt::Executor;
 use hyper_util::rt::tokio::TokioExecutor;
-use tokio::task::{spawn_blocking, JoinError, JoinHandle};
+use tokio::task::{JoinError, JoinHandle, spawn_blocking};
 pub use tracing::error_span as __error_span;
 use tracing::{Instrument, Span};
 

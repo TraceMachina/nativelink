@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use nativelink_error::{make_err, Code, Error};
+use nativelink_error::{Code, Error, make_err};
 use nativelink_util::action_messages::{
     ActionInfo, ActionState, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };

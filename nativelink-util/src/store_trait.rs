@@ -24,17 +24,17 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use futures::{join, try_join, Future, FutureExt, Stream};
-use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use futures::{Future, FutureExt, Stream, join, try_join};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use crate::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
+use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair};
 use crate::common::DigestInfo;
-use crate::digest_hasher::{default_digest_hasher_func, DigestHasher, DigestHasherFunc};
+use crate::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
 use crate::fs;
 use crate::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 

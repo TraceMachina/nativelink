@@ -14,8 +14,8 @@
 
 use nativelink_macro::nativelink_test;
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
-    event, request_event, response_event, stream_event, Event, RequestEvent, ResponseEvent,
-    StreamEvent,
+    Event, RequestEvent, ResponseEvent, StreamEvent, event, request_event, response_event,
+    stream_event,
 };
 use nativelink_util::origin_event::get_id_for_event;
 

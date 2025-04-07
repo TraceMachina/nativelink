@@ -14,16 +14,16 @@
 
 use std::collections::VecDeque;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
 
 use bytes::{Bytes, BytesMut};
 use futures::task::Context;
 use futures::{Future, Stream, TryFutureExt};
-use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use tokio::sync::mpsc;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 const ZERO_DATA: Bytes = Bytes::new();
 
@@ -360,7 +360,7 @@ impl DropCloserReadHalf {
                     }
                 }
                 Err(e) => {
-                    return Err(e.clone()).err_tip(|| "Failed to check if next chunk is EOF")?
+                    return Err(e.clone()).err_tip(|| "Failed to check if next chunk is EOF")?;
                 }
             }
             chunk

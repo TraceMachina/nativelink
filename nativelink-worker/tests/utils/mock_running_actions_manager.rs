@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use async_lock::Mutex;
 use futures::Future;
-use nativelink_error::{make_input_err, Error};
+use nativelink_error::{Error, make_input_err};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use nativelink_util::action_messages::{ActionResult, OperationId};
 use nativelink_util::common::DigestInfo;

@@ -6,7 +6,7 @@
 [package]
 name = "nativelink-proto"
 version = "0.6.0"
-edition = "2021"
+edition = "2024"
 autobins = false
 autoexamples = false
 autotests = false

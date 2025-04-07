@@ -16,23 +16,23 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::ops::Bound;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex;
 use futures::task::Poll;
-use futures::{poll, Stream, StreamExt};
+use futures::{Stream, StreamExt, poll};
 use mock_instant::thread_local::{MockClock, SystemTime as MockSystemTime};
 use nativelink_config::schedulers::{PropertyType, SimpleSpec};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function, ExecuteRequest, Platform,
+    ExecuteRequest, Platform, digest_function,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
+    ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
 };
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
@@ -44,7 +44,7 @@ use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
-    NameOrPath, OperationId, SymlinkInfo, WorkerId, INTERNAL_ERROR_EXIT_CODE,
+    INTERNAL_ERROR_EXIT_CODE, NameOrPath, OperationId, SymlinkInfo, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
@@ -54,8 +54,8 @@ use nativelink_util::operation_state_manager::{
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
-use tokio::sync::{mpsc, Notify};
-use utils::scheduler_utils::{make_base_action_info, INSTANCE_NAME};
+use tokio::sync::{Notify, mpsc};
+use utils::scheduler_utils::{INSTANCE_NAME, make_base_action_info};
 
 mod utils {
     pub(crate) mod scheduler_utils;
@@ -2084,7 +2084,9 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         if let ActionStage::Completed(stage) = &mut received_state.stage {
             if let Some(real_err) = &mut stage.error {
                 assert!(
-                    real_err.to_string().contains("Job cancelled because it attempted to execute too many times"),
+                    real_err
+                        .to_string()
+                        .contains("Job cancelled because it attempted to execute too many times"),
                     "{real_err} did not contain 'Job cancelled because it attempted to execute too many times'",
                 );
                 *real_err = err;

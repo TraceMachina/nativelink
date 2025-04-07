@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueQualifier, OperationId,
@@ -34,11 +34,11 @@ use nativelink_util::store_trait::{
 };
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::Notify;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
-    SortedAwaitedActionState, CLIENT_KEEPALIVE_DURATION,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
+    SortedAwaitedAction, SortedAwaitedActionState,
 };
 
 type ClientOperationId = OperationId;
@@ -606,9 +606,9 @@ where
             .update_data(UpdateOperationIdToAwaitedAction(awaited_action))
             .await
             .err_tip(|| "In RedisAwaitedActionDb::add_action")?
-            .err_tip(|| {
-                "Version match failed for new action insert in RedisAwaitedActionDb::add_action"
-            })?;
+            .err_tip(
+                || "Version match failed for new action insert in RedisAwaitedActionDb::add_action",
+            )?;
 
         self.store
             .update_data(UpdateClientIdToOperationId {

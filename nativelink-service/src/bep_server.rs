@@ -16,10 +16,10 @@ use std::borrow::Cow;
 use std::pin::Pin;
 
 use bytes::BytesMut;
-use futures::stream::unfold;
 use futures::Stream;
+use futures::stream::unfold;
 use nativelink_error::{Error, ResultExt};
-use nativelink_proto::com::github::trace_machina::nativelink::events::{bep_event, BepEvent};
+use nativelink_proto::com::github::trace_machina::nativelink::events::{BepEvent, bep_event};
 use nativelink_proto::google::devtools::build::v1::publish_build_event_server::{
     PublishBuildEvent, PublishBuildEventServer,
 };
@@ -32,7 +32,7 @@ use nativelink_util::origin_context::{ActiveOriginContext, ORIGIN_IDENTITY};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike};
 use prost::Message;
 use tonic::{Request, Response, Result, Status, Streaming};
-use tracing::{instrument, Level};
+use tracing::{Level, instrument};
 
 /// Current version of the BEP event. This might be used in the future if
 /// there is a breaking change in the BEP event format.
@@ -171,9 +171,9 @@ impl BepServer {
                 move |maybe_state| async move {
                     let mut state = maybe_state?;
                     let request =
-                        match state.stream.message().await.err_tip(|| {
-                            "While receiving message in publish_build_tool_event_stream"
-                        }) {
+                        match state.stream.message().await.err_tip(
+                            || "While receiving message in publish_build_tool_event_stream",
+                        ) {
                             Ok(Some(request)) => request,
                             Ok(None) => return None,
                             Err(e) => return Some((Err(e.into()), None)),

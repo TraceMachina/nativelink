@@ -39,7 +39,7 @@ use tokio::sync::watch;
 use tokio::{self};
 use tokio_stream::StreamExt;
 use utils::mock_scheduler::MockActionScheduler;
-use utils::scheduler_utils::{make_base_action_info, TokioWatchActionStateResult};
+use utils::scheduler_utils::{TokioWatchActionStateResult, make_base_action_info};
 
 struct TestContext {
     mock_scheduler: Arc<MockActionScheduler>,

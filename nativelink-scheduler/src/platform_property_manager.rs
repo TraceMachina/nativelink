@@ -15,9 +15,9 @@
 use std::collections::HashMap;
 
 use nativelink_config::schedulers::PropertyType;
-use nativelink_error::{make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_input_err};
 use nativelink_metric::{
-    group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 

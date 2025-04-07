@@ -18,7 +18,7 @@ use blake3::Hasher as Blake3Hasher;
 use bytes::BytesMut;
 use futures::Future;
 use nativelink_config::stores::ConfigDigestHashFunction;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
@@ -29,11 +29,12 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 
 use crate::common::DigestInfo;
 use crate::origin_context::{ActiveOriginContext, OriginContext};
-use crate::{fs, make_symbol, spawn_blocking};
+use crate::{fs, spawn_blocking, unsafe_make_symbol};
 
 // The symbol can be used to retrieve the active hasher function.
 // from an `OriginContext`.
-make_symbol!(ACTIVE_HASHER_FUNC, DigestHasherFunc);
+// Safety: There is no other symbol named `ACTIVE_HASHER_FUNC`.
+unsafe_make_symbol!(ACTIVE_HASHER_FUNC, DigestHasherFunc);
 
 static DEFAULT_DIGEST_HASHER_FUNC: OnceLock<DigestHasherFunc> = OnceLock::new();
 

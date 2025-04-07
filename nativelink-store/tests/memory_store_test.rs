@@ -122,9 +122,10 @@ async fn ensure_full_copy_of_bytes_is_made_test() -> Result<(), Error> {
         sum_memory_usage_increase_perc += new_virtual_mem as f64 / initial_virtual_mem as f64;
     }
     assert!(
-            (sum_memory_usage_increase_perc / MAX_STATS_ITERATIONS as f64) < MAXIMUM_MEMORY_USAGE_INCREASE_PERC,
-            "Memory usage increased by {sum_memory_usage_increase_perc} perc, which is more than {MAXIMUM_MEMORY_USAGE_INCREASE_PERC} perc",
-        );
+        (sum_memory_usage_increase_perc / MAX_STATS_ITERATIONS as f64)
+            < MAXIMUM_MEMORY_USAGE_INCREASE_PERC,
+        "Memory usage increased by {sum_memory_usage_increase_perc} perc, which is more than {MAXIMUM_MEMORY_USAGE_INCREASE_PERC} perc",
+    );
     Ok(())
 }
 

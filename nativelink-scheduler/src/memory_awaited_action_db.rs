@@ -19,7 +19,7 @@ use std::sync::Arc;
 use async_lock::Mutex;
 use futures::{FutureExt, Stream};
 use nativelink_config::stores::EvictionPolicy;
-use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId,
@@ -29,12 +29,12 @@ use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::{mpsc, watch, Notify};
-use tracing::{event, Level};
+use tokio::sync::{Notify, mpsc, watch};
+use tracing::{Level, event};
 
 use crate::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
-    SortedAwaitedActionState, CLIENT_KEEPALIVE_DURATION,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
+    SortedAwaitedAction, SortedAwaitedActionState,
 };
 
 /// Number of events to process per cycle.
@@ -482,7 +482,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         &self,
         start: Bound<&OperationId>,
         end: Bound<&OperationId>,
-    ) -> impl Iterator<Item = (&'_ OperationId, MemoryAwaitedActionSubscriber<I, NowFn>)> {
+    ) -> impl Iterator<Item = (&'_ OperationId, MemoryAwaitedActionSubscriber<I, NowFn>)>
+    + use<'_, I, NowFn> {
         self.operation_id_to_awaited_action
             .range((start, end))
             .map(|(operation_id, tx)| {

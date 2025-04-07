@@ -18,20 +18,20 @@ use std::{iter, mem};
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
-use futures::{select, FutureExt, TryFutureExt};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use futures::{FutureExt, TryFutureExt, select};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, OutputDirectory as ProtoOutputDirectory, Tree as ProtoTree,
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
 
@@ -272,9 +272,9 @@ impl CompletenessCheckingStore {
                 self.cas_store
                     .has_with_results(&digests, &mut has_results[..])
                     .await
-                    .err_tip(|| {
-                        "Error calling has_with_results() inside CompletenessCheckingStore::has"
-                    })?;
+                    .err_tip(
+                        || "Error calling has_with_results() inside CompletenessCheckingStore::has",
+                    )?;
                 let missed_indexes = has_results
                     .iter()
                     .zip(indexes)

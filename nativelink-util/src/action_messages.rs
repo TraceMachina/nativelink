@@ -18,20 +18,20 @@ use std::convert::Into;
 use std::hash::Hash;
 use std::time::{Duration, SystemTime};
 
-use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 use nativelink_metric::{
-    publish, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, publish,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata,
-    ExecuteRequest, ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory,
-    OutputFile, OutputSymlink, SymlinkNode,
+    Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata, ExecuteRequest,
+    ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory, OutputFile,
+    OutputSymlink, SymlinkNode, execution_stage,
 };
-use nativelink_proto::google::longrunning::operation::Result as LongRunningResult;
 use nativelink_proto::google::longrunning::Operation;
+use nativelink_proto::google::longrunning::operation::Result as LongRunningResult;
 use nativelink_proto::google::rpc::Status;
-use prost::bytes::Bytes;
 use prost::Message;
+use prost::bytes::Bytes;
 use prost_types::Any;
 use serde::ser::Error as SerdeError;
 use serde::{Deserialize, Serialize};
@@ -433,7 +433,9 @@ pub struct FileInfo {
 impl From<FileInfo> for FileNode {
     fn from(val: FileInfo) -> Self {
         let NameOrPath::Name(name) = val.name_or_path else {
-            panic!("Cannot return a FileInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
+            panic!(
+                "Cannot return a FileInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()"
+            );
         };
         Self {
             name,
@@ -463,7 +465,9 @@ impl TryFrom<OutputFile> for FileInfo {
 impl From<FileInfo> for OutputFile {
     fn from(val: FileInfo) -> Self {
         let NameOrPath::Path(path) = val.name_or_path else {
-            panic!("Cannot return a FileInfo that uses a NameOrPath::Name(), it must be a NameOrPath::Path()");
+            panic!(
+                "Cannot return a FileInfo that uses a NameOrPath::Name(), it must be a NameOrPath::Path()"
+            );
         };
         Self {
             path,
@@ -498,7 +502,9 @@ impl TryFrom<SymlinkNode> for SymlinkInfo {
 impl From<SymlinkInfo> for SymlinkNode {
     fn from(val: SymlinkInfo) -> Self {
         let NameOrPath::Name(name) = val.name_or_path else {
-            panic!("Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
+            panic!(
+                "Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()"
+            );
         };
         Self {
             name,
@@ -523,7 +529,9 @@ impl TryFrom<OutputSymlink> for SymlinkInfo {
 impl From<SymlinkInfo> for OutputSymlink {
     fn from(val: SymlinkInfo) -> Self {
         let NameOrPath::Path(path) = val.name_or_path else {
-            panic!("Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
+            panic!(
+                "Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()"
+            );
         };
         Self {
             path,
@@ -1015,13 +1023,10 @@ impl TryFrom<ExecuteResponse> for ActionStage {
                     .err_tip(|| "Expected digest to be set on LogFile msg")?
                     .try_into()
             })?,
-            error: execute_response.status.clone().and_then(|v| {
-                if v.code == 0 {
-                    None
-                } else {
-                    Some(v.into())
-                }
-            }),
+            error: execute_response
+                .status
+                .clone()
+                .and_then(|v| if v.code == 0 { None } else { Some(v.into()) }),
             message: execute_response.message,
         };
 

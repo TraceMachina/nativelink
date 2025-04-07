@@ -32,7 +32,7 @@ use nativelink_util::digest_hasher::default_digest_hasher_func;
 use nativelink_util::operation_state_manager::ClientStateManager;
 use nativelink_util::origin_event::OriginEventContext;
 use tonic::{Request, Response, Status};
-use tracing::{event, instrument, Level};
+use tracing::{Level, event, instrument};
 
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 

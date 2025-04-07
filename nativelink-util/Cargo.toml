@@ -1,7 +1,7 @@
 [package]
 name = "nativelink-util"
 version = "0.6.0"
-edition = "2021"
+edition = "2024"
 
 [features]
 enable_tokio_console = []

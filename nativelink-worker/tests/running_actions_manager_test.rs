@@ -24,17 +24,17 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::task::Poll;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures::{poll, FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, poll};
 use nativelink_config::cas_server::EnvironmentSource;
 use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
-use nativelink_error::{make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable;
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function::Value as ProtoDigestFunction, platform::Property, Action,
-    ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest,
+    Action, ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest,
     ExecuteResponse, FileNode, NodeProperties, Platform, SymlinkNode, Tree,
+    digest_function::Value as ProtoDigestFunction, platform::Property,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     HistoricalExecuteResponse, StartExecute,
@@ -49,12 +49,12 @@ use nativelink_util::action_messages::SymlinkInfo;
 use nativelink_util::action_messages::{
     ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
 };
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::store_trait::{Store, StoreLike};
 use nativelink_worker::running_actions_manager::{
-    download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl,
-    RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
+    Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
+    RunningActionsManagerArgs, RunningActionsManagerImpl, download_to_directory,
 };
 use pretty_assertions::assert_eq;
 use prost::Message;
@@ -416,8 +416,8 @@ async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std
 
 #[serial]
 #[nativelink_test]
-async fn ensure_output_files_full_directories_are_created_no_working_directory_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn ensure_output_files_full_directories_are_created_no_working_directory_test()
+-> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     fn test_monotonic_clock() -> SystemTime {
@@ -538,8 +538,8 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
 
 #[serial]
 #[nativelink_test]
-async fn ensure_output_files_full_directories_are_created_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn ensure_output_files_full_directories_are_created_test()
+-> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     fn test_monotonic_clock() -> SystemTime {

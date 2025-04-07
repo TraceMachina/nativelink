@@ -213,8 +213,8 @@ impl From<std::io::Error> for Error {
 impl From<fred::error::Error> for Error {
     fn from(error: fred::error::Error) -> Self {
         use fred::error::ErrorKind::{
-            Auth, Backpressure, Canceled, Cluster, Config, InvalidArgument, InvalidCommand,
-            NotFound, Parse, Protocol, Routing, Sentinel, Timeout, Tls, Unknown, Url, IO,
+            Auth, Backpressure, Canceled, Cluster, Config, IO, InvalidArgument, InvalidCommand,
+            NotFound, Parse, Protocol, Routing, Sentinel, Timeout, Tls, Unknown, Url,
         };
 
         // Conversions here are based on https://grpc.github.io/grpc/core/md_doc_statuscodes.html.
