@@ -78,10 +78,12 @@ mod duration_tests {
         let example = r#"{"duration": -10}"#;
         let result: Result<DurationEntity, _> = serde_json5::from_str(example);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Negative duration is not allowed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Negative duration is not allowed")
+        );
     }
 
     #[test]
@@ -91,10 +93,7 @@ mod duration_tests {
                 r#"{"duration": true}"#,
                 "expected either a number of seconds as an integer, or a string with a duration format (e.g., \"1h2m3s\", \"30m\", \"1d\")",
             ),
-            (
-                r#"{"duration": "invalid"}"#,
-                "expected number at 0",
-            ),
+            (r#"{"duration": "invalid"}"#, "expected number at 0"),
             (
                 r#"{"duration": "999999999999999999999s"}"#,
                 "number is too large",
@@ -167,10 +166,12 @@ mod data_size_tests {
         let example = r#"{"data_size": -1024}"#;
         let result: Result<DataSizeEntity, _> = serde_json5::from_str(example);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Negative data size is not allowed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Negative data size is not allowed")
+        );
     }
 
     #[test]
@@ -326,11 +327,16 @@ mod shellexpand_tests {
 
     #[test]
     fn test_shellexpand_functionality() {
-        std::env::set_var("TEST_DURATION", "5m");
-        std::env::set_var("TEST_SIZE", "1GB");
-        std::env::set_var("TEST_NUMBER", "42");
-        std::env::set_var("TEST_VAR", "test_value");
-        std::env::set_var("EMPTY_VAR", "");
+        // Safety: Neither Cargo nor any other test set any environment variables, so there should
+        // not be any code mutating the environment. While not foolproof, the worst case is that
+        // this changes in the future, causing the the test suite to fail and needing to be re-run.
+        unsafe {
+            std::env::set_var("TEST_DURATION", "5m");
+            std::env::set_var("TEST_SIZE", "1GB");
+            std::env::set_var("TEST_NUMBER", "42");
+            std::env::set_var("TEST_VAR", "test_value");
+            std::env::set_var("EMPTY_VAR", "");
+        };
 
         // Test duration with environment variable
         let duration_result =
@@ -361,9 +367,11 @@ mod shellexpand_tests {
         // Test undefined environment variable
         let undefined_result =
             serde_json5::from_str::<OptionalNumericEntity>(r#"{"value": "${UNDEFINED_VAR}"}"#);
-        assert!(undefined_result
-            .unwrap_err()
-            .to_string()
-            .contains("environment variable not found"));
+        assert!(
+            undefined_result
+                .unwrap_err()
+                .to_string()
+                .contains("environment variable not found")
+        );
     }
 }

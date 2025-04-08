@@ -19,13 +19,13 @@ use nativelink_config::schedulers::{
     ExperimentalSimpleSchedulerBackend, SchedulerSpec, SimpleSpec,
 };
 use nativelink_config::stores::EvictionPolicy;
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
 use nativelink_store::redis_store::RedisStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::operation_state_manager::ClientStateManager;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
 use crate::grpc_scheduler::GrpcScheduler;

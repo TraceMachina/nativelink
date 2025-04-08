@@ -19,7 +19,7 @@ use std::marker::PhantomData;
 use std::str::from_utf8;
 
 use nativelink_metric::{MetricFieldData, MetricKind, MetricsComponent};
-use nativelink_metric_collector::{otel_export, MetricsCollectorLayer};
+use nativelink_metric_collector::{MetricsCollectorLayer, otel_export};
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use prometheus::{Encoder, TextEncoder};

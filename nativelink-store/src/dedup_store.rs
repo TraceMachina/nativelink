@@ -21,17 +21,17 @@ use bincode::config::{FixintEncoding, WithOtherIntEncoding};
 use bincode::{DefaultOptions, Options};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use nativelink_config::stores::DedupSpec;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::cas_utils::is_zero_digest;
 

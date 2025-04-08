@@ -21,11 +21,11 @@ use std::sync::Arc;
 use bincode::{DefaultOptions, Options};
 use bytes::Bytes;
 use nativelink_config::stores::{CompressionSpec, MemorySpec, StoreSpec};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::compression_store::{
-    CompressionStore, Footer, Lz4Config, SliceIndex, CURRENT_STREAM_FORMAT_VERSION,
-    DEFAULT_BLOCK_SIZE, FOOTER_FRAME_TYPE,
+    CURRENT_STREAM_FORMAT_VERSION, CompressionStore, DEFAULT_BLOCK_SIZE, FOOTER_FRAME_TYPE, Footer,
+    Lz4Config, SliceIndex,
 };
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;

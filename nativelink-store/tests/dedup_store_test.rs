@@ -154,8 +154,8 @@ async fn fetch_part_test() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test(
-) -> Result<(), Error> {
+async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test()
+-> Result<(), Error> {
     const DATA_SIZE: usize = 30;
     const START_READ_BYTE: usize = 7;
 

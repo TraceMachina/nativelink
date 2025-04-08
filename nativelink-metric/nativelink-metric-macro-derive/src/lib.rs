@@ -15,11 +15,11 @@
 use core::panic;
 
 use proc_macro::TokenStream;
-use quote::{format_ident, quote, ToTokens};
+use quote::{ToTokens, format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    parse_macro_input, Attribute, DeriveInput, Ident, ImplGenerics, LitStr, TypeGenerics,
-    WhereClause,
+    Attribute, DeriveInput, Ident, ImplGenerics, LitStr, TypeGenerics, WhereClause,
+    parse_macro_input,
 };
 
 /// Holds the type of group for the metric. For example, if a metric

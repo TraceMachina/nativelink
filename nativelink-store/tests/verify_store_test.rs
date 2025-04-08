@@ -23,7 +23,7 @@ use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::verify_store::VerifyStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
+use nativelink_util::digest_hasher::{DigestHasherFunc, make_ctx_for_hash_func};
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;

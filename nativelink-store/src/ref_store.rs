@@ -18,12 +18,12 @@ use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
 use nativelink_config::stores::RefSpec;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::store_manager::StoreManager;
 

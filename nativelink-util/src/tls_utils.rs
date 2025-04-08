@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use nativelink_config::stores::{ClientTlsConfig, GrpcEndpoint};
-use nativelink_error::{make_err, make_input_err, Code, Error};
+use nativelink_error::{Code, Error, make_err, make_input_err};
 use tonic::transport::Uri;
 
 pub fn load_client_config(

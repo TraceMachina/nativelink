@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::BytesMut;
-use futures::stream::{unfold, FuturesUnordered};
-use futures::{future, Future, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::stream::{FuturesUnordered, unfold};
+use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
 use nativelink_config::stores::GrpcSpec;
-use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
@@ -39,7 +39,7 @@ use nativelink_proto::google::bytestream::{
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
-use nativelink_util::digest_hasher::{default_digest_hasher_func, ACTIVE_HASHER_FUNC};
+use nativelink_util::digest_hasher::{ACTIVE_HASHER_FUNC, default_digest_hasher_func};
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::proto_stream_utils::{
@@ -54,7 +54,7 @@ use prost::Message;
 use rand::Rng;
 use tokio::time::sleep;
 use tonic::{IntoRequest, Request, Response, Status, Streaming};
-use tracing::{event, Level};
+use tracing::{Level, event};
 use uuid::Uuid;
 
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
@@ -253,7 +253,7 @@ impl GrpcStore {
     async fn read_internal(
         &self,
         request: ReadRequest,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<>, Error> {
         let channel = self
             .connection_manager
             .connection()
@@ -271,10 +271,13 @@ impl GrpcStore {
         Ok(FirstStream::new(first_response, response))
     }
 
-    pub async fn read(
+    pub async fn read<R>(
         &self,
-        grpc_request: impl IntoRequest<ReadRequest>,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
+        grpc_request: R,
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<R>, Error>
+    where
+        R: IntoRequest<ReadRequest>,
+    {
         error_if!(
             matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
@@ -739,7 +742,7 @@ impl StoreDriver for GrpcStore {
                                         .append("While fetching message in GrpcStore::get_part()"),
                                 ),
                                 local_state,
-                            ))
+                            ));
                         }
                     };
                     let length = data.len() as i64;

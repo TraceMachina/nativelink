@@ -19,7 +19,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use futures::Future;
 use nativelink_metric::{
-    group, publish, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group, publish,
 };
 
 thread_local! {

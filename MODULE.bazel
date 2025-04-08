@@ -76,7 +76,7 @@ use_repo(crate, "crates")
 #          grade nativelink executables. It may be removed at any point in time.
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
-    edition = "2021",
+    edition = "2024",
 
     # These should always follow the versions from LRE.
     rust_analyzer_version = "nightly/2025-04-03",

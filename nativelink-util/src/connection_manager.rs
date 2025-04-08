@@ -18,13 +18,13 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use futures::stream::{unfold, FuturesUnordered, StreamExt};
 use futures::Future;
+use futures::stream::{FuturesUnordered, StreamExt, unfold};
 use nativelink_config::stores::Retry;
-use nativelink_error::{make_err, Code, Error};
+use nativelink_error::{Code, Error, make_err};
 use tokio::sync::{mpsc, oneshot};
-use tonic::transport::{channel, Channel, Endpoint};
-use tracing::{event, Level};
+use tonic::transport::{Channel, Endpoint, channel};
+use tracing::{Level, event};
 
 use crate::background_spawn;
 use crate::retry::{self, Retrier, RetryResult};

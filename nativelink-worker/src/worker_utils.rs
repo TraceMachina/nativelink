@@ -20,11 +20,11 @@ use std::str::from_utf8;
 
 use futures::future::try_join_all;
 use nativelink_config::cas_server::WorkerProperty;
-use nativelink_error::{make_err, make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::ConnectWorkerRequest;
 use tokio::process;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 pub async fn make_connect_worker_request<S: BuildHasher>(
     worker_id_prefix: String,
@@ -53,7 +53,7 @@ pub async fn make_connect_worker_request<S: BuildHasher>(
                                 "Could not parse the value of worker property: {}: '{}'",
                                 property_name,
                                 cmd
-                            ))
+                            ));
                         }
                     };
                     let mut process = process::Command::new(command);

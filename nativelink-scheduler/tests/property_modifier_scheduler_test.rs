@@ -21,7 +21,7 @@ mod utils {
     pub(crate) mod scheduler_utils;
 }
 
-use futures::{join, StreamExt};
+use futures::{StreamExt, join};
 use nativelink_config::schedulers::{
     PlatformPropertyAddition, PropertyModification, PropertyModifierSpec, SchedulerSpec, SimpleSpec,
 };
@@ -35,7 +35,7 @@ use nativelink_util::operation_state_manager::{ClientStateManager, OperationFilt
 use pretty_assertions::assert_eq;
 use tokio::sync::watch;
 use utils::mock_scheduler::MockActionScheduler;
-use utils::scheduler_utils::{make_base_action_info, TokioWatchActionStateResult, INSTANCE_NAME};
+use utils::scheduler_utils::{INSTANCE_NAME, TokioWatchActionStateResult, make_base_action_info};
 
 struct TestContext {
     mock_scheduler: Arc<MockActionScheduler>,

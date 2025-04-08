@@ -22,9 +22,9 @@ use parking_lot::Mutex;
 use tracing::span::Attributes;
 use tracing::subscriber::Interest;
 use tracing::{Event, Id, Metadata, Subscriber};
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::SpanRef;
-use tracing_subscriber::Layer;
 
 use crate::metrics_collection::{
     CollectedMetricChildren, CollectedMetricPrimitive, CollectedMetrics, RootMetricCollectedMetrics,

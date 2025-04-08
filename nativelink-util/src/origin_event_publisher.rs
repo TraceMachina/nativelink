@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use bytes::BytesMut;
-use futures::{future, FutureExt};
+use futures::{FutureExt, future};
 use nativelink_proto::com::github::trace_machina::nativelink::events::{OriginEvent, OriginEvents};
 use prost::Message;
 use tokio::sync::{broadcast, mpsc};

@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
@@ -23,7 +23,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
 use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::origin_event::{OriginMetadata, ORIGIN_EVENT_COLLECTOR};
+use nativelink_util::origin_event::{ORIGIN_EVENT_COLLECTOR, OriginMetadata};
 use serde::{Deserialize, Serialize};
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 

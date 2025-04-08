@@ -14,8 +14,8 @@
 
 use std::borrow::Cow;
 use std::cmp::min;
-use std::collections::vec_deque::VecDeque;
 use std::collections::HashMap;
+use std::collections::vec_deque::VecDeque;
 use std::convert::Into;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Debug;
@@ -31,16 +31,16 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
 use bytes::{Bytes, BytesMut};
-use filetime::{set_file_mtime, FileTime};
+use filetime::{FileTime, set_file_mtime};
 use formatx::Template;
 use futures::future::{
-    try_join, try_join3, try_join_all, BoxFuture, Future, FutureExt, TryFutureExt,
+    BoxFuture, Future, FutureExt, TryFutureExt, try_join, try_join_all, try_join3,
 };
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
     EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, ActionResult as ProtoActionResult, Command as ProtoCommand,
@@ -51,16 +51,16 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     HistoricalExecuteResponse, StartExecute,
 };
 use nativelink_store::ac_utils::{
-    compute_buf_digest, get_and_decode_digest, serialize_and_upload_message, ESTIMATED_DIGEST_SIZE,
+    ESTIMATED_DIGEST_SIZE, compute_buf_digest, get_and_decode_digest, serialize_and_upload_message,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
-    to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo,
-    NameOrPath, OperationId, SymlinkInfo,
+    ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
+    SymlinkInfo, to_execute_response,
 };
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -69,14 +69,14 @@ use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
 use relative_path::RelativePath;
-use scopeguard::{guard, ScopeGuard};
+use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
 use tokio::sync::{oneshot, watch};
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
-use tracing::{enabled, event, Level};
+use tracing::{Level, enabled, event};
 use uuid::Uuid;
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -180,9 +180,9 @@ pub fn download_to_directory<'a>(
                                 })
                             })
                             .await
-                            .err_tip(|| {
-                                "Failed to launch spawn_blocking in download_to_directory"
-                            })??;
+                            .err_tip(
+                                || "Failed to launch spawn_blocking in download_to_directory",
+                            )??;
                         }
                         Ok(())
                     })
@@ -1664,9 +1664,9 @@ impl RunningActionsManagerImpl {
             .cas_store
             .fast_store()
             .downcast_ref::<FilesystemStore>(None)
-            .err_tip(|| {
-                "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl"
-            })?
+            .err_tip(
+                || "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl",
+            )?
             .get_arc()
             .err_tip(|| "FilesystemStore's internal Arc was lost")?;
         let (action_done_tx, _) = watch::channel(());

@@ -19,7 +19,7 @@ use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use rand::Rng;

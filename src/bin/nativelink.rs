@@ -20,8 +20,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
-use futures::future::{try_join_all, BoxFuture, Either, OptionFuture, TryFutureExt};
 use futures::FutureExt;
+use futures::future::{BoxFuture, Either, OptionFuture, TryFutureExt, try_join_all};
 use hyper::{Response, StatusCode};
 use hyper_util::rt::tokio::TokioIo;
 use hyper_util::server::conn::auto;
@@ -32,11 +32,11 @@ use nativelink_config::cas_server::{
 };
 use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_config::{SchedulerConfig, StoreConfig};
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, RootMetricsComponent,
 };
-use nativelink_metric_collector::{otel_export, MetricsCollectorLayer};
+use nativelink_metric_collector::{MetricsCollectorLayer, otel_export};
 use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
 use nativelink_service::ac_server::AcServer;
 use nativelink_service::bep_server::BepServer;
@@ -49,16 +49,16 @@ use nativelink_service::worker_api_server::WorkerApiServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::fs::set_open_file_limit;
-use nativelink_util::digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
+use nativelink_util::digest_hasher::{DigestHasherFunc, set_default_digest_hasher_func};
 use nativelink_util::health_utils::HealthRegistryBuilder;
-use nativelink_util::metrics_utils::{set_metrics_enabled_for_this_thread, Counter};
+use nativelink_util::metrics_utils::{Counter, set_metrics_enabled_for_this_thread};
 use nativelink_util::operation_state_manager::ClientStateManager;
 use nativelink_util::origin_context::{ActiveOriginContext, OriginContext};
 use nativelink_util::origin_event_middleware::OriginEventMiddlewareLayer;
 use nativelink_util::origin_event_publisher::OriginEventPublisher;
 use nativelink_util::shutdown_guard::{Priority, ShutdownGuard};
 use nativelink_util::store_trait::{
-    set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
+    DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG, set_default_digest_size_health_check,
 };
 use nativelink_util::task::TaskExecutor;
 use nativelink_util::{background_spawn, fs, init_tracing, spawn, spawn_blocking};
@@ -72,15 +72,15 @@ use scopeguard::guard;
 use tokio::net::TcpListener;
 use tokio::select;
 #[cfg(target_family = "unix")]
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{broadcast, mpsc};
+use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
-use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
 use tonic::service::Routes;
-use tracing::{error_span, event, trace_span, Level};
+use tracing::{Level, error_span, event, trace_span};
 use tracing_subscriber::layer::SubscriberExt;
 
 #[global_allocator]
@@ -573,84 +573,77 @@ async fn inner_main(
                                 // Convert the collected metrics into OpenTelemetry metrics then
                                 // encode them into Prometheus format and populate them into a
                                 // hyper::Response.
-                                let response = {
-                                    let registry = prometheus::Registry::new();
-                                    let exporter = opentelemetry_prometheus::exporter()
-                                        .with_registry(registry.clone())
-                                        .without_counter_suffixes()
-                                        .without_scope_info()
-                                        .build()
-                                        .map_err(|e| make_err!(Code::Internal, "{e}"))
-                                        .err_tip(|| {
-                                            "While creating OpenTelemetry Prometheus exporter"
-                                        })?;
+                                let registry = prometheus::Registry::new();
+                                let exporter = opentelemetry_prometheus::exporter()
+                                    .with_registry(registry.clone())
+                                    .without_counter_suffixes()
+                                    .without_scope_info()
+                                    .build()
+                                    .map_err(|e| make_err!(Code::Internal, "{e}"))
+                                    .err_tip(
+                                        || "While creating OpenTelemetry Prometheus exporter",
+                                    )?;
 
-                                    // Prepare our OpenTelemetry collector/exporter.
-                                    let provider =
-                                        SdkMeterProvider::builder().with_reader(exporter).build();
-                                    let meter = provider.meter("nativelink");
+                                // Prepare our OpenTelemetry collector/exporter.
+                                let provider =
+                                    SdkMeterProvider::builder().with_reader(exporter).build();
+                                let meter = provider.meter("nativelink");
 
-                                    // TODO(allada) We should put this as part of the config instead of a magic
-                                    // request header.
-                                    if let Some(json_type) =
-                                        request.headers().get("x-nativelink-json")
-                                    {
-                                        let json_data = if json_type == "pretty" {
-                                            serde_json::to_string_pretty(&*output_metrics.lock())
-                                                .map_err(|e| {
-                                                    make_err!(
-                                                        Code::Internal,
-                                                        "Could not convert to json {e:?}"
-                                                    )
-                                                })?
-                                        } else {
-                                            serde_json::to_string(&*output_metrics.lock()).map_err(
-                                                |e| {
-                                                    make_err!(
-                                                        Code::Internal,
-                                                        "Could not convert to json {e:?}"
-                                                    )
-                                                },
-                                            )?
-                                        };
-                                        let mut response =
-                                            Response::new(axum::body::Body::from(json_data));
-                                        response.headers_mut().insert(
-                                            hyper::header::CONTENT_TYPE,
-                                            hyper::header::HeaderValue::from_static(
-                                                "application/json",
-                                            ),
-                                        );
-                                        return Ok(response);
-                                    }
-
-                                    // Export the metrics to OpenTelemetry.
-                                    otel_export(
-                                        "nativelink".to_string(),
-                                        &meter,
-                                        &output_metrics.lock(),
-                                    );
-
-                                    // Translate the OpenTelemetry metrics to Prometheus format and encode
-                                    // them into a hyper::Response.
-                                    let mut result = vec![];
-                                    TextEncoder::new()
-                                        .encode(&registry.gather(), &mut result)
-                                        .unwrap();
+                                // TODO(allada) We should put this as part of the config instead of a magic
+                                // request header.
+                                if let Some(json_type) = request.headers().get("x-nativelink-json")
+                                {
+                                    let json_data = if json_type == "pretty" {
+                                        serde_json::to_string_pretty(&*output_metrics.lock())
+                                            .map_err(|e| {
+                                                make_err!(
+                                                    Code::Internal,
+                                                    "Could not convert to json {e:?}"
+                                                )
+                                            })?
+                                    } else {
+                                        serde_json::to_string(&*output_metrics.lock()).map_err(
+                                            |e| {
+                                                make_err!(
+                                                    Code::Internal,
+                                                    "Could not convert to json {e:?}"
+                                                )
+                                            },
+                                        )?
+                                    };
                                     let mut response =
-                                        Response::new(axum::body::Body::from(result));
-                                    // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
-                                    // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
-                                    // However, this makes debugging more difficult, so we use the old text/plain instead.
+                                        Response::new(axum::body::Body::from(json_data));
                                     response.headers_mut().insert(
                                         hyper::header::CONTENT_TYPE,
-                                        hyper::header::HeaderValue::from_static(
-                                            "text/plain; version=0.0.4; charset=utf-8",
-                                        ),
+                                        hyper::header::HeaderValue::from_static("application/json"),
                                     );
-                                    Result::<_, Error>::Ok(response)
-                                };
-                                response
+                                    return Ok(response);
+                                }
+
+                                // Export the metrics to OpenTelemetry.
+                                otel_export(
+                                    "nativelink".to_string(),
+                                    &meter,
+                                    &output_metrics.lock(),
+                                );
+
+                                // Translate the OpenTelemetry metrics to Prometheus format and encode
+                                // them into a hyper::Response.
+                                let mut result = vec![];
+                                TextEncoder::new()
+                                    .encode(&registry.gather(), &mut result)
+                                    .unwrap();
+                                let mut response = Response::new(axum::body::Body::from(result));
+                                // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
+                                // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
+                                // However, this makes debugging more difficult, so we use the old text/plain instead.
+                                response.headers_mut().insert(
+                                    hyper::header::CONTENT_TYPE,
+                                    hyper::header::HeaderValue::from_static(
+                                        "text/plain; version=0.0.4; charset=utf-8",
+                                    ),
+                                );
+                                Ok::<_, Error>(response)
                             })
                             .await
                             .unwrap_or_else(|e| Ok(error_to_response(e)))
@@ -812,9 +805,9 @@ async fn inner_main(
 
         if let Some(value) = http_config.experimental_http2_max_pending_accept_reset_streams {
             http.http2()
-                .max_pending_accept_reset_streams(usize::try_from(value).err_tip(|| {
-                    "Could not convert experimental_http2_max_pending_accept_reset_streams"
-                })?);
+                .max_pending_accept_reset_streams(usize::try_from(value).err_tip(
+                    || "Could not convert experimental_http2_max_pending_accept_reset_streams",
+                )?);
         }
         if let Some(value) = http_config.experimental_http2_initial_stream_window_size {
             http.http2().initial_stream_window_size(value);

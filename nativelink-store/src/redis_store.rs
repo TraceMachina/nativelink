@@ -34,9 +34,9 @@ use fred::types::redisearch::{
 use fred::types::scripts::Script;
 use fred::types::{Builder, Key as RedisKey, Map as RedisMap, SortOrder, Value as RedisValue};
 use futures::stream::FuturesUnordered;
-use futures::{future, FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
 use nativelink_config::stores::{RedisMode, RedisSpec};
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
@@ -51,7 +51,7 @@ use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use tokio::select;
 use tokio::time::sleep;
-use tracing::{event, Level};
+use tracing::{Level, event};
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
@@ -156,7 +156,10 @@ impl RedisStore {
             ));
         };
         let [addr] = spec.addresses.as_slice() else {
-            return Err(make_err!(Code::Unimplemented, "Connecting directly to multiple redis nodes in a cluster is currently unsupported. Please specify a single URL to a single node, and nativelink will use cluster discover to find the other nodes."));
+            return Err(make_err!(
+                Code::Unimplemented,
+                "Connecting directly to multiple redis nodes in a cluster is currently unsupported. Please specify a single URL to a single node, and nativelink will use cluster discover to find the other nodes."
+            ));
         };
         let redis_config = match spec.mode {
             RedisMode::Cluster => RedisConfig::from_url_clustered(addr),
@@ -408,9 +411,9 @@ impl StoreDriver for RedisStore {
                         .err_tip(|| "Failed to read chunk in update in redis store")
                         .and_then(|chunk| {
                             let offset = *bytes_read;
-                            let chunk_len = u32::try_from(chunk.len()).err_tip(|| {
-                                "Could not convert chunk length to u32 in RedisStore::update"
-                            })?;
+                            let chunk_len = u32::try_from(chunk.len()).err_tip(
+                                || "Could not convert chunk length to u32 in RedisStore::update",
+                            )?;
                             let new_bytes_read = bytes_read
                                 .checked_add(chunk_len)
                                 .err_tip(|| "Overflow protection in RedisStore::update")?;
@@ -426,9 +429,9 @@ impl StoreDriver for RedisStore {
                     client
                         .setrange::<(), _, _>(temp_key_ref, offset, chunk)
                         .await
-                        .err_tip(|| {
-                            "While appending to append to temp key in RedisStore::update"
-                        })?;
+                        .err_tip(
+                            || "While appending to append to temp key in RedisStore::update",
+                        )?;
                     Ok::<u32, Error>(end_pos)
                 })
             })
@@ -876,7 +879,10 @@ impl RedisSubscriptionManager {
                             }
                         };
                         let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
-                            event!(Level::WARN, "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
+                            event!(
+                                Level::WARN,
+                                "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn"
+                            );
                             return;
                         };
                         let subscribed_keys_mux = subscribed_keys.read();
@@ -889,7 +895,10 @@ impl RedisSubscriptionManager {
                     // If we reconnect or lag behind we might have had dirty keys, so we need to
                     // flag all of them as changed.
                     let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
-                        event!(Level::WARN, "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
+                        event!(
+                            Level::WARN,
+                            "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn"
+                        );
                         return;
                     };
                     let subscribed_keys_mux = subscribed_keys.read();
@@ -954,7 +963,9 @@ impl SchedulerStore for RedisStore {
             Ok(subscription_manager.clone())
         } else {
             let Some(pub_sub_channel) = &self.pub_sub_channel else {
-                return Err(make_input_err!("RedisStore must have a pubsub channel for a Redis Scheduler if using subscriptions"));
+                return Err(make_input_err!(
+                    "RedisStore must have a pubsub channel for a Redis Scheduler if using subscriptions"
+                ));
             };
             let sub = Arc::new(RedisSubscriptionManager::new(
                 self.subscriber_client.clone(),

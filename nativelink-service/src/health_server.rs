@@ -22,7 +22,7 @@ use axum::body::Body;
 use bytes::Bytes;
 use futures::StreamExt;
 use http_body_util::Full;
-use hyper::header::{HeaderValue, CONTENT_TYPE};
+use hyper::header::{CONTENT_TYPE, HeaderValue};
 use hyper::{Request, Response, StatusCode};
 use nativelink_util::health_utils::{
     HealthRegistry, HealthStatus, HealthStatusDescription, HealthStatusReporter,

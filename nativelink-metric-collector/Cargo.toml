@@ -1,8 +1,8 @@
 [package]
 name = "nativelink-metric-collector"
 version = "0.6.0"
-edition = "2021"
-rust-version = "1.79.0"
+edition = "2024"
+rust-version = "1.85.0"
 
 [dependencies]
 nativelink-metric = { path = "../nativelink-metric" }

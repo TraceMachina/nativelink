@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::convert::Into;
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use futures::future::{pending, BoxFuture};
+use futures::future::{BoxFuture, pending};
 use futures::stream::unfold;
-use futures::{try_join, Future, Stream, TryFutureExt};
+use futures::{Future, Stream, TryFutureExt, try_join};
 use nativelink_config::cas_server::ByteStreamConfig;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::google::bytestream::byte_stream_server::{
     ByteStream, ByteStreamServer as Server,
 };
@@ -36,11 +36,11 @@ use nativelink_proto::google::bytestream::{
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{
-    default_digest_hasher_func, make_ctx_for_hash_func, DigestHasherFunc,
+    DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func,
 };
 use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
@@ -51,7 +51,7 @@ use nativelink_util::task::JoinHandleDropGuard;
 use parking_lot::Mutex;
 use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{enabled, error_span, event, instrument, Instrument, Level};
+use tracing::{Instrument, Level, enabled, error_span, event, instrument};
 
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -270,7 +270,7 @@ impl ByteStreamServer {
         store: Store,
         digest: DigestInfo,
         read_request: ReadRequest,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + Send + 'static, Error> {
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + Send + use<>, Error> {
         struct ReaderState {
             max_bytes_per_stream: usize,
             rx: DropCloserReadHalf,
@@ -419,7 +419,7 @@ impl ByteStreamServer {
                     None => {
                         return Err(make_input_err!(
                             "Client closed stream before sending all data"
-                        ))
+                        ));
                     }
                     // Code path for client stream error. Probably client disconnect.
                     Some(Err(err)) => return Err(err),

@@ -16,15 +16,15 @@ use core::panic;
 use std::any::Any;
 use std::cell::RefCell;
 use std::clone::Clone;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::mem::ManuallyDrop;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::Future;
-use nativelink_error::{make_err, Code, Error};
+use nativelink_error::{Code, Error, make_err};
 use pin_project_lite::pin_project;
 use tracing::instrument::Instrumented;
 use tracing::{Instrument, Span};
@@ -39,10 +39,12 @@ use crate::background_spawn;
 /// data; we can use these symbols to let one module set the data
 /// and tie the data to a symbol and another module read the data
 /// with the symbol, without the two modules knowing about each other.
+///
+/// Safety: The symbol name must be globally unique.
 #[macro_export]
-macro_rules! make_symbol {
+macro_rules! unsafe_make_symbol {
     ($name:ident, $type:ident) => {
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         #[used]
         pub static $name: $crate::origin_context::NLSymbol<$type> =
             $crate::origin_context::NLSymbol {
@@ -54,7 +56,8 @@ macro_rules! make_symbol {
 
 // Symbol that represents the identity of the origin of a request.
 // See: IdentityHeaderSpec for details.
-make_symbol!(ORIGIN_IDENTITY, String);
+// Safety: There is no other symbol named `ORIGIN_IDENTITY`.
+unsafe_make_symbol!(ORIGIN_IDENTITY, String);
 
 pub struct NLSymbol<T: Send + Sync + 'static> {
     pub name: &'static str,

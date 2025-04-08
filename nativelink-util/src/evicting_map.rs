@@ -26,7 +26,7 @@ use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_metric::MetricsComponent;
 use serde::{Deserialize, Serialize};
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics_utils::{Counter, CounterWithTime};
