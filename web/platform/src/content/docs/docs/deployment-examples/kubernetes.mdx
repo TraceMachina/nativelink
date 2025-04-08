@@ -69,11 +69,11 @@ kubectl apply -k \
 Once the infra is ready, trigger the pipelines that build the images:
 
 ```bash
-cat > dummy-repo.yaml << EOF
+cat > nativelink-repo.yaml << EOF
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
-  name: dummy-repository
+  name: nativelink
   namespace: default
 spec:
   interval: 2m
@@ -81,7 +81,7 @@ spec:
   ref:
     branch: main
 EOF
-kubectl apply -f dummy-repo.yaml
+kubectl apply -f nativelink-repo.yaml
 ```
 
 :::danger
@@ -107,7 +107,7 @@ dashboards that come with the development cluster:
 
 In terminals, the following commands can be helpful to view deployment progress:
 
-- `tkn pr logs -f` to view the logs of a `PipelineRun` in the terminal.
+- `tkn pr logs -n ci -f` to view the logs of a `PipelineRun` in the terminal.
 - `flux get all -A` to view the state of the NativeLink deployments.
 
 Once NativeLink is deployed:

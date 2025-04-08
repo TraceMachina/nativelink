@@ -218,7 +218,12 @@ func writeEnvoyConfigToFile(populatedConfig string) (string, error) {
 	}
 
 	// Ensure the file is closed properly.
-	defer tmpFile.Close()
+	defer func() {
+		err := tmpFile.Close()
+		if err != nil {
+			log.Printf("Error closing file: %v", err)
+		}
+	}()
 
 	// Write the populated configuration to the temporary file.
 	if _, err := tmpFile.WriteString(populatedConfig); err != nil {

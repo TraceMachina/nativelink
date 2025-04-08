@@ -35,7 +35,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 	components.Check(components.AddComponent(
 		ctx,
 		"local-sources",
-		&components.LocalPVAndPVC{
+		&components.LocalPV{
 			Size:     "50Mi",
 			HostPath: "/mnt",
 		},
@@ -44,7 +44,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 	components.Check(components.AddComponent(
 		ctx,
 		"nix-store",
-		&components.LocalPVAndPVC{
+		&components.LocalPV{
 			Size:     "10Gi",
 			HostPath: "/nix",
 		},
