@@ -56,7 +56,9 @@
         "cas_stores": {
           "": "CAS_MAIN_STORE"
         }
-      }
+      },
+      "fetch": {},
+      "push": {},
     }
   }, {
     // Only publish metrics on a private port.

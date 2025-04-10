@@ -30,7 +30,8 @@
           "cpu_count": "minimum",
           "OSFamily": "priority",
           "container-image": "priority",
-          "lre-rs": "priority"
+          "lre-rs": "priority",
+          "ISA": "exact",
         }
       }
     }
