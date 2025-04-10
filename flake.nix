@@ -147,14 +147,6 @@
         nativelink-aarch64-linux = nativelinkFor pkgs.pkgsCross.aarch64-multiplatform-musl;
         nativelink-x86_64-linux = nativelinkFor pkgs.pkgsCross.musl64;
 
-        nativelink-debug = (craneLibFor pkgs).buildPackage ((commonArgsFor pkgs)
-          // {
-            cargoArtifacts = cargoArtifactsFor pkgs;
-            CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static --cfg tokio_unstable";
-            CARGO_PROFILE = "smol";
-            cargoExtraArgs = "--features enable_tokio_console";
-          });
-
         nativelink-is-executable-test = pkgs.callPackage ./tools/nativelink-is-executable-test.nix {inherit nativelink;};
 
         generate-toolchains = pkgs.callPackage ./tools/generate-toolchains.nix {};
@@ -320,7 +312,6 @@
               nativelink
               nativelinkCoverageForHost
               nativelink-aarch64-linux
-              nativelink-debug
               nativelink-image
               nativelink-is-executable-test
               nativelink-worker-init
