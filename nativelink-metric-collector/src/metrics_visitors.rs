@@ -22,7 +22,7 @@ use tracing::field::{Field, Visit};
 use crate::metrics_collection::{CollectedMetricPrimitive, CollectedMetricPrimitiveValue};
 
 /// The type of the collected primitive metric.
-#[derive(Default, Debug, Serialize)]
+#[derive(Default, Debug, Serialize, Clone, Copy)]
 pub enum CollectionKind {
     #[default]
     Counter = 0,
@@ -147,7 +147,8 @@ impl Visit for MetricDataVisitor {
 /// by the `tracing` layer for a given field.
 /// This is the same as `MetricDataVisitor` but only captures info
 /// about a given span on span creation.
-pub struct SpanFields {
+#[derive(Debug)]
+pub(crate) struct SpanFields {
     pub name: Cow<'static, str>,
 }
 

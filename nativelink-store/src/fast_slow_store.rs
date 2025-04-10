@@ -42,7 +42,7 @@ use nativelink_util::store_trait::{
 // client to hang up while the data is buffered. An alternative is to possibly make a
 // "BufferedStore" that could be placed on the "slow" store that would hang up early
 // if data is in the buffer.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct FastSlowStore {
     #[metric(group = "fast_store")]
     fast_store: Store,
@@ -394,7 +394,7 @@ impl StoreDriver for FastSlowStore {
     }
 }
 
-#[derive(Default, MetricsComponent)]
+#[derive(Debug, Default, MetricsComponent)]
 struct FastSlowStoreMetrics {
     #[metric(help = "Hit count for the fast store")]
     fast_store_hit_count: AtomicU64,

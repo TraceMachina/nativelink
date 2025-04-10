@@ -65,8 +65,8 @@ impl<T: AsyncWrite> AsyncWrite for WriteCounter<T> {
         let me = self.project();
         let result = me.inner.poll_write(cx, buf);
         match &result {
-            Poll::Ready(Result::Ok(sz)) => *me.bytes_written += *sz as u64,
-            Poll::Ready(Result::Err(_)) => *me.failed = true,
+            Poll::Ready(Ok(sz)) => *me.bytes_written += *sz as u64,
+            Poll::Ready(Err(_)) => *me.failed = true,
             _ => {}
         }
         result

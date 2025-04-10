@@ -60,7 +60,7 @@ use uuid::Uuid;
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct GrpcStore {
     #[metric(help = "Instance name for the store")]
     instance_name: String,

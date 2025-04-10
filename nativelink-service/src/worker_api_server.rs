@@ -52,6 +52,14 @@ pub struct WorkerApiServer {
     node_id: [u8; 6],
 }
 
+impl std::fmt::Debug for WorkerApiServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerApiServer")
+            .field("node_id", &self.node_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl WorkerApiServer {
     pub fn new(
         config: &WorkerApiConfig,

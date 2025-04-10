@@ -66,7 +66,7 @@ enum WorkerClientApiReturns {
 }
 
 #[derive(Clone)]
-pub struct MockWorkerApiClient {
+pub(crate) struct MockWorkerApiClient {
     rx_call: Arc<Mutex<mpsc::UnboundedReceiver<WorkerClientApiCalls>>>,
     tx_call: mpsc::UnboundedSender<WorkerClientApiCalls>,
     rx_resp: Arc<Mutex<mpsc::UnboundedReceiver<WorkerClientApiReturns>>>,
@@ -74,7 +74,7 @@ pub struct MockWorkerApiClient {
 }
 
 impl MockWorkerApiClient {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
         Self {
@@ -93,7 +93,7 @@ impl Default for MockWorkerApiClient {
 }
 
 impl MockWorkerApiClient {
-    pub async fn expect_connect_worker(
+    pub(crate) async fn expect_connect_worker(
         &mut self,
         result: Result<Response<Streaming<UpdateForWorker>>, Status>,
     ) -> ConnectWorkerRequest {
@@ -114,7 +114,7 @@ impl MockWorkerApiClient {
         req
     }
 
-    pub async fn expect_execution_response(
+    pub(crate) async fn expect_execution_response(
         &mut self,
         result: Result<Response<()>, Status>,
     ) -> ExecuteResult {
@@ -183,7 +183,7 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
     }
 }
 
-pub fn setup_grpc_stream() -> (
+pub(crate) fn setup_grpc_stream() -> (
     mpsc::Sender<Frame<Bytes>>,
     Response<Streaming<UpdateForWorker>>,
 ) {
@@ -194,7 +194,7 @@ pub fn setup_grpc_stream() -> (
     (tx, Response::new(stream))
 }
 
-pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConfig) -> TestContext {
+pub(crate) async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConfig) -> TestContext {
     let mock_worker_api_client = MockWorkerApiClient::new();
     let mock_worker_api_client_clone = mock_worker_api_client.clone();
     let actions_manager = Arc::new(MockRunningActionsManager::new());
@@ -225,7 +225,7 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
     }
 }
 
-pub async fn setup_local_worker(
+pub(crate) async fn setup_local_worker(
     platform_properties: HashMap<String, WorkerProperty>,
 ) -> TestContext {
     const ARBITRARY_LARGE_TIMEOUT: f32 = 10000.;
@@ -240,7 +240,7 @@ pub async fn setup_local_worker(
     setup_local_worker_with_config(local_worker_config).await
 }
 
-pub struct TestContext {
+pub(crate) struct TestContext {
     pub client: MockWorkerApiClient,
     pub actions_manager: Arc<MockRunningActionsManager>,
 

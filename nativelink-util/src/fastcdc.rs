@@ -7,6 +7,7 @@
 use bytes::{Bytes, BytesMut};
 use tokio_util::codec::Decoder;
 
+#[derive(Debug)]
 struct State {
     hash: u32,
     position: usize,
@@ -38,6 +39,7 @@ impl State {
 ///
 /// Or put simply, it helps upload only the parts of the files that change, instead
 /// of the entire file.
+#[derive(Debug)]
 pub struct FastCDC {
     min_size: usize,
     avg_size: usize,

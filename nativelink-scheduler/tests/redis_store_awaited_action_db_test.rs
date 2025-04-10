@@ -404,8 +404,9 @@ async fn add_action_smoke_test() -> Result<(), Error> {
 
     let store = {
         let mut builder = Builder::default_centralized();
+        let mocks = Arc::clone(&mocks);
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
         let (client_pool, subscriber_client) = make_clients(builder);

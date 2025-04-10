@@ -22,6 +22,7 @@ use nativelink_metric::{
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 
 /// Helps manage known properties and conversion into `PlatformPropertyValue`.
+#[derive(Debug)]
 pub struct PlatformPropertyManager {
     known_properties: HashMap<String, PropertyType>,
 }

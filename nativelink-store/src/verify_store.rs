@@ -31,7 +31,7 @@ use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct VerifyStore {
     #[metric(group = "inner_store")]
     inner_store: Store,

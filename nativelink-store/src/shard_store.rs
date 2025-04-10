@@ -26,7 +26,7 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 struct StoreAndWeight {
     #[metric(help = "The weight of the store")]
     weight: u32,
@@ -34,7 +34,7 @@ struct StoreAndWeight {
     store: Store,
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct ShardStore {
     // The weights will always be in ascending order a specific store is choosen based on the
     // the hash of the key hash that is nearest-binary searched using the u32 as the index.

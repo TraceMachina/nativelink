@@ -34,6 +34,7 @@ use crate::metrics_visitors::{MetricDataVisitor, SpanFields};
 /// The layer that is given to `tracing` to collect metrics.
 /// The output of the metrics will be populated in the `root_collected_metrics`
 /// field.
+#[derive(Debug)]
 pub struct MetricsCollectorLayer<S> {
     spans: Mutex<HashMap<Id, SpanFields>>,
     root_collected_metrics: Arc<Mutex<RootMetricCollectedMetrics>>,

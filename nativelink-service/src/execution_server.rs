@@ -82,6 +82,14 @@ struct InstanceInfo {
     cas_store: Store,
 }
 
+impl fmt::Debug for InstanceInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InstanceInfo")
+            .field("cas_store", &self.cas_store)
+            .finish_non_exhaustive()
+    }
+}
+
 impl InstanceInfo {
     async fn build_action_info(
         &self,
@@ -152,6 +160,7 @@ impl InstanceInfo {
     }
 }
 
+#[derive(Debug)]
 pub struct ExecutionServer {
     instance_infos: HashMap<InstanceName, InstanceInfo>,
 }

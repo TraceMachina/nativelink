@@ -117,9 +117,18 @@ pub trait HealthStatusIndicator: Sync + Send + Unpin {
 
 type HealthRegistryBuilderState =
     Arc<Mutex<HashMap<Cow<'static, str>, Arc<dyn HealthStatusIndicator>>>>;
+
 pub struct HealthRegistryBuilder {
     namespace: Cow<'static, str>,
     state: HealthRegistryBuilderState,
+}
+
+impl Debug for HealthRegistryBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HealthRegistryBuilder")
+            .field("namespace", &self.namespace)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Health registry builder that is used to build a health registry.
@@ -160,6 +169,21 @@ impl HealthRegistryBuilder {
 #[derive(Default, Clone)]
 pub struct HealthRegistry {
     indicators: Vec<(Cow<'static, str>, Arc<dyn HealthStatusIndicator>)>,
+}
+
+impl Debug for HealthRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HealthRegistry")
+            .field(
+                "indicators",
+                &self
+                    .indicators
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 pub trait HealthStatusReporter {

@@ -36,7 +36,7 @@ use prost::Message;
 use tonic::{Request, Response, Status};
 use tracing::{Level, error_span, event, instrument};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AcStoreInfo {
     store: Store,
     read_only: bool,

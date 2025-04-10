@@ -26,7 +26,7 @@ use prometheus::{Encoder, TextEncoder};
 use serde_json::Value;
 use tracing_subscriber::layer::SubscriberExt;
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct MultiStruct {
     #[metric(help = "dummy help pub_u64")]
     pub pub_u64: u64,
@@ -44,8 +44,8 @@ pub struct MultiStruct {
     sub_struct: Foo<'static, String>,
 }
 
-#[derive(MetricsComponent)]
-struct Foo<'a, T: Debug + Send + Sync> {
+#[derive(Debug, MetricsComponent)]
+struct Foo<#[expect(single_use_lifetimes, reason = "false positive")] 'a, T: Debug + Send + Sync> {
     #[metric(help = "help str1", handler = ToString::to_string)]
     custom_handler_num_str: u64,
 

@@ -508,7 +508,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     }
 
     // Now remove worker.
-    let _ = scheduler.remove_worker(&worker_id1).await;
+    drop(scheduler.remove_worker(&worker_id1).await);
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
 
     {
@@ -904,7 +904,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
 }
 
 // TODO(allada) These should be gneralized and expanded for more tests.
-pub struct MockAwaitedActionSubscriber {}
+struct MockAwaitedActionSubscriber {}
 impl AwaitedActionSubscriber for MockAwaitedActionSubscriber {
     async fn changed(&mut self) -> Result<AwaitedAction, Error> {
         unreachable!();
@@ -1515,12 +1515,14 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
             ActionStage::Executing
         );
     }
-    let _ = setup_new_worker(
-        &scheduler,
-        rogue_worker_id.clone(),
-        PlatformProperties::default(),
-    )
-    .await?;
+    drop(
+        setup_new_worker(
+            &scheduler,
+            rogue_worker_id.clone(),
+            PlatformProperties::default(),
+        )
+        .await?,
+    );
 
     let action_result = ActionResult {
         output_files: Vec::default(),
@@ -2002,13 +2004,15 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         OperationId::from(operation_id.as_str())
     };
 
-    let _ = scheduler
-        .update_action(
-            &worker_id,
-            &operation_id,
-            UpdateOperationType::UpdateWithError(make_err!(Code::Internal, "Some error")),
-        )
-        .await;
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(Code::Internal, "Some error")),
+            )
+            .await,
+    );
 
     {
         // Client should get notification saying it has been queued again.
@@ -2040,13 +2044,15 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
 
     let err = make_err!(Code::Internal, "Some error");
     // Send internal error from worker again.
-    let _ = scheduler
-        .update_action(
-            &worker_id,
-            &operation_id,
-            UpdateOperationType::UpdateWithError(err.clone()),
-        )
-        .await;
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(err.clone()),
+            )
+            .await,
+    );
 
     {
         // Client should get notification saying it has been queued again.
@@ -2203,13 +2209,15 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         OperationId::from(operation_id.as_str())
     };
 
-    let _ = scheduler
-        .update_action(
-            &worker_id1,
-            &operation_id,
-            UpdateOperationType::UpdateWithError(make_err!(Code::NotFound, "Some error")),
-        )
-        .await;
+    drop(
+        scheduler
+            .update_action(
+                &worker_id1,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(Code::NotFound, "Some error")),
+            )
+            .await,
+    );
 
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
 

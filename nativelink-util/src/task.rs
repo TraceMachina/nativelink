@@ -128,7 +128,7 @@ impl<T> Drop for JoinHandleDropGuard<T> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TaskExecutor(TokioExecutor);
 
 impl TaskExecutor {

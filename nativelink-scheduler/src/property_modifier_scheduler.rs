@@ -35,6 +35,15 @@ pub struct PropertyModifierScheduler {
     known_properties: Mutex<HashMap<String, Vec<String>>>,
 }
 
+impl std::fmt::Debug for PropertyModifierScheduler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PropertyModifierScheduler")
+            .field("modifications", &self.modifications)
+            .field("known_properties", &self.known_properties)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PropertyModifierScheduler {
     pub fn new(spec: &PropertyModifierSpec, scheduler: Arc<dyn ClientStateManager>) -> Self {
         Self {

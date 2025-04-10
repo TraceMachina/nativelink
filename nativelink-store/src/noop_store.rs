@@ -24,7 +24,7 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo};
 
-#[derive(Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct NoopStore;
 
 impl MetricsComponent for NoopStore {

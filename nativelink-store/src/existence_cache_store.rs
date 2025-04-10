@@ -43,7 +43,7 @@ impl LenEntry for ExistanceItem {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct ExistenceCacheStore<I: InstantWrapper> {
     #[metric(group = "inner_store")]
     inner_store: Store,
@@ -120,7 +120,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
                     result.map(|size| (key.borrow().into_digest(), ExistanceItem(size)))
                 })
                 .collect::<Vec<_>>();
-            let _ = self.existence_cache.insert_many(inserts).await;
+            drop(self.existence_cache.insert_many(inserts).await);
         }
 
         // Merge the results from the cache and the query.

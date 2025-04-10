@@ -59,6 +59,20 @@ pub struct DedupStore {
     bincode_options: WithOtherIntEncoding<DefaultOptions, FixintEncoding>,
 }
 
+impl std::fmt::Debug for DedupStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DedupStore")
+            .field("index_store", &self.index_store)
+            .field("content_store", &self.content_store)
+            .field("fast_cdc_decoder", &self.fast_cdc_decoder)
+            .field(
+                "max_concurrent_fetch_per_get",
+                &self.max_concurrent_fetch_per_get,
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 impl DedupStore {
     pub fn new(
         spec: &DedupSpec,
