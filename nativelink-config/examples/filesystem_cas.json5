@@ -111,7 +111,8 @@
           "cpu_model": "exact",
           "kernel_version": "exact",
           "docker_image": "priority",
-          "lre-rs": "priority"
+          "lre-rs": "priority",
+          "ISA": "exact",
         }
       }
     }
