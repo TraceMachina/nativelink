@@ -25,7 +25,7 @@ patches:
       value: main
   target:
     kind: GitRepository
-    name: nativelink
+    name: nativelink-infra
 
 # Setting the flake outputs to `./src_root#xxx` causes the Tekton pipelines to
 # build nativelink from your local sources.
