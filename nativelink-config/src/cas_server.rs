@@ -729,6 +729,53 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub disable_metrics: bool,
 
+    /// `NativeLink` exposes telemetry via a push-based gRPC OTLP exporter. The
+    /// configuration for the endpoint and exposure intervals may be configured
+    /// via the environment variables in:
+    ///
+    /// <https://opentelemetry.io/docs/specs/otel/protocol/exporter/>
+    ///
+    /// In particular, endpoints may be set via the following environment
+    /// variables:
+    ///
+    /// - `OTEL_EXPORTER_OTLP_ENDPOINT`
+    /// - `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`
+    /// - `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`
+    /// - `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
+    ///
+    /// The following compression mechanisms are supported:
+    ///
+    /// - None (default)
+    /// - `OTEL_EXPORTER_OTLP_COMPRESSION=zstd` (global flag)
+    /// - `OTEL_EXPORTER_OTLP_LOGS_COMPRESSION=zstd`
+    /// - `OTEL_EXPORTER_OTLP_METRICS_COMPRESSION=zstd`
+    /// - `OTEL_EXPORTER_OTLP_TRACES_COMPRESSION=zstd`
+    ///
+    /// TODO(aaronmondal): Enable zstandard compression by default and make it
+    ///                    opt-out instead of the current opt-in.
+    ///
+    /// # Logs
+    ///
+    /// The log level for metrics may be set independently of `NativeLink`'s
+    /// stdout logs via:
+    ///
+    /// - `OTEL_LOG_LEVEL`
+    ///
+    /// # Traces
+    ///
+    /// TODO(aaronmondal): Figure out what our defaults here actually are lol.
+    ///
+    /// # Metrics
+    ///
+    /// The export inteval and export timeout for metrics may be configured via:
+    ///
+    /// - `OTEL_METRIC_EXPORT_INTERVAL` (in milliseconds, default is 60000)
+    /// - `OTEL_METRIC_EXPORT_TIMEOUT` (in milliseconds, default is 30000)
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub disable_telemetry: bool,
+
     /// Default hash function to use while uploading blobs to the CAS when not set
     /// by client.
     ///

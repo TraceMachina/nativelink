@@ -39,6 +39,11 @@ tracing = { version = "0.1.41", default-features = false }
 tracing-subscriber = { version = "0.3.19", features = ["ansi", "env-filter", "json"], default-features = false }
 uuid = { version = "1.16.0", default-features = false, features = ["v6", "v4", "serde"] }
 mock_instant = "0.5.3"
+opentelemetry = { version = "0.29.0" }
+opentelemetry_sdk = { version = "0.29.0", default-features = false }
+opentelemetry-otlp = { version = "0.29.0", default-features = false, features = ["logs", "trace", "metrics", "grpc-tonic", "zstd-tonic"] }
+opentelemetry-appender-tracing = { version = "0.29.1" }
+tracing-opentelemetry = { version = "0.30.0" }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

@@ -22,7 +22,7 @@ use axum::Router;
 use clap::Parser;
 use futures::FutureExt;
 use futures::future::{BoxFuture, Either, OptionFuture, TryFutureExt, try_join_all};
-use hyper::{Response, StatusCode};
+use hyper::StatusCode;
 use hyper_util::rt::tokio::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
@@ -53,7 +53,7 @@ use nativelink_util::digest_hasher::{DigestHasherFunc, set_default_digest_hasher
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::metrics_utils::{Counter, set_metrics_enabled_for_this_thread};
 use nativelink_util::operation_state_manager::ClientStateManager;
-use nativelink_util::origin_context::{ActiveOriginContext, OriginContext};
+use nativelink_util::origin_context::OriginContext;
 use nativelink_util::origin_event_middleware::OriginEventMiddlewareLayer;
 use nativelink_util::origin_event_publisher::OriginEventPublisher;
 use nativelink_util::shutdown_guard::{Priority, ShutdownGuard};
@@ -61,12 +61,9 @@ use nativelink_util::store_trait::{
     DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG, set_default_digest_size_health_check,
 };
 use nativelink_util::task::TaskExecutor;
-use nativelink_util::{background_spawn, fs, init_tracing, spawn, spawn_blocking};
+use nativelink_util::{background_spawn, fs, init_tracing, spawn};
 use nativelink_worker::local_worker::new_local_worker;
-use opentelemetry::metrics::MeterProvider;
-use opentelemetry_sdk::metrics::SdkMeterProvider;
 use parking_lot::{Mutex, RwLock};
-use prometheus::{Encoder, TextEncoder};
 use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
 use scopeguard::guard;
 use tokio::net::TcpListener;
@@ -85,9 +82,6 @@ use tracing_subscriber::layer::SubscriberExt;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
-
-/// Note: This must be kept in sync with the documentation in `PrometheusConfig::path`.
-const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
 
 /// Note: This must be kept in sync with the documentation in `AdminConfig::path`.
 const DEFAULT_ADMIN_API_PATH: &str = "/admin";
@@ -203,10 +197,64 @@ impl RoutesExt for Routes {
     }
 }
 
+// This is a temporary solution until we rework the metrics collection mechanism
+// to utilize the `tracing_opentelemetry::MetricsLayer`.
+//
+// At the moment it's necessary to run an intermediary collection step and then
+// periodically export the gathered metrics via the OTLP exporter. This is
+// inefficient and won't be necessary once we change all metrics exposure to
+// OTLP's push-based model.
+fn legacy_metrics_export_loop(
+    meter: opentelemetry::metrics::Meter,
+    root_metrics: Arc<RwLock<RootMetrics>>,
+) {
+    background_spawn!(
+        name: "metrics_exporter",
+        fut: async move {
+            // Note: This interval is intentionally not configurable. The export
+            // interval is handled by a `periodic_exporter` in the OTLP/tracing
+            // setup and configurable via the `OTEL_METRIC_EXPORT_INTERVAL`
+            // environment variable.
+            let mut gathering_interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                gathering_interval.tick().await;
+
+                let origin_context = Arc::new(OriginContext::new());
+
+                origin_context.clone().wrap_async(trace_span!("metrics_collection"), async {
+
+                    let (layer, output_metrics) = MetricsCollectorLayer::new();
+                    let result = tracing::subscriber::with_default(
+                        tracing_subscriber::registry().with(layer),
+                        || {
+                            let metrics_component = root_metrics.read();
+                            MetricsComponent::publish(
+                                &*metrics_component,
+                                MetricKind::Component,
+                                MetricFieldData::default(),
+                            )
+                        },
+                    );
+
+                    if let Err(e) = result {
+                        event!(Level::ERROR, "Error collecting metrics: {}", e);
+                        return;
+                    }
+
+                    otel_export("nativelink".to_string(), &meter, &output_metrics.lock());
+                }).await;
+            }
+        },
+        target: "nativelink::metrics",
+    );
+}
+
 async fn inner_main(
     cfg: CasConfig,
     server_start_timestamp: u64,
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
+    meter: opentelemetry::metrics::Meter, // TODO(aaronmondal): Remove this
+                                          // after the OTLP migration.
 ) -> Result<(), Error> {
     const fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
@@ -304,6 +352,12 @@ async fn inner_main(
         workers: HashMap::new(), // Will be filled in later.
         schedulers: action_schedulers.clone(),
     }));
+
+    if let Some(global_cfg) = cfg.global {
+        if !global_cfg.disable_telemetry {
+            legacy_metrics_export_loop(meter, root_metrics.clone());
+        }
+    }
 
     for (server_cfg, connected_clients_mux) in servers_and_clients {
         let services = server_cfg
@@ -526,131 +580,6 @@ async fn inner_main(
                 &health_cfg.path
             };
             svc = svc.route_service(path, HealthServer::new(health_registry));
-        }
-
-        if let Some(prometheus_cfg) = services.experimental_prometheus {
-            fn error_to_response<E: std::error::Error>(e: E) -> Response<axum::body::Body> {
-                let mut response = Response::new(format!("Error: {e:?}").into());
-                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                response
-            }
-            let path = if prometheus_cfg.path.is_empty() {
-                DEFAULT_PROMETHEUS_METRICS_PATH
-            } else {
-                &prometheus_cfg.path
-            };
-
-            let root_metrics_clone = root_metrics.clone();
-
-            svc = svc.route_service(
-                path,
-                axum::routing::get(move |request: hyper::Request<axum::body::Body>| {
-                    ActiveOriginContext::get()
-                        .expect("OriginContext should be set here")
-                        .wrap_async(trace_span!("prometheus_ctx"), async move {
-                            // We spawn on a thread that can block to give more freedom to our metrics
-                            // collection. This allows it to call functions like `tokio::block_in_place`
-                            // if it needs to wait on a future.
-                            spawn_blocking!("prometheus_metrics", move || {
-                                let (layer, output_metrics) = MetricsCollectorLayer::new();
-
-                                // Traverse all the MetricsComponent's. The `MetricsCollectorLayer` will
-                                // collect all the metrics and store them in `output_metrics`.
-                                tracing::subscriber::with_default(
-                                    tracing_subscriber::registry().with(layer),
-                                    || {
-                                        let metrics_component = root_metrics_clone.read();
-                                        MetricsComponent::publish(
-                                            &*metrics_component,
-                                            MetricKind::Component,
-                                            MetricFieldData::default(),
-                                        )
-                                    },
-                                )
-                                .map_err(|e| make_err!(Code::Internal, "{e}"))
-                                .err_tip(|| "While processing prometheus metrics")?;
-
-                                // Convert the collected metrics into OpenTelemetry metrics then
-                                // encode them into Prometheus format and populate them into a
-                                // hyper::Response.
-                                let registry = prometheus::Registry::new();
-                                let exporter = opentelemetry_prometheus::exporter()
-                                    .with_registry(registry.clone())
-                                    .without_counter_suffixes()
-                                    .without_scope_info()
-                                    .build()
-                                    .map_err(|e| make_err!(Code::Internal, "{e}"))
-                                    .err_tip(
-                                        || "While creating OpenTelemetry Prometheus exporter",
-                                    )?;
-
-                                // Prepare our OpenTelemetry collector/exporter.
-                                let provider =
-                                    SdkMeterProvider::builder().with_reader(exporter).build();
-                                let meter = provider.meter("nativelink");
-
-                                // TODO(allada) We should put this as part of the config instead of a magic
-                                // request header.
-                                if let Some(json_type) = request.headers().get("x-nativelink-json")
-                                {
-                                    let json_data = if json_type == "pretty" {
-                                        serde_json::to_string_pretty(&*output_metrics.lock())
-                                            .map_err(|e| {
-                                                make_err!(
-                                                    Code::Internal,
-                                                    "Could not convert to json {e:?}"
-                                                )
-                                            })?
-                                    } else {
-                                        serde_json::to_string(&*output_metrics.lock()).map_err(
-                                            |e| {
-                                                make_err!(
-                                                    Code::Internal,
-                                                    "Could not convert to json {e:?}"
-                                                )
-                                            },
-                                        )?
-                                    };
-                                    let mut response =
-                                        Response::new(axum::body::Body::from(json_data));
-                                    response.headers_mut().insert(
-                                        hyper::header::CONTENT_TYPE,
-                                        hyper::header::HeaderValue::from_static("application/json"),
-                                    );
-                                    return Ok(response);
-                                }
-
-                                // Export the metrics to OpenTelemetry.
-                                otel_export(
-                                    "nativelink".to_string(),
-                                    &meter,
-                                    &output_metrics.lock(),
-                                );
-
-                                // Translate the OpenTelemetry metrics to Prometheus format and encode
-                                // them into a hyper::Response.
-                                let mut result = vec![];
-                                TextEncoder::new()
-                                    .encode(&registry.gather(), &mut result)
-                                    .unwrap();
-                                let mut response = Response::new(axum::body::Body::from(result));
-                                // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
-                                // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
-                                // However, this makes debugging more difficult, so we use the old text/plain instead.
-                                response.headers_mut().insert(
-                                    hyper::header::CONTENT_TYPE,
-                                    hyper::header::HeaderValue::from_static(
-                                        "text/plain; version=0.0.4; charset=utf-8",
-                                    ),
-                                );
-                                Ok::<_, Error>(response)
-                            })
-                            .await
-                            .unwrap_or_else(|e| Ok(error_to_response(e)))
-                            .unwrap_or_else(error_to_response)
-                        })
-                }),
-            );
         }
 
         if let Some(admin_config) = services.admin {
@@ -1016,12 +945,12 @@ async fn inner_main(
 
     if let Err(e) = try_join_all(root_futures).await {
         panic!("{e:?}");
-    };
+    }
 
     Ok(())
 }
 
-async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
+fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
     let args = Args::parse();
     let json_contents = String::from_utf8(
         std::fs::read(&args.config_file)
@@ -1031,11 +960,13 @@ async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_tracing()?;
+    let mut cfg = get_config()?;
 
-    let mut cfg = futures::executor::block_on(get_config())?;
-
-    let mut metrics_enabled = {
+    // TODO(aaronmondal): Potentially wrong. Double-check.
+    let metrics_enabled = if std::env::var(METRICS_DISABLE_ENV).is_ok() {
+        // Override metrics enabled if the environment variable is set.
+        false
+    } else {
         let global_cfg = if let Some(global_cfg) = &mut cfg.global {
             if global_cfg.max_open_files == 0 {
                 global_cfg.max_open_files = fs::DEFAULT_OPEN_FILE_LIMIT;
@@ -1056,6 +987,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }),
                 default_digest_hash_function: None,
                 default_digest_size_health_check: DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
+                disable_telemetry: false,
             }
         };
         set_open_file_limit(global_cfg.max_open_files);
@@ -1067,10 +999,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         set_default_digest_size_health_check(global_cfg.default_digest_size_health_check)?;
         !global_cfg.disable_metrics
     };
-    // Override metrics enabled if the environment variable is set.
-    if std::env::var(METRICS_DISABLE_ENV).is_ok() {
-        metrics_enabled = false;
-    }
+
     let server_start_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -1081,6 +1010,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
         .build()?;
+
+    // The OTLP exporters need to run in a Tokio context.
+    // TODO(aaronmondal): Seems to deadlock with certain log level configurations.
+    #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
+    let meter = runtime.block_on(async { tokio::spawn(async { init_tracing() }).await? })?;
 
     // Initiates the shutdown process by broadcasting the shutdown signal via the `oneshot::Sender` to all listeners.
     // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.
@@ -1116,7 +1050,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime
         .block_on(Arc::new(OriginContext::new()).wrap_async(
             trace_span!("main"),
-            inner_main(cfg, server_start_time, shutdown_tx),
+            inner_main(cfg, server_start_time, shutdown_tx, meter),
         ))
         .err_tip(|| "main() function failed")?;
     Ok(())

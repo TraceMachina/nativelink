@@ -42,22 +42,30 @@ pub mod tls_utils;
 pub mod write_counter;
 
 // Re-export tracing mostly for use in macros.
+// TODO(aaronmondal): Certainly not ideal. Make init_tracing return `Ok(())`.
+use opentelemetry::metrics::Meter;
 pub use tracing as __tracing;
 
 /// Initialize tracing.
-pub fn init_tracing() -> Result<(), nativelink_error::Error> {
+pub fn init_tracing() -> Result<Meter, nativelink_error::Error> {
+    use nativelink_error::{Code, ResultExt, make_err};
+    use opentelemetry::metrics::MeterProvider;
+    use opentelemetry::trace::TracerProvider;
+    use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+    use opentelemetry_otlp::{Protocol, WithExportConfig};
+    use opentelemetry_sdk::Resource;
+    use opentelemetry_sdk::logs::SdkLoggerProvider;
+    use opentelemetry_sdk::metrics::SdkMeterProvider;
     use tracing_subscriber::prelude::*;
 
     static LOGGING_INITIALIZED: parking_lot::Mutex<bool> = parking_lot::Mutex::new(false);
     let mut logging_initized_guard = LOGGING_INITIALIZED.lock();
     if *logging_initized_guard {
-        return Err(nativelink_error::make_err!(
-            nativelink_error::Code::Internal,
-            "Logging already initialized"
-        ));
+        return Err(make_err!(Code::Internal, "Logging already initialized"));
     }
     *logging_initized_guard = true;
-    let env_filter = tracing_subscriber::EnvFilter::builder()
+
+    let stdout_filter = tracing_subscriber::EnvFilter::builder()
         .with_default_directive(tracing::metadata::LevelFilter::WARN.into())
         .from_env_lossy();
 
@@ -68,31 +76,98 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
     // Layers vector is used for due to how tracing_subscriber::fmt::layer builds type signature
     // not being able to unify a single trait type before being boxed. For example see
     // https://docs.rs/tracing-subscriber/0.3.18/tracing_subscriber/layer/index.html
-    let mut layers = Vec::new();
-    match nl_log_fmt.as_str() {
-        "compact" => layers.push(
-            tracing_subscriber::fmt::layer()
-                .compact()
-                .with_timer(tracing_subscriber::fmt::time::time())
-                .with_filter(env_filter)
-                .boxed(),
-        ),
-        "json" => layers.push(
-            tracing_subscriber::fmt::layer()
-                .json()
-                .with_timer(tracing_subscriber::fmt::time::time())
-                .with_filter(env_filter)
-                .boxed(),
-        ),
-        _ => layers.push(
-            tracing_subscriber::fmt::layer()
-                .pretty()
-                .with_timer(tracing_subscriber::fmt::time::time())
-                .with_filter(env_filter)
-                .boxed(),
-        ),
+    // let mut layers = Vec::new();
+    let fmt_layer = match nl_log_fmt.as_str() {
+        "compact" => tracing_subscriber::fmt::layer()
+            .compact()
+            .with_timer(tracing_subscriber::fmt::time::time())
+            .with_filter(stdout_filter)
+            .boxed(),
+        "json" => tracing_subscriber::fmt::layer()
+            .json()
+            .with_timer(tracing_subscriber::fmt::time::time())
+            .with_filter(stdout_filter)
+            .boxed(),
+        _ => tracing_subscriber::fmt::layer()
+            .pretty()
+            .with_timer(tracing_subscriber::fmt::time::time())
+            .with_filter(stdout_filter)
+            .boxed(),
     };
 
-    tracing_subscriber::registry().with(layers).init();
-    Ok(())
+    // TODO(aaronmondal): Consider making the resource name configurable.
+    let resource = Resource::builder().with_service_name("nativelink").build();
+
+    // Logs
+    let log_provider = SdkLoggerProvider::builder()
+        .with_resource(resource.clone())
+        .with_batch_exporter(
+            opentelemetry_otlp::LogExporter::builder()
+                .with_tonic()
+                .with_protocol(Protocol::Grpc)
+                .build()
+                .map_err(|e| make_err!(Code::Internal, "{e}"))
+                .err_tip(|| "While creating OpenTelemetry OTLP Log exporter")?,
+        )
+        .build();
+
+    // Filter non-nativelink information.
+    // See: https://github.com/open-telemetry/opentelemetry-rust/issues/2877
+    let otlp_log_filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing::metadata::LevelFilter::WARN.into())
+        .from_env_lossy()
+        .add_directive("hyper=off".parse().unwrap())
+        .add_directive("tonic=off".parse().unwrap())
+        .add_directive("h2=off".parse().unwrap())
+        .add_directive("reqwest=off".parse().unwrap());
+
+    let otlp_log_layer =
+        OpenTelemetryTracingBridge::new(&log_provider).with_filter(otlp_log_filter);
+
+    // Traces
+    let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_resource(resource.clone())
+        .with_batch_exporter(
+            opentelemetry_otlp::SpanExporter::builder()
+                .with_tonic()
+                .with_protocol(Protocol::Grpc)
+                .build()
+                .map_err(|e| make_err!(Code::Internal, "{e}"))
+                .err_tip(|| "While creating OpenTelemetry OTLP Trace exporter")?,
+        )
+        .build();
+
+    let otlp_trace_layer =
+        tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer("nativelink"));
+
+    // Metrics
+    let metrics_provider = SdkMeterProvider::builder()
+        .with_resource(resource)
+        .with_periodic_exporter(
+            opentelemetry_otlp::MetricExporter::builder()
+                .with_tonic()
+                .with_protocol(Protocol::Grpc)
+                .build()
+                .map_err(|e| make_err!(Code::Internal, "{e}"))
+                .err_tip(|| "While creating OpenTelemetry OTLP Metric exporter")?,
+        )
+        .build();
+
+    opentelemetry::global::set_meter_provider(metrics_provider.clone());
+
+    // TODO(aaronmondal): Use this instead of the custom logic in `init_metrics`.
+    // let otlp_metrics_layer = tracing_opentelemetry::MetricsLayer::new(metrics_provider);
+
+    tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(otlp_log_layer)
+        .with(otlp_trace_layer)
+        // .with(otlp_metrics_layer)
+        .init();
+
+    // TODO(aaronmondal): Currently we need to move the meter outside of this
+    //                    function so that we can consume it in nativelink's
+    //                    `inner_main` function. This is not ideal. Change it to
+    //                    a pure "MetricsLayer" implementation.
+    Ok(metrics_provider.meter("nativelink"))
 }
