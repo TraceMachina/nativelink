@@ -69,18 +69,6 @@
           }
         }
       }
-    },
-    {
-      "listener": {
-        "http": {
-          "socket_address": "0.0.0.0:50061"
-        }
-      },
-      "services": {
-        "experimental_prometheus": {
-          "path": "/metrics"
-        }
-      }
     }
   ]
 }

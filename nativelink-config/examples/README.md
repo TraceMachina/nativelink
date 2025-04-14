@@ -312,7 +312,7 @@ The `public` server consists of a `listener` object and a `services` object. The
 
 > ⚠️ _WARNING_: A private server shouldn't be exposed to the public. ⚠️
 
-The `private` server consists of a `listener` object and a `services` object. The `listener` object is one level and includes an `http` with a `socket address`. The `services` server consists of an `experimental_prometheus` object with a `path` field, a `worker_api` object with `scheduler_field`, and an `admin` object.
+The `private` server consists of a `listener` object and a `services` object. The `listener` object is one level and includes an `http` with a `socket address`. The `services` server consists of a `worker_api` object with `scheduler_field` and an `admin` object.
 
 ```json5
  {
@@ -364,9 +364,6 @@ The `private` server consists of a `listener` object and a `services` object. Th
       }
     },
     "services": {
-      "experimental_prometheus": {
-        "path": "/metrics"
-      },
       // Note: This should be served on a different port, because it has
       // a different permission set than the other services.
       // In other words, this service is a backend api. The ones above
@@ -548,9 +545,6 @@ Below, you will find a fully tested example that you can also find in [basic_cas
       }
     },
     "services": {
-      "experimental_prometheus": {
-        "path": "/metrics"
-      },
       // Note: This should be served on a different port, because it has
       // a different permission set than the other services.
       // In other words, this service is a backend api. The ones above
