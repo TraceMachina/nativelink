@@ -37,13 +37,13 @@ use crate::origin_event::{ORIGIN_EVENT_COLLECTOR, OriginEventCollector, OriginMe
 // We should consolidate these.
 const DEFAULT_IDENTITY_HEADER: &str = "x-identity";
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct OriginRequestMetadata {
     pub identity: String,
     pub bazel_metadata: Option<RequestMetadata>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct OriginEventMiddlewareLayer {
     maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     idenity_header_config: Arc<IdentityHeaderSpec>,
@@ -73,7 +73,7 @@ impl<S> Layer<S> for OriginEventMiddlewareLayer {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct OriginEventMiddleware<S> {
     inner: S,
     maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,

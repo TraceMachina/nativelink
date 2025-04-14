@@ -322,6 +322,12 @@ pub struct Store {
     inner: Arc<dyn StoreDriver>,
 }
 
+impl std::fmt::Debug for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Store").finish_non_exhaustive()
+    }
+}
+
 impl Store {
     pub fn new(inner: Arc<dyn StoreDriver>) -> Self {
         Self { inner }
@@ -736,7 +742,7 @@ pub trait StoreDriver:
         let digest_data_len = digest_data.len() as u64;
         let digest_info = StoreKey::from(digest_hasher.finalize_digest());
 
-        let digest_bytes = bytes::Bytes::copy_from_slice(&digest_data);
+        let digest_bytes = Bytes::copy_from_slice(&digest_data);
 
         if let Err(e) = self
             .update_oneshot(digest_info.borrow(), digest_bytes.clone())
@@ -936,6 +942,7 @@ pub trait IsFalse {}
 pub trait IsTrue {}
 
 /// Compile time true value.
+#[derive(Debug, Clone, Copy)]
 pub struct TrueValue;
 impl BoolValue for TrueValue {
     const VALUE: bool = true;
@@ -943,6 +950,7 @@ impl BoolValue for TrueValue {
 impl IsTrue for TrueValue {}
 
 /// Compile time false value.
+#[derive(Debug, Clone, Copy)]
 pub struct FalseValue;
 impl BoolValue for FalseValue {
     const VALUE: bool = false;

@@ -249,15 +249,15 @@ pub trait ResultExt<T> {
     fn err_tip_with_code<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
-        S: std::string::ToString,
-        F: (std::ops::FnOnce(&Error) -> (Code, S)) + Sized;
+        S: ToString,
+        F: (FnOnce(&Error) -> (Code, S)) + Sized;
 
     #[inline]
     fn err_tip<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
-        S: std::string::ToString,
-        F: (std::ops::FnOnce() -> S) + Sized,
+        S: ToString,
+        F: (FnOnce() -> S) + Sized,
     {
         self.err_tip_with_code(|e| (e.code, tip_fn()))
     }
@@ -275,8 +275,8 @@ impl<T, E: Into<Error>> ResultExt<T> for Result<T, E> {
     fn err_tip_with_code<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
-        S: std::string::ToString,
-        F: (std::ops::FnOnce(&Error) -> (Code, S)) + Sized,
+        S: ToString,
+        F: (FnOnce(&Error) -> (Code, S)) + Sized,
     {
         self.map_err(|e| {
             let mut error: Error = e.into();
@@ -310,8 +310,8 @@ impl<T> ResultExt<T> for Option<T> {
     fn err_tip_with_code<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
-        S: std::string::ToString,
-        F: (std::ops::FnOnce(&Error) -> (Code, S)) + Sized,
+        S: ToString,
+        F: (FnOnce(&Error) -> (Code, S)) + Sized,
     {
         self.ok_or_else(|| {
             let mut error = Error {
@@ -375,7 +375,7 @@ impl ErrorKindExt for std::io::ErrorKind {
 }
 
 // Serde definition for tonic::Code. See: https://serde.rs/remote-derive.html
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(remote = "Code")]
 pub enum CodeDef {
     Ok = 0,

@@ -25,6 +25,7 @@ use crate::shutdown_guard::{Priority, ShutdownGuard};
 use crate::store_trait::{Store, StoreLike};
 
 /// Publishes origin events to the store.
+#[derive(Debug)]
 pub struct OriginEventPublisher {
     store: Store,
     rx: mpsc::Receiver<OriginEvent>,

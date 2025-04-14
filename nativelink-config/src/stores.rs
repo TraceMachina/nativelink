@@ -524,7 +524,7 @@ pub struct FastSlowSpec {
     pub slow: StoreSpec,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 pub struct MemorySpec {
     /// Policy used to evict items out of the store. Failure to set this
@@ -664,7 +664,7 @@ pub struct Lz4Config {
     pub max_decode_block_size: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum CompressionAlgorithm {
     /// LZ4 compression algorithm is extremely fast for compression and
@@ -695,7 +695,7 @@ pub struct CompressionSpec {
 /// is touched it updates the timestamp. Inserts and updates will execute the
 /// eviction policy removing any expired entries and/or the oldest entries
 /// until the store size becomes smaller than `max_bytes`.
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 pub struct EvictionPolicy {
     /// Maximum number of bytes before eviction takes place.
@@ -851,7 +851,7 @@ pub struct GrpcSpec {
 }
 
 /// The possible error codes that might occur on an upstream request.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub enum ErrorCode {
     Cancelled = 1,
     Unknown = 2,
@@ -991,7 +991,7 @@ pub struct RedisSpec {
     pub retry: Retry,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RedisMode {
     Cluster,
@@ -1000,7 +1000,7 @@ pub enum RedisMode {
     Standard,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 pub struct NoopSpec {}
 
 /// Retry configuration. This configuration is exponential and each iteration

@@ -105,10 +105,12 @@ async fn get_part_caches_if_exact_size_set() -> Result<(), Error> {
         .err_tip(|| "Failed to update store")?;
     let store = ExistenceCacheStore::new(&spec, inner_store.clone());
 
-    let _ = store
-        .get_part_unchunked(digest, 0, None)
-        .await
-        .err_tip(|| "Expected get_part to succeed")?;
+    drop(
+        store
+            .get_part_unchunked(digest, 0, None)
+            .await
+            .err_tip(|| "Expected get_part to succeed")?,
+    );
 
     assert!(
         store.exists_in_cache(&digest).await,

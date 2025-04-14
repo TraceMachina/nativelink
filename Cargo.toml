@@ -75,3 +75,49 @@ tokio-stream = ["fs"]
 tonic-build = ["prost"]
 tonic = ["transport", "tls"]
 uuid = ["v4", "serde"]
+
+[workspace.lints.rust]
+ambiguous-glob-reexports = "deny"
+clashing-extern-declarations = "deny"
+const-item-mutation = "deny"
+dangling-pointers-from-temporaries = "deny"
+deref-nullptr = "deny"
+drop-bounds = "deny"
+future-incompatible = "deny"
+hidden-glob-reexports = "deny"
+improper-ctypes = "deny"
+improper-ctypes-definitions = "deny"
+invalid-from-utf8 = "deny"
+invalid-macro-export-arguments = "deny"
+invalid-nan-comparisons = "deny"
+invalid-reference-casting = "deny"
+invalid-value = "deny"
+opaque-hidden-inferred-bound = "deny"
+overlapping-range-endpoints = "deny"
+suspicious-double-ref-op = "deny"
+unconditional-recursion = "deny"
+unexpected-cfgs = "deny"
+unnameable-test-items = "deny"
+unsafe-op-in-unsafe-fn = "deny"
+unstable-syntax-pre-expansion = "deny"
+
+keyword-idents = "warn"
+let-underscore = "warn"
+macro-use-extern-crate = "warn"
+meta-variable-misuse = "warn"
+missing-abi = "warn"
+missing-copy-implementations = "warn"
+missing-debug-implementations = "warn"
+noop-method-call = "warn"
+single-use-lifetimes = "warn"
+trivial-casts = "warn"
+trivial-numeric-casts = "warn"
+unreachable-pub = "warn"
+unused = { level = "warn", priority = -1 }
+unused-import-braces = "warn"
+unused-lifetimes = "warn"
+unused-qualifications = "warn"
+variant-size-differences = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

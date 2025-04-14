@@ -45,6 +45,7 @@ pub struct ActionInfoWithProps {
 }
 
 /// Notifications to send worker about a requested state change.
+#[derive(Debug)]
 pub enum WorkerUpdate {
     /// Requests that the worker begin executing this action.
     RunAction((OperationId, ActionInfoWithProps)),
@@ -53,7 +54,7 @@ pub enum WorkerUpdate {
     Disconnect,
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct PendingActionInfoData {
     #[metric]
     pub action_info: ActionInfoWithProps,
@@ -62,7 +63,7 @@ pub struct PendingActionInfoData {
 
 /// Represents a connection to a worker and used as the medium to
 /// interact with the worker from the client/scheduler.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct Worker {
     /// Unique identifier of the worker.
     #[metric(help = "The unique identifier of the worker.")]
@@ -276,7 +277,7 @@ impl Hash for Worker {
     }
 }
 
-#[derive(Default, MetricsComponent)]
+#[derive(Debug, Default, MetricsComponent)]
 struct Metrics {
     #[metric(help = "The timestamp of when this worker connected.")]
     connected_timestamp: u64,

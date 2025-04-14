@@ -50,7 +50,7 @@ impl Serialize for CollectedMetricPrimitive {
 }
 
 /// Key-value represented output.
-pub type CollectedMetricChildren = HashMap<String, CollectedMetrics>;
+pub(crate) type CollectedMetricChildren = HashMap<String, CollectedMetrics>;
 
 /// The type of the collected metric (eg: nested vs primitive).
 #[derive(Debug, Serialize)]

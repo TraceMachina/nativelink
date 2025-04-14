@@ -21,6 +21,7 @@ use futures::{Future, Stream};
 use pin_project::pin_project;
 
 #[pin_project(project = StreamStateProj)]
+#[derive(Debug)]
 enum StreamState<Fut> {
     Future(#[pin] Fut),
     Next,
@@ -32,6 +33,7 @@ enum StreamState<Fut> {
 /// to implement Stream, but to access the underlying data requires a lock,
 /// but API does not require the data to be in sync with data already received.
 #[pin_project]
+#[derive(Debug)]
 pub struct ChunkedStream<K, T, F, E, Fut>
 where
     K: Ord,

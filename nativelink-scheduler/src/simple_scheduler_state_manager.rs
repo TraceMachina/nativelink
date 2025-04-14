@@ -246,7 +246,7 @@ where
 /// It also includes the workers that are available to execute actions based on allocation
 /// strategy.
 #[derive(MetricsComponent)]
-pub struct SimpleSchedulerStateManager<T, I, NowFn>
+pub(crate) struct SimpleSchedulerStateManager<T, I, NowFn>
 where
     T: AwaitedActionDb,
     I: InstantWrapper,
@@ -294,7 +294,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
-    pub fn new(
+    pub(crate) fn new(
         max_job_retries: usize,
         no_event_action_timeout: Duration,
         client_action_timeout: Duration,

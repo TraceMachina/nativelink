@@ -695,7 +695,7 @@ async fn inner_main(
                             .await
                             .map_err(|e| {
                                 Err::<String, _>((
-                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                    StatusCode::INTERNAL_SERVER_ERROR,
                                     format!("Error: {e:?}"),
                                 ))
                             })
@@ -1106,7 +1106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .recv()
             .await;
         event!(Level::WARN, "Process terminated via SIGTERM",);
-        let _ = shutdown_tx_clone.send(shutdown_guard.clone());
+        drop(shutdown_tx_clone.send(shutdown_guard.clone()));
         let () = shutdown_guard.wait_for(Priority::P0).await;
         event!(Level::WARN, "Successfully shut down nativelink.",);
         std::process::exit(143);

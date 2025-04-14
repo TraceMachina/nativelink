@@ -576,12 +576,14 @@ pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
     fn get_work_directory(&self) -> &String;
 }
 
+#[derive(Debug)]
 struct RunningActionImplExecutionResult {
     stdout: Bytes,
     stderr: Bytes,
     exit_code: i32,
 }
 
+#[derive(Debug)]
 struct RunningActionImplState {
     command_proto: Option<ProtoCommand>,
     // TODO(allada) Kill is not implemented yet, but is instrumented.
@@ -599,6 +601,7 @@ struct RunningActionImplState {
     error: Option<Error>,
 }
 
+#[derive(Debug)]
 pub struct RunningActionImpl {
     operation_id: OperationId,
     action_directory: String,
@@ -1357,11 +1360,18 @@ type SleepFn = fn(Duration) -> BoxFuture<'static, ()>;
 
 /// Functions that may be injected for testing purposes, during standard control
 /// flows these are specified by the new function.
+#[derive(Clone, Copy)]
 pub struct Callbacks {
     /// A function that gets the current time.
     pub now_fn: NowFn,
     /// A function that sleeps for a given Duration.
     pub sleep_fn: SleepFn,
+}
+
+impl Debug for Callbacks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Callbacks").finish_non_exhaustive()
+    }
 }
 
 /// The set of additional information for executing an action over and above
@@ -1370,7 +1380,7 @@ pub struct Callbacks {
 /// may be used to run the action with a particular set of additional
 /// environment variables, or perhaps configure it to execute within a
 /// container.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ExecutionConfiguration {
     /// If set, will be executed instead of the first argument passed in the
     /// `ActionInfo` with all of the arguments in the `ActionInfo` passed as
@@ -1382,6 +1392,7 @@ pub struct ExecutionConfiguration {
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
 }
 
+#[derive(Debug)]
 struct UploadActionResults {
     upload_ac_results_strategy: UploadCacheResultsStrategy,
     upload_historical_results_strategy: UploadCacheResultsStrategy,
@@ -1625,6 +1636,7 @@ impl UploadActionResults {
     }
 }
 
+#[derive(Debug)]
 pub struct RunningActionsManagerArgs<'a> {
     pub root_action_directory: String,
     pub execution_configuration: ExecutionConfiguration,
@@ -1638,6 +1650,7 @@ pub struct RunningActionsManagerArgs<'a> {
 
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
+#[derive(Debug)]
 pub struct RunningActionsManagerImpl {
     root_action_directory: String,
     execution_configuration: ExecutionConfiguration,
@@ -1875,11 +1888,12 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     // Use the ShutdownGuard to signal the completion of the actions
     // Dropping the sender automatically notifies the process to terminate.
     async fn complete_actions(&self, _complete_msg: ShutdownGuard) {
-        let _ = self
-            .action_done_tx
-            .subscribe()
-            .wait_for(|()| self.running_actions.lock().is_empty())
-            .await;
+        drop(
+            self.action_done_tx
+                .subscribe()
+                .wait_for(|()| self.running_actions.lock().is_empty())
+                .await,
+        );
     }
 
     // Note: When the future returns the process should be fully killed and cleaned up.
@@ -1902,11 +1916,12 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         // Ignore error. If error happens it means there's no sender, which is not a problem.
         // Note: Sanity check this API will always check current value then future values:
         // https://play.rust-lang.org/?version=stable&edition=2021&gist=23103652cc1276a97e5f9938da87fdb2
-        let _ = self
-            .action_done_tx
-            .subscribe()
-            .wait_for(|()| self.running_actions.lock().is_empty())
-            .await;
+        drop(
+            self.action_done_tx
+                .subscribe()
+                .wait_for(|()| self.running_actions.lock().is_empty())
+                .await,
+        );
     }
 
     #[inline]
@@ -1915,7 +1930,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     }
 }
 
-#[derive(Default, MetricsComponent)]
+#[derive(Debug, Default, MetricsComponent)]
 pub struct Metrics {
     #[metric(help = "Stats about the create_and_add_action command.")]
     create_and_add_action: AsyncCounterWrapper,

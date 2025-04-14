@@ -32,13 +32,13 @@ pub struct NamedConfig<Spec> {
     pub spec: Spec,
 }
 
-pub type StoreConfig = NamedConfig<crate::stores::StoreSpec>;
-pub type SchedulerConfig = NamedConfig<crate::schedulers::SchedulerSpec>;
+pub type StoreConfig = NamedConfig<stores::StoreSpec>;
+pub type SchedulerConfig = NamedConfig<schedulers::SchedulerSpec>;
 
 // TODO(aaronmondal): Remove all the iterator impls and the Deserializer once we
 //                    fully migrate to the new config schema.
-pub type StoreConfigs = NamedConfigs<crate::stores::StoreSpec>;
-pub type SchedulerConfigs = NamedConfigs<crate::schedulers::SchedulerSpec>;
+pub type StoreConfigs = NamedConfigs<stores::StoreSpec>;
+pub type SchedulerConfigs = NamedConfigs<schedulers::SchedulerSpec>;
 
 #[derive(Debug)]
 pub struct NamedConfigs<T>(pub Vec<NamedConfig<T>>);
