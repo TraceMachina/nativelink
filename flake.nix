@@ -4,7 +4,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    flake-utils.url = "github:numtide/flake-utils";
     git-hooks = {
       url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -20,7 +19,6 @@
       # TODO(SchahinRohani): Use a specific commit hash until nix2container is stable.
       url = "github:nlewo/nix2container/cc96df7c3747c61c584d757cfc083922b4f4b33e";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
     };
   };
 
@@ -45,7 +43,20 @@
         ./tools/darwin/flake-module.nix
         ./tools/nixos/flake-module.nix
         ./flake-module.nix
+        # ./module-test.nix
       ];
+      flake = {
+        flakeModules = {
+          default = ./flake-module.nix;
+          darwin = ./tools/darwin/flake-module.nix;
+          local-remote-execution = ./local-remote-execution/flake-module.nix;
+          nixos = ./tools/nixos/flake-module.nix;
+        };
+        overlays = {
+          lre = import ./local-remote-execution/overlays/default.nix {inherit nix2container;};
+          tools = import ./tools/public/default.nix {inherit nix2container;};
+        };
+      };
       perSystem = {
         config,
         pkgs,
@@ -197,32 +208,6 @@
 
         createWorker = pkgs.nativelink-tools.lib.createWorker self;
 
-        buck2-toolchain = let
-          buck2-nightly-rust-version = "2024-04-28";
-          buck2-nightly-rust = pkgs.rust-bin.nightly.${buck2-nightly-rust-version};
-          buck2-rust = buck2-nightly-rust.default.override {extensions = ["rust-src"];};
-        in
-          pkgs.callPackage ./tools/create-worker-experimental.nix {
-            inherit buildImage self;
-            imageName = "buck2-toolchain";
-            packagesForImage = [
-              pkgs.coreutils
-              pkgs.bash
-              pkgs.go
-              pkgs.diffutils
-              pkgs.gnutar
-              pkgs.gzip
-              pkgs.python3Full
-              pkgs.unzip
-              pkgs.zstd
-              pkgs.cargo-bloat
-              pkgs.mold-wrapped
-              pkgs.reindeer
-              pkgs.lld_16
-              pkgs.clang_16
-              buck2-rust
-            ];
-          };
         siso-chromium = buildImage {
           name = "siso-chromium";
           fromImage = pullImage {
@@ -330,7 +315,6 @@
             nativelink-worker-siso-chromium = createWorker siso-chromium;
             nativelink-worker-toolchain-drake = createWorker toolchain-drake;
             nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
-            nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
           }
           // (
@@ -363,7 +347,7 @@
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
-        local-remote-execution.settings = {
+        local-remote-execution = {
           Env = with pkgs.lre;
             if pkgs.stdenv.isDarwin
             then lre-rs.meta.Env # C++ doesn't support Darwin yet.
@@ -373,18 +357,16 @@
             then "macos"
             else "linux";
         };
-        nixos.settings = {
-          path = with pkgs; [
-            "/run/current-system/sw/bin"
-            "${binutils.bintools}/bin"
-            "${uutils-coreutils-noprefix}/bin"
-            "${pkgs.lre.clang}/bin"
-            "${git}/bin"
-            "${python3}/bin"
-          ];
-        };
+        nixos.path = with pkgs; [
+          "/run/current-system/sw/bin"
+          "${binutils.bintools}/bin"
+          "${uutils-coreutils-noprefix}/bin"
+          "${pkgs.lre.clang}/bin"
+          "${git}/bin"
+          "${python3}/bin"
+        ];
         devShells.default = pkgs.mkShell {
-          nativeBuildInputs = let
+          packages = let
             bazel = pkgs.writeShellScriptBin "bazel" ''
               unset TMPDIR TMP
               exec ${pkgs.bazelisk}/bin/bazelisk "$@"
@@ -462,12 +444,13 @@
               # to NativeLink's read-only cache.
               ${config.nativelink.installationScript}
 
-              # If on NixOS, generate nixos.bazelrc which adds the required
+              # If on NixOS, generate nixos.bazelrc, which adds the required
               # NixOS binary paths to the bazel environment.
-              if [ -e /etc/nixos ]; then
-                ${config.nixos.installationScript}
-                export CC=customClang
-              fi
+              ${config.nixos.installationScript}
+
+              # If on Darwin, generate darwin.bazelrc, which configures darwin
+              # libs and frameworks.
+              ${config.darwin.installationScript}
 
               # The Bazel and Cargo builds in nix require a Clang toolchain.
               # TODO(aaronmondal): The Bazel build currently uses the
@@ -481,11 +464,6 @@
               export PATH=$HOME/.deno/bin:$PATH
               deno types > web/platform/utils/deno.d.ts
             ''
-            + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-              # On Darwin generate darwin.bazelrc which configures
-              # darwin libs & frameworks when running in the nix environment.
-              ${config.darwin.installationScript}
-            ''
             # TODO(aaronmondal): Generalize this.
             + pkgs.lib.optionalString (system == "x86_64-linux") ''
               export CC_x86_64_unknown_linux_gnu=customClang
@@ -494,15 +472,5 @@
       };
     }
     // {
-      flakeModule = {
-        default = ./flake-module.nix;
-        darwin = ./tools/darwin/flake-module.nix;
-        local-remote-execution = ./local-remote-execution/flake-module.nix;
-        nixos = ./tools/nixos/flake-module.nix;
-      };
-      overlays = {
-        lre = import ./local-remote-execution/overlays/default.nix {inherit nix2container;};
-        tools = import ./tools/public/default.nix {inherit nix2container;};
-      };
     };
 }
