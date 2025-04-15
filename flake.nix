@@ -4,7 +4,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    flake-utils.url = "github:numtide/flake-utils";
     git-hooks = {
       url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -20,7 +19,6 @@
       # TODO(SchahinRohani): Use a specific commit hash until nix2container is stable.
       url = "github:nlewo/nix2container/cc96df7c3747c61c584d757cfc083922b4f4b33e";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
     };
   };
 
@@ -46,6 +44,18 @@
         ./tools/nixos/flake-module.nix
         ./flake-module.nix
       ];
+      flake = {
+        flakeModules = {
+          default = ./flake-module.nix;
+          darwin = ./tools/darwin/flake-module.nix;
+          local-remote-execution = ./local-remote-execution/flake-module.nix;
+          nixos = ./tools/nixos/flake-module.nix;
+        };
+        overlays = {
+          lre = import ./local-remote-execution/overlays/default.nix {inherit nix2container;};
+          tools = import ./tools/public/default.nix {inherit nix2container;};
+        };
+      };
       perSystem = {
         config,
         pkgs,
@@ -363,7 +373,7 @@
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
-        local-remote-execution.settings = {
+        local-remote-execution = {
           Env = with pkgs.lre;
             if pkgs.stdenv.isDarwin
             then lre-rs.meta.Env # C++ doesn't support Darwin yet.
@@ -373,18 +383,16 @@
             then "macos"
             else "linux";
         };
-        nixos.settings = {
-          path = with pkgs; [
-            "/run/current-system/sw/bin"
-            "${binutils.bintools}/bin"
-            "${uutils-coreutils-noprefix}/bin"
-            "${pkgs.lre.clang}/bin"
-            "${git}/bin"
-            "${python3}/bin"
-          ];
-        };
+        nixos.path = with pkgs; [
+          "/run/current-system/sw/bin"
+          "${binutils.bintools}/bin"
+          "${uutils-coreutils-noprefix}/bin"
+          "${pkgs.lre.clang}/bin"
+          "${git}/bin"
+          "${python3}/bin"
+        ];
         devShells.default = pkgs.mkShell {
-          nativeBuildInputs = let
+          packages = let
             bazel = pkgs.writeShellScriptBin "bazel" ''
               unset TMPDIR TMP
               exec ${pkgs.bazelisk}/bin/bazelisk "$@"
@@ -454,7 +462,7 @@
               # development shell.
               ${config.pre-commit.installationScript}
 
-              # Generate lre.bazelrc which configures LRE toolchains when
+              # Generate local-remote-execution.bazelrc which configures LRE toolchains when
               # running in the nix environment.
               ${config.local-remote-execution.installationScript}
 
@@ -462,12 +470,13 @@
               # to NativeLink's read-only cache.
               ${config.nativelink.installationScript}
 
-              # If on NixOS, generate nixos.bazelrc which adds the required
+              # If on NixOS, generate nixos.bazelrc, which adds the required
               # NixOS binary paths to the bazel environment.
-              if [ -e /etc/nixos ]; then
-                ${config.nixos.installationScript}
-                export CC=customClang
-              fi
+              ${config.nixos.installationScript}
+
+              # If on Darwin, generate darwin.bazelrc, which configures darwin
+              # libs and frameworks.
+              ${config.darwin.installationScript}
 
               # The Bazel and Cargo builds in nix require a Clang toolchain.
               # TODO(aaronmondal): The Bazel build currently uses the
@@ -481,11 +490,6 @@
               export PATH=$HOME/.deno/bin:$PATH
               deno types > web/platform/utils/deno.d.ts
             ''
-            + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-              # On Darwin generate darwin.bazelrc which configures
-              # darwin libs & frameworks when running in the nix environment.
-              ${config.darwin.installationScript}
-            ''
             # TODO(aaronmondal): Generalize this.
             + pkgs.lib.optionalString (system == "x86_64-linux") ''
               export CC_x86_64_unknown_linux_gnu=customClang
@@ -494,15 +498,5 @@
       };
     }
     // {
-      flakeModule = {
-        default = ./flake-module.nix;
-        darwin = ./tools/darwin/flake-module.nix;
-        local-remote-execution = ./local-remote-execution/flake-module.nix;
-        nixos = ./tools/nixos/flake-module.nix;
-      };
-      overlays = {
-        lre = import ./local-remote-execution/overlays/default.nix {inherit nix2container;};
-        tools = import ./tools/public/default.nix {inherit nix2container;};
-      };
     };
 }

@@ -18,7 +18,7 @@ user.bazelrc
 MODULE.bazel.lock
 trivy-results.sarif
 Pulumi.dev.yaml
-lre.bazelrc
+local-remote-execution.bazelrc
 nixos.bazelrc
 rust-project.json
 darwin.bazelrc

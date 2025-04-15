@@ -3,42 +3,35 @@
   flake-parts-lib,
   ...
 }: {
-  options = {
-    perSystem = flake-parts-lib.mkPerSystemOption (
-      {
-        config,
-        options,
-        pkgs,
-        ...
-      }: let
-        cfg = config.darwin;
-      in {
-        options = {
-          darwin = {
-            pkgs = lib.mkOption {
-              type = lib.types.uniq (lib.types.lazyAttrsOf (lib.types.raw or lib.types.unspecified));
-              description = "Nixpkgs to use.";
-              default = pkgs;
-              defaultText = lib.literalMD "`pkgs` (module argument)";
-            };
-            settings = lib.mkOption {
-              type = lib.types.submoduleWith {
-                modules = [./modules/darwin.nix];
-                specialArgs = {inherit (cfg) pkgs;};
-              };
-              default = {};
-              description = "Configuration for Bazel on Darwin.";
-            };
-            installationScript = lib.mkOption {
-              type = lib.types.str;
-              description = "Create darwin.bazelrc.";
-              default = cfg.settings.installationScript;
-              defaultText = lib.literalMD "bazelrc content";
-              readOnly = true;
-            };
-          };
+  options.perSystem = flake-parts-lib.mkPerSystemOption (
+    {
+      config,
+      options,
+      pkgs,
+      ...
+    }: let
+      namespace = "darwin";
+    in {
+      options.${namespace} = lib.mkOption {
+        type = lib.types.submoduleWith {
+          modules = [
+            ../../modules/installation-script.nix
+          ];
+          specialArgs = {inherit pkgs;};
         };
-      }
-    );
-  };
+      };
+
+      config.${namespace} = {
+        enable =
+          if pkgs.stdenv.isDarwin
+          then true
+          else false;
+        bazelrcContent = ''
+          build --@rules_rust//:extra_rustc_flags=-L${pkgs.libiconv}/lib,-Lframework=${pkgs.darwin.Security}/Library/Frameworks,-Lframework=${pkgs.darwin.CF}/Library/Frameworks
+          build --@rules_rust//:extra_exec_rustc_flags=-L${pkgs.libiconv}/lib,-Lframework=${pkgs.darwin.Security}/Library/Frameworks,-Lframework=${pkgs.darwin.CF}/Library/Frameworks
+        '';
+        inherit namespace;
+      };
+    }
+  );
 }
