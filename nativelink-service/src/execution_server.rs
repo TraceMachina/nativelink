@@ -62,7 +62,7 @@ impl NativelinkOperationId {
 
     fn from_name(name: &str) -> Result<Self, Error> {
         let (instance_name, name) = name
-            .split_once('/')
+            .rsplit_once('/')
             .err_tip(|| "Expected instance_name and name to be separated by '/'")?;
         Ok(NativelinkOperationId::new(
             instance_name.to_string(),
@@ -382,4 +382,17 @@ impl Execution for ExecutionServer {
         }
         resp
     }
+}
+
+#[cfg(test)]
+#[test]
+fn test_nl_op_id_from_name() -> Result<(), Box<dyn std::error::Error>> {
+    let examples = [("foo/bar", "foo"), ("a/b/c/d", "a/b/c")];
+
+    for (input, expected) in examples {
+        let id = NativelinkOperationId::from_name(input)?;
+        assert_eq!(id.instance_name, expected);
+    }
+
+    Ok(())
 }
