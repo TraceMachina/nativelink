@@ -63,6 +63,22 @@ filegroup(
 )
 
 test_suite(
+    name = "unit_tests",
+    tests = [
+        "//nativelink-config:unit_test",
+        "//nativelink-error:unit_test",
+        "//nativelink-macro:unit_test",
+        "//nativelink-metric:unit_test",
+        "//nativelink-metric-collector:unit_test",
+        "//nativelink-scheduler:unit_test",
+        "//nativelink-service:unit_test",
+        "//nativelink-store:unit_test",
+        "//nativelink-util:unit_test",
+        "//nativelink-worker:unit_test",
+    ],
+)
+
+test_suite(
     name = "doctests",
     tests = [
         "//nativelink-config:doc_test",

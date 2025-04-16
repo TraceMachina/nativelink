@@ -3,6 +3,7 @@ load(
     "rust_doc",
     "rust_doc_test",
     "rust_library",
+    "rust_test",
     "rust_test_suite",
 )
 
@@ -43,6 +44,16 @@ rust_test_suite(
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:serde_json5",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-config",
+    deps = [
+        "@crates//:pretty_assertions",
+        "@crates//:serde_json",
     ],
 )
 

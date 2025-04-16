@@ -3,6 +3,7 @@ load(
     "rust_doc",
     "rust_doc_test",
     "rust_library",
+    "rust_test",
     "rust_test_suite",
 )
 
@@ -79,6 +80,23 @@ rust_test_suite(
         "@crates//:serial_test",
         "@crates//:tokio",
         "@crates//:tonic",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-worker",
+    proc_macro_deps = [
+        "//nativelink-macro",
+    ],
+    deps = [
+        "@crates//:hyper",
+        "@crates//:hyper-util",
+        "@crates//:pretty_assertions",
+        "@crates//:prost-types",
+        "@crates//:rand",
+        "@crates//:serial_test",
     ],
 )
 

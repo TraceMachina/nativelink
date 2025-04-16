@@ -285,6 +285,7 @@ impl<'a> RequestBuilder<'a> {
     }
 
     #[inline]
+    #[allow(unused_qualifications, reason = "false positive on hyper::http::Error")]
     fn build(&self) -> Result<Request<SdkBody>, hyper::http::Error> {
         let mut req_builder = Request::builder()
             .method(self.components.method.clone())
