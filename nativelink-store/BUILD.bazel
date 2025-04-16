@@ -62,6 +62,7 @@ rust_library(
         "@crates//:hyper-rustls",
         "@crates//:hyper-util",
         "@crates//:lz4_flex",
+        "@crates//:opentelemetry",
         "@crates//:parking_lot",
         "@crates//:patricia_tree",
         "@crates//:prost",

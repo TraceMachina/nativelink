@@ -194,7 +194,9 @@ pub(crate) fn setup_grpc_stream() -> (
     (tx, Response::new(stream))
 }
 
-pub(crate) async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConfig) -> TestContext {
+pub(crate) async fn setup_local_worker_with_config(
+    local_worker_config: LocalWorkerConfig,
+) -> TestContext {
     let mock_worker_api_client = MockWorkerApiClient::new();
     let mock_worker_api_client_clone = mock_worker_api_client.clone();
     let actions_manager = Arc::new(MockRunningActionsManager::new());

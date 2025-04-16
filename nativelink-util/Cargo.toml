@@ -22,6 +22,10 @@ hex = { version = "0.4.3", default-features = false, features = ["std"] }
 hyper = "1.6.0"
 hyper-util = "0.1.11"
 lru = { version = "0.13.0", default-features = false }
+opentelemetry = { version = "0.29.0" } # TODO(aaronmondal): Streamline features.
+opentelemetry-appender-tracing = { version = "0.29.1" } # TODO(aaronmondal): Streamline features.
+opentelemetry-otlp = { version = "0.29.0", default-features = false, features = ["logs", "trace", "metrics", "grpc-tonic", "zstd-tonic"] }
+opentelemetry_sdk = { version = "0.29.0", default-features = false }
 parking_lot = "0.12.3"
 pin-project-lite = "0.2.16"
 prost = { version = "0.13.5", default-features = false }
@@ -36,6 +40,7 @@ tokio-util = { version = "0.7.14" }
 tonic = { version = "0.13.0", features = ["transport", "tls-ring"], default-features = false }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
+tracing-opentelemetry = { version = "0.30.0" } # TODO(aaronmondal): Streamline features.
 tracing-subscriber = { version = "0.3.19", features = ["ansi", "env-filter", "json"], default-features = false }
 uuid = { version = "1.16.0", default-features = false, features = ["v6", "v4", "serde"] }
 mock_instant = "0.5.3"

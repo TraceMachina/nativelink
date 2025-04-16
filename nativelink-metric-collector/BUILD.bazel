@@ -12,7 +12,6 @@ rust_library(
         "src/lib.rs",
         "src/metrics_collection.rs",
         "src/metrics_visitors.rs",
-        "src/otel_exporter.rs",
         "src/tracing_layers.rs",
     ],
     visibility = ["//visibility:public"],
