@@ -169,18 +169,6 @@ pub struct WorkerApiConfig {
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
-pub struct PrometheusConfig {
-    /// Path to register prometheus metrics. If path is "/metrics", and your
-    /// domain is "example.com", you can reach the endpoint with:
-    /// <http://example.com/metrics>.
-    ///
-    /// Default: "/metrics"
-    #[serde(default)]
-    pub path: String,
-}
-
-#[derive(Deserialize, Debug, Default)]
-#[serde(deny_unknown_fields)]
 pub struct AdminConfig {
     /// Path to register the admin API. If path is "/admin", and your
     /// domain is "example.com", you can reach the endpoint with:
@@ -286,10 +274,6 @@ pub struct ServicesConfig {
     /// the service that will consume build events from the client and
     /// publish them to a store for processing by an external service.
     pub experimental_bep: Option<BepConfig>,
-
-    /// Experimental - Prometheus metrics configuration. Metrics are gathered
-    /// as a singleton but may be served on multiple endpoints.
-    pub experimental_prometheus: Option<PrometheusConfig>,
 
     /// This is the service for any administrative tasks.
     /// It provides a REST API endpoint for administrative purposes.
@@ -715,19 +699,6 @@ pub struct GlobalConfig {
     /// Default: 24576 (= 24 * 1024)
     #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_open_files: usize,
-
-    /// This flag can be used to prevent metrics from being collected at runtime.
-    /// Metrics are still able to be collected, but this flag prevents metrics that
-    /// are collected at runtime (performance metrics) from being tallied. The
-    /// overhead of collecting metrics is very low, so this flag should only be
-    /// used if there is a very good reason to disable metrics.
-    /// This flag can be forcibly set using the `NATIVELINK_DISABLE_METRICS` variable.
-    /// If the variable is set it will always disable metrics regardless of what
-    /// this flag is set to.
-    ///
-    /// Default: <true (disabled) if no prometheus service enabled, false otherwise>
-    #[serde(default)]
-    pub disable_metrics: bool,
 
     /// Default hash function to use while uploading blobs to the CAS when not set
     /// by client.
