@@ -3,6 +3,7 @@ load(
     "rust_doc",
     "rust_doc_test",
     "rust_library",
+    "rust_test",
     "rust_test_suite",
 )
 
@@ -134,6 +135,31 @@ rust_test_suite(
         "@crates//:tracing",
         "@crates//:tracing-subscriber",
         "@crates//:uuid",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-store",
+    proc_macro_deps = [
+        "//nativelink-macro",
+    ],
+    deps = [
+        "//nativelink-metric-collector",
+        "@crates//:pretty_assertions",
+        "@crates//:memory-stats",
+        "@crates//:mock_instant",
+        "@crates//:sha2",
+        "@crates//:http",
+        "@crates//:aws-smithy-types",
+        "@crates//:aws-smithy-runtime",
+        "@crates//:aws-sdk-s3",
+        "@crates//:aws-smithy-runtime-api",
+        "@crates//:rand",
+        "@crates//:serde_json",
+        "@crates//:fred",
+        "@crates//:tracing-subscriber",
     ],
 )
 

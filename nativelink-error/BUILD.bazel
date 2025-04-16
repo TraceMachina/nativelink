@@ -2,6 +2,7 @@ load(
     "@rules_rust//rust:defs.bzl",
     "rust_doc",
     "rust_doc_test",
+    "rust_test",
     "rust_library",
 )
 
@@ -14,6 +15,24 @@ rust_library(
     deps = [
         "//nativelink-metric",
         "//nativelink-proto",
+        "@crates//:fred",
+        "@crates//:hex",
+        "@crates//:prost",
+        "@crates//:prost-types",
+        "@crates//:serde",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-error",
+    deps = [
+        "//nativelink-proto",
+        "//nativelink-metric",
+        "@crates//:async-lock",
         "@crates//:fred",
         "@crates//:hex",
         "@crates//:prost",
