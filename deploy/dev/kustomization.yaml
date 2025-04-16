@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
 - ../../kubernetes/resources/flux
+- ../../kubernetes/resources/flux-dev
 - ../../kubernetes/resources/nativelink-core
 - ../../kubernetes/resources/gateway-routes
 - ../../kubernetes/workers/resources/worker-init
