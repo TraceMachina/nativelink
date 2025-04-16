@@ -31,7 +31,7 @@
     "@astrojs/partytown": "^2.1.2",
     "@astrojs/react": "^3.6.2",
     "@astrojs/sitemap": "^3.1.6",
-    "@astrojs/starlight": "^0.28.2",
+    "@astrojs/starlight": "^0.34.0",
     "@bazel/bazelisk": "^1.19.0",
     "@beoe/pan-zoom": "^0.0.3",
     "@beoe/rehype-mermaid": "^0.0.1",
