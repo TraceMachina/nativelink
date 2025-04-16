@@ -20,6 +20,8 @@ bytes = { version = "1.10.1", default-features = false }
 filetime = "0.2.25"
 formatx = "0.2.3"
 futures = { version = "0.3.31", default-features = false }
+opentelemetry = { version = "0.29.0" } # TODO(aaronmondal): Streamline features.
+opentelemetry-http = { version = "0.29.0" } # TODO(aaronmondal): Streamline features.
 parking_lot = "0.12.3"
 prost = { version = "0.13.5", default-features = false }
 relative-path = "1.9.3"

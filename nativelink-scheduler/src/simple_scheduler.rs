@@ -28,10 +28,13 @@ use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
-use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::origin_event::{ORIGIN_EVENT_COLLECTOR, OriginEventCollector, OriginMetadata};
+use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
+use opentelemetry::KeyValue;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
 use tokio_stream::StreamExt;
@@ -279,23 +282,17 @@ impl SimpleScheduler {
             };
             tokio::pin!(attach_operation_fut);
 
-            let attach_operation_fut = if let Some(origin_event_tx) = maybe_origin_event_tx {
-                let mut ctx = ActiveOriginContext::fork().unwrap_or_default();
+            let attach_operation_fut = if let Some(_origin_event_tx) = maybe_origin_event_tx {
+                let origin_metadata = maybe_origin_metadata.unwrap_or_default();
 
-                // Populate our origin event collector with the origin metadata
-                // associated with the action.
-                ctx.replace_value(&ORIGIN_EVENT_COLLECTOR, move |maybe_old_collector| {
-                    let origin_metadata = maybe_origin_metadata.unwrap_or_default();
-                    let Some(old_collector) = maybe_old_collector else {
-                        return Some(Arc::new(OriginEventCollector::new(
-                            origin_event_tx.clone(),
-                            origin_metadata,
-                        )));
-                    };
-                    Some(Arc::new(old_collector.clone_with_metadata(origin_metadata)))
-                });
-                Arc::new(ctx)
-                    .wrap_async(info_span!("do_try_match"), attach_operation_fut)
+                let ctx = Context::current_with_baggage(vec![KeyValue::new(
+                    ENDUSER_ID,
+                    origin_metadata.identity,
+                )]);
+
+                info_span!("do_try_match")
+                    .in_scope(|| attach_operation_fut)
+                    .with_context(ctx)
                     .left_future()
             } else {
                 attach_operation_fut.right_future()
