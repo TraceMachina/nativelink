@@ -38,9 +38,10 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::store_trait::{
     StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
+use opentelemetry::{InstrumentationScope, KeyValue, global, metrics};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{Level, event};
+use tracing::{Instrument, Level, event, info_span, instrument};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -58,17 +59,14 @@ pub enum FileType {
     String,
 }
 
-#[derive(Debug, MetricsComponent)]
+#[derive(Debug)]
 pub struct SharedContext {
     // Used in testing to know how many active drop() spawns are running.
     // TODO(allada) It is probably a good idea to use a spin lock during
     // destruction of the store to ensure that all files are actually
     // deleted (similar to how it is done in tests).
-    #[metric(help = "Number of active drop spawns")]
     pub active_drop_spawns: AtomicU64,
-    #[metric(help = "Path to the configured temp path")]
     temp_path: String,
-    #[metric(help = "Path to the configured content path")]
     content_path: String,
 }
 
@@ -399,6 +397,11 @@ pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_
 /// `add_files_to_cache`.
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
+#[instrument(
+    skip(evicting_map, shared_context),
+    fields(content_path = shared_context.content_path.as_str(),
+    block_size = block_size,
+))]
 async fn add_files_to_cache<Fe: FileEntry>(
     evicting_map: &EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>,
     anchor_time: &SystemTime,
@@ -612,21 +615,57 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     Ok(())
 }
 
+fn init_metrics(content_path: &str) -> FilesystemMetrics {
+    let meter = global::meter_with_scope(
+        InstrumentationScope::builder("filesystem_store")
+            .with_attributes([KeyValue::new("content_path", content_path.to_string())])
+            .build(),
+    );
+
+    FilesystemMetrics {
+        file_sizes: meter
+            .f64_histogram("filesystem_store_file_sizes")
+            .with_description("Size distribution of files in the filesystem store")
+            .with_unit("bytes")
+            .build(),
+        operations_duration: meter
+            .f64_histogram("filesystem_store_operation_duration")
+            .with_description("Duration of filesystem store operations")
+            .with_unit("ms")
+            .build(),
+        active_operations: meter
+            .i64_up_down_counter("filesystem_store_active_operations")
+            .with_description("Number of active operations in the filesystem store")
+            .build(),
+    }
+}
+
+#[derive(Debug)]
+struct FilesystemMetrics {
+    file_sizes: metrics::Histogram<f64>,
+    operations_duration: metrics::Histogram<f64>,
+    active_operations: metrics::UpDownCounter<i64>,
+}
+
 #[derive(Debug, MetricsComponent)]
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
-    #[metric]
     shared_context: Arc<SharedContext>,
-    #[metric(group = "evicting_map")]
     evicting_map: Arc<EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>>,
-    #[metric(help = "Block size of the configured filesystem")]
     block_size: u64,
-    #[metric(help = "Size of the configured read buffer size")]
     read_buffer_size: usize,
     weak_self: Weak<Self>,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
+    metrics: FilesystemMetrics,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
+    #[instrument(
+        skip(spec),
+        fields(
+            content_path = %spec.content_path,
+            temp_path = %spec.temp_path,
+        ),
+    )]
     pub async fn new(spec: &FilesystemSpec) -> Result<Arc<Self>, Error> {
         Self::new_with_timeout_and_rename_fn(spec, |from, to| std::fs::rename(from, to)).await
     }
@@ -644,6 +683,9 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 .err_tip(|| format!("Failed to create directory {path}/{DIGEST_FOLDER}"))
         }
 
+        let metrics = init_metrics(&spec.content_path);
+
+        let start_time = std::time::Instant::now();
         let now = SystemTime::now();
 
         let empty_policy = nativelink_config::stores::EvictionPolicy::default();
@@ -651,7 +693,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         let evicting_map = Arc::new(EvictingMap::new(eviction_policy, now));
 
         // Create temp and content directories and the s and d subdirectories.
-
         create_subdirs(&spec.temp_path).await?;
         create_subdirs(&spec.content_path).await?;
 
@@ -666,6 +707,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         } else {
             spec.block_size
         };
+
         add_files_to_cache(
             evicting_map.as_ref(),
             &now,
@@ -674,13 +716,26 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             rename_fn,
         )
         .await?;
-        prune_temp_path(&shared_context.temp_path).await?;
+
+        let prune_span = info_span!(
+            "prune_temp_path",
+            temp_path = shared_context.temp_path.as_str()
+        );
+        prune_temp_path(&shared_context.temp_path)
+            .instrument(prune_span)
+            .await?;
 
         let read_buffer_size = if spec.read_buffer_size == 0 {
             DEFAULT_BUFF_SIZE
         } else {
             spec.read_buffer_size as usize
         };
+
+        metrics.operations_duration.record(
+            start_time.elapsed().as_millis() as f64,
+            &[KeyValue::new("operation", "initialization")],
+        );
+
         Ok(Arc::new_cyclic(|weak_self| Self {
             shared_context,
             evicting_map,
@@ -688,6 +743,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             read_buffer_size,
             weak_self: weak_self.clone(),
             rename_fn,
+            metrics,
         }))
     }
 
@@ -702,6 +758,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store"))
     }
 
+    #[instrument(
+        skip(self, entry, temp_file, reader),
+        fields(key = %final_key.as_str()),
+    )]
     async fn update_file(
         self: Pin<&Self>,
         mut entry: Fe,
@@ -709,6 +769,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
+        let start_time = std::time::Instant::now();
+
+        self.metrics
+            .active_operations
+            .add(1, &[KeyValue::new("operation", "update_file")]);
+
         let mut data_size = 0;
         loop {
             let mut data = reader
@@ -735,6 +801,20 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         drop(temp_file);
 
         *entry.data_size_mut() = data_size;
+
+        self.metrics
+            .file_sizes
+            .record(data_size as f64, &[KeyValue::new("operation", "write")]);
+
+        self.metrics.operations_duration.record(
+            start_time.elapsed().as_millis() as f64,
+            &[KeyValue::new("operation", "update_file")],
+        );
+
+        self.metrics
+            .active_operations
+            .add(-1, &[KeyValue::new("operation", "update_file")]);
+
         self.emplace_file(final_key, Arc::new(entry)).await
     }
 
@@ -814,6 +894,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
 #[async_trait]
 impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
+    #[instrument(
+        skip(self, keys, results),
+        fields(keys_count = keys.len()),
+    )]
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -848,6 +932,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         Ok(())
     }
 
+    #[instrument(
+        skip(self, reader, _upload_size),
+        fields(key = %key.as_str()),
+    )]
     async fn update(
         self: Pin<&Self>,
         key: StoreKey<'_>,

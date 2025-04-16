@@ -895,8 +895,6 @@ fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_tracing()?;
-
     let mut cfg = get_config()?;
 
     let global_cfg = if let Some(global_cfg) = &mut cfg.global {
@@ -932,6 +930,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+
+    // The OTLP exporters need to run in a Tokio context.
+    #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
+    runtime.block_on(async { tokio::spawn(async { init_tracing() }).await? })?;
 
     // Initiates the shutdown process by broadcasting the shutdown signal via the `oneshot::Sender` to all listeners.
     // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.

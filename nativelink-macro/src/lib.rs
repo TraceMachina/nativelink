@@ -36,7 +36,7 @@ pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[tokio::test(#attr)]
         async fn #fn_name(#fn_inputs) #fn_output {
             // Error means already initialized, which is ok.
-            let _ = nativelink_util::init_tracing();
+            let _ = nativelink_util::init_tracing_for_tests();
 
             #[warn(clippy::disallowed_methods)]
             ::std::sync::Arc::new(::nativelink_util::origin_context::OriginContext::new()).wrap_async(
