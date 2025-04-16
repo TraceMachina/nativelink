@@ -172,7 +172,6 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -246,7 +245,6 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
         || async move {},
         task_change_notify.clone(),
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -307,7 +305,6 @@ async fn find_executing_action() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -391,7 +388,6 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest1 = DigestInfo::new([99u8; 32], 512);
     let action_digest2 = DigestInfo::new([88u8; 32], 512);
@@ -585,7 +581,6 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -673,7 +668,6 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
     let mut platform_properties = HashMap::new();
@@ -768,7 +762,6 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -875,7 +868,6 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let worker_id = WorkerId("worker_id".to_string());
     let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -1031,7 +1023,6 @@ async fn matching_engine_fails_sends_abort() -> Result<(), Error> {
             || async move {},
             task_change_notify,
             MockInstantWrapped::default,
-            None,
         );
         // Initial worker calls do_try_match, so send it no items.
         senders.get_range_of_actions.send(vec![]).unwrap();
@@ -1077,7 +1068,6 @@ async fn matching_engine_fails_sends_abort() -> Result<(), Error> {
             || async move {},
             task_change_notify,
             MockInstantWrapped::default,
-            None,
         );
         // senders.tx_get_awaited_action_by_id.send(Ok(None)).unwrap();
         senders.get_range_of_actions.send(vec![]).unwrap();
@@ -1136,7 +1126,6 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1268,7 +1257,6 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1370,7 +1358,6 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1490,7 +1477,6 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1600,7 +1586,6 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1747,7 +1732,6 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1913,7 +1897,6 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1981,7 +1964,6 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2141,7 +2123,6 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
         },
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     assert_eq!(dropped.load(Ordering::Relaxed), false);
 
@@ -2171,7 +2152,6 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2257,7 +2237,6 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2336,7 +2315,6 @@ async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 

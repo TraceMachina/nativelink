@@ -41,6 +41,8 @@ rust_library(
         "@crates//:bytes",
         "@crates//:futures",
         "@crates//:lru",
+        "@crates//:opentelemetry",
+        "@crates//:opentelemetry-semantic-conventions",
         "@crates//:parking_lot",
         "@crates//:rand",
         "@crates//:scopeguard",

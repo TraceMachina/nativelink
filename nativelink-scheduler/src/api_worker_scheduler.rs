@@ -19,19 +19,16 @@ use async_lock::Mutex;
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
-use nativelink_metric::{
-    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
-    RootMetricsComponent, group,
-};
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
+use opentelemetry::{InstrumentationScope, KeyValue, global, metrics};
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tonic::async_trait;
-use tracing::{Level, event};
+use tracing::{error, instrument, warn};
 
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
@@ -54,32 +51,49 @@ impl DerefMut for Workers {
     }
 }
 
-// Note: This could not be a derive macro because this derive-macro
-// does n ot support LruCache and nameless field structs.
-impl MetricsComponent for Workers {
-    fn publish(
-        &self,
-        _kind: MetricKind,
-        _field_metadata: MetricFieldData,
-    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
-        let _enter = group!("workers").entered();
-        for (worker_id, worker) in self.iter() {
-            let _enter = group!(worker_id).entered();
-            worker.publish(MetricKind::Component, MetricFieldData::default())?;
-        }
-        Ok(MetricPublishKnownKindData::Component)
+fn init_metrics() -> ApiWorkerSchedulerMetrics {
+    let meter =
+        global::meter_with_scope(InstrumentationScope::builder("api_worker_scheduler").build());
+
+    ApiWorkerSchedulerMetrics {
+        workers_count: meter
+            .i64_up_down_counter("worker_count")
+            .with_description("Number of workers available in the scheduler")
+            .build(),
+        worker_actions_total: meter
+            .u64_counter("worker_actions_total")
+            .with_description("Total number of actions assigned to workers")
+            .build(),
+        worker_evictions: meter
+            .u64_counter("worker_evictions")
+            .with_description("Number of workers evicted from the pool")
+            .build(),
+        worker_operation_duration: meter
+            .f64_histogram("worker_operation_duration")
+            .with_description("Duration of operations on workers")
+            .with_unit("ms")
+            .build(),
+        worker_backpressure_events: meter
+            .u64_counter("worker_backpressure_events")
+            .with_description("Number of times workers have applied backpressure")
+            .build(),
     }
 }
 
+#[derive(Debug, Clone)]
+struct ApiWorkerSchedulerMetrics {
+    workers_count: metrics::UpDownCounter<i64>,
+    worker_actions_total: metrics::Counter<u64>,
+    worker_evictions: metrics::Counter<u64>,
+    worker_operation_duration: metrics::Histogram<f64>,
+    worker_backpressure_events: metrics::Counter<u64>,
+}
+
 /// A collection of workers that are available to run tasks.
-#[derive(MetricsComponent)]
 struct ApiWorkerSchedulerImpl {
     /// A `LruCache` of workers availabled based on `allocation_strategy`.
-    #[metric(group = "workers")]
     workers: Workers,
-
     /// The worker state manager.
-    #[metric(group = "worker_state_manager")]
     worker_state_manager: Arc<dyn WorkerStateManager>,
     /// The allocation strategy for workers.
     allocation_strategy: WorkerAllocationStrategy,
@@ -87,6 +101,7 @@ struct ApiWorkerSchedulerImpl {
     worker_change_notify: Arc<Notify>,
     /// A channel to notify that an operation is still alive.
     operation_keep_alive_tx: UnboundedSender<(OperationId, WorkerId)>,
+    metrics: ApiWorkerSchedulerMetrics,
 }
 
 impl core::fmt::Debug for ApiWorkerSchedulerImpl {
@@ -102,6 +117,10 @@ impl core::fmt::Debug for ApiWorkerSchedulerImpl {
 
 impl ApiWorkerSchedulerImpl {
     /// Refreshes the lifetime of the worker with the given timestamp.
+    #[instrument(
+        skip(self, worker_id, timestamp),
+        fields(worker_id = ?worker_id),
+    )]
     fn refresh_lifetime(
         &mut self,
         worker_id: &WorkerId,
@@ -126,8 +145,7 @@ impl ApiWorkerSchedulerImpl {
                 .send((operation_id.clone(), worker_id.clone()))
                 .is_err()
             {
-                event!(
-                    Level::ERROR,
+                error!(
                     ?operation_id,
                     ?worker_id,
                     "OperationKeepAliveTx stream closed"
@@ -139,9 +157,15 @@ impl ApiWorkerSchedulerImpl {
 
     /// Adds a worker to the pool.
     /// Note: This function will not do any task matching.
+    #[instrument(
+        skip(self, worker),
+        fields(worker_id = ?worker.id),
+    )]
     fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id.clone();
         self.workers.put(worker_id.clone(), worker);
+
+        self.metrics.workers_count.add(1, &[]);
 
         // Worker is not cloneable, and we do not want to send the initial connection results until
         // we have added it to the map, or we might get some strange race conditions due to the way
@@ -151,8 +175,7 @@ impl ApiWorkerSchedulerImpl {
             .send_initial_connection_result()
             .err_tip(|| "Failed to send initial connection result to worker");
         if let Err(err) = &res {
-            event!(
-                Level::ERROR,
+            error!(
                 ?worker_id,
                 ?err,
                 "Worker connection appears to have been closed while adding to pool"
@@ -165,13 +188,26 @@ impl ApiWorkerSchedulerImpl {
     /// Removes worker from pool.
     /// Note: The caller is responsible for any rescheduling of any tasks that might be
     /// running.
+    #[instrument(
+        skip(self, worker_id),
+        fields(worker_id = ?worker_id),
+    )]
     fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
         let result = self.workers.pop(worker_id);
+
+        if result.is_some() {
+            self.metrics.workers_count.add(-1, &[]);
+        }
+
         self.worker_change_notify.notify_one();
         result
     }
 
     /// Sets if the worker is draining or not.
+    #[instrument(
+        skip(self, worker_id),
+        fields(worker_id = ?worker_id, is_draining),
+    )]
     async fn set_drain_worker(
         &mut self,
         worker_id: &WorkerId,
@@ -186,6 +222,7 @@ impl ApiWorkerSchedulerImpl {
         Ok(())
     }
 
+    #[instrument(skip(self, platform_properties))]
     fn inner_find_worker_for_action(
         &self,
         platform_properties: &PlatformProperties,
@@ -204,6 +241,10 @@ impl ApiWorkerSchedulerImpl {
         workers_iter.map(|(_, w)| w.id.clone())
     }
 
+    #[instrument(
+        skip(self, worker_id, operation_id, update),
+        fields(worker_id = ?worker_id, operation_id = ?operation_id),
+    )]
     async fn update_action(
         &mut self,
         worker_id: &WorkerId,
@@ -234,6 +275,10 @@ impl ApiWorkerSchedulerImpl {
             }
         };
 
+        if due_to_backpressure {
+            self.metrics.worker_backpressure_events.add(1, &[]);
+        }
+
         // Update the operation in the worker state manager.
         {
             let update_operation_res = self
@@ -242,8 +287,7 @@ impl ApiWorkerSchedulerImpl {
                 .await
                 .err_tip(|| "in update_operation on SimpleScheduler::update_action");
             if let Err(err) = update_operation_res {
-                event!(
-                    Level::ERROR,
+                error!(
                     ?operation_id,
                     ?worker_id,
                     ?err,
@@ -278,20 +322,31 @@ impl ApiWorkerSchedulerImpl {
 
     /// Notifies the specified worker to run the given action and handles errors by evicting
     /// the worker if the notification fails.
+    #[instrument(
+        skip(self, worker_id, operation_id, action_info),
+        fields(worker_id = ?worker_id, operation_id = ?operation_id),
+    )]
     async fn worker_notify_run_action(
         &mut self,
         worker_id: WorkerId,
         operation_id: OperationId,
         action_info: ActionInfoWithProps,
     ) -> Result<(), Error> {
+        let start_time = std::time::Instant::now();
+
         if let Some(worker) = self.workers.get_mut(&worker_id) {
             let notify_worker_result = worker
                 .notify_update(WorkerUpdate::RunAction((operation_id, action_info.clone())))
                 .await;
 
-            if notify_worker_result.is_err() {
-                event!(
-                    Level::WARN,
+            if notify_worker_result.is_ok() {
+                self.metrics.worker_actions_total.add(1, &[]);
+                self.metrics.worker_operation_duration.record(
+                    start_time.elapsed().as_millis() as f64,
+                    &[KeyValue::new("operation", "assign_action")],
+                );
+            } else {
+                warn!(
                     ?worker_id,
                     ?action_info,
                     ?notify_worker_result,
@@ -307,8 +362,7 @@ impl ApiWorkerSchedulerImpl {
                     .merge(self.immediate_evict_worker(&worker_id, err).await);
             }
         } else {
-            event!(
-                Level::WARN,
+            warn!(
                 ?worker_id,
                 ?operation_id,
                 ?action_info,
@@ -319,11 +373,18 @@ impl ApiWorkerSchedulerImpl {
     }
 
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
+    #[instrument(
+        skip(self, worker_id, err),
+        fields(worker_id = ?worker_id, err_code = ?err.code),
+    )]
     async fn immediate_evict_worker(
         &mut self,
         worker_id: &WorkerId,
         err: Error,
     ) -> Result<(), Error> {
+        self.metrics
+            .worker_evictions
+            .add(1, &[KeyValue::new("reason", err.code.to_string())]);
         let mut result = Ok(());
         if let Some(mut worker) = self.remove_worker(worker_id) {
             // We don't care if we fail to send message to worker, this is only a best attempt.
@@ -347,21 +408,25 @@ impl ApiWorkerSchedulerImpl {
     }
 }
 
-#[derive(Debug, MetricsComponent)]
+#[derive(Debug)]
 pub struct ApiWorkerScheduler {
-    #[metric]
     inner: Mutex<ApiWorkerSchedulerImpl>,
-    #[metric(group = "platform_property_manager")]
     platform_property_manager: Arc<PlatformPropertyManager>,
-
-    #[metric(
-        help = "Timeout of how long to evict workers if no response in this given amount of time in seconds."
-    )]
     worker_timeout_s: u64,
     _operation_keep_alive_spawn: JoinHandleDropGuard<()>,
 }
 
 impl ApiWorkerScheduler {
+    #[instrument(
+        skip(
+            worker_state_manager,
+            platform_property_manager,
+            allocation_strategy,
+            worker_change_notify
+        ),
+        fields(worker_timeout_s),
+        level = "info"
+    )]
     pub fn new(
         worker_state_manager: Arc<dyn WorkerStateManager>,
         platform_property_manager: Arc<PlatformPropertyManager>,
@@ -377,6 +442,7 @@ impl ApiWorkerScheduler {
                 allocation_strategy,
                 worker_change_notify,
                 operation_keep_alive_tx,
+                metrics: init_metrics(),
             }),
             platform_property_manager,
             worker_timeout_s,
@@ -402,8 +468,7 @@ impl ApiWorkerScheduler {
                                 )
                                 .await;
                             if let Err(err) = update_operation_res {
-                                event!(
-                                    Level::WARN,
+                                warn!(
                                     ?err,
                                     "Error while running worker_keep_alive_received, maybe job is done?"
                                 );
@@ -415,6 +480,10 @@ impl ApiWorkerScheduler {
         })
     }
 
+    #[instrument(
+        skip(self, worker_id, operation_id, action_info),
+        fields(worker_id = ?worker_id, operation_id = ?operation_id),
+    )]
     pub async fn worker_notify_run_action(
         &self,
         worker_id: WorkerId,
@@ -431,6 +500,7 @@ impl ApiWorkerScheduler {
     // TODO(blaise.bruer) This algorithm is not very efficient. Simple testing using a tree-like
     // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
     // simulation of worst cases in a single threaded environment.
+    #[instrument(skip(self, platform_properties))]
     pub async fn find_worker_for_action(
         &self,
         platform_properties: &PlatformProperties,
@@ -465,6 +535,10 @@ impl WorkerScheduler for ApiWorkerScheduler {
         self.platform_property_manager.as_ref()
     }
 
+    #[instrument(
+        skip(self, worker),
+        fields(worker_id = ?worker.id),
+    )]
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
         let worker_id = worker.id.clone();
@@ -478,6 +552,10 @@ impl WorkerScheduler for ApiWorkerScheduler {
         Ok(())
     }
 
+    #[instrument(
+        skip(self, worker_id, operation_id, update),
+        fields(worker_id = ?worker_id, operation_id = ?operation_id),
+    )]
     async fn update_action(
         &self,
         worker_id: &WorkerId,
@@ -488,6 +566,10 @@ impl WorkerScheduler for ApiWorkerScheduler {
         inner.update_action(worker_id, operation_id, update).await
     }
 
+    #[instrument(
+        skip(self, worker_id, timestamp),
+        fields(worker_id = ?worker_id),
+    )]
     async fn worker_keep_alive_received(
         &self,
         worker_id: &WorkerId,
@@ -499,6 +581,10 @@ impl WorkerScheduler for ApiWorkerScheduler {
             .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
     }
 
+    #[instrument(
+        skip(self, worker_id),
+        fields(worker_id = ?worker_id),
+    )]
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
         inner
@@ -509,6 +595,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
             .await
     }
 
+    #[instrument(skip(self, now_timestamp))]
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
 
@@ -528,11 +615,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
             })
             .collect();
         for worker_id in &worker_ids_to_remove {
-            event!(
-                Level::WARN,
-                ?worker_id,
-                "Worker timed out, removing from pool"
-            );
+            warn!(?worker_id, "Worker timed out, removing from pool");
             result = result.merge(
                 inner
                     .immediate_evict_worker(
@@ -549,10 +632,12 @@ impl WorkerScheduler for ApiWorkerScheduler {
         result
     }
 
+    #[instrument(
+        skip(self, worker_id),
+        fields(worker_id = ?worker_id, is_draining),
+    )]
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
         inner.set_drain_worker(worker_id, is_draining).await
     }
 }
-
-impl RootMetricsComponent for ApiWorkerScheduler {}
