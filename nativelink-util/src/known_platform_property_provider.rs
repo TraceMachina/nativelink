@@ -14,7 +14,6 @@
 
 use async_trait::async_trait;
 use nativelink_error::Error;
-use nativelink_metric::RootMetricsComponent;
 
 use crate::operation_state_manager::ClientStateManager;
 
@@ -24,7 +23,7 @@ use crate::operation_state_manager::ClientStateManager;
 // move this to the nativelink-scheduler crate.
 #[async_trait]
 pub trait KnownPlatformPropertyProvider:
-    ClientStateManager + Sync + Send + Unpin + RootMetricsComponent + 'static
+    ClientStateManager + Sync + Send + Unpin + 'static
 {
     // Returns the platform property manager.
     async fn get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error>;

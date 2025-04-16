@@ -32,7 +32,7 @@ rust_binary(
         "@crates//:hyper-util",
         "@crates//:mimalloc",
         "@crates//:opentelemetry",
-        "@crates//:opentelemetry_sdk",
+        "@crates//:opentelemetry-http",
         "@crates//:parking_lot",
         "@crates//:rustls-pemfile",
         "@crates//:scopeguard",

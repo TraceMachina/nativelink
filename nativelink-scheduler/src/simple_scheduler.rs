@@ -19,7 +19,6 @@ use async_trait::async_trait;
 use futures::{Future, FutureExt};
 use nativelink_config::schedulers::SimpleSpec;
 use nativelink_error::{Code, Error, ResultExt};
-use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
@@ -28,14 +27,17 @@ use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
-use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::origin_event::{ORIGIN_EVENT_COLLECTOR, OriginEventCollector, OriginMetadata};
+use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
+use opentelemetry::{InstrumentationScope, KeyValue, global, metrics};
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
 use tokio_stream::StreamExt;
-use tracing::{Level, event, info_span};
+use tracing::{debug, error, info, info_span, instrument, warn};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
@@ -108,26 +110,42 @@ impl ActionStateResult for SimpleSchedulerActionStateResult {
     }
 }
 
+fn init_metrics() -> SimpleSchedulerMetrics {
+    let meter = global::meter_with_scope(InstrumentationScope::builder("simple_scheduler").build());
+
+    SimpleSchedulerMetrics {
+        matching_attempts: meter
+            .u64_counter("scheduler_matching_attempts")
+            .with_description("Number of attempts to match actions to workers")
+            .build(),
+        successful_matches: meter
+            .u64_counter("scheduler_successful_matches")
+            .with_description("Number of successful action to worker matches")
+            .build(),
+    }
+}
+
+#[derive(Debug)]
+struct SimpleSchedulerMetrics {
+    matching_attempts: metrics::Counter<u64>,
+    successful_matches: metrics::Counter<u64>,
+}
+
 /// Engine used to manage the queued/running tasks and relationship with
 /// the worker nodes. All state on how the workers and actions are interacting
 /// should be held in this struct.
-#[derive(MetricsComponent)]
 pub struct SimpleScheduler {
     /// Manager for matching engine side of the state manager.
-    #[metric(group = "matching_engine_state_manager")]
     matching_engine_state_manager: Arc<dyn MatchingEngineStateManager>,
 
     /// Manager for client state of this scheduler.
-    #[metric(group = "client_state_manager")]
     client_state_manager: Arc<dyn ClientStateManager>,
 
     /// Manager for platform of this scheduler.
-    #[metric(group = "platform_properties")]
     platform_property_manager: Arc<PlatformPropertyManager>,
 
     /// A `Workers` pool that contains all workers that are available to execute actions in a priority
     /// order based on the allocation strategy.
-    #[metric(group = "worker_scheduler")]
     worker_scheduler: Arc<ApiWorkerScheduler>,
 
     /// The sender to send origin events to the origin events.
@@ -136,6 +154,8 @@ pub struct SimpleScheduler {
     /// Background task that tries to match actions to workers. If this struct
     /// is dropped the spawn will be cancelled as well.
     _task_worker_matching_spawn: JoinHandleDropGuard<()>,
+
+    metrics: SimpleSchedulerMetrics,
 }
 
 impl core::fmt::Debug for SimpleScheduler {
@@ -160,6 +180,10 @@ impl SimpleScheduler {
     /// for execution based on priority and other metrics.
     /// All further updates to the action will be provided through the returned
     /// value.
+    #[instrument(
+        skip(self, action_info),
+        fields(client_op_id = ?client_operation_id),
+    )]
     async fn inner_add_action(
         &self,
         client_operation_id: OperationId,
@@ -170,34 +194,44 @@ impl SimpleScheduler {
             .add_action(client_operation_id.clone(), action_info)
             .await
             .err_tip(|| "In SimpleScheduler::add_action")?;
+
+        debug!("Action added");
+
         Ok(Box::new(SimpleSchedulerActionStateResult::new(
             client_operation_id.clone(),
             action_state_result,
         )))
     }
 
+    #[instrument(skip(self))]
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
+        debug!(?filter, "Filtering operations");
         self.client_state_manager
             .filter_operations(filter)
             .await
             .err_tip(|| "In SimpleScheduler::find_by_client_operation_id getting filter result")
     }
 
+    #[instrument(skip(self))]
     async fn get_queued_operations(&self) -> Result<ActionStateResultStream, Error> {
         let filter = OperationFilter {
             stages: OperationStageFlags::Queued,
             order_by_priority_direction: Some(OrderDirection::Desc),
             ..Default::default()
         };
+
+        debug!("Getting queued operations");
+
         self.matching_engine_state_manager
             .filter_operations(filter)
             .await
             .err_tip(|| "In SimpleScheduler::get_queued_operations getting filter result")
     }
 
+    #[instrument(skip(self))]
     pub async fn do_try_match_for_test(&self) -> Result<(), Error> {
         self.do_try_match().await
     }
@@ -205,6 +239,7 @@ impl SimpleScheduler {
     // TODO(blaise.bruer) This is an O(n*m) (aka n^2) algorithm. In theory we
     // can create a map of capabilities of each worker and then try and match
     // the actions to the worker using the map lookup (ie. map reduce).
+    #[instrument(skip(self))]
     async fn do_try_match(&self) -> Result<(), Error> {
         async fn match_action_to_worker(
             action_state_result: &dyn ActionStateResult,
@@ -218,6 +253,8 @@ impl SimpleScheduler {
                     .as_action_info()
                     .await
                     .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
+
+            debug!(action_id = ?action_info.unique_qualifier.digest(), "Processing action for matching");
 
             // TODO(allada) We should not compute this every time and instead store
             // it with the ActionInfo when we receive it.
@@ -238,10 +275,23 @@ impl SimpleScheduler {
                     .find_worker_for_action(&action_info.platform_properties)
                     .await
                 {
-                    Some(worker_id) => worker_id,
+                    Some(worker_id) => {
+                        debug!(
+                            worker_id = ?worker_id,
+                            action_id = ?action_info.inner.unique_qualifier.digest(),
+                            "Found worker for action"
+                        );
+                        worker_id
+                    }
                     // If we could not find a worker for the action,
                     // we have nothing to do.
-                    None => return Ok(()),
+                    None => {
+                        warn!(
+                            action_id = ?action_info.inner.unique_qualifier.digest(),
+                            "No worker found for action"
+                        );
+                        return Ok(());
+                    }
                 }
             };
 
@@ -255,6 +305,12 @@ impl SimpleScheduler {
                     action_state.client_operation_id.clone()
                 };
 
+                debug!(
+                    worker_id = ?worker_id,
+                    operation_id = ?operation_id,
+                    "Assigning operation to worker"
+                );
+
                 // Tell the matching engine that the operation is being assigned to a worker.
                 let assign_result = matching_engine_state_manager
                     .assign_operation(&operation_id, Ok(&worker_id))
@@ -264,11 +320,22 @@ impl SimpleScheduler {
                     if err.code == Code::Aborted {
                         // If the operation was aborted, it means that the operation was
                         // cancelled due to another operation being assigned to the worker.
+                        debug!(
+                            operation_id = ?operation_id,
+                            worker_id = ?worker_id,
+                            "Operation assignment aborted"
+                        );
                         return Ok(());
                     }
                     // Any other error is a real error.
                     return Err(err);
                 }
+
+                info!(
+                    operation_id = ?operation_id,
+                    worker_id = ?worker_id,
+                    "Operation assigned to worker, notifying worker"
+                );
 
                 workers
                     .worker_notify_run_action(worker_id, operation_id, action_info)
@@ -279,29 +346,25 @@ impl SimpleScheduler {
             };
             tokio::pin!(attach_operation_fut);
 
-            let attach_operation_fut = if let Some(origin_event_tx) = maybe_origin_event_tx {
-                let mut ctx = ActiveOriginContext::fork().unwrap_or_default();
+            let attach_operation_fut = if let Some(_origin_event_tx) = maybe_origin_event_tx {
+                let origin_metadata = maybe_origin_metadata.unwrap_or_default();
 
-                // Populate our origin event collector with the origin metadata
-                // associated with the action.
-                ctx.replace_value(&ORIGIN_EVENT_COLLECTOR, move |maybe_old_collector| {
-                    let origin_metadata = maybe_origin_metadata.unwrap_or_default();
-                    let Some(old_collector) = maybe_old_collector else {
-                        return Some(Arc::new(OriginEventCollector::new(
-                            origin_event_tx.clone(),
-                            origin_metadata,
-                        )));
-                    };
-                    Some(Arc::new(old_collector.clone_with_metadata(origin_metadata)))
-                });
-                Arc::new(ctx)
-                    .wrap_async(info_span!("do_try_match"), attach_operation_fut)
+                let ctx = Context::current_with_baggage(vec![KeyValue::new(
+                    ENDUSER_ID,
+                    origin_metadata.identity,
+                )]);
+
+                info_span!("do_try_match")
+                    .in_scope(|| attach_operation_fut)
+                    .with_context(ctx)
                     .left_future()
             } else {
                 attach_operation_fut.right_future()
             };
             attach_operation_fut.await
         }
+
+        debug!("Attempting to match action to worker");
 
         let mut result = Ok(());
 
@@ -310,18 +373,31 @@ impl SimpleScheduler {
             .await
             .err_tip(|| "Failed to get queued operations in do_try_match")?;
 
+        let mut processed_count = 0;
+        let mut matched_count = 0;
+
         while let Some(action_state_result) = stream.next().await {
-            result = result.merge(
-                match_action_to_worker(
-                    action_state_result.as_ref(),
-                    self.worker_scheduler.as_ref(),
-                    self.matching_engine_state_manager.as_ref(),
-                    self.platform_property_manager.as_ref(),
-                    self.maybe_origin_event_tx.as_ref(),
-                )
-                .await,
-            );
+            processed_count += 1;
+
+            let match_result = match_action_to_worker(
+                action_state_result.as_ref(),
+                self.worker_scheduler.as_ref(),
+                self.matching_engine_state_manager.as_ref(),
+                self.platform_property_manager.as_ref(),
+                self.maybe_origin_event_tx.as_ref(),
+            )
+            .await;
+
+            if match_result.is_ok() {
+                matched_count += 1;
+            }
+            result = result.merge(match_result);
         }
+
+        self.metrics.matching_attempts.add(processed_count, &[]);
+        self.metrics.successful_matches.add(matched_count, &[]);
+
+        debug!(matched_count, "Matching attempt completed");
         result
     }
 }
@@ -353,6 +429,10 @@ impl SimpleScheduler {
         )
     }
 
+    #[instrument(
+        skip_all,
+        fields(worker_timeout_s, client_action_timeout_s, max_job_retries)
+    )]
     pub fn new_with_callback<
         Fut: Future<Output = ()> + Send,
         F: Fn() -> Fut + Send + Sync + 'static,
@@ -386,8 +466,7 @@ impl SimpleScheduler {
         // tasks are going to be dropped all over the place, this isn't a good
         // setting.
         if client_action_timeout_s <= CLIENT_KEEPALIVE_DURATION.as_secs() {
-            event!(
-                Level::ERROR,
+            error!(
                 client_action_timeout_s,
                 "Setting client_action_timeout_s to less than the client keep alive interval is going to cause issues, please set above {}.",
                 CLIENT_KEEPALIVE_DURATION.as_secs()
@@ -398,6 +477,11 @@ impl SimpleScheduler {
         if max_job_retries == 0 {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
         }
+
+        info!(
+            worker_timeout_s,
+            client_action_timeout_s, max_job_retries, "Initializing SimpleScheduler"
+        );
 
         let worker_change_notify = Arc::new(Notify::new());
         let state_manager = SimpleSchedulerStateManager::new(
@@ -422,6 +506,8 @@ impl SimpleScheduler {
             let weak_inner = weak_self.clone();
             let task_worker_matching_spawn =
                 spawn!("simple_scheduler_task_worker_matching", async move {
+                    info!("Starting worker matching task");
+
                     // Break out of the loop only when the inner is dropped.
                     loop {
                         let task_change_fut = task_change_notify.notified();
@@ -430,20 +516,28 @@ impl SimpleScheduler {
                         tokio::pin!(worker_change_fut);
                         // Wait for either of these futures to be ready.
                         let _ = futures::future::select(task_change_fut, worker_change_fut).await;
+                        debug!("Task or worker change notification received");
+
                         let result = match weak_inner.upgrade() {
                             Some(scheduler) => scheduler.do_try_match().await,
                             // If the inner went away it means the scheduler is shutting
                             // down, so we need to resolve our future.
-                            None => return,
+                            None => {
+                                info!("Scheduler dropped, exiting worker matching task");
+                                return;
+                            }
                         };
                         if let Err(err) = result {
-                            event!(Level::ERROR, ?err, "Error while running do_try_match");
+                            error!(?err, "Error while running do_try_match");
                         }
 
                         on_matching_engine_run().await;
                     }
                     // Unreachable.
                 });
+
+            info!("SimpleScheduler initialized");
+
             SimpleScheduler {
                 matching_engine_state_manager: state_manager.clone(),
                 client_state_manager: state_manager.clone(),
@@ -451,6 +545,7 @@ impl SimpleScheduler {
                 platform_property_manager,
                 maybe_origin_event_tx,
                 _task_worker_matching_spawn: task_worker_matching_spawn,
+                metrics: init_metrics(),
             }
         });
         (action_scheduler, worker_scheduler_clone)
@@ -459,6 +554,10 @@ impl SimpleScheduler {
 
 #[async_trait]
 impl ClientStateManager for SimpleScheduler {
+    #[instrument(
+        skip(self, action_info),
+        fields(client_op_id = ?client_operation_id),
+    )]
     async fn add_action(
         &self,
         client_operation_id: OperationId,
@@ -468,6 +567,7 @@ impl ClientStateManager for SimpleScheduler {
             .await
     }
 
+    #[instrument(skip(self))]
     async fn filter_operations<'a>(
         &'a self,
         filter: OperationFilter,
@@ -482,6 +582,7 @@ impl ClientStateManager for SimpleScheduler {
 
 #[async_trait]
 impl KnownPlatformPropertyProvider for SimpleScheduler {
+    #[instrument(skip(self))]
     async fn get_known_properties(&self, _instance_name: &str) -> Result<Vec<String>, Error> {
         Ok(self
             .worker_scheduler
@@ -499,46 +600,71 @@ impl WorkerScheduler for SimpleScheduler {
         self.worker_scheduler.get_platform_property_manager()
     }
 
+    #[instrument(
+        skip(self, worker),
+        fields(worker_id = ?worker.id),
+    )]
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
+        info!("Adding worker to scheduler");
         self.worker_scheduler.add_worker(worker).await
     }
 
+    #[instrument(
+        skip(self),
+        fields(worker_id = ?worker_id, operation_id = ?operation_id),
+    )]
     async fn update_action(
         &self,
         worker_id: &WorkerId,
         operation_id: &OperationId,
         update: UpdateOperationType,
     ) -> Result<(), Error> {
+        debug!(?update, "Updating action");
         self.worker_scheduler
             .update_action(worker_id, operation_id, update)
             .await
     }
 
+    #[instrument(
+        skip(self),
+        fields(worker_id = ?worker_id),
+    )]
     async fn worker_keep_alive_received(
         &self,
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error> {
+        debug!("Received worker keep-alive");
         self.worker_scheduler
             .worker_keep_alive_received(worker_id, timestamp)
             .await
     }
 
+    #[instrument(
+        skip(self),
+        fields(worker_id = ?worker_id),
+    )]
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        info!("Removing worker from scheduler");
         self.worker_scheduler.remove_worker(worker_id).await
     }
 
+    #[instrument(skip(self))]
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
+        debug!("Removing timed out workers");
         self.worker_scheduler
             .remove_timedout_workers(now_timestamp)
             .await
     }
 
+    #[instrument(
+        skip(self),
+        fields(worker_id = ?worker_id, is_draining),
+    )]
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
+        info!("Setting worker drain state");
         self.worker_scheduler
             .set_drain_worker(worker_id, is_draining)
             .await
     }
 }
-
-impl RootMetricsComponent for SimpleScheduler {}

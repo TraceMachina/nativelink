@@ -39,9 +39,8 @@ use nativelink_proto::google::bytestream::{
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
-use nativelink_util::digest_hasher::{ACTIVE_HASHER_FUNC, default_digest_hasher_func};
+use nativelink_util::digest_hasher::{DigestHasherFunc, default_digest_hasher_func};
 use nativelink_util::health_utils::HealthStatusIndicator;
-use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::proto_stream_utils::{
     FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
 };
@@ -49,6 +48,7 @@ use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::{default_health_status_indicator, tls_utils};
+use opentelemetry::context::Context;
 use parking_lot::Mutex;
 use prost::Message;
 use rand::Rng;
@@ -439,8 +439,8 @@ impl GrpcStore {
             inline_stdout: false,
             inline_stderr: false,
             inline_output_files: Vec::new(),
-            digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-                .err_tip(|| "In get_action_from_store")?
+            digest_function: Context::current()
+                .get::<DigestHasherFunc>()
                 .map_or_else(default_digest_hasher_func, |v| *v)
                 .proto_digest_func()
                 .into(),
@@ -495,8 +495,8 @@ impl GrpcStore {
             action_digest: Some(digest.into()),
             action_result: Some(action_result),
             results_cache_policy: None,
-            digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-                .err_tip(|| "In get_action_from_store")?
+            digest_function: Context::current()
+                .get::<DigestHasherFunc>()
                 .map_or_else(default_digest_hasher_func, |v| *v)
                 .proto_digest_func()
                 .into(),
@@ -542,8 +542,8 @@ impl StoreDriver for GrpcStore {
                     .iter()
                     .map(|k| k.borrow().into_digest().into())
                     .collect(),
-                digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-                    .err_tip(|| "In GrpcStore::has_with_results")?
+                digest_function: Context::current()
+                    .get::<DigestHasherFunc>()
                     .map_or_else(default_digest_hasher_func, |v| *v)
                     .proto_digest_func()
                     .into(),
@@ -587,8 +587,8 @@ impl StoreDriver for GrpcStore {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
 
-        let digest_function = ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-            .err_tip(|| "In GrpcStore::update()")?
+        let digest_function = Context::current()
+            .get::<DigestHasherFunc>()
             .map_or_else(default_digest_hasher_func, |v| *v)
             .proto_digest_func()
             .as_str_name()
@@ -685,8 +685,8 @@ impl StoreDriver for GrpcStore {
         if digest.size_bytes() == 0 {
             return writer.send_eof();
         }
-        let digest_function = ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-            .err_tip(|| "In GrpcStore::update()")?
+        let digest_function = Context::current()
+            .get::<DigestHasherFunc>()
             .map_or_else(default_digest_hasher_func, |v| *v)
             .proto_digest_func()
             .as_str_name()

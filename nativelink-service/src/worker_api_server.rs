@@ -287,7 +287,7 @@ impl WorkerApi for WorkerApiServer {
 
     #[instrument(
         err,
-        ret(level = Level::INFO),
+        ret(level = Level::DEBUG),
         level = Level::INFO,
         skip_all,
         fields(request = ?grpc_request.get_ref())

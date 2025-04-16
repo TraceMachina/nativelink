@@ -102,16 +102,6 @@ pub trait MetricsComponent {
     ) -> Result<MetricPublishKnownKindData, Error>;
 }
 
-pub trait RootMetricsComponent: MetricsComponent + Send + Sync {
-    fn publish(
-        &self,
-        kind: MetricKind,
-        field_metadata: MetricFieldData,
-    ) -> Result<MetricPublishKnownKindData, Error> {
-        MetricsComponent::publish(self, kind, field_metadata)
-    }
-}
-
 impl<T: MetricsComponent> MetricsComponent for Option<T> {
     fn publish(
         &self,

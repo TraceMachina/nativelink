@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::any::type_name_of_val;
 use std::collections::HashMap;
 
-use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::store_trait::Store;
 use parking_lot::RwLock;
+use tracing::{info, instrument};
 
-#[derive(Debug, Default, MetricsComponent)]
+#[derive(Debug, Default)]
 pub struct StoreManager {
-    #[metric]
     stores: RwLock<HashMap<String, Store>>,
 }
 
@@ -31,11 +31,23 @@ impl StoreManager {
         }
     }
 
+    #[instrument(skip(self, store))]
     pub fn add_store(&self, name: &str, store: Store) {
+        // TODO(aaronmondal): This currently always prints "Store". Make the
+        //                    store trait implementation properly advertise its
+        //                    type.
+        let store_type = type_name_of_val(&store);
+
         let mut stores = self.stores.write();
         stores.insert(name.to_string(), store);
+        info!(
+            store_name = name,
+            store_type = store_type,
+            "Store added to manager",
+        );
     }
 
+    #[instrument(skip(self))]
     pub fn get_store(&self, name: &str) -> Option<Store> {
         let stores = self.stores.read();
         if let Some(store) = stores.get(name) {
@@ -44,5 +56,3 @@ impl StoreManager {
         None
     }
 }
-
-impl RootMetricsComponent for StoreManager {}

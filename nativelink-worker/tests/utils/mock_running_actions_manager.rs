@@ -360,7 +360,10 @@ impl MockRunningAction {
 
 impl RunningAction for MockRunningAction {
     fn get_operation_id(&self) -> &OperationId {
-        unreachable!("not implemented for tests");
+        // For testing purposes we create a static OperationId that's
+        // initialized once.
+        static OPERATION_ID: std::sync::OnceLock<OperationId> = std::sync::OnceLock::new();
+        OPERATION_ID.get_or_init(OperationId::default)
     }
 
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
