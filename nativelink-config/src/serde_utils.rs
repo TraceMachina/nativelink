@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::marker::PhantomData;
 use std::borrow::Cow;
 use std::fmt;
-use std::marker::PhantomData;
 
 use byte_unit::Byte;
 use humantime::parse_duration;

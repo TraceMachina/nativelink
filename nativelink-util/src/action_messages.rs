@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::Ordering;
+use core::cmp::Ordering;
+use core::convert::Into;
+use core::hash::Hash;
+use core::time::Duration;
 use std::collections::HashMap;
-use std::convert::Into;
-use std::hash::Hash;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 use nativelink_metric::{
@@ -68,8 +69,8 @@ impl Default for OperationId {
     }
 }
 
-impl std::fmt::Display for OperationId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for OperationId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Uuid(uuid) => uuid.fmt(f),
             Self::String(name) => f.write_str(name),
@@ -124,7 +125,7 @@ impl TryFrom<Bytes> for OperationId {
             }
             // We could not take ownership of the Bytes, so we may need to copy our data.
             Err(value) => {
-                let value = std::str::from_utf8(&value).map_err(|e| {
+                let value = core::str::from_utf8(&value).map_err(|e| {
                     make_input_err!(
                         "Failed to convert bytes to string in try_from<Bytes> for OperationId : {e:?}"
                     )
@@ -149,15 +150,15 @@ impl MetricsComponent for WorkerId {
     }
 }
 
-impl std::fmt::Display for WorkerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for WorkerId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("{}", self.0))
     }
 }
 
-impl std::fmt::Debug for WorkerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self, f)
+impl core::fmt::Debug for WorkerId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self, f)
     }
 }
 
@@ -169,7 +170,7 @@ impl From<WorkerId> for String {
 
 impl From<String> for WorkerId {
     fn from(s: String) -> Self {
-        WorkerId(s)
+        Self(s)
     }
 }
 
@@ -228,8 +229,8 @@ impl ActionUniqueQualifier {
     }
 }
 
-impl std::fmt::Display for ActionUniqueQualifier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ActionUniqueQualifier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let (cachable, unique_key) = match self {
             Self::Cachable(action) => (true, action),
             Self::Uncachable(action) => (false, action),
@@ -262,8 +263,8 @@ pub struct ActionUniqueKey {
     pub digest: DigestInfo,
 }
 
-impl std::fmt::Display for ActionUniqueKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ActionUniqueKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!(
             "{}/{}/{}",
             self.instance_name, self.digest_function, self.digest,
@@ -271,11 +272,12 @@ impl std::fmt::Display for ActionUniqueKey {
     }
 }
 
-/// Information needed to execute an action. This struct is used over bazel's proto `Action`
-/// for simplicity and offers a `salt`, which is useful to ensure during hashing (for dicts)
-/// to ensure we never match against another `ActionInfo` (when a task should never be cached).
-/// This struct must be 100% compatible with `ExecuteRequest` struct in `remote_execution.proto`
-/// except for the salt field.
+/// Information needed to execute an action.
+///
+/// This struct is used over bazel's proto `Action` for simplicity and offers a `salt`, which is
+/// useful to ensure during hashing (for dicts) to ensure we never match against another
+/// `ActionInfo` (when a task should never be cached). This struct must be 100% compatible with
+/// `ExecuteRequest` struct in `remote_execution.proto` except for the salt field.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, MetricsComponent)]
 pub struct ActionInfo {
     /// Digest of the underlying `Command`.
@@ -390,6 +392,7 @@ impl From<&ActionInfo> for ExecuteRequest {
 
 /// Simple utility struct to determine if a string is representing a full path or
 /// just the name of the file.
+///
 /// This is in order to be able to reuse the same struct instead of building different
 /// structs when converting `FileInfo` -> {`OutputFile`, `FileNode`} and other similar
 /// structs.
@@ -708,7 +711,7 @@ pub struct ActionResult {
 
 impl Default for ActionResult {
     fn default() -> Self {
-        ActionResult {
+        Self {
             output_files: Vec::default(),
             output_folders: Vec::default(),
             output_directory_symlinks: Vec::default(),
@@ -808,12 +811,12 @@ impl MetricsComponent for ActionStage {
         _field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
         let value = match self {
-            ActionStage::Unknown => "Unknown".to_string(),
-            ActionStage::CacheCheck => "CacheCheck".to_string(),
-            ActionStage::Queued => "Queued".to_string(),
-            ActionStage::Executing => "Executing".to_string(),
-            ActionStage::Completed(_) => "Completed".to_string(),
-            ActionStage::CompletedFromCache(_) => "CompletedFromCache".to_string(),
+            Self::Unknown => "Unknown".to_string(),
+            Self::CacheCheck => "CacheCheck".to_string(),
+            Self::Queued => "Queued".to_string(),
+            Self::Executing => "Executing".to_string(),
+            Self::Completed(_) => "Completed".to_string(),
+            Self::CompletedFromCache(_) => "CompletedFromCache".to_string(),
         };
         Ok(MetricPublishKnownKindData::String(value))
     }

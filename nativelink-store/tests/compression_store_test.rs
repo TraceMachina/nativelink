@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp;
+use core::cmp;
+use core::pin::Pin;
+use core::str::from_utf8;
 use std::io::Cursor;
-use std::pin::Pin;
-use std::str::from_utf8;
 use std::sync::Arc;
 
 use bincode::{DefaultOptions, Options};
@@ -77,9 +77,7 @@ async fn simple_smoke_test() -> Result<(), Error> {
         &CompressionSpec {
             backend: StoreSpec::Memory(MemorySpec::default()),
             compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
-                nativelink_config::stores::Lz4Config {
-                    ..Default::default()
-                },
+                Default::default(),
             ),
         },
         Store::new(MemoryStore::new(&MemorySpec::default())),
@@ -163,9 +161,7 @@ async fn rand_5mb_smoke_test() -> Result<(), Error> {
         &CompressionSpec {
             backend: StoreSpec::Memory(MemorySpec::default()),
             compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
-                nativelink_config::stores::Lz4Config {
-                    ..Default::default()
-                },
+                Default::default(),
             ),
         },
         Store::new(MemoryStore::new(&MemorySpec::default())),
@@ -196,9 +192,7 @@ async fn sanity_check_zero_bytes_test() -> Result<(), Error> {
         &CompressionSpec {
             backend: StoreSpec::Memory(MemorySpec::default()),
             compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
-                nativelink_config::stores::Lz4Config {
-                    ..Default::default()
-                },
+                Default::default(),
             ),
         },
         Store::new(inner_store.clone()),
@@ -287,13 +281,13 @@ async fn check_header_test() -> Result<(), Error> {
         assert_eq!(
             version, CURRENT_STREAM_FORMAT_VERSION,
             "Expected header version to match current version"
-        );
-    }
+        )
+    };
     {
         // Check block size.
         let block_size = reader.read_u32_le().await?;
-        assert_eq!(block_size, BLOCK_SIZE, "Expected block size to match");
-    }
+        assert_eq!(block_size, BLOCK_SIZE, "Expected block size to match")
+    };
     {
         // Check upload_type and upload_size.
         const MAX_SIZE_OPT_CODE: u32 = 1;
@@ -306,8 +300,8 @@ async fn check_header_test() -> Result<(), Error> {
         assert_eq!(
             upload_size, MAX_SIZE_INPUT as u32,
             "Expected upload size to match"
-        );
-    }
+        )
+    };
 
     // As a sanity check lets check our footer.
     assert_eq!(
@@ -371,8 +365,8 @@ async fn check_footer_test() -> Result<(), Error> {
         assert_eq!(
             version, CURRENT_STREAM_FORMAT_VERSION,
             "Expected footer version to match current version"
-        );
-    }
+        )
+    };
     {
         // Check block size in footer.
         let block_size = u32::from_le_bytes(compressed_data[pos - 4..pos].try_into().unwrap());
@@ -380,8 +374,8 @@ async fn check_footer_test() -> Result<(), Error> {
         assert_eq!(
             block_size, BLOCK_SIZE,
             "Expected uncompressed_data_size to match original data size"
-        );
-    }
+        )
+    };
     {
         // Check data size in footer.
         let uncompressed_data_size =
@@ -391,8 +385,8 @@ async fn check_footer_test() -> Result<(), Error> {
             uncompressed_data_size,
             value.len() as u64,
             "Expected uncompressed_data_size to match original data size"
-        );
-    }
+        )
+    };
     let index_count = {
         // Check index count in footer.
         let index_count = u32::from_le_bytes(compressed_data[pos - 4..pos].try_into().unwrap());
@@ -429,8 +423,8 @@ async fn check_footer_test() -> Result<(), Error> {
             bincode_index_count,
             u64::from(index_count),
             "Expected index_count and bincode_index_count to match"
-        );
-    }
+        )
+    };
     {
         // Check our footer length.
         let footer_len = u32::from_le_bytes(compressed_data[pos - 4..pos].try_into().unwrap());
@@ -439,16 +433,16 @@ async fn check_footer_test() -> Result<(), Error> {
             footer_len,
             1 + 4 + 8 + 4 + (index_count * 4) + 8,
             "Expected frame type to be footer"
-        );
-    }
+        )
+    };
     {
         // Check our frame type.
         let frame_type = u8::from_le_bytes(compressed_data[pos - 1..pos].try_into().unwrap());
         assert_eq!(
             frame_type, FOOTER_FRAME_TYPE,
             "Expected frame type to be footer"
-        );
-    }
+        )
+    };
 
     // Just as one last sanity check lets check our deserialized footer.
     assert_eq!(

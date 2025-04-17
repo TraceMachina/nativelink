@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use bytes::BytesMut;
@@ -42,7 +42,7 @@ async fn insert_into_store<T: Message>(
     hash: &str,
     action_size: i64,
     action_result: &T,
-) -> Result<i64, Box<dyn std::error::Error>> {
+) -> Result<i64, Box<dyn core::error::Error>> {
     let mut store_data = BytesMut::new();
     action_result.encode(&mut store_data)?;
     let data_len = store_data.len();
@@ -107,7 +107,7 @@ async fn get_action_result(
 }
 
 #[nativelink_test]
-async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
+async fn empty_store() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let ac_server = make_ac_server(&store_manager)?;
 
@@ -120,7 +120,7 @@ async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
+async fn has_single_item() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let ac_server = make_ac_server(&store_manager)?;
     let ac_store = store_manager.get_store("main_ac").unwrap();
@@ -142,7 +142,7 @@ async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error>> {
+async fn single_item_wrong_digest_size() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let ac_server = make_ac_server(&store_manager)?;
     let ac_store = store_manager.get_store("main_ac").unwrap();
@@ -161,7 +161,7 @@ async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-fn get_encoded_proto_size<T: Message>(proto: &T) -> Result<usize, Box<dyn std::error::Error>> {
+fn get_encoded_proto_size<T: Message>(proto: &T) -> Result<usize, Box<dyn core::error::Error>> {
     let mut store_data = Vec::new();
     proto.encode(&mut store_data)?;
     Ok(store_data.len())
@@ -184,7 +184,7 @@ async fn update_action_result(
 }
 
 #[nativelink_test]
-async fn one_item_update_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn one_item_update_test() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let ac_server = make_ac_server(&store_manager)?;
     let ac_store = store_manager.get_store("main_ac").unwrap();

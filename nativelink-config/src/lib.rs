@@ -17,10 +17,10 @@ pub mod schedulers;
 pub mod serde_utils;
 pub mod stores;
 
-use std::any::type_name;
+use core::any::type_name;
+use core::marker::PhantomData;
 use std::collections::HashMap;
 use std::fmt;
-use std::marker::PhantomData;
 
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -44,7 +44,7 @@ pub type SchedulerConfigs = NamedConfigs<schedulers::SchedulerSpec>;
 pub struct NamedConfigs<T>(pub Vec<NamedConfig<T>>);
 
 impl<T> NamedConfigs<T> {
-    pub fn iter(&self) -> std::slice::Iter<'_, NamedConfig<T>> {
+    pub fn iter(&self) -> core::slice::Iter<'_, NamedConfig<T>> {
         self.0.iter()
     }
 }
@@ -60,7 +60,7 @@ impl<T> IntoIterator for NamedConfigs<T> {
 
 impl<'a, T> IntoIterator for &'a NamedConfigs<T> {
     type Item = &'a NamedConfig<T>;
-    type IntoIter = std::slice::Iter<'a, NamedConfig<T>>;
+    type IntoIter = core::slice::Iter<'a, NamedConfig<T>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
@@ -73,7 +73,7 @@ struct NamedConfigsVisitor<T> {
 
 impl<T> NamedConfigsVisitor<T> {
     const fn new() -> Self {
-        NamedConfigsVisitor {
+        Self {
             phantom: PhantomData,
         }
     }

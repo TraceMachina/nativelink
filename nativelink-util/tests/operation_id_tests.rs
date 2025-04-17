@@ -30,14 +30,11 @@ async fn parse_operation_id() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn parse_empty_failure() -> Result<(), Error> {
-    {
-        let operation_id = OperationId::from("");
-        assert_eq!(operation_id, OperationId::String(String::new()));
-    }
-    {
-        let operation_id = OperationId::from("foobar");
-        assert_eq!(operation_id, OperationId::String("foobar".to_string()));
-    }
+    let operation_id = OperationId::from("");
+    assert_eq!(operation_id, OperationId::String(String::new()));
+
+    let operation_id = OperationId::from("foobar");
+    assert_eq!(operation_id, OperationId::String("foobar".to_string()));
 
     Ok(())
 }

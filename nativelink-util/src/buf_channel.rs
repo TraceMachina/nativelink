@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::task::Poll;
 use std::collections::VecDeque;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::task::Poll;
 
 use bytes::{Bytes, BytesMut};
 use futures::task::Context;
@@ -27,11 +27,12 @@ use tracing::{Level, event};
 
 const ZERO_DATA: Bytes = Bytes::new();
 
-/// Create a channel pair that can be used to transport buffer objects around to
-/// different components. This wrapper is used because the streams give some
-/// utility like managing EOF in a more friendly way, ensure if no EOF is received
-/// it will send an error to the receiver channel before shutting down and count
-/// the number of bytes sent.
+/// Create a channel pair that can be used to transport buffer objects around to different
+/// components.
+///
+/// This wrapper is used because the streams give some utility like managing EOF in a more friendly
+/// way, ensure if no EOF is received it will send an error to the receiver channel before shutting
+/// down and count the number of bytes sent.
 #[must_use]
 pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
     // We allow up to 2 items in the buffer at any given time. There is no major
@@ -364,7 +365,7 @@ impl DropCloserReadHalf {
                     }
                 }
                 Err(e) => {
-                    return Err(e.clone()).err_tip(|| "Failed to check if next chunk is EOF")?;
+                    return Err(e).err_tip(|| "Failed to check if next chunk is EOF")?;
                 }
             }
             chunk

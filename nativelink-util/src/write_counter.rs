@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use pin_project_lite::pin_project;
 use tokio::io::AsyncWrite;
@@ -31,7 +31,7 @@ pin_project! {
 
 impl<T: AsyncWrite> WriteCounter<T> {
     pub const fn new(inner: T) -> Self {
-        WriteCounter {
+        Self {
             inner,
             bytes_written: 0,
             failed: false,
