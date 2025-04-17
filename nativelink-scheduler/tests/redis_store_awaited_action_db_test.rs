@@ -51,6 +51,7 @@ const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 const SCRIPT_VERSION: &str = "3e762c15";
 const VERSION_SCRIPT_HASH: &str = "fdf1152fd21705c8763752809b86b55c5d4511ce";
 const MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
+const SCAN_COUNT: u32 = 10_000;
 
 fn mock_uuid_generator() -> String {
     uuid::Uuid::parse_str(TEMP_UUID).unwrap().to_string()
@@ -420,6 +421,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
                 String::new(),
                 4064,
                 MAX_CHUNK_UPLOADS_PER_UPDATE,
+                SCAN_COUNT,
             )
             .unwrap(),
         )
