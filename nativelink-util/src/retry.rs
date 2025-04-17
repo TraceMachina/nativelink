@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::time::Duration;
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures::future::Future;
 use futures::stream::StreamExt;
@@ -28,7 +28,7 @@ struct ExponentialBackoff {
 
 impl ExponentialBackoff {
     const fn new(base: Duration) -> Self {
-        ExponentialBackoff { current: base }
+        Self { current: base }
     }
 }
 
@@ -59,8 +59,8 @@ pub struct Retrier {
     config: Retry,
 }
 
-impl std::fmt::Debug for Retrier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Retrier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Retrier")
             .field("config", &self.config)
             .finish_non_exhaustive()
@@ -90,7 +90,7 @@ const fn to_error_code(code: Code) -> ErrorCode {
 
 impl Retrier {
     pub fn new(sleep_fn: SleepFn, jitter_fn: JitterFn, config: Retry) -> Self {
-        Retrier {
+        Self {
             sleep_fn,
             jitter_fn,
             config,
@@ -168,7 +168,7 @@ impl Retrier {
                         }
                         (self.sleep_fn)(
                             iter.next()
-                                .ok_or(err.append(format!("On attempt {attempt}")))?,
+                                .ok_or_else(|| err.append(format!("On attempt {attempt}")))?,
                         )
                         .await;
                     }

@@ -72,8 +72,8 @@ async fn has_test() -> Result<(), Error> {
                 DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?,
                 BIG_VALUE.into(),
             )
-            .await?;
-    }
+            .await?
+    };
     {
         // Check if our partition store has small data.
         let small_has_result = size_part_store
@@ -84,8 +84,8 @@ async fn has_test() -> Result<(), Error> {
             Ok(Some(SMALL_VALUE.len() as u64)),
             "Expected size part store to have data in ref store : {}",
             SMALL_HASH
-        );
-    }
+        )
+    };
     {
         // Check if our partition store has big data.
         let small_has_result = size_part_store
@@ -96,8 +96,8 @@ async fn has_test() -> Result<(), Error> {
             Ok(Some(BIG_VALUE.len() as u64)),
             "Expected size part store to have data in ref store : {}",
             BIG_HASH
-        );
-    }
+        )
+    };
     Ok(())
 }
 
@@ -120,8 +120,8 @@ async fn get_test() -> Result<(), Error> {
                 DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?,
                 BIG_VALUE.into(),
             )
-            .await?;
-    }
+            .await?
+    };
     {
         // Read the partition store small data.
         let data = size_part_store
@@ -133,8 +133,8 @@ async fn get_test() -> Result<(), Error> {
             SMALL_VALUE.as_bytes(),
             "Expected size part store to have data in ref store : {}",
             SMALL_HASH
-        );
-    }
+        )
+    };
     {
         // Read the partition store big data.
         let data = size_part_store
@@ -146,8 +146,8 @@ async fn get_test() -> Result<(), Error> {
             BIG_VALUE.as_bytes(),
             "Expected size part store to have data in ref store : {}",
             BIG_HASH
-        );
-    }
+        )
+    };
     Ok(())
 }
 
@@ -170,8 +170,8 @@ async fn update_test() -> Result<(), Error> {
                 DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?,
                 BIG_VALUE.into(),
             )
-            .await?;
-    }
+            .await?
+    };
     {
         // Check if we read small data from size_partition_store it has same data.
         let data = lower_memory_store
@@ -183,8 +183,8 @@ async fn update_test() -> Result<(), Error> {
             SMALL_VALUE.as_bytes(),
             "Expected size part store to have data in memory store : {}",
             SMALL_HASH
-        );
-    }
+        )
+    };
     {
         // Check if we read big data from size_partition_store it has same data.
         let data = upper_memory_store
@@ -196,7 +196,7 @@ async fn update_test() -> Result<(), Error> {
             BIG_VALUE.as_bytes(),
             "Expected size part store to have data in memory store : {}",
             BIG_HASH
-        );
-    }
+        )
+    };
     Ok(())
 }

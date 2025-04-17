@@ -12,13 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::Borrow;
-use std::cmp::Eq;
+use core::borrow::Borrow;
+use core::fmt::Debug;
+use core::hash::Hash;
+use core::ops::RangeBounds;
 use std::collections::BTreeSet;
-use std::fmt::Debug;
-use std::future::Future;
-use std::hash::Hash;
-use std::ops::RangeBounds;
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -31,7 +29,7 @@ use tracing::{Level, event};
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics_utils::{Counter, CounterWithTime};
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 pub struct SerializedLRU<K> {
     pub data: Vec<(K, i32)>,
     pub anchor_time: u64,
@@ -64,7 +62,7 @@ pub trait LenEntry: 'static {
     /// the `EvictionMap` globally (including inside `unref()`).
     #[inline]
     fn unref(&self) -> impl Future<Output = ()> + Send {
-        std::future::ready(())
+        core::future::ready(())
     }
 }
 
@@ -168,7 +166,7 @@ where
     I: InstantWrapper,
 {
     pub fn new(config: &EvictionPolicy, anchor_time: I) -> Self {
-        EvictingMap {
+        Self {
             // We use unbounded because if we use the bounded version we can't call the delete
             // function on the LenEntry properly.
             state: Mutex::new(State {

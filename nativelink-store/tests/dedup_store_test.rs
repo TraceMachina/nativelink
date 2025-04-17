@@ -239,7 +239,7 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
                 .await
                 .err_tip(|| "Failed to get_part from dedup store")?;
 
-            let len_fenced = std::cmp::min(len, rt_data.len());
+            let len_fenced = core::cmp::min(len, rt_data.len());
             assert_eq!(
                 rt_data.len(),
                 len_fenced,
@@ -304,7 +304,7 @@ async fn has_checks_content_store() -> Result<(), Error> {
         // Check to ensure we our baseline `.has()` succeeds.
         let size_info = store.has(digest1).await.err_tip(|| "Failed to run .has")?;
         assert_eq!(size_info, Some(DATA_SIZE as u64), "Expected sizes to match");
-    }
+    };
     {
         // We now add one more item to the store, which will trigger eviction of one of
         // the existing items because max_bytes will be exceeded.
@@ -323,7 +323,7 @@ async fn has_checks_content_store() -> Result<(), Error> {
                 Some(DATA2.len() as u64),
                 "Expected sizes to match"
             );
-        }
+        };
         {
             // Check our first added entry is now invalid (because part of it was evicted).
             let size_info = store.has(digest1).await.err_tip(|| "Failed to run .has")?;
@@ -331,7 +331,7 @@ async fn has_checks_content_store() -> Result<(), Error> {
                 size_info, None,
                 "Expected .has() to return None (not found)"
             );
-        }
+        };
     }
 
     Ok(())
@@ -366,7 +366,7 @@ async fn has_with_no_existing_index_returns_none_test() -> Result<(), Error> {
             "Expected None to be returned, got {:?}",
             size_info
         );
-    }
+    };
     Ok(())
 }
 
@@ -398,6 +398,6 @@ async fn has_with_zero_digest_returns_some_test() -> Result<(), Error> {
             "Expected Sone(0) to be returned, got {:?}",
             size_info
         );
-    }
+    };
     Ok(())
 }

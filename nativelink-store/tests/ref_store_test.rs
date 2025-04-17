@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ptr::from_ref;
+use core::ptr::from_ref;
 use std::sync::Arc;
 
 use nativelink_config::stores::{MemorySpec, RefSpec};
@@ -49,15 +49,13 @@ async fn has_test() -> Result<(), Error> {
 
     let (_store_manager, memory_store, ref_store) = setup_stores();
 
-    {
-        // Insert data into memory store.
-        memory_store
-            .update_oneshot(
-                DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
-                VALUE1.into(),
-            )
-            .await?;
-    }
+    // Insert data into memory store.
+    memory_store
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
+            VALUE1.into(),
+        )
+        .await?;
     {
         // Now check if we check of ref_store has the data.
         let has_result = ref_store
@@ -68,8 +66,8 @@ async fn has_test() -> Result<(), Error> {
             Ok(Some(VALUE1.len() as u64)),
             "Expected ref store to have data in ref store : {}",
             VALID_HASH1
-        );
-    }
+        )
+    };
     Ok(())
 }
 
@@ -79,15 +77,13 @@ async fn get_test() -> Result<(), Error> {
 
     let (_store_manager, memory_store, ref_store) = setup_stores();
 
-    {
-        // Insert data into memory store.
-        memory_store
-            .update_oneshot(
-                DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
-                VALUE1.into(),
-            )
-            .await?;
-    }
+    // Insert data into memory store.
+    memory_store
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
+            VALUE1.into(),
+        )
+        .await?;
     {
         // Now check if we read it from ref_store it has same data.
         let data = ref_store
@@ -99,8 +95,8 @@ async fn get_test() -> Result<(), Error> {
             VALUE1.as_bytes(),
             "Expected ref store to have data in ref store : {}",
             VALID_HASH1
-        );
-    }
+        )
+    };
     Ok(())
 }
 
@@ -110,15 +106,13 @@ async fn update_test() -> Result<(), Error> {
 
     let (_store_manager, memory_store, ref_store) = setup_stores();
 
-    {
-        // Insert data into ref_store.
-        ref_store
-            .update_oneshot(
-                DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
-                VALUE1.into(),
-            )
-            .await?;
-    }
+    // Insert data into ref_store.
+    ref_store
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
+            VALUE1.into(),
+        )
+        .await?;
     {
         // Now check if we read it from memory_store it has same data.
         let data = memory_store
@@ -130,8 +124,8 @@ async fn update_test() -> Result<(), Error> {
             VALUE1.as_bytes(),
             "Expected ref store to have data in memory store : {}",
             VALID_HASH1
-        );
-    }
+        )
+    };
     Ok(())
 }
 
@@ -148,7 +142,7 @@ async fn inner_store_test() -> Result<(), Error> {
         },
         Arc::downgrade(&store_manager),
     ));
-    store_manager.add_store("ref_store_inner", ref_store_inner.clone());
+    store_manager.add_store("ref_store_inner", ref_store_inner);
 
     let ref_store_outer = Store::new(RefStore::new(
         &RefSpec {

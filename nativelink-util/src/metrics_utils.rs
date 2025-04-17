@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::mem::forget;
-use std::sync::atomic::{AtomicU64, Ordering};
+use core::mem::forget;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use futures::Future;
@@ -115,7 +115,8 @@ impl AsyncTimer<'_> {
 }
 
 /// Tracks the number of calls, successes, failures, and drops of an async function.
-/// call `.wrap(future)` to wrap a future and stats about the future are automatically
+///
+/// Call `.wrap(future)` to wrap a future and stats about the future are automatically
 /// tracked and can be published to a `CollectorState`.
 #[derive(Debug, Default)]
 pub struct AsyncCounterWrapper {
@@ -133,6 +134,10 @@ pub struct AsyncCounterWrapper {
 // can attach multiple values on the same group, so we need to
 // manually implement the `MetricsComponent` trait to do so.
 impl MetricsComponent for AsyncCounterWrapper {
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "complexity arises from macro usage"
+    )]
     fn publish(
         &self,
         _kind: MetricKind,

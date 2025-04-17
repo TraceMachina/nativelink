@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::task::{Context, Poll};
 use std::fs::Metadata;
 use std::io::{IoSlice, Seek};
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::task::{Context, Poll};
 
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use rlimit::increase_nofile_limit;
@@ -32,7 +32,7 @@ use tracing::{Level, event};
 use crate::spawn_blocking;
 
 /// Default read buffer size when reading to/from disk.
-pub const DEFAULT_READ_BUFF_SIZE: usize = 16384;
+pub const DEFAULT_READ_BUFF_SIZE: usize = 0x4000;
 
 #[derive(Debug)]
 pub struct FileSlot {

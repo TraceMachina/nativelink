@@ -148,10 +148,11 @@ pub struct ExperimentalRedisSchedulerBackend {
     pub redis_store: StoreRefName,
 }
 
-/// A scheduler that simply forwards requests to an upstream scheduler.  This
-/// is useful to use when doing some kind of local action cache or CAS away from
-/// the main cluster of workers.  In general, it's more efficient to point the
-/// build at the main scheduler directly though.
+/// A scheduler that simply forwards requests to an upstream scheduler.
+///
+/// This is useful to use when doing some kind of local action cache or CAS away from the main
+/// cluster of workers.  In general, it's more efficient to point the build at the main scheduler
+/// directly though.
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct GrpcSpec {

@@ -431,12 +431,14 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                             .await
                             .err_tip(|| format!("Could not open file {full_path:?}"))?;
                         upload_file(cas_store, &full_path, hasher, metadata)
-                            .map_ok(Into::into)
+                            .map(|res| res.and_then(TryInto::try_into))
                             .await
                     });
                 } else if file_type.is_symlink() {
-                    symlink_futures
-                        .push(upload_symlink(full_path, &full_work_directory).map_ok(Into::into));
+                    symlink_futures.push(
+                        upload_symlink(full_path, &full_work_directory)
+                            .map(|res| res.and_then(TryInto::try_into)),
+                    );
                 }
             }
         }

@@ -60,12 +60,10 @@ async fn ensure_no_errors_if_only_first_message_has_resource_name_set() -> Resul
         data: Bytes::from_static(&RAW_DATA.as_bytes()[8..]),
     };
 
-    {
-        tx.send(Ok(message1.clone())).unwrap();
-        tx.send(Ok(message2.clone())).unwrap();
-        tx.send(Ok(message3.clone())).unwrap();
-        drop(tx); // Close the channel.
-    }
+    tx.send(Ok(message1.clone())).unwrap();
+    tx.send(Ok(message2.clone())).unwrap();
+    tx.send(Ok(message3.clone())).unwrap();
+    drop(tx); // Close the channel.
 
     let local_state = Arc::new(Mutex::new(WriteState::new(
         INSTANCE_NAME.to_string(),
@@ -73,16 +71,14 @@ async fn ensure_no_errors_if_only_first_message_has_resource_name_set() -> Resul
     )));
     let mut write_state_wrapper = WriteStateWrapper::new(local_state.clone());
 
-    {
-        // Ensure we transported our data properly.
-        assert_eq!(write_state_wrapper.next().await, Some(message1));
-        assert_eq!(write_state_wrapper.next().await, Some(message2));
-        assert_eq!(write_state_wrapper.next().await, Some(message3));
-        assert_eq!(write_state_wrapper.next().await, None);
+    // Ensure we transported our data properly.
+    assert_eq!(write_state_wrapper.next().await, Some(message1));
+    assert_eq!(write_state_wrapper.next().await, Some(message2));
+    assert_eq!(write_state_wrapper.next().await, Some(message3));
+    assert_eq!(write_state_wrapper.next().await, None);
 
-        // Ensure no stream errors were set.
-        assert_eq!(local_state.lock().take_read_stream_error(), None);
-    }
+    // Ensure no stream errors were set.
+    assert_eq!(local_state.lock().take_read_stream_error(), None);
 
     Ok(())
 }

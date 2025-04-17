@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::{Debug, Formatter};
+use core::marker::PhantomData;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::time::Duration;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fmt::{Debug, Formatter};
-use std::marker::PhantomData;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
 
 use async_lock::RwLock;
 use bytes::Bytes;
@@ -61,7 +61,7 @@ struct TestFileEntry<Hooks: FileEntryHooks + 'static + Sync + Send> {
 }
 
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> Debug for TestFileEntry<Hooks> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), core::fmt::Error> {
         f.debug_struct("TestFileEntry")
             .field("inner", &self.inner)
             .finish()
@@ -276,8 +276,8 @@ async fn valid_results_after_shutdown_test() -> Result<(), Error> {
             Ok(Some(VALUE1.len() as u64)),
             "Expected filesystem store to have hash: {}",
             HASH1
-        );
-    }
+        )
+    };
     {
         // With a new store ensure content is still readable (ie: restores from shutdown).
         let store = Box::pin(
@@ -293,8 +293,8 @@ async fn valid_results_after_shutdown_test() -> Result<(), Error> {
         let key = StoreKey::Digest(digest);
 
         let content = store.get_part_unchunked(key, 0, None).await?;
-        assert_eq!(content, VALUE1.as_bytes());
-    }
+        assert_eq!(content, VALUE1.as_bytes())
+    };
 
     Ok(())
 }
@@ -336,8 +336,8 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
             &data[..],
             VALUE1.as_bytes(),
             "Expected file content to match"
-        );
-    }
+        )
+    };
 
     // Replace content.
     store.update_oneshot(digest1, VALUE2.into()).await?;
@@ -349,8 +349,8 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
             &data[..],
             VALUE2.as_bytes(),
             "Expected file content to match"
-        );
-    }
+        )
+    };
 
     loop {
         if DELETES_FINISHED.load(Ordering::Relaxed) == 1 {
@@ -414,8 +414,8 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
             first_byte[0],
             VALUE1.as_bytes()[0],
             "Expected first byte to match"
-        );
-    }
+        )
+    };
 
     // Replace content.
     store.update_oneshot(digest1, VALUE2.into()).await?;
@@ -444,8 +444,8 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
         assert_eq!(
             num_files, 1,
             "There should only be one file in the temp directory"
-        );
-    }
+        )
+    };
 
     let remaining_file_data = reader
         .consume(Some(1024))
@@ -544,8 +544,8 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
         assert_eq!(
             num_files, 1,
             "There should only be one file in the temp directory"
-        );
-    }
+        )
+    };
 
     let reader_data = reader
         .consume(Some(1024))
@@ -589,8 +589,8 @@ async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error
         let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
         let mut file_contents = String::new();
         reader.read_to_string(&mut file_contents).await?;
-        assert_eq!(file_contents, VALUE1);
-    }
+        assert_eq!(file_contents, VALUE1)
+    };
 
     // Now replace the data.
     store.update_oneshot(digest, VALUE2.into()).await?;
@@ -600,8 +600,8 @@ async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error
         let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
         let mut file_contents = String::new();
         reader.read_to_string(&mut file_contents).await?;
-        assert_eq!(file_contents, VALUE1);
-    }
+        assert_eq!(file_contents, VALUE1)
+    };
 
     Ok(())
 }
@@ -660,8 +660,8 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
             1,
             "Expected exactly 1 unrefed digest"
         );
-        assert_eq!(unrefed_digests[0], small_digest, "Expected digest to match");
-    }
+        assert_eq!(unrefed_digests[0], small_digest, "Expected digest to match")
+    };
 
     Ok(())
 }
@@ -694,8 +694,8 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
                         .await
                         .err_tip(|| "Failed to open temp file")?;
                     // We don't care if it fails, this is only best attempt.
-                    drop(file_handle.get_ref().as_ref().sync_all().await);
-                }
+                    drop(file_handle.get_ref().as_ref().sync_all().await)
+                };
                 // Ensure we have written to the file too. This ensures we have an open file handle.
                 // Failing to do this may result in the file existing, but the `update_fut` not actually
                 // sending data to it yet.
@@ -783,9 +783,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
     FILE_DELETED_BARRIER.wait().await;
 
     // Now it should have cleaned up its temp files.
-    {
-        check_temp_empty(&temp_path).await?;
-    }
+    check_temp_empty(&temp_path).await?;
 
     // Finally ensure that our entry is not in the store.
     assert_eq!(
@@ -937,7 +935,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
             .await
             .err_tip(|| "Failed to get_part"),
     );
-    assert_eq!(results, vec!(Some(0)));
+    assert_eq!(results, vec![Some(0)]);
 
     wait_for_empty_content_file(&content_path, digest, || async move {
         tokio::task::yield_now().await;
@@ -1012,8 +1010,8 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
         // Writing these out explicitly so users know this is what we are testing.
         // Note: The order they are dropped matters.
         drop(update_fut);
-        drop(rename_pause_request_lock);
-    }
+        drop(rename_pause_request_lock)
+    };
     // Grab the newly inserted item in our store.
     let new_file_entry = store.get_file_entry_for_digest(&digest).await?;
     assert!(
@@ -1132,8 +1130,8 @@ async fn update_with_whole_file_closes_file() -> Result<(), Error> {
             fs::OPEN_FILE_SEMAPHORE.available_permits(),
             1,
             "Expected 1 permit to be available"
-        );
-    }
+        )
+    };
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
 
@@ -1157,8 +1155,8 @@ async fn update_with_whole_file_closes_file() -> Result<(), Error> {
     {
         file.write_all(value.as_bytes()).await?;
         file.as_mut().sync_all().await?;
-        file.seek(tokio::io::SeekFrom::Start(0)).await?;
-    }
+        file.seek(tokio::io::SeekFrom::Start(0)).await?
+    };
 
     store
         .update_with_whole_file(

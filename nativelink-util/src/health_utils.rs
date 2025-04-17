@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
+use core::pin::Pin;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fmt::Debug;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -63,7 +63,7 @@ impl HealthStatus {
     pub fn new_initializing(
         component: &(impl HealthStatusIndicator + ?Sized),
         message: Cow<'static, str>,
-    ) -> HealthStatus {
+    ) -> Self {
         Self::Initializing {
             struct_name: component.struct_name(),
             message,
@@ -73,7 +73,7 @@ impl HealthStatus {
     pub fn new_warning(
         component: &(impl HealthStatusIndicator + ?Sized),
         message: Cow<'static, str>,
-    ) -> HealthStatus {
+    ) -> Self {
         Self::Warning {
             struct_name: component.struct_name(),
             message,
@@ -83,7 +83,7 @@ impl HealthStatus {
     pub fn new_failed(
         component: &(impl HealthStatusIndicator + ?Sized),
         message: Cow<'static, str>,
-    ) -> HealthStatus {
+    ) -> Self {
         Self::Failed {
             struct_name: component.struct_name(),
             message,
@@ -107,7 +107,7 @@ pub trait HealthStatusIndicator: Sync + Send + Unpin {
 
     /// Returns the name of the struct implementing the trait.
     fn struct_name(&self) -> &'static str {
-        std::any::type_name::<Self>()
+        core::any::type_name::<Self>()
     }
 
     /// Check the health status of the component. This function should be
@@ -124,7 +124,7 @@ pub struct HealthRegistryBuilder {
 }
 
 impl Debug for HealthRegistryBuilder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HealthRegistryBuilder")
             .field("namespace", &self.namespace)
             .finish_non_exhaustive()
@@ -151,8 +151,8 @@ impl HealthRegistryBuilder {
 
     /// Create a sub builder for a namespace.
     #[must_use]
-    pub fn sub_builder(&mut self, namespace: &str) -> HealthRegistryBuilder {
-        HealthRegistryBuilder {
+    pub fn sub_builder(&mut self, namespace: &str) -> Self {
+        Self {
             namespace: format!("{}/{}", self.namespace, namespace).into(),
             state: self.state.clone(),
         }
@@ -172,7 +172,7 @@ pub struct HealthRegistry {
 }
 
 impl Debug for HealthRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HealthRegistry")
             .field(
                 "indicators",

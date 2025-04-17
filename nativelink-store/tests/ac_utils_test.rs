@@ -58,8 +58,8 @@ async fn upload_file_to_store_with_large_file() -> Result<(), Error> {
             .await
             .err_tip(|| "Could not write to file")?;
         file.flush().await.err_tip(|| "Could not flush file")?;
-        file.sync_all().await.err_tip(|| "Could not sync file")?;
-    }
+        file.sync_all().await.err_tip(|| "Could not sync file")?
+    };
     {
         // Upload our file.
         let file = fs::open_file(&filepath, 0, u64::MAX)
@@ -73,13 +73,13 @@ async fn upload_file_to_store_with_large_file() -> Result<(), Error> {
                 file,
                 UploadSizeInfo::ExactSize(expected_data.len() as u64),
             )
-            .await?;
-    }
+            .await?
+    };
     {
         // Check to make sure the file was saved correctly to the store.
         let store_data = store.get_part_unchunked(digest, 0, None).await?;
         assert_eq!(store_data.len(), expected_data.len());
-        assert_eq!(store_data, expected_data);
-    }
+        assert_eq!(store_data, expected_data)
+    };
     Ok(())
 }

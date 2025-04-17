@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::{Eq, Ordering};
+use core::cmp::{Eq, Ordering};
+use core::hash::{BuildHasher, Hash};
+use core::ops::{Deref, DerefMut};
 use std::collections::HashMap;
 use std::fmt;
-use std::hash::{BuildHasher, Hash};
 use std::io::{Cursor, Write};
-use std::ops::{Deref, DerefMut};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use nativelink_error::{Error, ResultExt, make_input_err};
@@ -55,7 +55,7 @@ impl MetricsComponent for DigestInfo {
 
 impl DigestInfo {
     pub const fn new(packed_hash: [u8; 32], size_bytes: u64) -> Self {
-        DigestInfo {
+        Self {
             size_bytes,
             packed_hash: PackedHash(packed_hash),
         }
@@ -79,14 +79,14 @@ impl DigestInfo {
                 i64::MAX
             ));
         }
-        Ok(DigestInfo {
+        Ok(Self {
             packed_hash,
             size_bytes,
         })
     }
 
-    pub const fn zero_digest() -> DigestInfo {
-        DigestInfo {
+    pub const fn zero_digest() -> Self {
+        Self {
             size_bytes: 0,
             packed_hash: PackedHash::new(),
         }
@@ -163,7 +163,7 @@ impl<'a> DigestStackStringifier<'a> {
             cursor.position() as usize
         };
         // Convert the buffer into utf8 string.
-        std::str::from_utf8(&self.buf[..len]).map_err(|e| {
+        core::str::from_utf8(&self.buf[..len]).map_err(|e| {
             make_input_err!(
                 "Could not convert [u8] to string - {} - {:?} - {:?}",
                 self.digest,
@@ -284,7 +284,7 @@ impl TryFrom<Digest> for DigestInfo {
             .size_bytes
             .try_into()
             .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
-        Ok(DigestInfo {
+        Ok(Self {
             packed_hash,
             size_bytes,
         })
@@ -301,7 +301,7 @@ impl TryFrom<&Digest> for DigestInfo {
             .size_bytes
             .try_into()
             .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
-        Ok(DigestInfo {
+        Ok(Self {
             packed_hash,
             size_bytes,
         })
@@ -310,7 +310,7 @@ impl TryFrom<&Digest> for DigestInfo {
 
 impl From<DigestInfo> for Digest {
     fn from(val: DigestInfo) -> Self {
-        Digest {
+        Self {
             hash: val.packed_hash.to_string(),
             size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
                 event!(
@@ -328,7 +328,7 @@ impl From<DigestInfo> for Digest {
 
 impl From<&DigestInfo> for Digest {
     fn from(val: &DigestInfo) -> Self {
-        Digest {
+        Self {
             hash: val.packed_hash.to_string(),
             size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
                 event!(
@@ -352,14 +352,14 @@ pub struct PackedHash([u8; 32]);
 const SIZE_OF_PACKED_HASH: usize = 32;
 impl PackedHash {
     const fn new() -> Self {
-        PackedHash([0; SIZE_OF_PACKED_HASH])
+        Self([0; SIZE_OF_PACKED_HASH])
     }
 
     fn from_hex(hash: &str) -> Result<Self, Error> {
         let mut packed_hash = [0u8; 32];
         hex::decode_to_slice(hash, &mut packed_hash)
             .map_err(|e| make_input_err!("Invalid sha256 hash: {hash} - {e:?}"))?;
-        Ok(PackedHash(packed_hash))
+        Ok(Self(packed_hash))
     }
 
     /// Converts the packed hash into a hex string.
@@ -381,7 +381,7 @@ impl PackedHash {
 impl fmt::Display for PackedHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let hash = self.to_hex()?;
-        match std::str::from_utf8(&hash) {
+        match core::str::from_utf8(&hash) {
             Ok(hash) => f.write_str(hash)?,
             Err(_) => f.write_str(&format!("Could not convert hash to utf8 {:?}", self.0))?,
         }
@@ -451,9 +451,8 @@ impl<K: Eq + Hash, T, S: BuildHasher + Clone> HashMapExt<K, T, S> for HashMap<K,
 }
 
 // Utility to encode our proto into GRPC stream format.
-pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::error::Error>> {
+pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn core::error::Error>> {
     // See below comment on spec.
-    use std::mem::size_of;
     const PREFIX_BYTES: usize = size_of::<u8>() + size_of::<u32>();
 
     let mut buf = BytesMut::new();
@@ -465,16 +464,15 @@ pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::
     }
     proto.encode(&mut buf)?;
     let len = buf.len() - PREFIX_BYTES;
-    {
-        let mut buf = &mut buf[0..PREFIX_BYTES];
-        // See: https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#:~:text=Compressed-Flag
-        // for more details on spec.
-        // Compressed-Flag -> 0 / 1 # encoded as 1 byte unsigned integer.
-        buf.put_u8(0);
-        // Message-Length -> {length of Message} # encoded as 4 byte unsigned integer (big endian).
-        buf.put_u32(len as u32);
-        // Message -> *{binary octet}.
-    }
+
+    let mut buf_view = &mut buf[0..PREFIX_BYTES];
+    // See: https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#:~:text=Compressed-Flag
+    // for more details on spec.
+    // Compressed-Flag -> 0 / 1 # encoded as 1 byte unsigned integer.
+    buf_view.put_u8(0);
+    // Message-Length -> {length of Message} # encoded as 4 byte unsigned integer (big endian).
+    buf_view.put_u32(len as u32);
+    // Message -> *{binary octet}.
 
     Ok(buf.freeze())
 }

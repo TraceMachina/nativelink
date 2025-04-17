@@ -25,108 +25,94 @@ const MAX_UNSAFE_DIGEST: &str =
 
 #[nativelink_test]
 async fn digest_info_min_max_test() -> Result<(), Error> {
-    {
-        const DIGEST: DigestInfo = DigestInfo::new([0u8; 32], u64::MIN);
-        assert_eq!(&format!("{DIGEST}"), MIN_DIGEST);
-    }
-    {
-        const DIGEST: DigestInfo = DigestInfo::new([255u8; 32], u64::MAX);
-        assert_eq!(&format!("{DIGEST}"), MAX_UNSAFE_DIGEST);
-    }
+    let digest = DigestInfo::new([0u8; 32], u64::MIN);
+    assert_eq!(&format!("{digest}"), MIN_DIGEST);
+
+    let digest = DigestInfo::new([255u8; 32], u64::MAX);
+    assert_eq!(&format!("{digest}"), MAX_UNSAFE_DIGEST);
     Ok(())
 }
 
 #[nativelink_test]
 async fn digest_info_try_new_min_max_test() -> Result<(), Error> {
-    {
-        let digest_parts: (&str, u64) = MIN_DIGEST
-            .split_once('-')
-            .map(|(s, n)| (s, n.parse().unwrap()))
-            .unwrap();
-        let digest = DigestInfo::try_new(digest_parts.0, digest_parts.1).unwrap();
-        assert_eq!(&format!("{digest}"), MIN_DIGEST);
-    }
-    {
-        let digest_parts: (&str, u64) = MAX_SAFE_DIGEST
-            .split_once('-')
-            .map(|(s, n)| (s, n.parse().unwrap()))
-            .unwrap();
-        let digest = DigestInfo::try_new(digest_parts.0, digest_parts.1).unwrap();
-        assert_eq!(&format!("{digest}"), MAX_SAFE_DIGEST);
-    }
-    {
-        let digest_parts: (&str, u64) = MAX_UNSAFE_DIGEST
-            .split_once('-')
-            .map(|(s, n)| (s, n.parse().unwrap()))
-            .unwrap();
-        let digest_res = DigestInfo::try_new(digest_parts.0, digest_parts.1);
-        assert_eq!(
-            digest_res,
-            Err(make_input_err!(
-                "Size bytes is too large: 18446744073709551615 - max: 9223372036854775807"
-            ))
-        );
-    }
-    {
-        // Sanity check to ensure non-repeating digests print properly
-        const DIGEST: &str =
-            "123456789abcdeffedcba987654321089abcde0123456789ffedcba987654321-123456789";
-        let digest_parts: (&str, u64) = DIGEST
-            .split_once('-')
-            .map(|(s, n)| (s, n.parse().unwrap()))
-            .unwrap();
-        let digest = DigestInfo::try_new(digest_parts.0, digest_parts.1).unwrap();
-        assert_eq!(&format!("{digest}"), DIGEST);
-    }
+    let digest_parts = MIN_DIGEST
+        .split_once('-')
+        .map(|(s, n)| (s, n.parse().unwrap()))
+        .unwrap();
+    let digest = DigestInfo::try_new::<u64>(digest_parts.0, digest_parts.1).unwrap();
+    assert_eq!(&format!("{digest}"), MIN_DIGEST);
+
+    let digest_parts = MAX_SAFE_DIGEST
+        .split_once('-')
+        .map(|(s, n)| (s, n.parse().unwrap()))
+        .unwrap();
+    let digest = DigestInfo::try_new::<u64>(digest_parts.0, digest_parts.1).unwrap();
+    assert_eq!(&format!("{digest}"), MAX_SAFE_DIGEST);
+
+    let digest_parts = MAX_UNSAFE_DIGEST
+        .split_once('-')
+        .map(|(s, n)| (s, n.parse().unwrap()))
+        .unwrap();
+    let digest_res = DigestInfo::try_new::<u64>(digest_parts.0, digest_parts.1);
+    assert_eq!(
+        digest_res,
+        Err(make_input_err!(
+            "Size bytes is too large: 18446744073709551615 - max: 9223372036854775807"
+        ))
+    );
+
+    // Sanity check to ensure non-repeating digests print properly
+    let full_digest = "123456789abcdeffedcba987654321089abcde0123456789ffedcba987654321-123456789";
+    let digest_parts = full_digest
+        .split_once('-')
+        .map(|(s, n)| (s, n.parse().unwrap()))
+        .unwrap();
+    let digest = DigestInfo::try_new::<u64>(digest_parts.0, digest_parts.1).unwrap();
+    assert_eq!(&format!("{digest}"), full_digest);
+
     Ok(())
 }
 
 #[nativelink_test]
 async fn digest_info_serialize_test() -> Result<(), Error> {
-    {
-        const DIGEST: DigestInfo = DigestInfo::new([0u8; 32], u64::MIN);
-        assert_eq!(
-            serde_json::to_string(&DIGEST).unwrap(),
-            format!("\"{MIN_DIGEST}\"")
-        );
-    }
-    {
-        const DIGEST: DigestInfo = DigestInfo::new([255u8; 32], i64::MAX as u64);
-        assert_eq!(
-            serde_json::to_string(&DIGEST).unwrap(),
-            format!("\"{MAX_SAFE_DIGEST}\"")
-        );
-    }
-    {
-        const DIGEST: DigestInfo = DigestInfo::new([255u8; 32], u64::MAX);
-        assert_eq!(
-            serde_json::to_string(&DIGEST).unwrap(),
-            format!("\"{MAX_UNSAFE_DIGEST}\"")
-        );
-    }
+    let digest = DigestInfo::new([0u8; 32], u64::MIN);
+    assert_eq!(
+        serde_json::to_string(&digest).unwrap(),
+        format!("\"{MIN_DIGEST}\"")
+    );
+
+    let digest = DigestInfo::new([255u8; 32], i64::MAX as u64);
+    assert_eq!(
+        serde_json::to_string(&digest).unwrap(),
+        format!("\"{MAX_SAFE_DIGEST}\"")
+    );
+
+    let digest = DigestInfo::new([255u8; 32], u64::MAX);
+    assert_eq!(
+        serde_json::to_string(&digest).unwrap(),
+        format!("\"{MAX_UNSAFE_DIGEST}\"")
+    );
+
     Ok(())
 }
 
 #[nativelink_test]
 async fn digest_info_deserialize_test() -> Result<(), Error> {
-    {
-        assert_eq!(
-            serde_json::from_str::<DigestInfo>(&format!("\"{MIN_DIGEST}\"")).unwrap(),
-            DigestInfo::new([0u8; 32], u64::MIN)
-        );
-    }
-    {
-        assert_eq!(
-            serde_json::from_str::<DigestInfo>(&format!("\"{MAX_SAFE_DIGEST}\"")).unwrap(),
-            DigestInfo::new([255u8; 32], i64::MAX as u64)
-        );
-    }
-    {
-        let digest_res = serde_json::from_str::<DigestInfo>(&format!("\"{MAX_UNSAFE_DIGEST}\""));
-        assert_eq!(
-            format!("{}", digest_res.err().unwrap()),
-            "Could not create DigestInfo: Error { code: InvalidArgument, messages: [\"Size bytes is too large: 18446744073709551615 - max: 9223372036854775807\"] } at line 1 column 87",
-        );
-    }
+    assert_eq!(
+        serde_json::from_str::<DigestInfo>(&format!("\"{MIN_DIGEST}\"")).unwrap(),
+        DigestInfo::new([0u8; 32], u64::MIN)
+    );
+
+    assert_eq!(
+        serde_json::from_str::<DigestInfo>(&format!("\"{MAX_SAFE_DIGEST}\"")).unwrap(),
+        DigestInfo::new([255u8; 32], i64::MAX as u64)
+    );
+
+    let digest_res = serde_json::from_str::<DigestInfo>(&format!("\"{MAX_UNSAFE_DIGEST}\""));
+    assert_eq!(
+        format!("{}", digest_res.err().unwrap()),
+        "Could not create DigestInfo: Error { code: InvalidArgument, messages: [\"Size bytes is too large: 18446744073709551615 - max: 9223372036854775807\"] } at line 1 column 87",
+    );
+
     Ok(())
 }

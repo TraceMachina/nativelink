@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::BytesMut;
@@ -102,7 +102,7 @@ impl GrpcStore {
         }
 
         let jitter_fn = Arc::new(jitter_fn);
-        Ok(Arc::new(GrpcStore {
+        Ok(Arc::new(Self {
             instance_name: spec.instance_name.clone(),
             store_type: spec.store_type,
             retrier: Retrier::new(
@@ -774,11 +774,11 @@ impl StoreDriver for GrpcStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

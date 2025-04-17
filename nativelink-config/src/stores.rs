@@ -641,7 +641,7 @@ pub struct CompletenessCheckingSpec {
     pub cas_store: StoreSpec,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Eq, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 pub struct Lz4Config {
     /// Size of the blocks to compress.
@@ -664,7 +664,7 @@ pub struct Lz4Config {
     pub max_decode_block_size: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum CompressionAlgorithm {
     /// LZ4 compression algorithm is extremely fast for compression and
@@ -851,7 +851,7 @@ pub struct GrpcSpec {
 }
 
 /// The possible error codes that might occur on an upstream request.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorCode {
     Cancelled = 1,
     Unknown = 2,

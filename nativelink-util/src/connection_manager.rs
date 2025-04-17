@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::task::{Context, Poll};
+use core::time::Duration;
 use std::collections::VecDeque;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::Duration;
 
 use futures::Future;
 use futures::stream::{FuturesUnordered, StreamExt, unfold};
@@ -386,6 +386,7 @@ impl ConnectionManagerWorker {
 /// service.  This handles the permit for limiting concurrency, and also
 /// re-connecting the underlying channel on error.  It depends on users
 /// reporting all errors.
+///
 /// NOTE: This should never be cloneable because its lifetime is linked to the
 ///       `ConnectionManagerWorker::available_connections`.
 #[derive(Debug)]
@@ -425,8 +426,8 @@ pub struct ResponseFuture {
     identifier: ChannelIdentifier,
 }
 
-impl std::fmt::Debug for ResponseFuture {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for ResponseFuture {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ResponseFuture")
             .field("inner", &self.inner)
             .field("connection_tx", &self.connection_tx)

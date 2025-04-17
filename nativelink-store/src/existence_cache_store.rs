@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
 use std::borrow::Cow;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -121,7 +121,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
                 })
                 .collect::<Vec<_>>();
             drop(self.existence_cache.insert_many(inserts).await);
-        }
+        };
 
         // Merge the results from the cache and the query.
         {
@@ -140,7 +140,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
                 inner_results_iter.next().is_some(),
                 "has_with_results returned more results than expected"
             );
-        }
+        };
 
         Ok(())
     }
@@ -221,11 +221,11 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

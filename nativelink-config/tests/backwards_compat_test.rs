@@ -36,7 +36,7 @@ fn test_configs_deserialization() {
         }
     ]);
 
-    let config: NamedConfigs<DummySpec> = serde_json::from_value(expected.clone()).unwrap();
+    let config: NamedConfigs<DummySpec> = serde_json::from_value(expected).unwrap();
     let mut new_stores: Vec<_> = config.into_iter().collect();
     new_stores.sort_by(|a, b| a.name.cmp(&b.name));
 

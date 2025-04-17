@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::Borrow;
-use std::fmt::Debug;
-use std::ops::Bound;
-use std::pin::Pin;
+use core::borrow::Borrow;
+use core::fmt::Debug;
+use core::ops::Bound;
+use core::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -37,7 +37,7 @@ use crate::cas_utils::is_zero_digest;
 pub struct BytesWrapper(Bytes);
 
 impl Debug for BytesWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("BytesWrapper { -- Binary data -- }")
     }
 }
@@ -189,11 +189,11 @@ impl StoreDriver for MemoryStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 

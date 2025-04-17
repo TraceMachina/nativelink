@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::task::Poll;
+use core::task::Poll;
 
 use bytes::{Bytes, BytesMut};
 use futures::poll;
@@ -149,9 +149,10 @@ async fn consume_some_optimized_test() -> Result<(), Error> {
     };
     let rx_fut = async move {
         assert_eq!(rx.consume(Some(1)).await?.as_ptr(), first_chunk_ptr);
-        assert_eq!(rx.consume(Some(100)).await?.as_ptr(), unsafe {
-            first_chunk_ptr.add(1)
-        });
+        assert_eq!(
+            rx.consume(Some(100)).await?.as_ptr(),
+            first_chunk_ptr.wrapping_add(1)
+        );
         Result::<(), Error>::Ok(())
     };
     try_join!(tx_fut, rx_fut)?;
@@ -226,7 +227,7 @@ async fn send_and_take_fuzz_test() -> Result<(), Error> {
 
                 let tx_fut = async move {
                     for i in (0..data_size).step_by(write_size) {
-                        tx.send(tx_data.slice(i..std::cmp::min(data_size, i + write_size)))
+                        tx.send(tx_data.slice(i..core::cmp::min(data_size, i + write_size)))
                             .await?;
                     }
                     tx.send_eof()?;
@@ -317,28 +318,28 @@ async fn eof_can_send_twice() -> Result<(), Error> {
 #[nativelink_test]
 async fn set_max_recent_data_size_no_eof_then_retry_test() -> Result<(), Error> {
     let (mut tx, mut rx) = make_buf_channel_pair();
-    {
-        rx.set_max_recent_data_size(1024);
-        tx.send(DATA1.into()).await.unwrap();
-        drop(tx);
-        assert_eq!(rx.recv().await.unwrap(), Bytes::from(DATA1));
-        assert_eq!(
-            rx.recv().await,
-            Err(make_err!(
-                Code::Internal,
-                "Sender dropped before sending EOF"
-            ))
-        );
-    }
-    {
-        rx.try_reset_stream().unwrap();
-        assert_eq!(
-            rx.recv().await,
-            Err(make_err!(
-                Code::Internal,
-                "Sender dropped before sending EOF"
-            ))
-        );
-    }
+
+    rx.set_max_recent_data_size(1024);
+    tx.send(DATA1.into()).await.unwrap();
+    drop(tx);
+
+    assert_eq!(rx.recv().await.unwrap(), Bytes::from(DATA1));
+    assert_eq!(
+        rx.recv().await,
+        Err(make_err!(
+            Code::Internal,
+            "Sender dropped before sending EOF"
+        ))
+    );
+
+    rx.try_reset_stream().unwrap();
+    assert_eq!(
+        rx.recv().await,
+        Err(make_err!(
+            Code::Internal,
+            "Sender dropped before sending EOF"
+        ))
+    );
+
     Ok(())
 }

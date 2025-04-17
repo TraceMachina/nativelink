@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ops::RangeBounds;
-use std::pin::Pin;
+use core::ops::RangeBounds;
+use core::pin::Pin;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use memory_stats::memory_stats;
@@ -188,8 +188,8 @@ async fn errors_with_invalid_inputs() -> Result<(), Error> {
         }
         has_should_fail(store, TOO_LONG_HASH, VALUE1.len()).await;
         has_should_fail(store, TOO_SHORT_HASH, VALUE1.len()).await;
-        has_should_fail(store, INVALID_HASH, VALUE1.len()).await;
-    }
+        has_should_fail(store, INVALID_HASH, VALUE1.len()).await
+    };
     {
         // .update() tests.
         async fn update_should_fail<'a>(
@@ -210,8 +210,8 @@ async fn errors_with_invalid_inputs() -> Result<(), Error> {
         }
         update_should_fail(store, TOO_LONG_HASH, VALUE1.len(), VALUE1).await;
         update_should_fail(store, TOO_SHORT_HASH, VALUE1.len(), VALUE1).await;
-        update_should_fail(store, INVALID_HASH, VALUE1.len(), VALUE1).await;
-    }
+        update_should_fail(store, INVALID_HASH, VALUE1.len(), VALUE1).await
+    };
     {
         // .update() tests.
         async fn get_should_fail<'a>(
@@ -234,8 +234,8 @@ async fn errors_with_invalid_inputs() -> Result<(), Error> {
         get_should_fail(store, TOO_SHORT_HASH, 1).await;
         get_should_fail(store, INVALID_HASH, 1).await;
         // With an empty store .get() should fail too.
-        get_should_fail(store, VALID_HASH1, 1).await;
-    }
+        get_should_fail(store, VALID_HASH1, 1).await
+    };
     Ok(())
 }
 
@@ -283,7 +283,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
             .await
             .err_tip(|| "Failed to get_part"),
     );
-    assert_eq!(results, vec!(Some(0)));
+    assert_eq!(results, vec![Some(0)]);
 
     Ok(())
 }
@@ -315,41 +315,33 @@ async fn list_test() -> Result<(), Error> {
     store.update_oneshot(KEY2, VALUE.into()).await?;
     store.update_oneshot(KEY3, VALUE.into()).await?;
 
-    {
-        // Test listing all keys.
-        let keys = get_list(&store, ..).await;
-        assert_eq!(keys, vec![KEY1, KEY2, KEY3]);
-    }
-    {
-        // Test listing from key1 to all.
-        let keys = get_list(&store, KEY1..).await;
-        assert_eq!(keys, vec![KEY1, KEY2, KEY3]);
-    }
-    {
-        // Test listing from key1 to key2.
-        let keys = get_list(&store, KEY1..KEY2).await;
-        assert_eq!(keys, vec![KEY1]);
-    }
-    {
-        // Test listing from key1 including key2.
-        let keys = get_list(&store, KEY1..=KEY2).await;
-        assert_eq!(keys, vec![KEY1, KEY2]);
-    }
-    {
-        // Test listing from key1 to key3.
-        let keys = get_list(&store, KEY1..KEY3).await;
-        assert_eq!(keys, vec![KEY1, KEY2]);
-    }
-    {
-        // Test listing from all to key2.
-        let keys = get_list(&store, ..KEY2).await;
-        assert_eq!(keys, vec![KEY1]);
-    }
-    {
-        // Test listing from key2 to key3.
-        let keys = get_list(&store, KEY2..KEY3).await;
-        assert_eq!(keys, vec![KEY2]);
-    }
+    // Test listing all keys.
+    let keys = get_list(&store, ..).await;
+    assert_eq!(keys, vec![KEY1, KEY2, KEY3]);
+
+    // Test listing from key1 to all.
+    let keys = get_list(&store, KEY1..).await;
+    assert_eq!(keys, vec![KEY1, KEY2, KEY3]);
+
+    // Test listing from key1 to key2.
+    let keys = get_list(&store, KEY1..KEY2).await;
+    assert_eq!(keys, vec![KEY1]);
+
+    // Test listing from key1 including key2.
+    let keys = get_list(&store, KEY1..=KEY2).await;
+    assert_eq!(keys, vec![KEY1, KEY2]);
+
+    // Test listing from key1 to key3.
+    let keys = get_list(&store, KEY1..KEY3).await;
+    assert_eq!(keys, vec![KEY1, KEY2]);
+
+    // Test listing from all to key2.
+    let keys = get_list(&store, ..KEY2).await;
+    assert_eq!(keys, vec![KEY1]);
+
+    // Test listing from key2 to key3.
+    let keys = get_list(&store, KEY2..KEY3).await;
+    assert_eq!(keys, vec![KEY2]);
 
     Ok(())
 }

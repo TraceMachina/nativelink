@@ -22,11 +22,11 @@ use nativelink_proto::build::bazel::remote::execution::v2::Platform as ProtoPlat
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property as ProtoProperty;
 use serde::{Deserialize, Serialize};
 
-/// `PlatformProperties` helps manage the configuration of platform properties to
-/// keys and types. The scheduler uses these properties to decide what jobs
-/// can be assigned to different workers. For example, if a job states it needs
-/// a specific key, it will never be run on a worker that does not have at least
-/// all the platform property keys configured on the worker.
+/// `PlatformProperties` helps manage the configuration of platform properties to keys and types.
+///
+/// The scheduler uses these properties to decide what jobs can be assigned to different workers.
+/// For example, if a job states it needs a specific key, it will never be run on a worker that does
+/// not have at least all the platform property keys configured on the worker.
 ///
 /// Additional rules may be applied based on `PlatfromPropertyValue`.
 #[derive(Eq, PartialEq, Clone, Debug, Default, Serialize, Deserialize, MetricsComponent)]
@@ -72,7 +72,7 @@ impl From<ProtoPlatform> for PlatformProperties {
 
 impl From<&PlatformProperties> for ProtoPlatform {
     fn from(val: &PlatformProperties) -> Self {
-        ProtoPlatform {
+        Self {
             properties: val
                 .properties
                 .iter()

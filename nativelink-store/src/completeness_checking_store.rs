@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::{iter, mem};
 use std::sync::Arc;
-use std::{iter, mem};
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -63,7 +63,7 @@ fn get_digests_and_output_dirs(
 async fn check_output_directories<'a>(
     cas_store: &Store,
     output_directories: Vec<ProtoOutputDirectory>,
-    handle_digest_infos_fn: &impl Fn(Vec<StoreKey<'a>>),
+    handle_digest_infos_fn: &(impl Fn(Vec<StoreKey<'a>>) + Sync),
 ) -> Result<(), Error> {
     let mut futures = FuturesUnordered::new();
 
@@ -117,7 +117,7 @@ pub struct CompletenessCheckingStore {
 
 impl CompletenessCheckingStore {
     pub fn new(ac_store: Store, cas_store: Store) -> Arc<Self> {
-        Arc::new(CompletenessCheckingStore {
+        Arc::new(Self {
             cas_store,
             ac_store,
             incomplete_entries_counter: CounterWithTime::default(),
@@ -171,8 +171,8 @@ impl CompletenessCheckingStore {
 
                     let (mut digest_infos, output_directories) =
                         get_digests_and_output_dirs(action_result)?;
-
                     {
+                        // Introduce a scope to limit the lock of state_mux.
                         let mut state = state_mux.lock();
 
                         // We immediately set the size of the digest here. Later we will unset it if
@@ -192,7 +192,7 @@ impl CompletenessCheckingStore {
                             .digests_to_check_idxs
                             .extend(iter::repeat_n(i, rep_len));
                         state.notify.notify_one();
-                    }
+                    };
 
                     // Hot path: It is very common for no output directories to be defined.
                     // So we can avoid any needless work by early returning.
@@ -319,11 +319,11 @@ impl CompletenessCheckingStore {
                         None => {
                             // We are done, so flag it done and ensure we notify the
                             // subscriber future.
-                            {
+                            { // Introduce a scope to limit the lock of state_mux.
                                 let mut state = state_mux.lock();
                                 state.done = true;
                                 state.notify.notify_one();
-                            }
+                            };
                             check_existence_fut
                                 .await
                                 .err_tip(|| "CompletenessCheckingStore's check_existence_fut ended unexpectedly on last await")?;
@@ -380,11 +380,11 @@ impl StoreDriver for CompletenessCheckingStore {
         self
     }
 
-    fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

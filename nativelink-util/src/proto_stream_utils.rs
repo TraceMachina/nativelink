@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::borrow::Cow;
-use std::fmt::Debug;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use futures::{Stream, StreamExt};
 use nativelink_error::{Error, ResultExt, error_if, make_input_err};
@@ -35,7 +35,7 @@ pub struct WriteRequestStreamWrapper<T> {
 }
 
 impl<T> Debug for WriteRequestStreamWrapper<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("WriteRequestStreamWrapper")
             .field("resource_info", &self.resource_info)
             .field("bytes_received", &self.bytes_received)
@@ -50,7 +50,7 @@ where
     T: Stream<Item = Result<WriteRequest, E>> + Unpin,
     E: Into<Error>,
 {
-    pub async fn from(mut stream: T) -> Result<WriteRequestStreamWrapper<T>, Error> {
+    pub async fn from(mut stream: T) -> Result<Self, Error> {
         let first_msg = stream
             .next()
             .await
@@ -66,7 +66,7 @@ where
             })?
             .to_owned();
 
-        Ok(WriteRequestStreamWrapper {
+        Ok(Self {
             resource_info,
             bytes_received: 0,
             stream,

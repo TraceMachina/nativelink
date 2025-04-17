@@ -25,8 +25,8 @@ pub struct StoreManager {
 }
 
 impl StoreManager {
-    pub fn new() -> StoreManager {
-        StoreManager {
+    pub fn new() -> Self {
+        Self {
             stores: RwLock::new(HashMap::new()),
         }
     }

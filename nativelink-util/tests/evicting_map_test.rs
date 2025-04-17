@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use bytes::Bytes;
 use mock_instant::thread_local::MockClock;
@@ -26,7 +26,7 @@ use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use pretty_assertions::assert_eq;
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BytesWrapper(Bytes);
 
 impl LenEntry for BytesWrapper {
@@ -43,8 +43,8 @@ impl LenEntry for BytesWrapper {
 
 impl From<Bytes> for BytesWrapper {
     #[inline]
-    fn from(bytes: Bytes) -> BytesWrapper {
-        BytesWrapper(bytes)
+    fn from(bytes: Bytes) -> Self {
+        Self(bytes)
     }
 }
 
@@ -585,7 +585,7 @@ async fn remove_evicts_on_time() -> Result<(), Error> {
 async fn range_multiple_items_test() -> Result<(), Error> {
     async fn get_map_range(
         evicting_map: &EvictingMap<String, BytesWrapper, MockInstantWrapped>,
-        range: impl std::ops::RangeBounds<String> + Send,
+        range: impl core::ops::RangeBounds<String> + Send,
     ) -> Vec<(String, Bytes)> {
         let mut found_values = Vec::new();
         evicting_map
@@ -628,41 +628,36 @@ async fn range_multiple_items_test() -> Result<(), Error> {
         .insert(KEY3.into(), Bytes::from(DATA3).into())
         .await;
 
-    {
-        // Ensure all range works.
-        let expected_values = vec![
-            (KEY1.to_string(), Bytes::from(DATA1)),
-            (KEY2.to_string(), Bytes::from(DATA2)),
-            (KEY3.to_string(), Bytes::from(DATA3)),
-        ];
-        let found_values = get_map_range(&evicting_map, ..).await;
-        assert_eq!(expected_values, found_values);
-    }
-    {
-        // Ensure prefix but everything range works.
-        let expected_values = vec![
-            (KEY1.to_string(), Bytes::from(DATA1)),
-            (KEY2.to_string(), Bytes::from(DATA2)),
-            (KEY3.to_string(), Bytes::from(DATA3)),
-        ];
-        let found_values = get_map_range(&evicting_map, "key-".to_string()..).await;
-        assert_eq!(expected_values, found_values);
-    }
-    {
-        // Ensure prefix range with everything after "key-2" works.
-        let expected_values = vec![
-            (KEY2.to_string(), Bytes::from(DATA2)),
-            (KEY3.to_string(), Bytes::from(DATA3)),
-        ];
-        let found_values = get_map_range(&evicting_map, "key-2".to_string()..).await;
-        assert_eq!(expected_values, found_values);
-    }
-    {
-        // Ensure prefix range with only KEY2.
-        let expected_values = vec![(KEY2.to_string(), Bytes::from(DATA2))];
-        let found_values = get_map_range(&evicting_map, KEY2.to_string()..KEY3.to_string()).await;
-        assert_eq!(expected_values, found_values);
-    }
+    // Ensure all range works.
+    let expected_values = vec![
+        (KEY1.to_string(), Bytes::from(DATA1)),
+        (KEY2.to_string(), Bytes::from(DATA2)),
+        (KEY3.to_string(), Bytes::from(DATA3)),
+    ];
+    let found_values = get_map_range(&evicting_map, ..).await;
+    assert_eq!(expected_values, found_values);
+
+    // Ensure prefix but everything range works.
+    let expected_values = vec![
+        (KEY1.to_string(), Bytes::from(DATA1)),
+        (KEY2.to_string(), Bytes::from(DATA2)),
+        (KEY3.to_string(), Bytes::from(DATA3)),
+    ];
+    let found_values = get_map_range(&evicting_map, "key-".to_string()..).await;
+    assert_eq!(expected_values, found_values);
+
+    // Ensure prefix range with everything after "key-2" works.
+    let expected_values = vec![
+        (KEY2.to_string(), Bytes::from(DATA2)),
+        (KEY3.to_string(), Bytes::from(DATA3)),
+    ];
+    let found_values = get_map_range(&evicting_map, "key-2".to_string()..).await;
+    assert_eq!(expected_values, found_values);
+
+    // Ensure prefix range with only KEY2.
+    let expected_values = vec![(KEY2.to_string(), Bytes::from(DATA2))];
+    let found_values = get_map_range(&evicting_map, KEY2.to_string()..KEY3.to_string()).await;
+    assert_eq!(expected_values, found_values);
 
     Ok(())
 }

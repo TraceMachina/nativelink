@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::borrow::Cow;
-use std::convert::AsRef;
 
 use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 
@@ -93,7 +92,7 @@ pub struct ResourceInfo<'a> {
 }
 
 impl<'a> ResourceInfo<'a> {
-    pub fn new(resource_name: &'a str, is_upload: bool) -> Result<ResourceInfo<'a>, Error> {
+    pub fn new(resource_name: &'a str, is_upload: bool) -> Result<Self, Error> {
         // The most amount of slashes there can be to get to "(compressed-)blobs" section is 7.
         let mut rparts = resource_name.rsplitn(7, '/');
         let mut output = ResourceInfo::default();
@@ -131,16 +130,15 @@ impl<'a> ResourceInfo<'a> {
                 .next()
                 .err_tip(|| format!("{ERROR_MSG} in {resource_name}"))?,
         ));
-        {
-            // Sanity check that our next item is "uploads".
-            let uploads = parts
-                .next()
-                .err_tip(|| format!("{ERROR_MSG} in {resource_name}"))?;
-            error_if!(
-                uploads != "uploads",
-                "Expected part to be 'uploads'. Got: {uploads} for {resource_name} is_upload: {is_upload}"
-            );
-        }
+
+        // Sanity check that our next item is "uploads".
+        let uploads = parts
+            .next()
+            .err_tip(|| format!("{ERROR_MSG} in {resource_name}"))?;
+        error_if!(
+            uploads != "uploads",
+            "Expected part to be 'uploads'. Got: {uploads} for {resource_name} is_upload: {is_upload}"
+        );
 
         // `instance_name` is optional.
         if let Some(instance_name) = parts.next() {

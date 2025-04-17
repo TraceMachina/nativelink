@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::marker::PhantomData;
-use std::pin::Pin;
+use core::marker::PhantomData;
+use core::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
 use base64::Engine;
@@ -290,8 +290,8 @@ pub struct OriginEventContext<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> std::fmt::Debug for OriginEventContext<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T> core::fmt::Debug for OriginEventContext<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("OriginEventContext")
             .field("inner", &self.inner)
             .field("_phantom", &self._phantom)

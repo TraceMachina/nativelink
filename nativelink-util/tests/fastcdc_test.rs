@@ -57,10 +57,10 @@ async fn test_all_zeros() -> Result<(), std::io::Error> {
 }
 
 #[nativelink_test]
-async fn test_sekien_16k_chunks() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_sekien_16k_chunks() -> Result<(), Box<dyn core::error::Error>> {
     let contents = include_bytes!("data/SekienAkashita.jpg");
     let mut cursor = Cursor::new(&contents);
-    let mut frame_reader = FramedRead::new(&mut cursor, FastCDC::new(8192, 16384, 32768));
+    let mut frame_reader = FramedRead::new(&mut cursor, FastCDC::new(0x2000, 0x4000, 0x8000));
 
     let mut frames = vec![];
     let mut sum_frame_len = 0;
@@ -123,12 +123,10 @@ async fn insert_garbage_check_boundaries_recover_test() -> Result<(), std::io::E
         frames_map
     };
 
-    {
-        // Replace 2k of bytes and append one byte to middle.
-        let mut rng = SmallRng::seed_from_u64(2);
-        rng.fill(&mut rand_data[0..4097]);
-        rand_data.insert(rand_data.len() / 2, 0x71);
-    }
+    // Replace 2k of bytes and append one byte to middle.
+    let mut rng = SmallRng::seed_from_u64(2);
+    rng.fill(&mut rand_data[0..4097]);
+    rand_data.insert(rand_data.len() / 2, 0x71);
 
     let mut right_frames = {
         let mut frame_reader = FramedRead::new(Cursor::new(&rand_data), fast_cdc.clone());

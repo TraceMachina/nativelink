@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
+use core::marker::PhantomData;
 use std::collections::HashMap;
-use std::fmt::Debug;
-use std::marker::PhantomData;
 
 use nativelink_metric::{MetricFieldData, MetricKind, MetricsComponent};
 use nativelink_metric_collector::MetricsCollectorLayer;

@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
+use core::marker::PhantomData;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fmt::Debug;
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -47,7 +47,7 @@ impl<S> MetricsCollectorLayer<S> {
     pub fn new() -> (Self, Arc<Mutex<RootMetricCollectedMetrics>>) {
         let root_collected_metrics = Arc::new(Mutex::new(RootMetricCollectedMetrics::default()));
         (
-            MetricsCollectorLayer {
+            Self {
                 spans: Mutex::new(HashMap::new()),
                 root_collected_metrics: root_collected_metrics.clone(),
                 _subscriber: PhantomData,

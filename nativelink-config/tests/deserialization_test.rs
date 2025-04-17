@@ -63,8 +63,7 @@ mod duration_tests {
             // Large numbers
             (r#"{"duration": 0}"#, 0),
             (r#"{"duration": 1000}"#, 1000),
-            // u32::MAX
-            (r#"{"duration": 4294967295}"#, 4_294_967_295),
+            (r#"{"duration": 4294967295}"#, u32::MAX),
         ];
 
         for (input, expected) in examples {
@@ -118,8 +117,7 @@ mod duration_tests {
     #[test]
     fn test_large_duration_numbers() {
         let examples = [
-            // u32::MAX
-            (r#"{"duration": 4294967295}"#, 4_294_967_295),
+            (r#"{"duration": 4294967295}"#, u32::MAX),
             // u64::MAX - this will fail to parse as usize on 64-bit systems
             // (r#"{"duration": 18446744073709551615}"#, 18_446_744_073_709_551_615),
         ];
