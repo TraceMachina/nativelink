@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::cmp;
+use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
 use core::time::Duration;
 use std::borrow::Cow;
@@ -31,6 +32,7 @@ use fred::types::redisearch::{
     AggregateOperation, FtAggregateOptions, FtCreateOptions, IndexKind, Load, SearchField,
     SearchSchema, SearchSchemaKind, WithCursor,
 };
+use fred::types::scan::Scanner;
 use fred::types::scripts::Script;
 use fred::types::{Builder, Key as RedisKey, Map as RedisMap, SortOrder, Value as RedisValue};
 use futures::stream::FuturesUnordered;
@@ -88,6 +90,10 @@ const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 10_000;
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 
+/// The default COUNT value passed when scanning keys in Redis.
+/// Note: If this changes it should be updated in the config documentation.
+const DEFAULT_SCAN_COUNT: u32 = 10_000;
+
 #[expect(
     clippy::trivially_copy_pass_by_ref,
     reason = "must match method signature expected"
@@ -136,6 +142,11 @@ pub struct RedisStore {
     /// This is used to limit the number of chunk uploads per update to prevent
     #[metric(help = "The maximum number of chunk uploads per update")]
     max_chunk_uploads_per_update: usize,
+
+    /// The COUNT value passed when scanning keys in Redis.
+    /// This is used to hint the amount of work that should be done per response.
+    #[metric(help = "The COUNT value passed when scanning keys in Redis")]
+    scan_count: u32,
 
     /// Redis script used to update a value in redis if the version matches.
     /// This is done by incrementing the version number and then setting the new data
@@ -216,6 +227,9 @@ impl RedisStore {
             if spec.max_chunk_uploads_per_update == 0 {
                 spec.max_chunk_uploads_per_update = DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE;
             }
+            if spec.max_chunk_uploads_per_update == 0 {
+                spec.scan_count = DEFAULT_SCAN_COUNT;
+            }
         }
         let connection_timeout = Duration::from_millis(spec.connection_timeout_ms);
         let command_timeout = Duration::from_millis(spec.command_timeout_ms);
@@ -257,11 +271,13 @@ impl RedisStore {
             spec.key_prefix.clone(),
             spec.read_chunk_size,
             spec.max_chunk_uploads_per_update,
+            spec.scan_count,
         )
         .map(Arc::new)
     }
 
     /// Used for testing when determinism is required.
+    #[expect(clippy::too_many_arguments)]
     pub fn new_from_builder_and_parts(
         client_pool: RedisPool,
         subscriber_client: SubscriberClient,
@@ -270,6 +286,7 @@ impl RedisStore {
         key_prefix: String,
         read_chunk_size: usize,
         max_chunk_uploads_per_update: usize,
+        scan_count: u32,
     ) -> Result<Self, Error> {
         // Start connection pool (this will retry forever by default).
         client_pool.connect();
@@ -284,6 +301,7 @@ impl RedisStore {
             key_prefix,
             read_chunk_size,
             max_chunk_uploads_per_update,
+            scan_count,
             update_if_version_matches_script: Script::from_lua(LUA_VERSION_SET_SCRIPT),
             subscription_manager: Mutex::new(None),
         })
@@ -363,6 +381,58 @@ impl StoreDriver for RedisStore {
             .collect::<FuturesUnordered<_>>()
             .try_collect()
             .await
+    }
+
+    async fn list(
+        self: Pin<&Self>,
+        range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
+        handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
+    ) -> Result<u64, Error> {
+        let range = (
+            range.0.map(StoreKey::into_owned),
+            range.1.map(StoreKey::into_owned),
+        );
+        let pattern = match range.0 {
+            Bound::Included(ref start) | Bound::Excluded(ref start) => match range.1 {
+                Bound::Included(ref end) | Bound::Excluded(ref end) => {
+                    let start = start.as_str();
+                    let end = end.as_str();
+                    let max_length = start.len().min(end.len());
+                    let length = start
+                        .chars()
+                        .zip(end.chars())
+                        .position(|(a, b)| a != b)
+                        .unwrap_or(max_length);
+                    format!("{}{}*", self.key_prefix, &start[..length])
+                }
+                Bound::Unbounded => format!("{}*", self.key_prefix),
+            },
+            Bound::Unbounded => format!("{}*", self.key_prefix),
+        };
+        let client = self.client_pool.next();
+        let mut scan_stream = client.scan(pattern, Some(self.scan_count), None);
+        let mut iterations = 0;
+        'outer: while let Some(mut page) = scan_stream.try_next().await? {
+            if let Some(keys) = page.take_results() {
+                for key in keys {
+                    // TODO: Notification of conversion errors
+                    // Any results that do not conform to expectations are ignored.
+                    if let Some(key) = key.as_str() {
+                        if let Some(key) = key.strip_prefix(&self.key_prefix) {
+                            let key = StoreKey::new_str(key);
+                            if range.contains(&key) {
+                                iterations += 1;
+                                if !handler(&key) {
+                                    break 'outer;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            page.next();
+        }
+        Ok(iterations)
     }
 
     async fn update(
