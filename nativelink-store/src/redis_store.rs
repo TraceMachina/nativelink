@@ -14,6 +14,7 @@
 
 use std::borrow::Cow;
 use std::cmp;
+use std::ops::{Bound, RangeBounds};
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -31,6 +32,7 @@ use fred::types::redisearch::{
     AggregateOperation, FtAggregateOptions, FtCreateOptions, IndexKind, Load, SearchField,
     SearchSchema, SearchSchemaKind, WithCursor,
 };
+use fred::types::scan::Scanner;
 use fred::types::scripts::Script;
 use fred::types::{Builder, Key as RedisKey, Map as RedisMap, SortOrder, Value as RedisValue};
 use futures::stream::FuturesUnordered;
@@ -363,6 +365,42 @@ impl StoreDriver for RedisStore {
             .collect::<FuturesUnordered<_>>()
             .try_collect()
             .await
+    }
+
+    async fn list(
+        self: Pin<&Self>,
+        range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
+        handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
+    ) -> Result<u64, Error> {
+        let range = (
+            range.0.map(StoreKey::into_owned),
+            range.1.map(StoreKey::into_owned),
+        );
+        // TODO: Common prefix from bounds
+        let prefix = &self.key_prefix;
+        let pattern = format!("{prefix}*");
+        let client = self.client_pool.next();
+        let mut scan_stream = client.scan(pattern, Some(10000), None);
+        let mut iterations = 0;
+        'outer: while let Some(mut page) = scan_stream.try_next().await? {
+            if let Some(keys) = page.take_results() {
+                for key in keys {
+                    if let Some(key) = key.as_str() {
+                        if let Some(key) = key.strip_prefix(prefix) {
+                            let key = StoreKey::new_str(key);
+                            if range.contains(&key) {
+                                iterations += 1;
+                                if !handler(&key) {
+                                    break 'outer;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            page.next();
+        }
+        Ok(iterations)
     }
 
     async fn update(
