@@ -16,14 +16,14 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
+use crate::schedulers::SchedulerSpec;
 use crate::serde_utils::{
     convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
     convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
     convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
     convert_vec_string_with_shellexpand,
 };
-use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreRefName};
-use crate::{SchedulerConfigs, StoreConfigs};
+use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreRefName, StoreSpec};
 
 /// Name of the scheduler. This type will be used when referencing a
 /// scheduler in the `CasConfig::schedulers`'s map key.
@@ -716,12 +716,22 @@ pub struct GlobalConfig {
     pub default_digest_size_health_check: usize,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct NamedConfig<Spec> {
+    pub name: String,
+    #[serde(flatten)]
+    pub spec: Spec,
+}
+
+pub type StoreConfig = NamedConfig<StoreSpec>;
+pub type SchedulerConfig = NamedConfig<SchedulerSpec>;
+
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct CasConfig {
     /// List of stores available to use in this config.
     /// The keys can be used in other configs when needing to reference a store.
-    pub stores: StoreConfigs,
+    pub stores: Vec<StoreConfig>,
 
     /// Worker configurations used to execute jobs.
     pub workers: Option<Vec<WorkerConfig>>,
@@ -729,7 +739,7 @@ pub struct CasConfig {
     /// List of schedulers available to use in this config.
     /// The keys can be used in other configs when needing to reference a
     /// scheduler.
-    pub schedulers: Option<SchedulerConfigs>,
+    pub schedulers: Option<Vec<SchedulerConfig>>,
 
     /// Servers to setup for this process.
     pub servers: Vec<ServerConfig>,
