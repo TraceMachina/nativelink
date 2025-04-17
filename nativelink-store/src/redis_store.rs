@@ -16,6 +16,7 @@ use core::cmp;
 use core::pin::Pin;
 use core::time::Duration;
 use std::borrow::Cow;
+use std::ops::{Bound, RangeBounds};
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
@@ -31,6 +32,7 @@ use fred::types::redisearch::{
     AggregateOperation, FtAggregateOptions, FtCreateOptions, IndexKind, Load, SearchField,
     SearchSchema, SearchSchemaKind, WithCursor,
 };
+use fred::types::scan::Scanner;
 use fred::types::scripts::Script;
 use fred::types::{Builder, Key as RedisKey, Map as RedisMap, SortOrder, Value as RedisValue};
 use futures::stream::FuturesUnordered;
@@ -363,6 +365,52 @@ impl StoreDriver for RedisStore {
             .collect::<FuturesUnordered<_>>()
             .try_collect()
             .await
+    }
+
+    async fn list(
+        self: Pin<&Self>,
+        range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
+        handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
+    ) -> Result<u64, Error> {
+        let range = (
+            range.0.map(StoreKey::into_owned),
+            range.1.map(StoreKey::into_owned),
+        );
+        let pattern = match range.0 {
+            Bound::Included(ref start) | Bound::Excluded(ref start) => match range.1 {
+                Bound::Included(ref end) | Bound::Excluded(ref end) => {
+                    let start = start.as_str();
+                    let end = end.as_str();
+                    let max_length = start.len().min(end.len());
+                    let length = start.chars().zip(end.chars()).position(|(a, b)| a != b).unwrap_or(max_length);
+                    format!("{0}{1}*", self.key_prefix, &start[..length])
+                }
+                _ => format!("{0}*", self.key_prefix),
+            }
+            _ => format!("{0}*", self.key_prefix),
+        };
+        let client = self.client_pool.next();
+        let mut scan_stream = client.scan(pattern, Some(10000), None);
+        let mut iterations = 0;
+        'outer: while let Some(mut page) = scan_stream.try_next().await? {
+            if let Some(keys) = page.take_results() {
+                for key in keys {
+                    if let Some(key) = key.as_str() {
+                        if let Some(key) = key.strip_prefix(&self.key_prefix) {
+                            let key = StoreKey::new_str(key);
+                            if range.contains(&key) {
+                                iterations += 1;
+                                if !handler(&key) {
+                                    break 'outer;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            page.next();
+        }
+        Ok(iterations)
     }
 
     async fn update(
