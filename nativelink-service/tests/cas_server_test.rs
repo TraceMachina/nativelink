@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -71,7 +71,7 @@ fn make_cas_server(store_manager: &StoreManager) -> Result<CasServer, Error> {
 }
 
 #[nativelink_test]
-async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
+async fn empty_store() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let cas_server = make_cas_server(&store_manager)?;
 
@@ -92,7 +92,7 @@ async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-async fn store_one_item_existence() -> Result<(), Box<dyn std::error::Error>> {
+async fn store_one_item_existence() -> Result<(), Box<dyn core::error::Error>> {
     const VALUE: &str = "1";
 
     let store_manager = make_store_manager().await?;
@@ -119,7 +119,7 @@ async fn store_one_item_existence() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::error::Error>> {
+async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn core::error::Error>> {
     const VALUE: &str = "1";
 
     let store_manager = make_store_manager().await?;
@@ -158,7 +158,7 @@ async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::error::Err
 }
 
 #[nativelink_test]
-async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
+async fn update_existing_item() -> Result<(), Box<dyn core::error::Error>> {
     const VALUE1: &str = "1";
     const VALUE2: &str = "2";
 
@@ -214,8 +214,8 @@ async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn batch_read_blobs_read_two_blobs_success_one_fail()
+-> Result<(), Box<dyn core::error::Error>> {
     const VALUE1: &str = "1";
     const VALUE2: &str = "23";
 
@@ -240,8 +240,8 @@ async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dy
         store
             .update_oneshot(DigestInfo::try_new(HASH2, VALUE2.len())?, VALUE2.into())
             .await
-            .expect("Update should have succeeded");
-    }
+            .expect("Update should have succeeded")
+    };
     {
         // Read two blobs and additional blob should come back not found.
         let digest3 = Digest {
@@ -296,8 +296,8 @@ async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dy
                     }
                 ],
             }
-        );
-    }
+        )
+    };
     Ok(())
 }
 
@@ -367,7 +367,7 @@ async fn setup_directory_structure(
 }
 
 #[nativelink_test]
-async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn std::error::Error>> {
+async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let cas_server = make_cas_server(&store_manager)?;
     let store = store_manager.get_store("main_cas").unwrap();
@@ -413,8 +413,8 @@ async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn std::e
                 ],
                 next_page_token: String::new()
             }]
-        );
-    }
+        )
+    };
 
     // Also verify that sending the root digest returns the entire tree as well.
     {
@@ -445,14 +445,14 @@ async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn std::e
                 ],
                 next_page_token: String::new()
             }]
-        );
-    }
+        )
+    };
 
     Ok(())
 }
 
 #[nativelink_test]
-async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::error::Error>> {
+async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let cas_server = make_cas_server(&store_manager)?;
     let store = store_manager.get_store("main_cas").unwrap();
@@ -493,8 +493,8 @@ async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::erro
                 directories: vec![root_directory.clone(), sub_directories[0].clone()],
                 next_page_token: format!("{}", sub_directory_digest_infos[1]),
             }]
-        );
-    }
+        )
+    };
 
     // Also verify that sending the root digest as the page token is treated as paging from the
     // beginning and respects page size.
@@ -519,8 +519,8 @@ async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::erro
                 directories: vec![root_directory.clone(), sub_directories[0].clone()],
                 next_page_token: format!("{}", sub_directory_digest_infos[1]),
             }]
-        );
-    }
+        )
+    };
 
     // Verify that paging from a non-initial page token will return the expected content.
     {
@@ -566,15 +566,15 @@ async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::erro
                 directories: vec![sub_directories[3].clone(), sub_directories[4].clone()],
                 next_page_token: String::new(),
             }]
-        );
-    }
+        )
+    };
 
     Ok(())
 }
 
 #[nativelink_test]
 async fn batch_update_blobs_two_items_existence_with_third_missing()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), Box<dyn core::error::Error>> {
     const VALUE1: &str = "1";
     const VALUE2: &str = "23";
 
@@ -633,8 +633,8 @@ async fn batch_update_blobs_two_items_existence_with_third_missing()
                     }
                 ],
             }
-        );
-    }
+        )
+    };
     {
         // Query the backend for inserted entries plus one that is not
         // present and ensure it only returns the one that is missing.
@@ -661,7 +661,7 @@ async fn batch_update_blobs_two_items_existence_with_third_missing()
             .await;
         assert!(raw_response.is_ok());
         let response = raw_response.unwrap().into_inner();
-        assert_eq!(response.missing_blob_digests, vec![missing_digest]);
-    }
+        assert_eq!(response.missing_blob_digests, vec![missing_digest])
+    };
     Ok(())
 }

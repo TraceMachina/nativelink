@@ -125,7 +125,7 @@ async fn verify_has_function_call_checks_cas() -> Result<(), Error> {
             res[0].is_some(),
             "Results should be some with all items in CAS."
         );
-    }
+    };
 
     {
         // Completeness check should fail when root file digest is missing.
@@ -142,7 +142,7 @@ async fn verify_has_function_call_checks_cas() -> Result<(), Error> {
             res[0].is_none(),
             "Results should be none with missing root file."
         );
-    }
+    };
 
     {
         // Completeness check should fail when child file digest is missing.
@@ -158,7 +158,7 @@ async fn verify_has_function_call_checks_cas() -> Result<(), Error> {
             res[0].is_none(),
             "Results should be none with missing root file."
         );
-    }
+    };
 
     {
         // Completeness check should fail when output file digest is missing.
@@ -174,7 +174,7 @@ async fn verify_has_function_call_checks_cas() -> Result<(), Error> {
             res[0].is_none(),
             "Results should be none with missing root file."
         );
-    }
+    };
 
     {
         // Completeness check should fail when stdout digest is missing.
@@ -190,7 +190,7 @@ async fn verify_has_function_call_checks_cas() -> Result<(), Error> {
             res[0].is_none(),
             "Results should be none with missing root file."
         );
-    }
+    };
 
     {
         // Completeness check should fail when stderr digest is missing.
@@ -206,7 +206,7 @@ async fn verify_has_function_call_checks_cas() -> Result<(), Error> {
             res[0].is_none(),
             "Results should be none with missing root file."
         );
-    }
+    };
 
     Ok(())
 }
@@ -225,7 +225,7 @@ async fn verify_completeness_get() -> Result<(), Error> {
                 .is_ok(),
             ".get() should succeed with all items in CAS",
         );
-    }
+    };
 
     {
         // Completeness check in get call should fail when digest is missing in CAS.
@@ -241,7 +241,7 @@ async fn verify_completeness_get() -> Result<(), Error> {
                 .is_err(),
             ".get() should fail with item missing in CAS",
         );
-    }
+    };
 
     Ok(())
 }

@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::ops::Bound;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::collections::VecDeque;
-use std::ops::Bound;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
 use futures::{Future, Stream};
 use pin_project::pin_project;
@@ -85,7 +85,7 @@ where
                         Ok(Some(((start, end), mut buffer))) => {
                             *this.start_key = Some(start);
                             *this.end_key = Some(end);
-                            std::mem::swap(&mut buffer, this.buffer);
+                            core::mem::swap(&mut buffer, this.buffer);
                         }
                         Ok(None) => return Poll::Ready(None), // End of stream.
                         Err(err) => return Poll::Ready(Some(Err(err))),
@@ -96,7 +96,7 @@ where
                 StreamStateProj::Next => {
                     this.buffer.clear();
                     // This trick is used to recycle capacity.
-                    let buffer = std::mem::take(this.buffer);
+                    let buffer = core::mem::take(this.buffer);
                     let start_key = this
                         .start_key
                         .take()

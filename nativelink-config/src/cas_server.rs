@@ -306,6 +306,7 @@ pub struct TlsConfig {
 }
 
 /// Advanced Http configurations. These are generally should not be set.
+///
 /// For documentation on what each of these do, see the hyper documentation:
 /// See: <https://docs.rs/hyper/latest/hyper/server/conn/struct.Http.html>
 ///

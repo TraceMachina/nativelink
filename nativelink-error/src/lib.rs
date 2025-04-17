@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::convert::Into;
+use core::convert::Into;
 
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
@@ -116,7 +116,7 @@ impl Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
 impl From<Error> for nativelink_proto::google::rpc::Status {
     fn from(val: Error) -> Self {
@@ -137,8 +137,8 @@ impl From<nativelink_proto::google::rpc::Status> for Error {
     }
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // A manual impl to reduce the noise of frequently empty fields.
         let mut builder = f.debug_struct("Error");
 
@@ -170,8 +170,8 @@ impl From<prost::UnknownEnumValue> for Error {
     }
 }
 
-impl From<std::num::TryFromIntError> for Error {
-    fn from(err: std::num::TryFromIntError) -> Self {
+impl From<core::num::TryFromIntError> for Error {
+    fn from(err: core::num::TryFromIntError) -> Self {
         make_err!(Code::InvalidArgument, "{}", err.to_string())
     }
 }
@@ -182,14 +182,14 @@ impl From<tokio::task::JoinError> for Error {
     }
 }
 
-impl From<std::num::ParseIntError> for Error {
-    fn from(err: std::num::ParseIntError) -> Self {
+impl From<core::num::ParseIntError> for Error {
+    fn from(err: core::num::ParseIntError) -> Self {
         make_err!(Code::InvalidArgument, "{}", err.to_string())
     }
 }
 
-impl From<std::convert::Infallible> for Error {
-    fn from(_err: std::convert::Infallible) -> Self {
+impl From<core::convert::Infallible> for Error {
+    fn from(_err: core::convert::Infallible) -> Self {
         // Infallible is an error type that can never happen.
         unreachable!();
     }
@@ -333,13 +333,13 @@ trait CodeExt {
 impl CodeExt for Code {
     fn into_error_kind(self) -> std::io::ErrorKind {
         match self {
-            Code::Aborted => std::io::ErrorKind::Interrupted,
-            Code::AlreadyExists => std::io::ErrorKind::AlreadyExists,
-            Code::DeadlineExceeded => std::io::ErrorKind::TimedOut,
-            Code::InvalidArgument => std::io::ErrorKind::InvalidInput,
-            Code::NotFound => std::io::ErrorKind::NotFound,
-            Code::PermissionDenied => std::io::ErrorKind::PermissionDenied,
-            Code::Unavailable => std::io::ErrorKind::ConnectionRefused,
+            Self::Aborted => std::io::ErrorKind::Interrupted,
+            Self::AlreadyExists => std::io::ErrorKind::AlreadyExists,
+            Self::DeadlineExceeded => std::io::ErrorKind::TimedOut,
+            Self::InvalidArgument => std::io::ErrorKind::InvalidInput,
+            Self::NotFound => std::io::ErrorKind::NotFound,
+            Self::PermissionDenied => std::io::ErrorKind::PermissionDenied,
+            Self::Unavailable => std::io::ErrorKind::ConnectionRefused,
             _ => std::io::ErrorKind::Other,
         }
     }

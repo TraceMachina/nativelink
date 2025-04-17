@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use futures::Future;
 use hyper::rt::Executor;

@@ -107,7 +107,7 @@ fn make_stream_and_writer_spawn(
     (tx, join_handle)
 }
 
-fn make_resource_name(data_len: impl std::fmt::Display) -> String {
+fn make_resource_name(data_len: impl core::fmt::Display) -> String {
     format!(
         "{}/uploads/{}/blobs/{}/{}",
         INSTANCE_NAME,
@@ -184,7 +184,7 @@ async fn server_and_client_stub(
 }
 
 #[nativelink_test]
-pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -201,7 +201,7 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error
         // might do.
         const BYTE_SPLIT_OFFSET: usize = 8;
 
-        let raw_data = "12456789abcdefghijk".as_bytes();
+        let raw_data = b"12456789abcdefghijk";
 
         let resource_name = format!(
             "{}/uploads/{}/blobs/{}/{}",
@@ -260,16 +260,16 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error
             .get_part_unchunked(DigestInfo::try_new(HASH1, raw_data.len())?, 0, None)
             .await?;
         assert_eq!(
-            std::str::from_utf8(&store_data),
-            std::str::from_utf8(raw_data),
+            core::str::from_utf8(&store_data),
+            core::str::from_utf8(raw_data),
             "Expected store to have been updated to new value"
-        );
-    }
+        )
+    };
     Ok(())
 }
 
 #[nativelink_test]
-pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn resume_write_success() -> Result<(), Box<dyn core::error::Error>> {
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     // Chunk our data into two chunks to simulate something a client
@@ -303,14 +303,14 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
         write_request.write_offset = 0;
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
-            .await?;
-    }
+            .await?
+    };
     {
         // Now disconnect our stream.
         drop(tx);
         let result = join_handle.await.expect("Failed to join");
-        assert_eq!(result.is_err(), true, "Expected error to be returned");
-    }
+        assert_eq!(result.is_err(), true, "Expected error to be returned")
+    };
     // Now reconnect.
     let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
@@ -320,16 +320,16 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
-            .await?;
-    }
+            .await?
+    };
     {
         // Now disconnect our stream.
         drop(tx);
         join_handle
             .await
             .expect("Failed to join")
-            .expect("Failed write");
-    }
+            .expect("Failed write")
+    };
     {
         // Check to make sure our store recorded the data properly.
         let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
@@ -337,13 +337,13 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
             store.get_part_unchunked(digest, 0, None).await?,
             WRITE_DATA,
             "Data written to store did not match expected data",
-        );
-    }
+        )
+    };
     Ok(())
 }
 
 #[nativelink_test]
-pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn restart_write_success() -> Result<(), Box<dyn core::error::Error>> {
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     // Chunk our data into two chunks to simulate something a client
@@ -377,14 +377,14 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
         write_request.write_offset = 0;
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
-            .await?;
-    }
+            .await?
+    };
     {
         // Now disconnect our stream.
         drop(tx);
         let result = join_handle.await.expect("Failed to join");
-        assert_eq!(result.is_err(), true, "Expected error to be returned");
-    }
+        assert_eq!(result.is_err(), true, "Expected error to be returned")
+    };
     // Now reconnect.
     let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
@@ -393,22 +393,22 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
         write_request.write_offset = 0;
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
-            .await?;
-    }
+            .await?
+    };
     {
         // Write the remainder of our data.
         write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
-            .await?;
-    }
+            .await?
+    };
     {
         // Now disconnect our stream.
         drop(tx);
         let result = join_handle.await.expect("Failed to join");
-        assert!(result.is_ok(), "Expected success to be returned");
-    }
+        assert!(result.is_ok(), "Expected success to be returned")
+    };
     {
         // Check to make sure our store recorded the data properly.
         let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
@@ -416,13 +416,13 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
             store.get_part_unchunked(digest, 0, None).await?,
             WRITE_DATA,
             "Data written to store did not match expected data",
-        );
-    }
+        )
+    };
     Ok(())
 }
 
 #[nativelink_test]
-pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn core::error::Error>> {
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     // Chunk our data into two chunks to simulate something a client
@@ -456,14 +456,14 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
         write_request.write_offset = 0;
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
-            .await?;
-    }
+            .await?
+    };
     {
         // Now disconnect our stream.
         drop(tx);
         let result = join_handle.await.expect("Failed to join");
-        assert_eq!(result.is_err(), true, "Expected error to be returned");
-    }
+        assert_eq!(result.is_err(), true, "Expected error to be returned")
+    };
     // Now reconnect.
     let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
@@ -472,22 +472,22 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
         write_request.write_offset = 2;
         write_request.data = WRITE_DATA[2..BYTE_SPLIT_OFFSET].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
-            .await?;
-    }
+            .await?
+    };
     {
         // Write the remainder of our data.
         write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
-            .await?;
-    }
+            .await?
+    };
     {
         // Now disconnect our stream.
         drop(tx);
         let result = join_handle.await.expect("Failed to join");
-        assert!(result.is_ok(), "Expected success to be returned");
-    }
+        assert!(result.is_ok(), "Expected success to be returned")
+    };
     {
         // Check to make sure our store recorded the data properly.
         let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
@@ -495,14 +495,14 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
             store.get_part_unchunked(digest, 0, None).await?,
             WRITE_DATA,
             "Data written to store did not match expected data",
-        );
-    }
+        )
+    };
     Ok(())
 }
 
 #[nativelink_test]
 pub async fn ensure_write_is_not_done_until_write_request_is_set()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), Box<dyn core::error::Error>> {
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     let store_manager = make_store_manager().await?;
@@ -527,8 +527,8 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set()
         write_request.write_offset = 0;
         write_request.data = WRITE_DATA[..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
-            .await?;
-    }
+            .await?
+    };
     // Note: We have to pull multiple times because there are multiple futures
     // joined onto this one future and we need to ensure we run the state machine as
     // far as possible.
@@ -544,8 +544,8 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set()
         write_request.finish_write = true;
         write_request.data.clear();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
-            .await?;
-    }
+            .await?
+    };
     let mut result = None;
     for _ in 0..100 {
         if let Poll::Ready(r) = poll!(&mut write_fut) {
@@ -564,8 +564,8 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set()
                 committed_size: WRITE_DATA.len() as i64
             },
             "Expected Responses to match"
-        );
-    }
+        )
+    };
     {
         // Check to make sure our store recorded the data properly.
         let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
@@ -573,13 +573,13 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set()
             store.get_part_unchunked(digest, 0, None).await?,
             WRITE_DATA,
             "Data written to store did not match expected data",
-        );
-    }
+        )
+    };
     Ok(())
 }
 
 #[nativelink_test]
-pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn out_of_order_data_fails() -> Result<(), Box<dyn core::error::Error>> {
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     // Chunk our data into two chunks to simulate something a client
@@ -606,15 +606,15 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>>
         write_request.write_offset = 0;
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
-            .await?;
-    }
+            .await?
+    };
     {
         // Write data it already has.
         write_request.write_offset = (BYTE_SPLIT_OFFSET - 1) as i64;
         write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
-            .await?;
-    }
+            .await?
+    };
     assert!(
         join_handle.await.expect("Failed to join").is_err(),
         "Expected error to be returned"
@@ -628,13 +628,13 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>>
                 .await
                 .is_err(),
             "Expected error to be returned"
-        );
-    }
+        )
+    };
     Ok(())
 }
 
 #[nativelink_test]
-pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -660,20 +660,20 @@ pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> 
         join_handle
             .await
             .expect("Failed to join")
-            .expect("Failed write");
-    }
+            .expect("Failed write")
+    };
     {
         // Check to make sure our store recorded the data properly.
         let data = store
             .get_part_unchunked(DigestInfo::try_new(HASH1, 0)?, 0, None)
             .await?;
-        assert_eq!(data, "", "Expected data to exist and be empty");
-    }
+        assert_eq!(data, "", "Expected data to exist and be empty")
+    };
     Ok(())
 }
 
 #[nativelink_test]
-pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -695,13 +695,13 @@ pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn std::error::
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
             .await?;
         // Expect the write command to fail.
-        assert!(join_handle.await.expect("Failed to join").is_err());
-    }
+        assert!(join_handle.await.expect("Failed to join").is_err())
+    };
     Ok(())
 }
 
 #[nativelink_test]
-pub async fn out_of_sequence_write() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn out_of_sequence_write() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -723,13 +723,13 @@ pub async fn out_of_sequence_write() -> Result<(), Box<dyn std::error::Error>> {
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
             .await?;
         // Expect the write command to fail.
-        assert!(join_handle.await.expect("Failed to join").is_err());
-    }
+        assert!(join_handle.await.expect("Failed to join").is_err())
+    };
     Ok(())
 }
 
 #[nativelink_test]
-pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn core::error::Error>> {
     const VALUE1: &str = "12456789abcdefghijk";
 
     let store_manager = make_store_manager().await?;
@@ -759,13 +759,13 @@ pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std:
             roundtrip_data,
             VALUE1.as_bytes(),
             "Expected response to match what is in store"
-        );
-    }
+        )
+    };
     Ok(())
 }
 
 #[nativelink_test]
-pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn core::error::Error>> {
     const DATA_SIZE: usize = 10_000_000;
 
     let store_manager = make_store_manager().await?;
@@ -807,8 +807,8 @@ pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn std::erro
         assert_eq!(
             roundtrip_data, raw_data,
             "Expected response to match what is in store"
-        );
-    }
+        )
+    };
     Ok(())
 }
 
@@ -854,13 +854,13 @@ pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
             Error::from(result.unwrap_err()),
             make_err!(Code::NotFound, "{expected_err_str}"),
             "Expected error data to match"
-        );
-    }
+        )
+    };
     Ok(())
 }
 
 #[nativelink_test]
-pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn core::error::Error>> {
     const BYTE_SPLIT_OFFSET: usize = 8;
 
     let store_manager = make_store_manager()
@@ -870,7 +870,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
     );
 
-    let raw_data = "12456789abcdefghijk".as_bytes();
+    let raw_data = b"12456789abcdefghijk";
     let resource_name = make_resource_name(raw_data.len());
 
     {
@@ -888,8 +888,8 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
                 committed_size: 0,
                 complete: false,
             }
-        );
-    }
+        )
+    };
 
     // Setup stream.
     let (tx, join_handle) =
@@ -922,8 +922,8 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
                 committed_size: write_request.data.len() as i64,
                 complete: false,
             }
-        );
-    }
+        )
+    };
 
     // Finish writing our data.
     write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
@@ -944,8 +944,8 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
                 committed_size: raw_data.len() as i64,
                 complete: true,
             }
-        );
-    }
+        )
+    };
     join_handle
         .await
         .expect("Failed to join")
@@ -954,7 +954,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
 }
 
 #[nativelink_test]
-pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error::Error>> {
     const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB.
 
     // This is the size of the wrapper proto around the data.
@@ -988,8 +988,8 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn std::error::
         tx.send(write_request).expect("Failed to send data");
 
         let result = bs_client.write(Request::new(rx)).await;
-        assert!(result.is_ok(), "Expected success, got {result:?}");
-    }
+        assert!(result.is_ok(), "Expected success, got {result:?}")
+    };
     {
         // Test to ensure if we send exactly our max message size plus one, it will fail.
         let data = Bytes::from(vec![
@@ -1016,8 +1016,8 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn std::error::
                 .to_string()
                 .contains("Error, decoded message length too large"),
             "Message should be too large message"
-        );
-    }
+        )
+    };
 
     drop(bs_client);
     // Wait for server to shutdown. This should happen when `bs_client` is dropped.

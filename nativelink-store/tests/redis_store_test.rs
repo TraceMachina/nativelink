@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::panicking;
 
@@ -137,7 +137,7 @@ impl Mocks for MockRedisBackend {
             args: Vec::new(),
         };
 
-        let results = std::iter::once(MULTI.clone())
+        let results = core::iter::once(MULTI.clone())
             .chain(commands)
             .chain([EXEC.clone()])
             .map(|command| self.process_command(command))
@@ -892,7 +892,7 @@ async fn test_redis_fingerprint_metric() -> Result<(), Error> {
     };
 
     let root_metrics = Arc::new(RwLock::new(RootMetricsTest {
-        stores: store_manager.clone(),
+        stores: store_manager,
     }));
 
     let (layer, output_metrics) = MetricsCollectorLayer::new();

@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
 
 use futures::future::ready;
 use futures::stream::repeat_with;
@@ -137,44 +137,42 @@ async fn retry_calls_sleep_fn() -> Result<(), Error> {
         },
     );
 
-    {
-        // Try with retry limit hit.
-        let result = Pin::new(&retrier)
-            .retry(repeat_with(|| {
-                RetryResult::<bool>::Retry(make_err!(Code::Unavailable, "Dummy failure",))
-            }))
-            .await;
+    // Try with retry limit hit.
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            RetryResult::<bool>::Retry(make_err!(Code::Unavailable, "Dummy failure",))
+        }))
+        .await;
 
-        assert_eq!(result.is_err(), true, "Expected the retry to fail");
-        assert_eq!(
-            sleep_fn_run_count.load(Ordering::Relaxed),
-            5,
-            "Expected the sleep_fn to be called twice"
-        );
-    }
+    assert_eq!(result.is_err(), true, "Expected the retry to fail");
+    assert_eq!(
+        sleep_fn_run_count.load(Ordering::Relaxed),
+        5,
+        "Expected the sleep_fn to be called twice"
+    );
+
     sleep_fn_run_count.store(0, Ordering::Relaxed); // Reset our counter.
-    {
-        // Try with 3 retries.
-        let run_count = Arc::new(AtomicI32::new(0));
-        let result = Pin::new(&retrier)
-            .retry(repeat_with(|| {
-                run_count.fetch_add(1, Ordering::Relaxed);
-                // Remember: This function is only called every time, not just retries.
-                // We run the first time, then retry 2 additional times meaning 3 runs.
-                if run_count.load(Ordering::Relaxed) == 3 {
-                    return RetryResult::Ok(true);
-                }
-                RetryResult::<bool>::Retry(make_err!(Code::Unavailable, "Dummy failure",))
-            }))
-            .await?;
 
-        assert_eq!(result, true, "Expected results to pass");
-        assert_eq!(
-            sleep_fn_run_count.load(Ordering::Relaxed),
-            2,
-            "Expected the sleep_fn to be called twice"
-        );
-    }
+    // Try with 3 retries.
+    let run_count = Arc::new(AtomicI32::new(0));
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            run_count.fetch_add(1, Ordering::Relaxed);
+            // Remember: This function is only called every time, not just retries.
+            // We run the first time, then retry 2 additional times meaning 3 runs.
+            if run_count.load(Ordering::Relaxed) == 3 {
+                return RetryResult::Ok(true);
+            }
+            RetryResult::<bool>::Retry(make_err!(Code::Unavailable, "Dummy failure",))
+        }))
+        .await?;
+
+    assert_eq!(result, true, "Expected results to pass");
+    assert_eq!(
+        sleep_fn_run_count.load(Ordering::Relaxed),
+        2,
+        "Expected the sleep_fn to be called twice"
+    );
 
     Ok(())
 }

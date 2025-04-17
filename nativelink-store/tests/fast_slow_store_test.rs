@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -154,76 +154,66 @@ async fn partial_reads_copy_full_to_fast_store_test() -> Result<(), Error> {
 fn calculate_range_test() {
     let test =
         |start_range, end_range| FastSlowStore::calculate_range(&start_range, &end_range).unwrap();
-    {
-        // Exact match.
-        let received_range = 0..1;
-        let send_range = 0..1;
-        let expected_results = Some(0..1);
-        assert_eq!(test(received_range, send_range), expected_results);
-    }
-    {
-        // Minus one on received_range.
-        let received_range = 1..4;
-        let send_range = 1..5;
-        let expected_results = Some(0..3);
-        assert_eq!(test(received_range, send_range), expected_results);
-    }
-    {
-        // Minus one on send_range.
-        let received_range = 1..5;
-        let send_range = 1..4;
-        let expected_results = Some(0..3);
-        assert_eq!(test(received_range, send_range), expected_results);
-    }
-    {
-        // Should have already sent all data (start fence post).
-        let received_range = 1..2;
-        let send_range = 0..1;
-        let expected_results = None;
-        assert_eq!(test(received_range, send_range), expected_results);
-    }
-    {
-        // Definiltly already sent data.
-        let received_range = 2..3;
-        let send_range = 0..1;
-        let expected_results = None;
-        assert_eq!(test(received_range, send_range), expected_results);
-    }
-    {
-        // All data should be sent (inside range).
-        let received_range = 3..4;
-        let send_range = 0..100;
-        let expected_results = Some(0..1); // Note: This is relative received_range.start.
-        assert_eq!(test(received_range, send_range), expected_results);
-    }
-    {
-        // Subset of received data should be sent.
-        let received_range = 1..100;
-        let send_range = 3..4;
-        let expected_results = Some(2..3); // Note: This is relative received_range.start.
-        assert_eq!(test(received_range, send_range), expected_results);
-    }
-    {
-        // We are clearly not at the offset yet.
-        let received_range = 0..1;
-        let send_range = 3..4;
-        let expected_results = None;
-        assert_eq!(test(received_range, send_range), expected_results);
-    }
-    {
-        // Not at offset yet (fence post).
-        let received_range = 0..1;
-        let send_range = 1..2;
-        let expected_results = None;
-        assert_eq!(test(received_range, send_range), expected_results);
-    }
-    {
-        // Head part of the received data should be sent.
-        let received_range = 1..3;
-        let send_range = 2..5;
-        let expected_results = Some(1..2);
-        assert_eq!(test(received_range, send_range), expected_results);
-    }
+
+    // Exact match.
+    let received_range = 0..1;
+    let send_range = 0..1;
+    let expected_results = Some(0..1);
+    assert_eq!(test(received_range, send_range), expected_results);
+
+    // Minus one on received_range.
+    let received_range = 1..4;
+    let send_range = 1..5;
+    let expected_results = Some(0..3);
+    assert_eq!(test(received_range, send_range), expected_results);
+
+    // Minus one on send_range.
+    let received_range = 1..5;
+    let send_range = 1..4;
+    let expected_results = Some(0..3);
+    assert_eq!(test(received_range, send_range), expected_results);
+
+    // Should have already sent all data (start fence post).
+    let received_range = 1..2;
+    let send_range = 0..1;
+    let expected_results = None;
+    assert_eq!(test(received_range, send_range), expected_results);
+
+    // Definiltly already sent data.
+    let received_range = 2..3;
+    let send_range = 0..1;
+    let expected_results = None;
+    assert_eq!(test(received_range, send_range), expected_results);
+
+    // All data should be sent (inside range).
+    let received_range = 3..4;
+    let send_range = 0..100;
+    let expected_results = Some(0..1); // Note: This is relative received_range.start.
+    assert_eq!(test(received_range, send_range), expected_results);
+
+    // Subset of received data should be sent.
+    let received_range = 1..100;
+    let send_range = 3..4;
+    let expected_results = Some(2..3); // Note: This is relative received_range.start.
+    assert_eq!(test(received_range, send_range), expected_results);
+
+    // We are clearly not at the offset yet.
+    let received_range = 0..1;
+    let send_range = 3..4;
+    let expected_results = None;
+    assert_eq!(test(received_range, send_range), expected_results);
+
+    // Not at offset yet (fence post).
+    let received_range = 0..1;
+    let send_range = 1..2;
+    let expected_results = None;
+    assert_eq!(test(received_range, send_range), expected_results);
+
+    // Head part of the received data should be sent.
+    let received_range = 1..3;
+    let send_range = 2..5;
+    let expected_results = Some(1..2);
+    assert_eq!(test(received_range, send_range), expected_results);
 }
 
 #[nativelink_test]
@@ -293,11 +283,11 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             self
         }
 
-        fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static) {
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
             self
         }
 
-        fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
             self
         }
     }

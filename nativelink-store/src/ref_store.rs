@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cell::UnsafeCell;
-use std::pin::Pin;
+use core::cell::UnsafeCell;
+use core::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
@@ -49,7 +49,7 @@ pub struct RefStore {
 
 impl RefStore {
     pub fn new(spec: &RefSpec, store_manager: Weak<StoreManager>) -> Arc<Self> {
-        Arc::new(RefStore {
+        Arc::new(Self {
             name: spec.name.clone(),
             store_manager,
             inner: StoreReference {
@@ -141,11 +141,11 @@ impl StoreDriver for RefStore {
         }
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

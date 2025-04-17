@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::{Debug, Formatter};
+use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
-use std::fmt::{Debug, Formatter};
-use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
@@ -230,7 +230,7 @@ impl FileEntry for FileEntryImpl {
     async fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(FileEntryImpl, fs::FileSlot, OsString), Error> {
+    ) -> Result<(Self, fs::FileSlot, OsString), Error> {
         let temp_full_path = encoded_file_path.get_file_path().to_os_string();
         let temp_file_result = fs::create_file(temp_full_path.clone())
             .or_else(|mut err| async {
@@ -253,7 +253,7 @@ impl FileEntry for FileEntryImpl {
             .await?;
 
         Ok((
-            <FileEntryImpl as FileEntry>::create(
+            <Self as FileEntry>::create(
                 0, /* Unknown yet, we will fill it in later */
                 block_size,
                 RwLock::new(encoded_file_path),
@@ -304,7 +304,7 @@ impl FileEntry for FileEntryImpl {
 }
 
 impl Debug for FileEntryImpl {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FileEntryImpl")
             .field("data_size", &self.data_size)
             .field("encoded_file_path", &"<behind mutex>")
@@ -971,11 +971,11 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 

@@ -12,16 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::any::Any;
+use core::cell::RefCell;
+use core::mem::ManuallyDrop;
 use core::panic;
-use std::any::Any;
-use std::cell::RefCell;
-use std::clone::Clone;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::mem::ManuallyDrop;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use futures::Future;
 use nativelink_error::{Code, Error, make_err};
@@ -31,14 +30,14 @@ use tracing::{Instrument, Span};
 
 use crate::background_spawn;
 
-/// Make a symbol that represents a unique memory pointer that is
-/// constant and chosen at compile time. This enables two modules
-/// to use that memory location to reference data that lives in a
-/// shared module without the two modules knowing about each other.
-/// For example, let's say we have a context that holds anonymous
-/// data; we can use these symbols to let one module set the data
-/// and tie the data to a symbol and another module read the data
-/// with the symbol, without the two modules knowing about each other.
+/// Make a symbol that represents a unique memory pointer that is constant and chosen at compile
+/// time.
+///
+/// This enables two modules to use that memory location to reference data that lives in a shared
+/// module without the two modules knowing about each other. For example, let's say we have a
+/// context that holds anonymous data; we can use these symbols to let one module set the data and
+/// tie the data to a symbol and another module read the data with the symbol, without the two
+/// modules knowing about each other.
 ///
 /// Safety: The symbol name must be globally unique.
 #[macro_export]
@@ -49,7 +48,7 @@ macro_rules! unsafe_make_symbol {
         pub static $name: $crate::origin_context::NLSymbol<$type> =
             $crate::origin_context::NLSymbol {
                 name: concat!(module_path!(), "::", stringify!($name)),
-                _phantom: std::marker::PhantomData {},
+                _phantom: core::marker::PhantomData,
             };
     };
 }
@@ -62,7 +61,7 @@ unsafe_make_symbol!(ORIGIN_IDENTITY, String);
 #[derive(Debug)]
 pub struct NLSymbol<T: Send + Sync + 'static> {
     pub name: &'static str,
-    pub _phantom: std::marker::PhantomData<T>,
+    pub _phantom: core::marker::PhantomData<T>,
 }
 
 impl<T: Send + Sync + 'static> Symbol for NLSymbol<T> {
@@ -77,7 +76,7 @@ pub trait Symbol {
     type Type: 'static;
 
     fn name(&self) -> &'static str {
-        std::any::type_name::<Self>()
+        core::any::type_name::<Self>()
     }
 }
 
@@ -300,7 +299,7 @@ impl ContextDropGuard {
     #[inline]
     fn release(mut self) -> Arc<OriginContext> {
         let new_ctx = self.restore_global_context();
-        std::mem::forget(self); // Prevent the destructor from being called.
+        core::mem::forget(self); // Prevent the destructor from being called.
         new_ctx
     }
 }
@@ -352,9 +351,9 @@ impl<T> ContextAwareFuture<T> {
     /// active context.
     #[must_use = "futures do nothing unless you `.await` or poll them"]
     #[inline]
-    pub fn new_from_active(inner: Instrumented<T>) -> ContextAwareFuture<T> {
+    pub fn new_from_active(inner: Instrumented<T>) -> Self {
         if let Some(ctx) = ActiveOriginContext::get() {
-            ContextAwareFuture::new(Some(ctx), inner)
+            Self::new(Some(ctx), inner)
         } else {
             // Useful to get tracing stack trace.
             tracing::error!("OriginContext must be set");
@@ -384,7 +383,7 @@ impl<T: Future> Future for ContextAwareFuture<T> {
             panic!("Expected context to be set");
         };
         let enter = ctx.enter();
-        // Since `inner` is only moved when the future itself is dropped, `inner` will
+        // Safety: Since `inner` is only moved when the future itself is dropped, `inner` will
         // never move, so this should be safe.
         // see: https://docs.rs/tracing/0.1.40/src/tracing/instrument.rs.html#297
         let inner = unsafe { this.inner.map_unchecked_mut(|v| &mut **v) };

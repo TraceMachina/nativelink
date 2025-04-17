@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
 use std::borrow::Cow;
-use std::fmt::Debug;
 
 use nativelink_metric::MetricKind;
 use serde::Serialize;
@@ -32,10 +32,8 @@ pub enum CollectionKind {
 impl From<MetricKind> for CollectionKind {
     fn from(kind: MetricKind) -> Self {
         match kind {
-            MetricKind::Counter => CollectionKind::Counter,
-            MetricKind::Default | MetricKind::String | MetricKind::Component => {
-                CollectionKind::String
-            }
+            MetricKind::Counter => Self::Counter,
+            MetricKind::Default | MetricKind::String | MetricKind::Component => Self::String,
         }
     }
 }
@@ -49,7 +47,7 @@ enum ValueWithPrimitiveType {
 
 impl Default for ValueWithPrimitiveType {
     fn default() -> Self {
-        ValueWithPrimitiveType::U64(0)
+        Self::U64(0)
     }
 }
 
@@ -78,7 +76,7 @@ impl From<MetricDataVisitor> for CollectedMetricPrimitive {
                 CollectionKind::Counter,
             ),
         };
-        CollectedMetricPrimitive {
+        Self {
             value: Some(value),
             help: visitor.help,
             value_type: visitor.value_type.unwrap_or(derived_type),
@@ -140,7 +138,7 @@ impl Visit for MetricDataVisitor {
             field => panic!("UNKNOWN FIELD {field}"),
         }
     }
-    fn record_error(&mut self, _field: &Field, _value: &(dyn std::error::Error + 'static)) {}
+    fn record_error(&mut self, _field: &Field, _value: &(dyn core::error::Error + 'static)) {}
 }
 
 /// An intermediate structed that will have it's contents populated

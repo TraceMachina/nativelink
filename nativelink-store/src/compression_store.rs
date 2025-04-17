@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp;
-use std::pin::Pin;
+use core::cmp;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -117,24 +117,24 @@ pub const FOOTER_FRAME_TYPE: u8 = 1;
 /// This is a partial mirror of `nativelink_config::stores::Lz4Config`.
 /// We cannot use that natively here because it could cause our
 /// serialized format to change if we added more configs.
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Copy, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default, Copy, Clone)]
 pub struct Lz4Config {
     pub block_size: u32,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone, Copy)]
 pub struct Header {
     pub version: u8,
     pub config: Lz4Config,
     pub upload_size: UploadSizeInfo,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone, Copy)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default, Clone, Copy)]
 pub struct SliceIndex {
     pub position_from_prev_index: u32,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default)]
 pub struct Footer {
     pub indexes: Vec<SliceIndex>,
     pub index_count: u32,
@@ -177,9 +177,7 @@ impl UploadState {
         };
         let footer = Footer {
             indexes: vec![
-                SliceIndex {
-                    ..Default::default()
-                };
+                SliceIndex::default();
                 usize::try_from(max_index_count)
                     .err_tip(|| "Could not convert max_index_count to usize")?
             ],
@@ -210,6 +208,7 @@ impl UploadState {
 }
 
 /// This store will compress data before sending it on to the inner store.
+///
 /// Note: Currently using `get_part()` and trying to read part of the data will
 /// result in the entire contents being read from the inner store but will
 /// only send the contents requested.
@@ -221,8 +220,8 @@ pub struct CompressionStore {
     bincode_options: BincodeOptions,
 }
 
-impl std::fmt::Debug for CompressionStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for CompressionStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CompressionStore")
             .field("inner_store", &self.inner_store)
             .field("config", &self.config)
@@ -243,7 +242,7 @@ impl CompressionStore {
                 lz4_config
             }
         };
-        Ok(Arc::new(CompressionStore {
+        Ok(Arc::new(Self {
             inner_store,
             config: lz4_config,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
@@ -304,7 +303,7 @@ impl StoreDriver for CompressionStore {
                 tx.send(serialized_header.into())
                     .await
                     .err_tip(|| "Failed to write compression header on upload")?;
-            }
+            };
 
             let mut received_amt = 0;
             let mut index_count: u32 = 0;
@@ -332,7 +331,7 @@ impl StoreDriver for CompressionStore {
                 // For efficiency reasons we do some raw slice manipulation so we can write directly
                 // into our buffer instead of having to do another allocation.
                 let raw_compressed_data = unsafe {
-                    std::slice::from_raw_parts_mut(
+                    core::slice::from_raw_parts_mut(
                         compressed_data_buf.chunk_mut().as_mut_ptr(),
                         max_output_size,
                     )
@@ -340,9 +339,7 @@ impl StoreDriver for CompressionStore {
 
                 let compressed_data_sz = compress_into(&chunk, raw_compressed_data)
                     .map_err(|e| make_err!(Code::Internal, "Compression error {:?}", e))?;
-                unsafe {
-                    compressed_data_buf.advance_mut(compressed_data_sz);
-                }
+                unsafe { compressed_data_buf.advance_mut(compressed_data_sz) };
 
                 // Now fill the size in our slice.
                 LittleEndian::write_u32(&mut compressed_data_buf[1..5], compressed_data_sz as u32);
@@ -364,12 +361,10 @@ impl StoreDriver for CompressionStore {
             // Note: We need to be careful that if we don't have any data (zero bytes) it
             // doesn't go to -1.
             index_count = index_count.saturating_sub(1);
-            output_state.footer.indexes.resize(
-                index_count as usize,
-                SliceIndex {
-                    ..Default::default()
-                },
-            );
+            output_state
+                .footer
+                .indexes
+                .resize(index_count as usize, SliceIndex::default());
             output_state.footer.index_count = output_state.footer.indexes.len() as u32;
             output_state.footer.uncompressed_data_size = received_amt;
             {
@@ -391,7 +386,7 @@ impl StoreDriver for CompressionStore {
                     .err_tip(|| "Failed to write footer to inner store in compression store")?;
                 tx.send_eof()
                     .err_tip(|| "Failed writing EOF in compression store update")?;
-            }
+            };
 
             Result::<(), Error>::Ok(())
         };
@@ -512,7 +507,7 @@ impl StoreDriver for CompressionStore {
                     // For efficiency reasons we do some raw slice manipulation so we can write directly
                     // into our buffer instead of having to do another allocation.
                     let raw_decompressed_data = unsafe {
-                        std::slice::from_raw_parts_mut(
+                        core::slice::from_raw_parts_mut(
                             uncompressed_data.chunk_mut().as_mut_ptr(),
                             max_output_size,
                         )
@@ -539,7 +534,7 @@ impl StoreDriver for CompressionStore {
                         remaining_bytes_to_send -= (end_pos - start_pos) as u64;
                     }
                     uncompressed_data_sz = new_uncompressed_data_sz;
-                }
+                };
                 chunks_count += 1;
 
                 let mut chunk = rx
@@ -601,7 +596,7 @@ impl StoreDriver for CompressionStore {
                     footer.uncompressed_data_size,
                     uncompressed_data_sz
                 );
-            }
+            };
 
             writer
                 .send_eof()
@@ -624,11 +619,11 @@ impl StoreDriver for CompressionStore {
         self
     }
 
-    fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }
