@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::ops::RangeBounds;
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -34,7 +35,7 @@ use nativelink_store::redis_store::RedisStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use parking_lot::RwLock;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, from_str, to_string};
@@ -812,6 +813,127 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
 
     let result = store.get_part_unchunked(digest, 0, None).await;
     assert_eq!(result.unwrap_err().code, Code::NotFound);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn list_test() -> Result<(), Error> {
+    async fn get_list(
+        store: &RedisStore,
+        range: impl RangeBounds<StoreKey<'static>> + Send + Sync + 'static,
+    ) -> Vec<StoreKey<'static>> {
+        let mut found_keys = vec![];
+        store
+            .list(range, |key| {
+                found_keys.push(key.borrow().into_owned());
+                true
+            })
+            .await
+            .unwrap();
+        found_keys
+    }
+
+    const KEY1: StoreKey = StoreKey::new_str("key1");
+    const KEY2: StoreKey = StoreKey::new_str("key2");
+    const KEY3: StoreKey = StoreKey::new_str("key3");
+
+    let command = MockCommand {
+        cmd: Str::from_static("SCAN"),
+        subcommand: None,
+        args: vec![
+            RedisValue::String(Str::from_static("0")),
+            RedisValue::String(Str::from_static("MATCH")),
+            RedisValue::String(Str::from_static("key*")),
+            RedisValue::String(Str::from_static("COUNT")),
+            RedisValue::Integer(10000),
+        ],
+    };
+    let command_open = MockCommand {
+        cmd: Str::from_static("SCAN"),
+        subcommand: None,
+        args: vec![
+            RedisValue::String(Str::from_static("0")),
+            RedisValue::String(Str::from_static("MATCH")),
+            RedisValue::String(Str::from_static("*")),
+            RedisValue::String(Str::from_static("COUNT")),
+            RedisValue::Integer(10000),
+        ],
+    };
+    let result = Ok(RedisValue::Array(vec![
+        RedisValue::String(Str::from_static("0")),
+        RedisValue::Array(vec![
+            RedisValue::String(Str::from_static("key1")),
+            RedisValue::String(Str::from_static("key2")),
+            RedisValue::String(Str::from_static("key3")),
+        ]),
+    ]));
+
+    let mocks = Arc::new(MockRedisBackend::new());
+    mocks
+        .expect(command_open.clone(), result.clone())
+        .expect(command_open.clone(), result.clone())
+        .expect(command.clone(), result.clone())
+        .expect(command.clone(), result.clone())
+        .expect(command.clone(), result.clone())
+        .expect(command_open.clone(), result.clone())
+        .expect(command, result);
+
+    let store = {
+        let mut builder = Builder::default_centralized();
+        builder.set_config(RedisConfig {
+            mocks: Some(mocks),
+            ..Default::default()
+        });
+
+        let (client_pool, subscriber_client) = make_clients(builder);
+        RedisStore::new_from_builder_and_parts(
+            client_pool,
+            subscriber_client,
+            None,
+            mock_uuid_generator,
+            String::new(),
+            DEFAULT_READ_CHUNK_SIZE,
+            DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+        )
+        .unwrap()
+    };
+
+    {
+        // Test listing all keys.
+        let keys = get_list(&store, ..).await;
+        assert_eq!(keys, vec![KEY1, KEY2, KEY3]);
+    }
+    {
+        // Test listing from key1 to all.
+        let keys = get_list(&store, KEY1..).await;
+        assert_eq!(keys, vec![KEY1, KEY2, KEY3]);
+    }
+    {
+        // Test listing from key1 to key2.
+        let keys = get_list(&store, KEY1..KEY2).await;
+        assert_eq!(keys, vec![KEY1]);
+    }
+    {
+        // Test listing from key1 including key2.
+        let keys = get_list(&store, KEY1..=KEY2).await;
+        assert_eq!(keys, vec![KEY1, KEY2]);
+    }
+    {
+        // Test listing from key1 to key3.
+        let keys = get_list(&store, KEY1..KEY3).await;
+        assert_eq!(keys, vec![KEY1, KEY2]);
+    }
+    {
+        // Test listing from all to key2.
+        let keys = get_list(&store, ..KEY2).await;
+        assert_eq!(keys, vec![KEY1]);
+    }
+    {
+        // Test listing from key2 to key3.
+        let keys = get_list(&store, KEY2..KEY3).await;
+        assert_eq!(keys, vec![KEY2]);
+    }
 
     Ok(())
 }
