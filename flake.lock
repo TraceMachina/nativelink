@@ -112,9 +112,7 @@
     },
     "nix2container": {
       "inputs": {
-        "flake-utils": [
-          "flake-utils"
-        ],
+        "flake-utils": "flake-utils",
         "nixpkgs": [
           "nixpkgs"
         ]
@@ -169,7 +167,6 @@
       "inputs": {
         "crane": "crane",
         "flake-parts": "flake-parts",
-        "flake-utils": "flake-utils",
         "git-hooks": "git-hooks",
         "nix2container": "nix2container",
         "nixpkgs": "nixpkgs",
