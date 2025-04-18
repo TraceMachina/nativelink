@@ -15,7 +15,6 @@
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
@@ -27,7 +26,6 @@ use hyper::{Request, Response, StatusCode};
 use nativelink_util::health_utils::{
     HealthRegistry, HealthStatus, HealthStatusDescription, HealthStatusReporter,
 };
-use nativelink_util::origin_context::OriginContext;
 use tower::Service;
 use tracing::error_span;
 
@@ -56,38 +54,35 @@ impl Service<Request<Body>> for HealthServer {
 
     fn call(&mut self, _req: Request<Body>) -> Self::Future {
         let health_registry = self.health_registry.clone();
-        Box::pin(Arc::new(OriginContext::new()).wrap_async(
-            error_span!("health_server_call"),
-            async move {
-                let health_status_descriptions: Vec<HealthStatusDescription> =
-                    health_registry.health_status_report().collect().await;
+        Box::pin(error_span!("health_server_call").in_scope(|| async move {
+            let health_status_descriptions: Vec<HealthStatusDescription> =
+                health_registry.health_status_report().collect().await;
 
-                match serde_json5::to_string(&health_status_descriptions) {
-                    Ok(body) => {
-                        let contains_failed_report =
-                            health_status_descriptions.iter().any(|description| {
-                                matches!(description.status, HealthStatus::Failed { .. })
-                            });
-                        let status_code = if contains_failed_report {
-                            StatusCode::SERVICE_UNAVAILABLE
-                        } else {
-                            StatusCode::OK
-                        };
+            match serde_json5::to_string(&health_status_descriptions) {
+                Ok(body) => {
+                    let contains_failed_report =
+                        health_status_descriptions.iter().any(|description| {
+                            matches!(description.status, HealthStatus::Failed { .. })
+                        });
+                    let status_code = if contains_failed_report {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    } else {
+                        StatusCode::OK
+                    };
 
-                        Ok(Response::builder()
-                            .status(status_code)
-                            .header(CONTENT_TYPE, HeaderValue::from_static(JSON_CONTENT_TYPE))
-                            .body(Full::new(Bytes::from(body)))
-                            .unwrap())
-                    }
-
-                    Err(e) => Ok(Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    Ok(Response::builder()
+                        .status(status_code)
                         .header(CONTENT_TYPE, HeaderValue::from_static(JSON_CONTENT_TYPE))
-                        .body(Full::new(Bytes::from(format!("Internal Failure: {e:?}"))))
-                        .unwrap()),
+                        .body(Full::new(Bytes::from(body)))
+                        .unwrap())
                 }
-            },
-        ))
+
+                Err(e) => Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header(CONTENT_TYPE, HeaderValue::from_static(JSON_CONTENT_TYPE))
+                    .body(Full::new(Bytes::from(format!("Internal Failure: {e:?}"))))
+                    .unwrap()),
+            }
+        }))
     }
 }

@@ -2028,6 +2028,8 @@ dependencies = [
  "nativelink-store",
  "nativelink-util",
  "nativelink-worker",
+ "opentelemetry",
+ "opentelemetry-http",
  "parking_lot",
  "rustls-pemfile",
  "scopeguard",
@@ -2141,6 +2143,7 @@ dependencies = [
  "nativelink-proto",
  "nativelink-store",
  "nativelink-util",
+ "opentelemetry",
  "parking_lot",
  "pretty_assertions",
  "prost",
@@ -2178,6 +2181,7 @@ dependencies = [
  "nativelink-scheduler",
  "nativelink-store",
  "nativelink-util",
+ "opentelemetry",
  "parking_lot",
  "pretty_assertions",
  "prost",
@@ -2271,6 +2275,7 @@ dependencies = [
  "nativelink-proto",
  "opentelemetry",
  "opentelemetry-appender-tracing",
+ "opentelemetry-http",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "parking_lot",
@@ -2313,6 +2318,8 @@ dependencies = [
  "nativelink-proto",
  "nativelink-store",
  "nativelink-util",
+ "opentelemetry",
+ "opentelemetry-http",
  "parking_lot",
  "pretty_assertions",
  "prost",
@@ -2441,6 +2448,19 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "opentelemetry-http"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46d7ab32b827b5b495bd90fa95a6cb65ccc293555dcc3199ae2937d2d237c8ed"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "http 1.3.1",
+ "opentelemetry",
+ "tracing",
 ]
 
 [[package]]

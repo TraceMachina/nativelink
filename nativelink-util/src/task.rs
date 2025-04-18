@@ -13,29 +13,30 @@
 // limitations under the License.
 
 use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::{Context as TaskContext, Poll};
 
 use futures::Future;
 use hyper::rt::Executor;
 use hyper_util::rt::tokio::TokioExecutor;
+use opentelemetry::context::{Context, FutureExt};
 use tokio::task::{JoinError, JoinHandle, spawn_blocking};
 pub use tracing::error_span as __error_span;
 use tracing::{Instrument, Span};
 
-use crate::origin_context::{ActiveOriginContext, ContextAwareFuture, OriginContext};
-
-pub fn __spawn_with_span_and_context<F, T>(
-    f: F,
-    span: Span,
-    ctx: Option<Arc<OriginContext>>,
-) -> JoinHandle<T>
+pub fn __spawn_with_span_and_context<F, T>(f: F, span: Span, ctx: Option<Context>) -> JoinHandle<T>
 where
     T: Send + 'static,
     F: Future<Output = T> + Send + 'static,
 {
+    let future = f.instrument(span);
+    let future = if let Some(ctx) = ctx {
+        future.with_context(ctx)
+    } else {
+        future.with_current_context()
+    };
+
     #[expect(clippy::disallowed_methods, reason = "purpose of the method")]
-    tokio::spawn(ContextAwareFuture::new(ctx, f.instrument(span)))
+    tokio::spawn(future)
 }
 
 pub fn __spawn_with_span<F, T>(f: F, span: Span) -> JoinHandle<T>
@@ -43,7 +44,8 @@ where
     T: Send + 'static,
     F: Future<Output = T> + Send + 'static,
 {
-    __spawn_with_span_and_context(f, span, ActiveOriginContext::get())
+    let current_ctx = Context::current();
+    __spawn_with_span_and_context(f, span, Some(current_ctx))
 }
 
 pub fn __spawn_blocking<F, T>(f: F, span: Span) -> JoinHandle<T>
@@ -117,7 +119,7 @@ impl<T> JoinHandleDropGuard<T> {
 impl<T> Future for JoinHandleDropGuard<T> {
     type Output = Result<T, JoinError>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
         Pin::new(&mut self.inner).poll(cx)
     }
 }

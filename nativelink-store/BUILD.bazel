@@ -124,6 +124,7 @@ rust_test_suite(
         "@crates//:http-body",
         "@crates//:memory-stats",
         "@crates//:mock_instant",
+        "@crates//:opentelemetry",
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",
         "@crates//:rand",

@@ -23,13 +23,11 @@ use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::common::PackedHash;
-use nativelink_util::digest_hasher::{
-    ACTIVE_HASHER_FUNC, DigestHasher, default_digest_hasher_func,
-};
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
-use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use opentelemetry::context::Context;
 
 #[derive(Debug, MetricsComponent)]
 pub struct VerifyStore {
@@ -179,8 +177,8 @@ impl StoreDriver for VerifyStore {
 
         let mut hasher = if self.verify_hash {
             Some(
-                ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-                    .err_tip(|| "In verify_store::update")?
+                Context::current()
+                    .get::<DigestHasherFunc>()
                     .map_or_else(default_digest_hasher_func, |v| *v)
                     .hasher(),
             )

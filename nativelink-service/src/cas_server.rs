@@ -36,10 +36,10 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
-use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::{Store, StoreLike};
+use opentelemetry::context::FutureExt;
 use tonic::{Request, Response, Status};
-use tracing::{Level, error_span, event, instrument};
+use tracing::{Instrument, Level, error_span, event, instrument};
 
 #[derive(Debug)]
 pub struct CasServer {
@@ -319,18 +319,17 @@ impl ContentAddressableStorage for CasServer {
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
         let request = grpc_request.into_inner();
-        let ctx = OriginEventContext::new(|| &request).await;
-        let resp = make_ctx_for_hash_func(request.digest_function)
-            .err_tip(|| "In CasServer::find_missing_blobs")?
-            .wrap_async(
-                error_span!("cas_server_find_missing_blobs"),
-                self.inner_find_missing_blobs(request),
+        let digest_function = request.digest_function;
+
+        self.inner_find_missing_blobs(request)
+            .instrument(error_span!("cas_server_find_missing_blobs"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function)
+                    .err_tip(|| "In CasServer::find_missing_blobs")?,
             )
             .await
             .err_tip(|| "Failed on find_missing_blobs() command")
-            .map_err(Into::into);
-        ctx.emit(|| &resp).await;
-        resp
+            .map_err(Into::into)
     }
 
     #[instrument(
@@ -345,18 +344,17 @@ impl ContentAddressableStorage for CasServer {
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
         let request = grpc_request.into_inner();
-        let ctx = OriginEventContext::new(|| &request).await;
-        let resp = make_ctx_for_hash_func(request.digest_function)
-            .err_tip(|| "In CasServer::batch_update_blobs")?
-            .wrap_async(
-                error_span!("cas_server_batch_update_blobs"),
-                self.inner_batch_update_blobs(request),
+        let digest_function = request.digest_function;
+
+        self.inner_batch_update_blobs(request)
+            .instrument(error_span!("cas_server_batch_update_blobs"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function)
+                    .err_tip(|| "In CasServer::batch_update_blobs")?,
             )
             .await
             .err_tip(|| "Failed on batch_update_blobs() command")
-            .map_err(Into::into);
-        ctx.emit(|| &resp).await;
-        resp
+            .map_err(Into::into)
     }
 
     #[instrument(
@@ -371,18 +369,17 @@ impl ContentAddressableStorage for CasServer {
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
         let request = grpc_request.into_inner();
-        let ctx = OriginEventContext::new(|| &request).await;
-        let resp = make_ctx_for_hash_func(request.digest_function)
-            .err_tip(|| "In CasServer::batch_read_blobs")?
-            .wrap_async(
-                error_span!("cas_server_batch_read_blobs"),
-                self.inner_batch_read_blobs(request),
+        let digest_function = request.digest_function;
+
+        self.inner_batch_read_blobs(request)
+            .instrument(error_span!("cas_server_batch_read_blobs"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function)
+                    .err_tip(|| "In CasServer::batch_read_blobs")?,
             )
             .await
             .err_tip(|| "Failed on batch_read_blobs() command")
-            .map_err(Into::into);
-        ctx.emit(|| &resp).await;
-        resp
+            .map_err(Into::into)
     }
 
     #[instrument(
@@ -396,23 +393,22 @@ impl ContentAddressableStorage for CasServer {
         grpc_request: Request<GetTreeRequest>,
     ) -> Result<Response<Self::GetTreeStream>, Status> {
         let request = grpc_request.into_inner();
-        let ctx = OriginEventContext::new(|| &request).await;
-        let resp = make_ctx_for_hash_func(request.digest_function)
-            .err_tip(|| "In CasServer::get_tree")?
-            .wrap_async(
-                error_span!("cas_server_get_tree"),
-                self.inner_get_tree(request),
+        let digest_function = request.digest_function;
+
+        let resp = self
+            .inner_get_tree(request)
+            .instrument(error_span!("cas_server_get_tree"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function).err_tip(|| "In CasServer::get_tree")?,
             )
             .await
             .err_tip(|| "Failed on get_tree() command")
-            .map(|stream| -> Response<Self::GetTreeStream> {
-                Response::new(ctx.wrap_stream(stream))
-            })
+            .map(|stream| -> Response<Self::GetTreeStream> { Response::new(Box::pin(stream)) })
             .map_err(Into::into);
+
         if resp.is_ok() {
             event!(Level::DEBUG, return = "Ok(<stream>)");
         }
-        ctx.emit(|| &resp).await;
         resp
     }
 }

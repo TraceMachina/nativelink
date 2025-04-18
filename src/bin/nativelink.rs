@@ -20,7 +20,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
-use futures::FutureExt;
 use futures::future::{BoxFuture, Either, OptionFuture, TryFutureExt, try_join_all};
 use hyper::StatusCode;
 use hyper_util::rt::tokio::TokioIo;
@@ -52,15 +51,13 @@ use nativelink_util::digest_hasher::{DigestHasherFunc, set_default_digest_hasher
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::metrics_utils::Counter;
 use nativelink_util::operation_state_manager::ClientStateManager;
-use nativelink_util::origin_context::OriginContext;
-use nativelink_util::origin_event_middleware::OriginEventMiddlewareLayer;
-use nativelink_util::origin_event_publisher::OriginEventPublisher;
 use nativelink_util::shutdown_guard::{Priority, ShutdownGuard};
 use nativelink_util::store_trait::{
     DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG, set_default_digest_size_health_check,
 };
 use nativelink_util::task::TaskExecutor;
-use nativelink_util::{background_spawn, fs, init_tracing, spawn};
+use nativelink_util::telemetry::init_tracing;
+use nativelink_util::{background_spawn, fs, spawn};
 use nativelink_worker::local_worker::new_local_worker;
 use parking_lot::{Mutex, RwLock};
 use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
@@ -69,14 +66,14 @@ use tokio::net::TcpListener;
 use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
 use tonic::codec::CompressionEncoding;
 use tonic::service::Routes;
-use tracing::{Level, error_span, event, trace_span};
+use tracing::{Level, event, info_span};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -86,10 +83,6 @@ const DEFAULT_ADMIN_API_PATH: &str = "/admin";
 
 // Note: This must be kept in sync with the documentation in `HealthConfig::path`.
 const DEFAULT_HEALTH_STATUS_CHECK_PATH: &str = "/status";
-
-// Note: This must be kept in sync with the documentation in
-// `OriginEventsConfig::max_event_queue_size`.
-const DEFAULT_MAX_QUEUE_EVENTS: usize = 65536;
 
 /// Broadcast Channel Capacity
 /// Note: The actual capacity may be greater than the provided capacity.
@@ -224,35 +217,11 @@ async fn inner_main(
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
 
-    let maybe_origin_event_tx = cfg
-        .experimental_origin_events
-        .as_ref()
-        .map(|origin_events_cfg| {
-            let mut max_queued_events = origin_events_cfg.max_event_queue_size;
-            if max_queued_events == 0 {
-                max_queued_events = DEFAULT_MAX_QUEUE_EVENTS;
-            }
-            let (tx, rx) = mpsc::channel(max_queued_events);
-            let store_name = origin_events_cfg.publisher.store.as_str();
-            let store = store_manager.get_store(store_name).err_tip(|| {
-                format!("Could not get store {store_name} for origin event publisher")
-            })?;
-
-            root_futures.push(Box::pin(
-                OriginEventPublisher::new(store, rx, shutdown_tx.clone())
-                    .run()
-                    .map(Ok),
-            ));
-
-            Ok::<_, Error>(tx)
-        })
-        .transpose()?;
-
     let mut action_schedulers = HashMap::new();
     let mut worker_schedulers = HashMap::new();
     for SchedulerConfig { name, spec } in cfg.schedulers.iter().flatten() {
         let (maybe_action_scheduler, maybe_worker_scheduler) =
-            scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref())
+            scheduler_factory(spec, &store_manager)
                 .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
         if let Some(action_scheduler) = maybe_action_scheduler {
             action_schedulers.insert(name.clone(), action_scheduler.clone());
@@ -503,10 +472,7 @@ async fn inner_main(
 
         let mut svc = tonic_services
             .into_axum_router()
-            .layer(OriginEventMiddlewareLayer::new(
-                maybe_origin_event_tx.clone(),
-                server_cfg.experimental_identity_header.clone(),
-            ));
+            .layer(nativelink_util::telemetry::OtlpLayer::new(false));
 
         if let Some(health_cfg) = services.health {
             let path = if health_cfg.path.is_empty() {
@@ -746,18 +712,14 @@ async fn inner_main(
 
                                 let (http, svc, maybe_tls_acceptor) =
                                     (http.clone(), svc.clone(), maybe_tls_acceptor.clone());
-                                Arc::new(OriginContext::new()).background_spawn(
-                                    error_span!(
-                                        target: "nativelink::services",
-                                        "http_connection",
-                                        ?remote_addr,
-                                        ?socket_addr
-                                    ),
-                                    async move {},
-                                );
+
                                 background_spawn!(
                                     name: "http_connection",
-                                    fut: async move {
+                                    fut: info_span!(
+                                        "http_connection",
+                                        remote_addr = %remote_addr,
+                                        socket_addr = %socket_addr,
+                                    ).in_scope(|| async move {
                                         // Move it into our spawn, so if our spawn dies the cleanup happens.
                                         let _guard = scope_guard;
                                         let serve_connection = if let Some(tls_acceptor) = maybe_tls_acceptor {
@@ -786,7 +748,7 @@ async fn inner_main(
                                                 "Failed running service"
                                             );
                                         }
-                                    },
+                                    }),
                                     target: "nativelink::services",
                                     ?remote_addr,
                                     ?socket_addr,
@@ -868,8 +830,8 @@ async fn inner_main(
                     worker_names.insert(name.clone());
                     worker_metrics.insert(name.clone(), metrics);
                     let shutdown_rx = shutdown_tx.subscribe();
-                    let fut = Arc::new(OriginContext::new())
-                        .wrap_async(trace_span!("worker_ctx"), local_worker.run(shutdown_rx));
+                    let fut = info_span!("worker_ctx", worker_name = %name)
+                        .in_scope(|| local_worker.run(shutdown_rx));
                     spawn!("worker", fut, ?name)
                 }
             };
@@ -967,10 +929,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[expect(clippy::disallowed_methods, reason = "waiting on everything to finish")]
     runtime
-        .block_on(Arc::new(OriginContext::new()).wrap_async(
-            trace_span!("main"),
-            inner_main(cfg, server_start_time, shutdown_tx),
-        ))
+        .block_on(async {
+            info_span!("main")
+                .in_scope(|| async { inner_main(cfg, server_start_time, shutdown_tx).await })
+                .await
+        })
         .err_tip(|| "main() function failed")?;
     Ok(())
 }

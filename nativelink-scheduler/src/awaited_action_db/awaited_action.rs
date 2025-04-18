@@ -22,8 +22,9 @@ use nativelink_metric::{
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
-use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::origin_event::{ORIGIN_EVENT_COLLECTOR, OriginMetadata};
+use nativelink_util::origin_event::OriginMetadata;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::Context;
 use serde::{Deserialize, Serialize};
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 
@@ -90,6 +91,8 @@ pub struct AwaitedAction {
 
 impl AwaitedAction {
     pub fn new(operation_id: OperationId, action_info: Arc<ActionInfo>, now: SystemTime) -> Self {
+        const ENDUSER_ID: &str = "origin.identity";
+
         let stage = ActionStage::Queued;
         let sort_key = AwaitedActionSortKey::new_with_unique_key(
             action_info.priority,
@@ -105,10 +108,21 @@ impl AwaitedAction {
             client_operation_id: operation_id.clone(),
             action_digest: action_info.unique_qualifier.digest(),
         });
-        let maybe_origin_metadata = ActiveOriginContext::get_value(&ORIGIN_EVENT_COLLECTOR)
-            .ok()
-            .flatten()
-            .map(|v| v.metadata.clone());
+
+        let ctx = Context::current();
+        let baggage = ctx.baggage();
+
+        let maybe_origin_metadata = if baggage.is_empty() {
+            None
+        } else {
+            Some(OriginMetadata {
+                identity: baggage
+                    .get(ENDUSER_ID)
+                    .map(|v| v.as_str().to_string())
+                    .unwrap_or_default(),
+                bazel_metadata: None, // TODO(aaronmondal): Implement conversion.
+            })
+        };
 
         Self {
             version: AwaitedActionVersion(0),

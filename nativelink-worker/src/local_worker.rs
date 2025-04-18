@@ -33,12 +33,12 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
 use nativelink_util::common::fs;
-use nativelink_util::digest_hasher::{ACTIVE_HASHER_FUNC, DigestHasherFunc};
+use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
-use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
+use opentelemetry::context::Context;
 use tokio::process;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
@@ -322,9 +322,14 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let futures_ref = &futures;
 
                             let add_future_channel = add_future_channel.clone();
-                            let mut ctx = ActiveOriginContext::fork().err_tip(|| "Expected ActiveOriginContext to be set in local_worker::run")?;
-                            ctx.set_value(&ACTIVE_HASHER_FUNC, Arc::new(digest_hasher));
-                            ctx.run(info_span!("worker_start_action_ctx"), move || {
+
+                            info_span!(
+                                "worker_start_action_ctx",
+                                digest_function = %digest_hasher.to_string(),
+                            ).in_scope(|| {
+                                let _guard = Context::current_with_value(digest_hasher)
+                                    .attach();
+
                                 futures_ref.push(
                                     spawn!("worker_start_action", start_action_fut).map(move |res| {
                                         let res = res.err_tip(|| "Failed to launch spawn")?;

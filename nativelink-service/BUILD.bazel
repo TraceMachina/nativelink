@@ -34,6 +34,7 @@ rust_library(
         "@crates//:http-body",
         "@crates//:http-body-util",
         "@crates//:hyper-1.6.0",
+        "@crates//:opentelemetry",
         "@crates//:parking_lot",
         "@crates//:prost",
         "@crates//:rand",

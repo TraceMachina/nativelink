@@ -28,8 +28,9 @@ use nativelink_proto::google::devtools::build::v1::{
     PublishLifecycleEventRequest,
 };
 use nativelink_store::store_manager::StoreManager;
-use nativelink_util::origin_context::{ActiveOriginContext, ORIGIN_IDENTITY};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike};
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::Context;
 use prost::Message;
 use tonic::{Request, Response, Result, Status, Streaming};
 use tracing::{Level, instrument};
@@ -39,11 +40,13 @@ use tracing::{Level, instrument};
 const BEP_EVENT_VERSION: u32 = 0;
 
 #[allow(clippy::result_large_err, reason = "TODO Fix this. Breaks on nightly")]
-fn get_identity() -> Result<Option<String>, Status> {
-    ActiveOriginContext::get()
-        .map_or(Ok(None), |ctx| ctx.get_value(&ORIGIN_IDENTITY))
-        .err_tip(|| "In BepServer")
-        .map_or_else(|e| Err(e.into()), |v| Ok(v.map(|v| v.as_ref().clone())))
+fn get_identity() -> Option<String> {
+    const ENDUSER_ID: &str = "origin.identity";
+
+    Context::current()
+        .baggage()
+        .get(ENDUSER_ID)
+        .map(|value| value.as_str().to_string())
 }
 
 #[derive(Debug)]
@@ -215,7 +218,7 @@ impl PublishBuildEvent for BepServer {
         &self,
         grpc_request: Request<PublishLifecycleEventRequest>,
     ) -> Result<Response<()>, Status> {
-        self.inner_publish_lifecycle_event(grpc_request.into_inner(), get_identity()?)
+        self.inner_publish_lifecycle_event(grpc_request.into_inner(), get_identity())
             .await
             .map_err(Error::into)
     }
@@ -230,7 +233,7 @@ impl PublishBuildEvent for BepServer {
         &self,
         grpc_request: Request<Streaming<PublishBuildToolEventStreamRequest>>,
     ) -> Result<Response<Self::PublishBuildToolEventStreamStream>, Status> {
-        self.inner_publish_build_tool_event_stream(grpc_request.into_inner(), get_identity()?)
+        self.inner_publish_build_tool_event_stream(grpc_request.into_inner(), get_identity())
             .await
             .map_err(Error::into)
     }
