@@ -79,7 +79,10 @@
           "values": [
             "${NATIVELINK_WORKER_LRE_RS:-undefined}"
           ]
-        }
+        },
+        "ISA": {
+          values: ["x86-64"]
+        },
       }
     }
   }],
