@@ -11,10 +11,10 @@
         pkgs,
         ...
       }: let
-        cfg = config.local-remote-execution;
+        cfg = config.lre;
       in {
         options = {
-          local-remote-execution = {
+          lre = {
             pkgs = lib.mkOption {
               type = lib.types.uniq (lib.types.lazyAttrsOf (lib.types.raw or lib.types.unspecified));
               description = lib.mdDoc ''

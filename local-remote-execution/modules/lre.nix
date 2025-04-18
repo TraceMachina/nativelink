@@ -41,7 +41,7 @@
   # devShells.default = pkgs.mkShell {
   #   shellHook = ''
   #   # Generate the `lre.bazelrc` config file.
-  #   ${config.local-remote-execution.installationScript}
+  #   ${config.lre.installationScript}
   #   '';
   # };
   # ```
@@ -103,7 +103,7 @@
     then ["#" "# WARNING: No environment set. LRE will not work locally."]
     else ["#"] ++ (map (x: "# " + x) (lib.lists.unique config.Env));
 
-  # If the `local-remote-execution.settings.prefix` is set to a nonempty string,
+  # If the `lre.settings.prefix` is set to a nonempty string,
   # prefix the Bazel build commands with that string. This will disable LRE
   # by default and require adding `--config=<prefix>` to Bazel invocations.
   maybePrefixedConfig =
