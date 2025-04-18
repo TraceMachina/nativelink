@@ -342,6 +342,14 @@
             nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
+            pyroaring = pkgs.callPackage ./tools/buildstream/pyroaring.nix {pythonPkgs = pkgs.python312Packages;};
+            bst = pkgs.callPackage ./tools/buildstream/bst.nix {
+              inherit pkgs pyroaring;
+              pythonPkgs = pkgs.python312Packages;
+            };
+            buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
+              inherit nativelink bst;
+            };
           }
           // (
             # It's not possible to crosscompile to darwin, not even between
