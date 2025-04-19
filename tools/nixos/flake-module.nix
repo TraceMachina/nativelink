@@ -3,42 +3,55 @@
   flake-parts-lib,
   ...
 }: {
-  options = {
-    perSystem = flake-parts-lib.mkPerSystemOption (
-      {
-        config,
-        options,
-        pkgs,
-        ...
-      }: let
-        cfg = config.nixos;
-      in {
-        options = {
-          nixos = {
-            pkgs = lib.mkOption {
-              type = lib.types.uniq (lib.types.lazyAttrsOf (lib.types.raw or lib.types.unspecified));
-              description = "Nixpkgs to use.";
-              default = pkgs;
-              defaultText = lib.literalMD "`pkgs` (module argument)";
-            };
-            settings = lib.mkOption {
-              type = lib.types.submoduleWith {
-                modules = [./modules/nixos.nix];
-                specialArgs = {inherit (cfg) pkgs;};
-              };
-              default = {};
-              description = "Configuration for Bazel on NixOS.";
-            };
-            installationScript = lib.mkOption {
-              type = lib.types.str;
-              description = "Create nixos.bazelrc.";
-              default = cfg.settings.installationScript;
-              defaultText = lib.literalMD "bazelrc content";
-              readOnly = true;
-            };
-          };
+  options.perSystem = flake-parts-lib.mkPerSystemOption (
+    {
+      config,
+      options,
+      pkgs,
+      ...
+    }: let
+      namespace = "nixos";
+      cfg = config.${namespace};
+    in {
+      options.${namespace} = {
+        enable = lib.mkOption {
+          type = lib.types.bool;
+          default =
+            if builtins.pathExists /etc/NIXOS
+            then true
+            else false;
         };
-      }
-    );
-  };
+        installationScript = lib.mkOption {
+          type = lib.types.str;
+          default = "";
+          description = lib.mkDoc ''
+            A bash snippet that creates a nixos.bazelrc file in the repository.
+          '';
+        };
+        path = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [];
+          description = "List of paths to include in the Bazel environment.";
+        };
+      };
+
+      config.${namespace} = lib.mkIf cfg.enable {
+        installationScript = let
+          bazelrcContent = ''
+            # Add to your NixOS config:
+            # programs.nix-ld.enable = true;
+            # services.envfs.enable = true;
+
+            build --action_env=PATH=${pathString}
+            build --host_action_env=PATH=${pathString}
+          '';
+
+          pathString = builtins.concatStringsSep ":" cfg.path;
+        in
+          import ../installation-script.nix {
+            inherit bazelrcContent namespace pkgs;
+          };
+      };
+    }
+  );
 }

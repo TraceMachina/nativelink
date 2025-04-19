@@ -64,7 +64,7 @@ import { Steps } from "@astrojs/starlight/components";
 
     ```nix
     # flake.nix
-    nativelink.settings = {
+    nativelink = {
       endpoint = "grpcs://my-custom-endpoint.com";
       api-key = "my-custom-readonly-api-key";
       prefix = "nativelink";
@@ -74,7 +74,7 @@ import { Steps } from "@astrojs/starlight/components";
 </Steps>
 
 :::tip
-When using custom `nativelink.settings` you can use arbitrary logic in Nix to
+When using custom `nativelink` settings, you can use arbitrary logic in Nix to
 set the fields dynamically.
 :::
 
