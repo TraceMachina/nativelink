@@ -1,0 +1,16 @@
+{
+  "remote_execution": {
+    "execution_address": "grpcs://your-remote-server.com:443",
+    "use_tls": true,
+    "cert_file": "certs/client.crt",
+    "key_file": "certs/client.key",
+    "ca_file": "certs/ca.crt"
+  },
+  "cache": {
+    "address": "grpcs://your-remote-cas.com:443",
+    "use_tls": true,
+    "cert_file": "certs/client.crt",
+    "key_file": "certs/client.key",
+    "ca_file": "certs/ca.crt"
+  }
+}
