@@ -174,5 +174,56 @@ where
         StoreDriver::check_health(Pin::new(self), namespace).await
     }
 }
+// ... end of impl HealthStatusIndicator for AzureBlobStore<NowFn> ...
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nativelink_util::instant_wrapper::SystemTimeWrapper;
+    use nativelink_config::stores::{AzureBlobSpec, RetrySpec};
+    use nativelink_util::buf_channel::make_buf_channel_pair;
+    use nativelink_util::store_trait::{StoreDriver, UploadSizeInfo};
+    use std::sync::Arc;
+
+    fn test_spec() -> AzureBlobSpec {
+        AzureBlobSpec {
+            account_name: std::env::var("AZURE_ACCOUNT_NAME").expect("AZURE_ACCOUNT_NAME must be set"),
+            account_key: std::env::var("AZURE_ACCOUNT_KEY").expect("AZURE_ACCOUNT_KEY must be set"),
+            container: std::env::var("AZURE_CONTAINER").expect("AZURE_CONTAINER must be set"),
+            blob_prefix: Some("test/".to_string()),
+            retry: RetrySpec::default(),
+            max_retry_buffer_per_request: Some(1024 * 1024),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_upload_and_download() -> Result<(), Error> {
+        let store = AzureBlobStore::new(&test_spec(), SystemTimeWrapper::now).unwrap();
+        let test_key = StoreKey::from("test-blob-key");
+
+        // Write test content
+        let content = b"Hello from AzureBlobStore!".to_vec();
+        let (mut tx, rx) = make_buf_channel_pair();
+        tx.send(Bytes::from(content.clone())).await?;
+        tx.send_eof()?;
+
+        // Upload to Azure Blob
+        StoreDriver::update(Pin::new(&*store), test_key.clone(), rx, UploadSizeInfo::ExactSize(content.len() as u64)).await?;
+
+        // Download from Azure Blob
+        let (reader, mut writer) = make_buf_channel_pair();
+        StoreDriver::get_part(Pin::new(&*store), test_key.clone(), &mut writer, 0, Some(content.len() as u64)).await?;
+
+        // Collect and compare
+        let mut result = Vec::new();
+        let mut stream = reader;
+        while let Some(bytes) = stream.next().await {
+            result.extend_from_slice(&bytes?);
+        }
+
+        assert_eq!(content, result);
+        Ok(())
+    }
+}
 
 
