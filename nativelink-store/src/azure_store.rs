@@ -1,5 +1,8 @@
 // azure_store.rs
 
+use dotenv::dotenv;
+dotenv().ok();
+
 use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
