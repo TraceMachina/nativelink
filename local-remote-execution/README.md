@@ -106,7 +106,7 @@ an optional `prefix` input to configure the generated `lre.bazelrc`:
 
 ```nix
 # This is a top-level field, next to `packages` and `apps`, and `devShells`
-lre.settings = {
+lre = {
   # In this example we import the lre-cc environment from nativelink and make it
   # available locally.
   inherit (lre-cc.meta) Env;
@@ -270,8 +270,8 @@ invoke a build against the cluster:
 CACHE=$(kubectl get gtw cache -o=jsonpath='{.status.addresses[0].value}')
 SCHEDULER=$(kubectl get gtw scheduler -o=jsonpath='{.status.addresses[0].value}')
 
-# Note: If you omit setting a `prefix` the `lre.settings` you
-#       can omit `--config=lre` here as LRE will be enabled by default.
+# Note: If you don't set `lre.prefix`, you can omit `--config=lre` here as
+# LRE will be enabled by default.
 bazel build \
     --config=lre \
     --remote_instance_name=main \
@@ -300,8 +300,8 @@ bazel clean
 
 CACHE=$(kubectl get gtw cache -o=jsonpath='{.status.addresses[0].value}')
 
-# Note: If you omit setting a `prefix` the `lre.settings` you
-#       can omit `--config=lre` here as LRE will be enabled by default.
+# Note: If you don't set `lre.prefix`, you can omit `--config=lre` here as
+# LRE will be enabled by default.
 bazel build \
     --config=lre \
     --remote_instance_name=main \
