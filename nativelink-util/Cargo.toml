@@ -42,6 +42,9 @@ mock_instant = "0.5.3"
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
+[dev-dependencies]
+dotenv = "0.15"
+
 
 http-body-util = "0.1.3"
 pretty_assertions = { version = "1.4.1", features = ["std"] }
