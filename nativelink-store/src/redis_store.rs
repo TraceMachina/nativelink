@@ -164,8 +164,12 @@ impl RedisStore {
         let redis_config = match spec.mode {
             RedisMode::Cluster => RedisConfig::from_url_clustered(addr),
             RedisMode::Sentinel => RedisConfig::from_url_sentinel(addr),
-            RedisMode::Standard => RedisConfig::from_url_centralized(addr),
-        }
+            RedisMode::Standard => {
+                let mut config = RedisConfig::from_url_centralized(addr);
+                config.set_database(0); 
+                config
+            }
+        };
         .err_tip_with_code(|e| {
             (
                 Code::InvalidArgument,
