@@ -19,7 +19,7 @@
                 "slow": {
                   "experimental_gcs_store": {
                     "service_email": "nativelink-test-aman@inbound-entity-447014-k2.iam.gserviceaccount.com",
-                    "bucket": "test-bucket-aman-nativelink",
+                    "bucket": "nativelink-test-aman",
                     "key_prefix": "test-prefix-index/",
                     "retry": {
                       "max_retries": 6,
@@ -50,7 +50,7 @@
                     "slow": {
                       "experimental_gcs_store": {
                         "service_email": "nativelink-test-aman@inbound-entity-447014-k2.iam.gserviceaccount.com",
-                        "bucket": "test-bucket-aman-nativelink",
+                        "bucket": "nativelink-test-aman",
                         "key_prefix": "test-prefix-dedup-cas/",
                         "retry": {
                           "max_retries": 6,
@@ -84,7 +84,7 @@
         "slow": {
           "experimental_gcs_store": {
             "service_email": "nativelink-test-aman@inbound-entity-447014-k2.iam.gserviceaccount.com",
-            "bucket": "test-bucket-aman-nativelink",
+            "bucket": "nativelink-test-aman",
             "key_prefix": "test-prefix-ac/",
             "retry": {
               "max_retries": 6,

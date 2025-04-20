@@ -13,15 +13,16 @@
 // limitations under the License.
 
 use std::borrow::Cow;
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::stream::{unfold, FuturesUnordered};
 use futures::TryStreamExt;
+use futures::stream::{FuturesUnordered, unfold};
 use nativelink_config::stores::GcsSpec;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
@@ -35,13 +36,22 @@ use crate::cas_utils::is_zero_digest;
 use crate::gcs_client::client::GcsClient;
 use crate::gcs_client::operations::GcsOperations;
 use crate::gcs_client::types::{
-    ObjectPath, CHUNK_SIZE, DEFAULT_CONCURRENT_UPLOADS, DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST,
-    MIN_MULTIPART_SIZE,
+    CHUNK_SIZE, DEFAULT_CONCURRENT_UPLOADS, DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST,
+    MIN_MULTIPART_SIZE, ObjectPath,
 };
 
 struct ConnectionPool {
     semaphore: Arc<tokio::sync::Semaphore>,
     client: Arc<dyn GcsOperations>,
+}
+
+impl Debug for ConnectionPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionPool")
+            .field("semaphore", &self.semaphore)
+            .field("client", &self.client)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ConnectionPool {
@@ -69,7 +79,7 @@ struct PooledConnection<'a> {
     _permit: tokio::sync::SemaphorePermit<'a>,
 }
 
-#[derive(MetricsComponent)]
+#[derive(MetricsComponent, Debug)]
 pub struct GcsStore<NowFn> {
     connection_pool: Arc<ConnectionPool>,
     now_fn: NowFn,
@@ -95,7 +105,7 @@ where
 {
     pub async fn new(spec: &GcsSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
         let client = GcsClient::new(spec).await?;
-        let client = Arc::new(client) as Arc<dyn GcsOperations>;
+        let client: Arc<dyn GcsOperations> = Arc::new(client);
 
         Self::new_with_ops(spec, client, now_fn)
     }
@@ -252,7 +262,7 @@ where
                                 return Some((
                                     RetryResult::Retry(e),
                                     (content.clone(), object.clone()),
-                                ))
+                                ));
                             }
                         };
 
@@ -328,7 +338,7 @@ where
                                 return Some((
                                     RetryResult::Retry(e),
                                     (chunk.clone(), obj.clone(), url.clone(), offs, final_chunk),
-                                ))
+                                ));
                             }
                         };
 
@@ -373,7 +383,7 @@ where
                         let conn = match self.connection_pool.acquire().await {
                             Ok(conn) => conn,
                             Err(e) => {
-                                return Some((RetryResult::Retry(e), (obj.clone(), url.clone())))
+                                return Some((RetryResult::Retry(e), (obj.clone(), url.clone())));
                             }
                         };
 
@@ -443,7 +453,7 @@ where
                                 return Some((
                                     RetryResult::Retry(e),
                                     (object.clone(), start_offset, end_offset),
-                                ))
+                                ));
                             }
                         };
 
@@ -483,7 +493,7 @@ where
                 Ok(())
             }
             Err(e) => {
-                let _ = writer.send_eof();
+                drop(writer.send_eof());
                 Err(e)
             }
         }

@@ -97,7 +97,7 @@ pub enum StoreSpec {
     /// }
     /// ```
     ///
-    experimental_gcs_store(GcsSpec),
+    ExperimentalGcsStore(GcsSpec),
 
     /// Verify store is used to apply verifications to an underlying
     /// store implementation. It is strongly encouraged to validate
@@ -813,11 +813,11 @@ pub struct GcsSpec {
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub service_email: String,
 
-    /// Bucket name to use as the backend
+    /// Bucket name to use as the backend.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub bucket: String,
 
-    /// If you wish to prefix the location in GCS. If None, no prefix will be used.
+    /// If you wish to prefix the location on s3. If None, no prefix will be used.
     #[serde(default)]
     pub key_prefix: Option<String>,
 
@@ -847,51 +847,15 @@ pub struct GcsSpec {
     /// Default: 5MB.
     pub max_retry_buffer_per_request: Option<usize>,
 
-    /// Size of chunks for resumeable uploads (in bytes).
-    /// Must be a multiple of 256 KB.
-    ///
-    /// Default: ~2MB.
-    pub resumable_chunk_size: Option<usize>,
-
-    /// Maximum number of concurrent uploads for resumable operations
+    /// Maximum number of concurrent `UploadPart` requests per `MultipartUpload`.
     ///
     /// Default: 10.
     pub max_concurrent_uploads: Option<usize>,
 
-    /// Optional endpoint override for testing
-    /// Example: "localhost:8080" for local development
+    /// Chunk size for resumable uploads.
     ///
-    /// Default: None (uses production GCS endpoint)
-    #[serde(default)]
-    pub endpoint: Option<String>,
-
-    /// Authentication scope for the GCS service.
-    /// Default: `<https://www.googleapis.com/auth/cloud-platform>`
-    pub auth_scope: Option<String>,
-
-    /// Token audience for authentication.
-    /// Default: `<https://storage.googleapis.com>`
-    pub auth_audience: Option<String>,
-
-    /// Token lifetime in seconds.
-    /// Default: 3600 (1 hour)
-    pub token_lifetime_secs: Option<u64>,
-
-    /// Window before token expiry when refresh should be attempted, in seconds.
-    /// Default: 300 (5 minutes)
-    pub token_refresh_window_secs: Option<u64>,
-
-    /// Maximum delay between token refresh attempts, in seconds.
-    /// Default: 30 seconds
-    pub max_token_refresh_delay_secs: Option<u64>,
-
-    /// Maximum number of token refresh attempts before giving up.
-    /// Default: 5
-    pub max_token_refresh_attempts: Option<u32>,
-
-    /// Base delay for token refresh retry backoff, in seconds.
-    /// Default: 2 seconds
-    pub token_retry_delay_base_secs: Option<u64>,
+    /// Default: 2MB
+    pub resumable_chunk_size: Option<usize>,
 
     /// Allow unencrypted HTTP connections. Only use this for local testing.
     ///
@@ -903,19 +867,11 @@ pub struct GcsSpec {
     /// configuration will have http/1.1 and http/2 enabled for connection
     /// schemes. Http/2 should be disabled if environments have poor support
     /// or performance related to http/2. Safe to keep default unless
-    /// underlying network environment or GCS API servers specify otherwise.
+    /// underlying network environment or S3 API servers specify otherwise.
     ///
     /// Default: false
     #[serde(default)]
     pub disable_http2: bool,
-
-    /// Connection timeout in seconds for HTTP connections.
-    /// Default: 15 seconds
-    pub connect_timeout_secs: Option<u64>,
-
-    /// Connection pool idle timeout in seconds.
-    /// Default: 30 seconds
-    pub pool_idle_timeout_secs: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]

@@ -14,14 +14,15 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use nativelink_error::{make_err, Code, Error};
+use nativelink_error::{Code, Error, make_err};
 use nativelink_util::buf_channel::DropCloserReadHalf;
 use tokio::sync::RwLock;
 
 use crate::gcs_client::operations::GcsOperations;
-use crate::gcs_client::types::{GcsObject, ObjectPath, Timestamp};
+use crate::gcs_client::types::{DEFAULT_CONTENT_TYPE, GcsObject, ObjectPath, Timestamp};
 
 /// A mock implementation of `GcsOperations` for testing
 #[derive(Debug)]
@@ -44,7 +45,7 @@ struct MockObject {
     content: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Copy, Debug, Clone, Default)]
 pub struct CallCounts {
     pub metadata_calls: usize,
     pub read_calls: usize,
@@ -131,19 +132,24 @@ impl MockGcsOperations {
     pub async fn add_object(&self, path: &ObjectPath, content: Vec<u8>) {
         let object_key = self.get_object_key(path);
 
+        // Get current timestamp
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
         let metadata = GcsObject {
             name: path.path.clone(),
             bucket: path.bucket.clone(),
             size: content.len() as i64,
-            content_type: "application/octet-stream".to_string(),
+            content_type: DEFAULT_CONTENT_TYPE.to_string(),
             update_time: Some(Timestamp {
-                seconds: chrono::Utc::now().timestamp(),
+                seconds: now,
                 nanos: 0,
             }),
         };
 
         let mock_object = MockObject { metadata, content };
-
         self.objects.write().await.insert(object_key, mock_object);
     }
 
@@ -155,7 +161,7 @@ impl MockGcsOperations {
 
     /// Get the count of all operation calls
     pub async fn get_call_counts(&self) -> CallCounts {
-        self.call_counts.read().await.clone()
+        *self.call_counts.read().await
     }
 
     /// Reset all operation counters
@@ -181,7 +187,6 @@ impl MockGcsOperations {
 
     /// Helper method to handle failures based on current settings
     async fn handle_failure(&self) -> Result<(), Error> {
-        // Add an explicit read lock on should_fail to ensure we get the latest value
         if *self.should_fail.read().await {
             match *self.failure_mode.read().await {
                 FailureMode::None => Err(make_err!(Code::Internal, "Simulated generic failure")),
@@ -217,7 +222,7 @@ impl MockGcsOperations {
             name: path.path.clone(),
             bucket: path.bucket.clone(),
             size: content.len() as i64,
-            content_type: "application/octet-stream".to_string(),
+            content_type: DEFAULT_CONTENT_TYPE.to_string(),
             update_time: Some(Timestamp {
                 seconds: timestamp,
                 nanos: 0,
@@ -226,6 +231,14 @@ impl MockGcsOperations {
 
         let mock_object = MockObject { metadata, content };
         self.objects.write().await.insert(object_key, mock_object);
+    }
+
+    /// Get the current timestamp
+    fn get_current_timestamp(&self) -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
     }
 }
 
@@ -363,9 +376,9 @@ impl GcsOperations for MockGcsOperations {
                     name: object.path.clone(),
                     bucket: object.bucket.clone(),
                     size: 0,
-                    content_type: "application/octet-stream".to_string(),
+                    content_type: DEFAULT_CONTENT_TYPE.to_string(),
                     update_time: Some(Timestamp {
-                        seconds: chrono::Utc::now().timestamp(),
+                        seconds: self.get_current_timestamp(),
                         nanos: 0,
                     }),
                 },
@@ -389,7 +402,7 @@ impl GcsOperations for MockGcsOperations {
         if is_final {
             mock_object.metadata.size = mock_object.content.len() as i64;
             mock_object.metadata.update_time = Some(Timestamp {
-                seconds: chrono::Utc::now().timestamp(),
+                seconds: self.get_current_timestamp(),
                 nanos: 0,
             });
         }

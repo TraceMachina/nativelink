@@ -12,13 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod auth;
 pub mod client;
-pub mod connector;
 pub mod mocks;
 pub mod operations;
 pub mod types;
 
-pub use auth::{AuthProvider, GcsAuthProvider, NoAuthProvider};
 pub use client::GcsClient;
 pub use types::{GcsObject, ObjectPath, Timestamp};

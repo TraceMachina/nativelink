@@ -3,7 +3,6 @@ target/
 .vscode/
 .idea/
 .zed
-.idea/
 .cache
 .terraform*
 .config

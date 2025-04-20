@@ -70,7 +70,10 @@ impl MockActionScheduler {
     }
 
     #[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
-    pub(crate) async fn expect_get_known_properties(&self, result: Result<Vec<String>, Error>) -> String {
+    pub(crate) async fn expect_get_known_properties(
+        &self,
+        result: Result<Vec<String>, Error>,
+    ) -> String {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::GetGetKnownProperties(req) = rx_call_lock
             .recv()

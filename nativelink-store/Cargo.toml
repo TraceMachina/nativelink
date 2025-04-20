@@ -30,7 +30,6 @@ blake3 = { version = "1.8.0", default-features = false }
 byteorder = { version = "1.5.0", default-features = false }
 bytes = { version = "1.10.1", default-features = false }
 bytes-utils = { version = "0.1.4", default-features = false }
-chrono = "0.4.39"
 const_format = { version = "0.2.34", default-features = false }
 fred = { version = "10.1.0", default-features = false, features = [
   "i-std",
@@ -47,6 +46,8 @@ fred = { version = "10.1.0", default-features = false, features = [
 ] }
 patricia_tree = { version = "0.9.0", default-features = false }
 futures = { version = "0.3.31", default-features = false }
+google-cloud-storage = { version = "0.24.0", default-features = false, features = ["auth", "rustls-tls"] }
+google-cloud-auth = { version = "0.17.2", default-features = false }
 hex = { version = "0.4.3", default-features = false }
 http = { version = "1.2.0", default-features = false }
 http-body = "1.0.1"
@@ -60,7 +61,6 @@ hyper-rustls = { version = "0.27.5", default-features = false, features = [
   "webpki-roots",
   "ring",
 ] }
-jsonwebtoken = "9.3.1"
 lz4_flex = { version = "0.11.3", default-features = false }
 parking_lot = "0.12.3"
 prost = { version = "0.13.5", default-features = false }
@@ -73,7 +73,6 @@ tokio-util = { version = "0.7.14" }
 tonic = { version = "0.13.0", features = ["transport", "tls-ring"], default-features = false }
 tracing = { version = "0.1.41", default-features = false }
 uuid = { version = "1.16.0", default-features = false, features = ["v4", "serde"] }
-urlencoding = "2.1.3"
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

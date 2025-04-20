@@ -20,7 +20,7 @@ use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::gcs_client::mocks::MockGcsOperations;
 use nativelink_store::gcs_client::operations::GcsOperations;
-use nativelink_store::gcs_client::types::ObjectPath;
+use nativelink_store::gcs_client::types::{DEFAULT_CONTENT_TYPE, ObjectPath};
 use nativelink_util::buf_channel::make_buf_channel_pair;
 
 const BUCKET_NAME: &str = "test-bucket";
@@ -43,7 +43,7 @@ async fn test_read_object_metadata_found() -> Result<(), Error> {
     assert_eq!(metadata.name, OBJECT_PATH);
     assert_eq!(metadata.bucket, BUCKET_NAME);
     assert_eq!(metadata.size, 5);
-    assert_eq!(metadata.content_type, "application/octet-stream");
+    assert_eq!(metadata.content_type, DEFAULT_CONTENT_TYPE);
     assert!(metadata.update_time.is_some());
 
     // Verify call counts
@@ -295,6 +295,49 @@ async fn test_simulated_failures() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn test_failure_modes() -> Result<(), Error> {
+    // Create a mock implementation
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let object_path = ObjectPath::new(BUCKET_NAME.to_string(), OBJECT_PATH);
+
+    // Test different failure modes
+    let failure_modes = [
+        (
+            nativelink_store::gcs_client::mocks::FailureMode::NotFound,
+            nativelink_error::Code::NotFound,
+        ),
+        (
+            nativelink_store::gcs_client::mocks::FailureMode::NetworkError,
+            nativelink_error::Code::Unavailable,
+        ),
+        (
+            nativelink_store::gcs_client::mocks::FailureMode::Unauthorized,
+            nativelink_error::Code::Unauthenticated,
+        ),
+        (
+            nativelink_store::gcs_client::mocks::FailureMode::ServerError,
+            nativelink_error::Code::Internal,
+        ),
+    ];
+
+    for (failure_mode, expected_code) in failure_modes {
+        mock_ops.set_should_fail(true).await;
+        mock_ops.set_failure_mode(failure_mode).await;
+
+        let result = mock_ops.read_object_metadata(object_path.clone()).await;
+        assert!(result.is_err(), "Expected operation to fail");
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.code, expected_code,
+            "Expected error code {:?}, got {:?}",
+            expected_code, err.code
+        );
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn test_empty_data_handling() -> Result<(), Error> {
     // Create a mock implementation
     let mock_ops = Arc::new(MockGcsOperations::new());
@@ -334,6 +377,108 @@ async fn test_empty_data_handling() -> Result<(), Error> {
         stored_content, expected_content,
         "Content wasn't stored correctly"
     );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_add_object_with_timestamp() -> Result<(), Error> {
+    // Create a mock implementation
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let object_path = ObjectPath::new(BUCKET_NAME.to_string(), OBJECT_PATH);
+    let test_content = vec![1, 2, 3, 4, 5];
+    let custom_timestamp = 1_234_567_890; // Unix timestamp for testing
+
+    // Add object with custom timestamp
+    mock_ops
+        .add_object_with_timestamp(&object_path, test_content, custom_timestamp)
+        .await;
+
+    // Test the read_object_metadata method
+    let result = mock_ops.read_object_metadata(object_path.clone()).await?;
+
+    // Verify the result
+    assert!(result.is_some(), "Expected to find metadata");
+    let metadata = result.unwrap();
+    assert_eq!(metadata.name, OBJECT_PATH);
+    assert_eq!(metadata.bucket, BUCKET_NAME);
+    assert_eq!(metadata.size, 5);
+    assert_eq!(metadata.content_type, DEFAULT_CONTENT_TYPE);
+
+    // Verify the timestamp was set correctly
+    assert!(metadata.update_time.is_some());
+    let timestamp = metadata.update_time.unwrap();
+    assert_eq!(timestamp.seconds, custom_timestamp);
+    assert_eq!(timestamp.nanos, 0);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_request_tracking() -> Result<(), Error> {
+    // Create a mock implementation
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let object_path = ObjectPath::new(BUCKET_NAME.to_string(), OBJECT_PATH);
+
+    // Perform operations
+    mock_ops.read_object_metadata(object_path.clone()).await?;
+    mock_ops.object_exists(&object_path).await?;
+
+    // Get recorded requests
+    let requests = mock_ops.get_requests().await;
+
+    // Verify requests were tracked
+    assert_eq!(requests.len(), 2, "Expected 2 recorded requests");
+
+    // Check first request type
+    match &requests[0] {
+        nativelink_store::gcs_client::mocks::MockRequest::ReadMetadata { object_path: path } => {
+            assert_eq!(path.bucket, BUCKET_NAME);
+            assert_eq!(path.path, OBJECT_PATH);
+        }
+        _ => panic!("Expected ReadMetadata request"),
+    }
+
+    // Check second request type
+    match &requests[1] {
+        nativelink_store::gcs_client::mocks::MockRequest::ObjectExists { object_path: path } => {
+            assert_eq!(path.bucket, BUCKET_NAME);
+            assert_eq!(path.path, OBJECT_PATH);
+        }
+        _ => panic!("Expected ObjectExists request"),
+    }
+
+    // Reset counters and ensure requests are cleared
+    mock_ops.reset_counters().await;
+    let requests_after_reset = mock_ops.get_requests().await;
+    assert_eq!(
+        requests_after_reset.len(),
+        0,
+        "Expected requests to be cleared after reset"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_clear_objects() -> Result<(), Error> {
+    // Create a mock implementation
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let object_path = ObjectPath::new(BUCKET_NAME.to_string(), OBJECT_PATH);
+
+    // Add an object
+    mock_ops.add_object(&object_path, vec![1, 2, 3]).await;
+
+    // Verify it exists
+    let exists_before = mock_ops.object_exists(&object_path).await?;
+    assert!(exists_before, "Expected object to exist before clearing");
+
+    // Clear all objects
+    mock_ops.clear_objects().await;
+
+    // Verify it no longer exists
+    let exists_after = mock_ops.object_exists(&object_path).await?;
+    assert!(!exists_after, "Expected object not to exist after clearing");
 
     Ok(())
 }
