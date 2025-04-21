@@ -14,6 +14,7 @@
 
 # This becomes the BUILD file for @local_config_cc// under non-BSD unixes.
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:defs.bzl", "cc_toolchain", "cc_toolchain_suite")
 load(":armeabi_cc_toolchain_config.bzl", "armeabi_cc_toolchain_config")
 load(":cc_toolchain_config.bzl", "cc_toolchain_config")
@@ -121,10 +122,10 @@ cc_toolchain_config(
     coverage_link_flags = ["--coverage"],
     cpu = "k8",
     cxx_builtin_include_directories = [
-        "/nix/store/fj0w79xmjgr6yis9pb074z2ly3rfl9f8-clang-wrapper-19.1.5/resource-root/include",
-        "/nix/store/kj8hbqx4ds9qm9mq7hyikxyfwwg13kzj-glibc-2.40-36-dev/include",
-        "/nix/store/fj0w79xmjgr6yis9pb074z2ly3rfl9f8-clang-wrapper-19.1.5/resource-root/share",
-        "/nix/store/mackxnwpk0bsajykrlryp4asd0ylhm4j-libcxx-19.1.5-dev/include/c++/v1",
+        "/nix/store/ix9klsvak30jhakj38a39158fxj1fp69-clang-wrapper-20.1.1/resource-root/include",
+        "/nix/store/71xyq87gpb2qrwn314p0sf2n002lgd91-glibc-2.40-66-dev/include",
+        "/nix/store/ix9klsvak30jhakj38a39158fxj1fp69-clang-wrapper-20.1.1/resource-root/share",
+        "/nix/store/d6a0l905kxjpzgvcynkg1k3pd0zij56l-libcxx-20.1.1-dev/include/c++/v1",
         "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
     ],
     cxx_flags = ["-std=c++14"],
@@ -135,8 +136,8 @@ cc_toolchain_config(
     ]},
     host_system_name = "x86_64-unknown-linux-gnu",
     link_flags = [
-        "-fuse-ld=/nix/store/vcahgq9p0xfxyyv2iknb6hmpgymy4nc6-llvm-binutils-wrapper-19.1.5/bin/ld.mold",
-        "-B/nix/store/2dpqlc0b1rhg82yay84n67x0m8y0196z-customClang/bin",
+        "-fuse-ld=/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/ld.mold",
+        "-B/nix/store/6hch3rx1g4xqhpjc6p5chjpx53pwr5ii-customClang/bin",
         "-Wl,-no-as-needed",
         "-Wl,-z,relro,-z,now",
     ],
@@ -161,19 +162,19 @@ cc_toolchain_config(
     target_libc = "glibc_2.35",
     target_system_name = "local",
     tool_paths = {
-        "ar": "/nix/store/vcahgq9p0xfxyyv2iknb6hmpgymy4nc6-llvm-binutils-wrapper-19.1.5/bin/ar",
-        "ld": "/nix/store/vcahgq9p0xfxyyv2iknb6hmpgymy4nc6-llvm-binutils-wrapper-19.1.5/bin/ld",
+        "ar": "/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/ar",
+        "ld": "/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/ld",
         "llvm-cov": "None",
         "llvm-profdata": "None",
         "cpp": "/usr/bin/cpp",
-        "gcc": "/nix/store/2dpqlc0b1rhg82yay84n67x0m8y0196z-customClang/bin/customClang",
-        "dwp": "/nix/store/vcahgq9p0xfxyyv2iknb6hmpgymy4nc6-llvm-binutils-wrapper-19.1.5/bin/dwp",
+        "gcc": "/nix/store/6hch3rx1g4xqhpjc6p5chjpx53pwr5ii-customClang/bin/customClang",
+        "dwp": "/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/dwp",
         "gcov": "None",
-        "nm": "/nix/store/vcahgq9p0xfxyyv2iknb6hmpgymy4nc6-llvm-binutils-wrapper-19.1.5/bin/nm",
-        "objcopy": "/nix/store/vcahgq9p0xfxyyv2iknb6hmpgymy4nc6-llvm-binutils-wrapper-19.1.5/bin/objcopy",
-        "objdump": "/nix/store/vcahgq9p0xfxyyv2iknb6hmpgymy4nc6-llvm-binutils-wrapper-19.1.5/bin/objdump",
-        "strip": "/usr/bin/strip",
-        "c++filt": "/nix/store/vcahgq9p0xfxyyv2iknb6hmpgymy4nc6-llvm-binutils-wrapper-19.1.5/bin/c++filt",
+        "nm": "/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/nm",
+        "objcopy": "/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/objcopy",
+        "objdump": "/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/objdump",
+        "strip": "/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/strip",
+        "c++filt": "/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/c++filt",
         "parse_headers": "cc_wrapper.sh",
         "validate_static_library": "validate_static_library.sh",
     },

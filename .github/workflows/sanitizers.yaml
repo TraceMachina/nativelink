@@ -20,18 +20,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04]
+        os: [ubuntu-24.04]
         sanitizer: [asan]
     name: ${{ matrix.sanitizer }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: >- # v4.1.1
-          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Setup Bazelisk
-        uses: >- # v0.8.1
-          bazel-contrib/setup-bazel@b388b84bb637e50cdae241d0f255670d4bd79f29
+      - name: Setup Bazel
+        uses: >- # v0.13.0
+          bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
         with:
           bazelisk-cache: true
           repository-cache: true

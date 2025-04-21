@@ -18,31 +18,29 @@ use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use async_lock::RwLock;
 use async_trait::async_trait;
 use bytes::BytesMut;
-use filetime::{set_file_atime, FileTime};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
+use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{
     StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
-use nativelink_util::{background_spawn, spawn_blocking};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
-use tokio::time::{sleep, timeout, Sleep};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -86,6 +84,7 @@ enum PathType {
 /// The whole [`StoreKey`] is stored as opposed to solely
 /// the [`DigestInfo`] so that it is more usable for things
 /// such as BEP -see Issue #1108
+#[derive(Debug)]
 pub struct EncodedFilePath {
     shared_context: Arc<SharedContext>,
     path_type: PathType,
@@ -168,7 +167,7 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> impl Future<Output = Result<(Self, fs::ResumeableFileSlot, OsString), Error>> + Send
+    ) -> impl Future<Output = Result<(Self, fs::FileSlot, OsString), Error>> + Send
     where
         Self: Sized;
 
@@ -186,7 +185,7 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
         &self,
         offset: u64,
         length: u64,
-    ) -> impl Future<Output = Result<fs::ResumeableFileSlot, Error>> + Send;
+    ) -> impl Future<Output = Result<Take<fs::FileSlot>, Error>> + Send;
 
     /// This function is a safe way to extract the file name of the underlying file. To protect users from
     /// accidentally creating undefined behavior we encourage users to do the logic they need to do with
@@ -231,7 +230,7 @@ impl FileEntry for FileEntryImpl {
     async fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(FileEntryImpl, fs::ResumeableFileSlot, OsString), Error> {
+    ) -> Result<(FileEntryImpl, fs::FileSlot, OsString), Error> {
         let temp_full_path = encoded_file_path.get_file_path().to_os_string();
         let temp_file_result = fs::create_file(temp_full_path.clone())
             .or_else(|mut err| async {
@@ -276,30 +275,19 @@ impl FileEntry for FileEntryImpl {
         &self.encoded_file_path
     }
 
-    async fn read_file_part(
+    fn read_file_part(
         &self,
         offset: u64,
         length: u64,
-    ) -> Result<fs::ResumeableFileSlot, Error> {
-        let (mut file, full_content_path_for_debug_only) = self
-            .get_file_path_locked(|full_content_path| async move {
-                let file = fs::open_file(full_content_path.clone(), length)
-                    .await
-                    .err_tip(|| {
-                        format!("Failed to open file in filesystem store {full_content_path:?}")
-                    })?;
-                Ok((file, full_content_path))
-            })
-            .await?;
-
-        file.as_reader()
-            .await
-            .err_tip(|| "Could not seek file in read_file_part()")?
-            .get_mut()
-            .seek(SeekFrom::Start(offset))
-            .await
-            .err_tip(|| format!("Failed to seek file: {full_content_path_for_debug_only:?}"))?;
-        Ok(file)
+    ) -> impl Future<Output = Result<Take<fs::FileSlot>, Error>> + Send {
+        self.get_file_path_locked(move |full_content_path| async move {
+            let file = fs::open_file(&full_content_path, offset, length)
+                .await
+                .err_tip(|| {
+                    format!("Failed to open file in filesystem store {full_content_path:?}")
+                })?;
+            Ok(file)
+        })
     }
 
     async fn get_file_path_locked<
@@ -348,33 +336,6 @@ impl LenEntry for FileEntryImpl {
 
     fn is_empty(&self) -> bool {
         self.data_size == 0
-    }
-
-    #[inline]
-    async fn touch(&self) -> bool {
-        let result = self
-            .get_file_path_locked(move |full_content_path| async move {
-                let full_content_path = full_content_path.clone();
-                spawn_blocking!("filesystem_touch_set_mtime", move || {
-                    set_file_atime(&full_content_path, FileTime::now()).err_tip(|| {
-                        format!("Failed to touch file in filesystem store {full_content_path:?}")
-                    })
-                })
-                .await
-                .map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Failed to change atime of file due to spawn failing {:?}",
-                        e
-                    )
-                })?
-            })
-            .await;
-        if let Err(err) = result {
-            event!(Level::ERROR, ?err, "Failed to touch file",);
-            return false;
-        }
-        true
     }
 
     // unref() only triggers when an item is removed from the eviction_map. It is possible
@@ -511,19 +472,13 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 // We need to filter out folders - we do not want to try to cache the s and d folders.
                 let is_file =
                     metadata.is_file() || !(file_name == STR_FOLDER || file_name == DIGEST_FOLDER);
-                let atime = match metadata.accessed() {
-                    Ok(atime) => atime,
-                    Err(err) => {
-                        panic!(
-                            "{}{}{} : {} {:?}",
-                            "It appears this filesystem does not support access time. ",
-                            "Please configure this program to run on a drive that supports ",
-                            "atime",
-                            file_name,
-                            err
-                        );
-                    }
-                };
+                // Using access time is not perfect, but better than random. We do not update the
+                // atime when a file is actually "touched", we rely on whatever the filesystem does
+                // when we read the file (usually update on read).
+                let atime = metadata
+                    .accessed()
+                    .or_else(|_| metadata.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
                 Result::<(String, SystemTime, u64, bool), Error>::Ok((
                     file_name,
                     atime,
@@ -605,7 +560,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
                     "Failed to add file to eviction cache",
                 );
                 // Ignore result.
-                let _ = fs::remove_file(format!("{path_root}/{file_name}")).await;
+                drop(fs::remove_file(format!("{path_root}/{file_name}")).await);
             }
         }
         Ok(())
@@ -637,9 +592,9 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     async fn prune_temp_inner(temp_path: &str, subpath: &str) -> Result<(), Error> {
         let (_permit, dir_handle) = fs::read_dir(format!("{temp_path}/{subpath}"))
             .await
-            .err_tip(|| {
-                "Failed opening temp directory to prune partial downloads in filesystem store"
-            })?
+            .err_tip(
+                || "Failed opening temp directory to prune partial downloads in filesystem store",
+            )?
             .into_inner();
 
         let mut read_dir_stream = ReadDirStream::new(dir_handle);
@@ -657,7 +612,7 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     Ok(())
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
     shared_context: Arc<SharedContext>,
@@ -668,19 +623,16 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric(help = "Size of the configured read buffer size")]
     read_buffer_size: usize,
     weak_self: Weak<Self>,
-    sleep_fn: fn(Duration) -> Sleep,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
     pub async fn new(spec: &FilesystemSpec) -> Result<Arc<Self>, Error> {
-        Self::new_with_timeout_and_rename_fn(spec, sleep, |from, to| std::fs::rename(from, to))
-            .await
+        Self::new_with_timeout_and_rename_fn(spec, |from, to| std::fs::rename(from, to)).await
     }
 
     pub async fn new_with_timeout_and_rename_fn(
         spec: &FilesystemSpec,
-        sleep_fn: fn(Duration) -> Sleep,
         rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     ) -> Result<Arc<Self>, Error> {
         async fn create_subdirs(path: &str) -> Result<(), Error> {
@@ -735,7 +687,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             block_size,
             read_buffer_size,
             weak_self: weak_self.clone(),
-            sleep_fn,
             rename_fn,
         }))
     }
@@ -751,53 +702,37 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store"))
     }
 
-    async fn update_file<'a>(
-        self: Pin<&'a Self>,
+    async fn update_file(
+        self: Pin<&Self>,
         mut entry: Fe,
-        mut resumeable_temp_file: fs::ResumeableFileSlot,
+        mut temp_file: fs::FileSlot,
         final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
         let mut data_size = 0;
         loop {
-            let Ok(data_result) = timeout(fs::idle_file_descriptor_timeout(), reader.recv()).await
-            else {
-                // In the event we timeout, we want to close the writing file, to prevent
-                // the file descriptor left open for long periods of time.
-                // This is needed because we wrap `fs` so only a fixed number of file
-                // descriptors may be open at any given time. If we are streaming from
-                // File -> File, it can cause a deadlock if the Write file is not sending
-                // data because it is waiting for a file descriotor to open before sending data.
-                resumeable_temp_file.close_file().await.err_tip(|| {
-                    "Could not close file due to timeout in FileSystemStore::update_file"
-                })?;
-                continue;
-            };
-            let mut data = data_result.err_tip(|| "Failed to receive data in filesystem store")?;
+            let mut data = reader
+                .recv()
+                .await
+                .err_tip(|| "Failed to receive data in filesystem store")?;
             let data_len = data.len();
             if data_len == 0 {
                 break; // EOF.
             }
-            resumeable_temp_file
-                .as_writer()
-                .await
-                .err_tip(|| "in filesystem_store::update_file")?
+            temp_file
                 .write_all_buf(&mut data)
                 .await
                 .err_tip(|| "Failed to write data into filesystem store")?;
             data_size += data_len as u64;
         }
 
-        resumeable_temp_file
-            .as_writer()
-            .await
-            .err_tip(|| "in filesystem_store::update_file")?
+        temp_file
             .as_ref()
             .sync_all()
             .await
             .err_tip(|| "Failed to sync_data in filesystem store")?;
 
-        drop(resumeable_temp_file);
+        drop(temp_file);
 
         *entry.data_size_mut() = data_size;
         self.emplace_file(final_key, Arc::new(entry)).await
@@ -942,19 +877,13 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn update_with_whole_file(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        mut file: fs::ResumeableFileSlot,
+        path: OsString,
+        file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
-        let path = file.get_path().as_os_str().to_os_string();
+    ) -> Result<Option<fs::FileSlot>, Error> {
         let file_size = match upload_size {
             UploadSizeInfo::ExactSize(size) => size,
             UploadSizeInfo::MaxSize(_) => file
-                .as_reader()
-                .await
-                .err_tip(|| {
-                    format!("While getting metadata for {path:?} in update_with_whole_file")
-                })?
-                .get_ref()
                 .as_ref()
                 .metadata()
                 .await
@@ -995,7 +924,6 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
             return Ok(());
         }
-
         let entry = self.evicting_map.get(&key).await.ok_or_else(|| {
             make_err!(
                 Code::NotFound,
@@ -1004,47 +932,33 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             )
         })?;
         let read_limit = length.unwrap_or(u64::MAX);
-        let mut resumeable_temp_file = entry.read_file_part(offset, read_limit).await?;
+        let mut temp_file = entry.read_file_part(offset, read_limit).or_else(|err| async move {
+            // If the file is not found, we need to remove it from the eviction map.
+            if err.code == Code::NotFound {
+                event!(
+                    Level::ERROR,
+                    ?err,
+                    ?key,
+                    "Entry was in our map, but not found on disk. Removing from map as a precaution, but process probably need restarted."
+                );
+                self.evicting_map.remove(&key).await;
+            }
+            Err(err)
+        }).await?;
 
         loop {
             let mut buf = BytesMut::with_capacity(self.read_buffer_size);
-            resumeable_temp_file
-                .as_reader()
-                .await
-                .err_tip(|| "In FileSystemStore::get_part()")?
+            temp_file
                 .read_buf(&mut buf)
                 .await
                 .err_tip(|| "Failed to read data in filesystem store")?;
             if buf.is_empty() {
                 break; // EOF.
             }
-            // In the event it takes a while to send the data to the client, we want to close the
-            // reading file, to prevent the file descriptor left open for long periods of time.
-            // Failing to do so might cause deadlocks if the receiver is unable to receive data
-            // because it is waiting for a file descriptor to open before receiving data.
-            // Using `ResumeableFileSlot` will re-open the file in the event it gets closed on the
-            // next iteration.
-            let buf_content = buf.freeze();
-            loop {
-                let sleep_fn = (self.sleep_fn)(fs::idle_file_descriptor_timeout());
-                tokio::pin!(sleep_fn);
-                tokio::select! {
-                    () = & mut (sleep_fn) => {
-                        resumeable_temp_file
-                            .close_file()
-                            .await
-                            .err_tip(|| "Could not close file due to timeout in FileSystemStore::get_part")?;
-                    }
-                    res = writer.send(buf_content.clone()) => {
-                        match res {
-                            Ok(()) => break,
-                            Err(err) => {
-                                return Err(err).err_tip(|| "Failed to send chunk in filesystem store get_part");
-                            }
-                        }
-                    }
-                }
-            }
+            writer
+                .send(buf.freeze())
+                .await
+                .err_tip(|| "Failed to send chunk in filesystem store get_part")?;
         }
         writer
             .send_eof()

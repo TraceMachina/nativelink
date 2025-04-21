@@ -14,8 +14,8 @@
 
 use std::borrow::Cow;
 use std::cmp::min;
-use std::collections::vec_deque::VecDeque;
 use std::collections::HashMap;
+use std::collections::vec_deque::VecDeque;
 use std::convert::Into;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Debug;
@@ -31,16 +31,16 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
 use bytes::{Bytes, BytesMut};
-use filetime::{set_file_mtime, FileTime};
+use filetime::{FileTime, set_file_mtime};
 use formatx::Template;
 use futures::future::{
-    try_join, try_join3, try_join_all, BoxFuture, Future, FutureExt, TryFutureExt,
+    BoxFuture, Future, FutureExt, TryFutureExt, try_join, try_join_all, try_join3,
 };
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
     EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, ActionResult as ProtoActionResult, Command as ProtoCommand,
@@ -51,16 +51,16 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     HistoricalExecuteResponse, StartExecute,
 };
 use nativelink_store::ac_utils::{
-    compute_buf_digest, get_and_decode_digest, serialize_and_upload_message, ESTIMATED_DIGEST_SIZE,
+    ESTIMATED_DIGEST_SIZE, compute_buf_digest, get_and_decode_digest, serialize_and_upload_message,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
-    to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo,
-    NameOrPath, OperationId, SymlinkInfo,
+    ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
+    SymlinkInfo, to_execute_response,
 };
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -69,14 +69,14 @@ use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
 use relative_path::RelativePath;
-use scopeguard::{guard, ScopeGuard};
+use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
 use tokio::sync::{oneshot, watch};
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
-use tracing::{enabled, event, Level};
+use tracing::{Level, enabled, event};
 use uuid::Uuid;
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -87,15 +87,15 @@ const EXIT_CODE_FOR_SIGNAL: i32 = 9;
 /// Note: If this value changes the config documentation
 /// should reflect it.
 const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
-    UploadCacheResultsStrategy::failures_only;
+    UploadCacheResultsStrategy::FailuresOnly;
 
 /// Valid string reasons for a failure.
 /// Note: If these change, the documentation should be updated.
-#[allow(non_camel_case_types)]
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum SideChannelFailureReason {
     /// Task should be considered timed out.
-    timeout,
+    Timeout,
 }
 
 /// This represents the json data that can be passed from the running process
@@ -180,9 +180,9 @@ pub fn download_to_directory<'a>(
                                 })
                             })
                             .await
-                            .err_tip(|| {
-                                "Failed to launch spawn_blocking in download_to_directory"
-                            })??;
+                            .err_tip(
+                                || "Failed to launch spawn_blocking in download_to_directory",
+                            )??;
                         }
                         Ok(())
                     })
@@ -261,24 +261,17 @@ async fn upload_file(
 ) -> Result<FileInfo, Error> {
     let is_executable = is_executable(&metadata, &full_path);
     let file_size = metadata.len();
-    let resumeable_file = fs::open_file(&full_path, u64::MAX)
+    let file = fs::open_file(&full_path, 0, u64::MAX)
         .await
         .err_tip(|| format!("Could not open file {full_path:?}"))?;
 
-    let (digest, mut resumeable_file) = hasher
+    let (digest, mut file) = hasher
         .hasher()
-        .digest_for_file(resumeable_file, Some(file_size))
+        .digest_for_file(&full_path, file.into_inner(), Some(file_size))
         .await
         .err_tip(|| format!("Failed to hash file in digest_for_file failed for {full_path:?}"))?;
 
-    resumeable_file
-        .as_reader()
-        .await
-        .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?
-        .get_mut()
-        .rewind()
-        .await
-        .err_tip(|| "Could not rewind file")?;
+    file.rewind().await.err_tip(|| "Could not rewind file")?;
 
     // Note: For unknown reasons we appear to be hitting:
     // https://github.com/rust-lang/rust/issues/92096
@@ -288,7 +281,8 @@ async fn upload_file(
         .as_store_driver_pin()
         .update_with_whole_file(
             digest.into(),
-            resumeable_file,
+            full_path.as_ref().into(),
+            file,
             UploadSizeInfo::ExactSize(digest.size_bytes()),
         )
         .await
@@ -490,7 +484,7 @@ async fn process_side_channel_file(
     let mut json_contents = String::new();
     {
         // Note: Scoping `file_slot` allows the file_slot semaphore to be released faster.
-        let mut file_slot = match fs::open_file(side_channel_file, u64::MAX).await {
+        let mut file_slot = match fs::open_file(side_channel_file, 0, u64::MAX).await {
             Ok(file_slot) => file_slot,
             Err(e) => {
                 if e.code != Code::NotFound {
@@ -500,11 +494,7 @@ async fn process_side_channel_file(
                 return Ok(None);
             }
         };
-        let reader = file_slot
-            .as_reader()
-            .await
-            .err_tip(|| "Error getting reader from side channel file (maybe permissions?)")?;
-        reader
+        file_slot
             .read_to_string(&mut json_contents)
             .await
             .err_tip(|| "Error reading side channel file")?;
@@ -517,7 +507,7 @@ async fn process_side_channel_file(
             )
         })?;
     Ok(side_channel_info.failure.map(|failure| match failure {
-        SideChannelFailureReason::timeout => Error::new(
+        SideChannelFailureReason::Timeout => Error::new(
             Code::DeadlineExceeded,
             format!(
                 "Command '{}' timed out after {} seconds",
@@ -586,12 +576,14 @@ pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
     fn get_work_directory(&self) -> &String;
 }
 
+#[derive(Debug)]
 struct RunningActionImplExecutionResult {
     stdout: Bytes,
     stderr: Bytes,
     exit_code: i32,
 }
 
+#[derive(Debug)]
 struct RunningActionImplState {
     command_proto: Option<ProtoCommand>,
     // TODO(allada) Kill is not implemented yet, but is instrumented.
@@ -609,6 +601,7 @@ struct RunningActionImplState {
     error: Option<Error>,
 }
 
+#[derive(Debug)]
 pub struct RunningActionImpl {
     operation_id: OperationId,
     action_directory: String,
@@ -651,6 +644,10 @@ impl RunningActionImpl {
         }
     }
 
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "False positive on stable, but not on nightly"
+    )]
     fn metrics(&self) -> &Arc<Metrics> {
         &self.running_actions_manager.metrics
     }
@@ -805,22 +802,22 @@ impl RunningActionImpl {
         {
             for (name, source) in additional_environment {
                 let value = match source {
-                    EnvironmentSource::property(property) => self
+                    EnvironmentSource::Property(property) => self
                         .action_info
                         .platform_properties
                         .get(property)
                         .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.as_str())),
-                    EnvironmentSource::value(value) => Cow::Borrowed(value.as_str()),
-                    EnvironmentSource::timeout_millis => {
+                    EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                    EnvironmentSource::TimeoutMillis => {
                         Cow::Owned(requested_timeout.as_millis().to_string())
                     }
-                    EnvironmentSource::side_channel_file => {
+                    EnvironmentSource::SideChannelFile => {
                         let file_cow =
                             format!("{}/{}", self.action_directory, Uuid::new_v4().simple());
                         maybe_side_channel_file = Some(Cow::Owned(file_cow.clone().into()));
                         Cow::Owned(file_cow)
                     }
-                    EnvironmentSource::action_directory => {
+                    EnvironmentSource::ActionDirectory => {
                         Cow::Borrowed(self.action_directory.as_str())
                     }
                 };
@@ -991,12 +988,6 @@ impl RunningActionImpl {
                             operation_id = ?self.operation_id,
                             ?err,
                             "Could not kill process",
-                        );
-                    } else {
-                        event!(
-                            Level::ERROR,
-                            operation_id = ?self.operation_id,
-                            "Could not get child process id, maybe already dead?",
                         );
                     }
                     {
@@ -1369,11 +1360,18 @@ type SleepFn = fn(Duration) -> BoxFuture<'static, ()>;
 
 /// Functions that may be injected for testing purposes, during standard control
 /// flows these are specified by the new function.
+#[derive(Clone, Copy)]
 pub struct Callbacks {
     /// A function that gets the current time.
     pub now_fn: NowFn,
     /// A function that sleeps for a given Duration.
     pub sleep_fn: SleepFn,
+}
+
+impl Debug for Callbacks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Callbacks").finish_non_exhaustive()
+    }
 }
 
 /// The set of additional information for executing an action over and above
@@ -1382,7 +1380,7 @@ pub struct Callbacks {
 /// may be used to run the action with a particular set of additional
 /// environment variables, or perhaps configure it to execute within a
 /// container.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ExecutionConfiguration {
     /// If set, will be executed instead of the first argument passed in the
     /// `ActionInfo` with all of the arguments in the `ActionInfo` passed as
@@ -1394,6 +1392,7 @@ pub struct ExecutionConfiguration {
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
 }
 
+#[derive(Debug)]
 struct UploadActionResults {
     upload_ac_results_strategy: UploadCacheResultsStrategy,
     upload_historical_results_strategy: UploadCacheResultsStrategy,
@@ -1414,7 +1413,7 @@ impl UploadActionResults {
             .unwrap_or(DEFAULT_HISTORICAL_RESULTS_STRATEGY);
         if !matches!(
             config.upload_ac_results_strategy,
-            UploadCacheResultsStrategy::never
+            UploadCacheResultsStrategy::Never
         ) && ac_store.is_none()
         {
             return Err(make_input_err!(
@@ -1445,7 +1444,7 @@ impl UploadActionResults {
         })
     }
 
-    fn should_cache_result(
+    const fn should_cache_result(
         strategy: UploadCacheResultsStrategy,
         action_result: &ActionResult,
         treat_infra_error_as_failure: bool,
@@ -1455,13 +1454,13 @@ impl UploadActionResults {
             did_fail = true;
         }
         match strategy {
-            UploadCacheResultsStrategy::success_only => !did_fail,
-            UploadCacheResultsStrategy::never => false,
+            UploadCacheResultsStrategy::SuccessOnly => !did_fail,
+            UploadCacheResultsStrategy::Never => false,
             // Never cache internal errors or timeouts.
-            UploadCacheResultsStrategy::everything => {
+            UploadCacheResultsStrategy::Everything => {
                 treat_infra_error_as_failure || action_result.error.is_none()
             }
-            UploadCacheResultsStrategy::failures_only => did_fail,
+            UploadCacheResultsStrategy::FailuresOnly => did_fail,
         }
     }
 
@@ -1637,6 +1636,7 @@ impl UploadActionResults {
     }
 }
 
+#[derive(Debug)]
 pub struct RunningActionsManagerArgs<'a> {
     pub root_action_directory: String,
     pub execution_configuration: ExecutionConfiguration,
@@ -1650,6 +1650,7 @@ pub struct RunningActionsManagerArgs<'a> {
 
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
+#[derive(Debug)]
 pub struct RunningActionsManagerImpl {
     root_action_directory: String,
     execution_configuration: ExecutionConfiguration,
@@ -1676,9 +1677,9 @@ impl RunningActionsManagerImpl {
             .cas_store
             .fast_store()
             .downcast_ref::<FilesystemStore>(None)
-            .err_tip(|| {
-                "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl"
-            })?
+            .err_tip(
+                || "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl",
+            )?
             .get_arc()
             .err_tip(|| "FilesystemStore's internal Arc was lost")?;
         let (action_done_tx, _) = watch::channel(());
@@ -1887,11 +1888,12 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     // Use the ShutdownGuard to signal the completion of the actions
     // Dropping the sender automatically notifies the process to terminate.
     async fn complete_actions(&self, _complete_msg: ShutdownGuard) {
-        let _ = self
-            .action_done_tx
-            .subscribe()
-            .wait_for(|()| self.running_actions.lock().is_empty())
-            .await;
+        drop(
+            self.action_done_tx
+                .subscribe()
+                .wait_for(|()| self.running_actions.lock().is_empty())
+                .await,
+        );
     }
 
     // Note: When the future returns the process should be fully killed and cleaned up.
@@ -1914,11 +1916,12 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         // Ignore error. If error happens it means there's no sender, which is not a problem.
         // Note: Sanity check this API will always check current value then future values:
         // https://play.rust-lang.org/?version=stable&edition=2021&gist=23103652cc1276a97e5f9938da87fdb2
-        let _ = self
-            .action_done_tx
-            .subscribe()
-            .wait_for(|()| self.running_actions.lock().is_empty())
-            .await;
+        drop(
+            self.action_done_tx
+                .subscribe()
+                .wait_for(|()| self.running_actions.lock().is_empty())
+                .await,
+        );
     }
 
     #[inline]
@@ -1927,7 +1930,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     }
 }
 
-#[derive(Default, MetricsComponent)]
+#[derive(Debug, Default, MetricsComponent)]
 pub struct Metrics {
     #[metric(help = "Stats about the create_and_add_action command.")]
     create_and_add_action: AsyncCounterWrapper,

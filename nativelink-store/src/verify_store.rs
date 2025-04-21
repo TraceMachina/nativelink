@@ -17,21 +17,21 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_config::stores::VerifySpec;
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::common::PackedHash;
 use nativelink_util::digest_hasher::{
-    default_digest_hasher_func, DigestHasher, ACTIVE_HASHER_FUNC,
+    ACTIVE_HASHER_FUNC, DigestHasher, default_digest_hasher_func,
 };
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct VerifyStore {
     #[metric(group = "inner_store")]
     inner_store: Store,

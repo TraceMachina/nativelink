@@ -52,15 +52,22 @@ pub struct WorkerApiServer {
     node_id: [u8; 6],
 }
 
+impl std::fmt::Debug for WorkerApiServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerApiServer")
+            .field("node_id", &self.node_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl WorkerApiServer {
     pub fn new(
         config: &WorkerApiConfig,
         schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
     ) -> Result<Self, Error> {
         let node_id = {
-            let mut rng = rand::thread_rng();
             let mut out = [0; 6];
-            rng.fill_bytes(&mut out);
+            rand::rng().fill_bytes(&mut out);
             out
         };
         for scheduler in schedulers.values() {
@@ -257,7 +264,6 @@ impl WorkerApiServer {
 impl WorkerApi for WorkerApiServer {
     type ConnectWorkerStream = ConnectWorkerStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,
@@ -278,7 +284,6 @@ impl WorkerApi for WorkerApiServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -295,7 +300,6 @@ impl WorkerApi for WorkerApiServer {
             .map_err(Into::into)
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -312,7 +316,6 @@ impl WorkerApi for WorkerApiServer {
             .map_err(Into::into)
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),

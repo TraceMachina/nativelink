@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::pin::Pin;
-use std::task::{ready, Context};
+use std::task::{Context, ready};
 
 use bytes::Bytes;
 use futures::task::Poll;

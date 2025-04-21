@@ -20,6 +20,10 @@ spec:
           env:
             - name: RUST_LOG
               value: info
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector-collector.default.svc:4317
+            - name: OTEL_EXPORTER_OTLP_COMPRESSION
+              value: zstd
           ports:
             - containerPort: 9090
             - containerPort: 50051

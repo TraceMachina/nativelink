@@ -19,8 +19,8 @@ use std::time::{Duration, SystemTime};
 
 use async_lock::Mutex;
 use async_trait::async_trait;
-use futures::{stream, StreamExt, TryStreamExt};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use futures::{StreamExt, TryStreamExt, stream};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
@@ -33,7 +33,7 @@ use nativelink_util::operation_state_manager::{
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use super::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
@@ -78,7 +78,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
-    fn new(
+    const fn new(
         sub: U,
         simple_scheduler_state_manager: Weak<SimpleSchedulerStateManager<T, I, NowFn>>,
         no_event_action_timeout: Duration,
@@ -135,7 +135,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
-    fn new(
+    const fn new(
         awaited_action_sub: U,
         simple_scheduler_state_manager: Weak<SimpleSchedulerStateManager<T, I, NowFn>>,
         no_event_action_timeout: Duration,
@@ -246,7 +246,7 @@ where
 /// It also includes the workers that are available to execute actions based on allocation
 /// strategy.
 #[derive(MetricsComponent)]
-pub struct SimpleSchedulerStateManager<T, I, NowFn>
+pub(crate) struct SimpleSchedulerStateManager<T, I, NowFn>
 where
     T: AwaitedActionDb,
     I: InstantWrapper,
@@ -294,7 +294,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
-    pub fn new(
+    pub(crate) fn new(
         max_job_retries: usize,
         no_event_action_timeout: Duration,
         client_action_timeout: Duration,
@@ -635,7 +635,7 @@ where
     where
         F: Fn(T::Subscriber) -> Box<dyn ActionStateResult> + Send + Sync + 'a,
     {
-        fn sorted_awaited_action_state_for_flags(
+        const fn sorted_awaited_action_state_for_flags(
             stage: OperationStageFlags,
         ) -> Option<SortedAwaitedActionState> {
             match stage {

@@ -3,19 +3,12 @@ resolver = "2"
 
 [package]
 name = "nativelink"
-version = "0.5.4"
-edition = "2021"
-rust-version = "1.84.0"
+version = "0.6.0"
+edition = "2024"
+rust-version = "1.86.0"
 
 [profile.release]
 lto = true
-opt-level = 3
-
-[profile.dev]
-lto = false
-opt-level = 0
-strip = false
-debug = true
 
 # Prefer this profile in CI, for instance via `cargo test --all --profile=smol`.
 # It reduces the size of the `target` directory from ~12GB to ~1GB.
@@ -29,9 +22,6 @@ debug = false
 name = "nativelink"
 
 [features]
-enable_tokio_console = [
-  "nativelink-util/enable_tokio_console"
-]
 nix = [
   "nativelink-worker/nix"
 ]
@@ -47,29 +37,26 @@ nativelink-worker = { path = "nativelink-worker" }
 nativelink-metric = { path = "nativelink-metric" }
 nativelink-metric-collector = { path = "nativelink-metric-collector" }
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
-axum = { version = "0.7.9", default-features = false }
-clap = { version = "4.5.26", features = ["derive"] }
+axum = { version = "0.8.3", default-features = false }
+clap = { version = "4.5.35", features = ["derive"] }
 futures = { version = "0.3.31", default-features = false }
-hyper = "1.5.2"
-hyper-util = "0.1.10"
-mimalloc = "0.1.43"
+hyper = "1.6.0"
+hyper-util = "0.1.11"
+mimalloc = "0.1.44"
 parking_lot = "0.12.3"
-rustls-pemfile = { version = "2.2.0", default-features = false }
+rustls-pemfile = { version = "2.2.0", features = ["std"], default-features = false }
 scopeguard = { version = "1.2.0", default-features = false }
-serde_json5 = "0.1.0"
-tokio = { version = "1.43.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
-tokio-rustls = { version = "0.26.1", default-features = false, features = [
+serde_json5 = "0.2.1"
+tokio = { version = "1.44.1", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
+tokio-rustls = { version = "0.26.2", default-features = false, features = [
   "ring",
 ] }
-tonic = { version = "0.12.3", features = ["transport", "tls"], default-features = false }
+tonic = { version = "0.13.0", features = ["transport", "tls-ring"], default-features = false }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
-opentelemetry_sdk = { version = "0.27.1", default-features = false }
+opentelemetry_sdk = { version = "0.29.0", default-features = false }
 tracing-subscriber = { version = "0.3.19", default-features = false }
-opentelemetry = { version = "0.27.1", default-features = false }
-prometheus = { version = "0.13.4", default-features = false }
-opentelemetry-prometheus = "0.27.0"
-serde_json = "1.0.135"
+opentelemetry = { version = "0.29.1", default-features = false }
 
 [workspace.cargo-features-manager.keep]
 async-lock = ["std"]
@@ -85,3 +72,49 @@ tokio-stream = ["fs"]
 tonic-build = ["prost"]
 tonic = ["transport", "tls"]
 uuid = ["v4", "serde"]
+
+[workspace.lints.rust]
+ambiguous-glob-reexports = "deny"
+clashing-extern-declarations = "deny"
+const-item-mutation = "deny"
+dangling-pointers-from-temporaries = "deny"
+deref-nullptr = "deny"
+drop-bounds = "deny"
+future-incompatible = "deny"
+hidden-glob-reexports = "deny"
+improper-ctypes = "deny"
+improper-ctypes-definitions = "deny"
+invalid-from-utf8 = "deny"
+invalid-macro-export-arguments = "deny"
+invalid-nan-comparisons = "deny"
+invalid-reference-casting = "deny"
+invalid-value = "deny"
+opaque-hidden-inferred-bound = "deny"
+overlapping-range-endpoints = "deny"
+suspicious-double-ref-op = "deny"
+unconditional-recursion = "deny"
+unexpected-cfgs = "deny"
+unnameable-test-items = "deny"
+unsafe-op-in-unsafe-fn = "deny"
+unstable-syntax-pre-expansion = "deny"
+
+keyword-idents = "warn"
+let-underscore = "warn"
+macro-use-extern-crate = "warn"
+meta-variable-misuse = "warn"
+missing-abi = "warn"
+missing-copy-implementations = "warn"
+missing-debug-implementations = "warn"
+noop-method-call = "warn"
+single-use-lifetimes = "warn"
+trivial-casts = "warn"
+trivial-numeric-casts = "warn"
+unreachable-pub = "warn"
+unused = { level = "warn", priority = -1 }
+unused-import-braces = "warn"
+unused-lifetimes = "warn"
+unused-qualifications = "warn"
+variant-size-differences = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

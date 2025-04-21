@@ -17,17 +17,25 @@
 // `bazel run nativelink-proto:update_protos`
 
 #![allow(
+    unknown_lints,
+    unused_qualifications,
     clippy::default_trait_access,
     clippy::doc_lazy_continuation,
     clippy::doc_markdown,
-    clippy::doc_markdown,
     clippy::large_enum_variant,
+    clippy::missing_const_for_fn,
+    clippy::doc_overindented_list_items,
     rustdoc::invalid_html_tags
 )]
 
 pub mod build {
     pub mod bazel {
         pub mod remote {
+            pub mod asset {
+                pub mod v1 {
+                    include!("build.bazel.remote.asset.v1.pb.rs");
+                }
+            }
             pub mod execution {
                 pub mod v2 {
                     include!("build.bazel.remote.execution.v2.pb.rs");

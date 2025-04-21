@@ -16,17 +16,17 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::task::Poll;
-use futures::{poll, Future};
+use futures::{Future, poll};
 use http_body_util::BodyExt;
-use hyper::body::Frame;
 use hyper::Uri;
+use hyper::body::Frame;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use maplit::hashmap;
 use nativelink_config::cas_server::ByteStreamConfig;
 use nativelink_config::stores::{MemorySpec, StoreSpec};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::byte_stream_server::ByteStream;
@@ -37,7 +37,7 @@ use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::channel_body_for_tests::ChannelBody;
-use nativelink_util::common::{encode_stream_proto, DigestInfo};
+use nativelink_util::common::{DigestInfo, encode_stream_proto};
 use nativelink_util::store_trait::StoreLike;
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn};
@@ -46,8 +46,8 @@ use tokio::io::DuplexStream;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::yield_now;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::codec::{Codec, CompressionEncoding, ProstCodec};
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Response, Streaming};
@@ -61,7 +61,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_cas",
         store_factory(
-            &StoreSpec::memory(MemorySpec::default()),
+            &StoreSpec::Memory(MemorySpec::default()),
             &store_manager,
             None,
         )
@@ -74,7 +74,7 @@ fn make_bytestream_server(
     store_manager: &StoreManager,
     config: Option<ByteStreamConfig>,
 ) -> Result<ByteStreamServer, Error> {
-    let config = config.unwrap_or(nativelink_config::cas_server::ByteStreamConfig {
+    let config = config.unwrap_or(ByteStreamConfig {
         cas_stores: hashmap! {
             "foo_instance_name".to_string() => "main_cas".to_string(),
         },
@@ -501,8 +501,8 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
 }
 
 #[nativelink_test]
-pub async fn ensure_write_is_not_done_until_write_request_is_set(
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn ensure_write_is_not_done_until_write_request_is_set()
+-> Result<(), Box<dyn std::error::Error>> {
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     let store_manager = make_store_manager().await?;
@@ -848,8 +848,8 @@ pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
 
         let result = result_fut.await.err_tip(|| "Expected result to be ready")?;
         let expected_err_str = concat!(
-                "status: NotFound, message: \"Key Digest(DigestInfo(\\\"0123456789abcdef000000000000000000000000000000000123456789abcdef-55\\\")) not found\", details: [], metadata: MetadataMap { headers: {} }",
-            );
+            "status: NotFound, message: \"Key Digest(DigestInfo(\\\"0123456789abcdef000000000000000000000000000000000123456789abcdef-55\\\")) not found\", details: [], metadata: MetadataMap { headers: {} }",
+        );
         assert_eq!(
             Error::from(result.unwrap_err()),
             make_err!(Code::NotFound, "{expected_err_str}"),
@@ -910,7 +910,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
 
     {
         // Check to see if our request is active.
-        tokio::task::yield_now().await;
+        yield_now().await;
         let data = bs_server
             .query_write_status(Request::new(QueryWriteStatusRequest {
                 resource_name: resource_name.clone(),
@@ -934,7 +934,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
 
     {
         // Now that it's done uploading, ensure it returns a success when requested again.
-        tokio::task::yield_now().await;
+        yield_now().await;
         let data = bs_server
             .query_write_status(Request::new(QueryWriteStatusRequest { resource_name }))
             .await?;

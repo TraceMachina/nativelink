@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::convert::AsRef;
 
-use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 
 const ERROR_MSG: &str = concat!(
     "Expected resource_name to be of pattern ",
@@ -234,7 +234,7 @@ fn recursive_parse<'a>(
             State::Unknown => {
                 return Err(make_input_err!(
                     "Unknown state should never be reached in ResourceInfo::new"
-                ))
+                ));
             }
             State::Compressor => {
                 state = State::DigestFunction;

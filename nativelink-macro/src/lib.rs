@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-extern crate proc_macro;
-
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, ItemFn};
+use syn::{ItemFn, parse_macro_input};
 
 #[proc_macro_attribute]
 pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -31,17 +29,19 @@ pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         #(#fn_attr)*
-        #[allow(clippy::disallowed_methods)]
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "`tokio::test` uses `tokio::runtime::Runtime::block_on`"
+        )]
         #[tokio::test(#attr)]
         async fn #fn_name(#fn_inputs) #fn_output {
             // Error means already initialized, which is ok.
             let _ = nativelink_util::init_tracing();
-            // If already set it's ok.
-            let _ = nativelink_util::fs::set_idle_file_descriptor_timeout(std::time::Duration::from_millis(100));
 
             #[warn(clippy::disallowed_methods)]
             ::std::sync::Arc::new(::nativelink_util::origin_context::OriginContext::new()).wrap_async(
-                ::nativelink_util::__tracing::trace_span!("test"), async move {
+                ::nativelink_util::__tracing::error_span!(stringify!(#fn_name)), async move {
+                    ::nativelink_util::common::reseed_rng_for_test().unwrap();
                     #fn_block
                 }
             )

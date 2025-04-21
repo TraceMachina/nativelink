@@ -25,7 +25,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 	cilium, err := components.AddComponent(
 		ctx,
 		"cilium",
-		&components.Cilium{Version: "1.16.0-pre.2"},
+		&components.Cilium{Version: "1.17.2"},
 	)
 	if err != nil {
 		log.Println(err)
@@ -35,7 +35,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 	components.Check(components.AddComponent(
 		ctx,
 		"local-sources",
-		&components.LocalPVAndPVC{
+		&components.LocalPV{
 			Size:     "50Mi",
 			HostPath: "/mnt",
 		},
@@ -44,31 +44,16 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 	components.Check(components.AddComponent(
 		ctx,
 		"nix-store",
-		&components.LocalPVAndPVC{
+		&components.LocalPV{
 			Size:     "10Gi",
 			HostPath: "/nix",
 		},
 	))
 
-	tektonOperator, err := components.AddComponent(
-		ctx,
-		"tekton-operator",
-		&components.TektonOperator{
-			Version: "0.72.0",
-			Dependencies: slices.Concat(
-				cilium,
-			),
-		},
-	)
-	if err != nil {
-		log.Println(err)
-		os.Exit(1)
-	}
-
 	flux, err := components.AddComponent(
 		ctx,
 		"flux",
-		&components.Flux{Version: "2.3.0"},
+		&components.Flux{Version: "2.5.1"},
 	)
 	if err != nil {
 		log.Println(err)
@@ -80,6 +65,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		"capacitor",
 		&components.Capacitor{
 			Dependencies: slices.Concat(
+				cilium,
 				flux,
 			),
 		},
@@ -92,7 +78,6 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 			Dependencies: slices.Concat(
 				cilium,
 				flux,
-				tektonOperator,
 			),
 		},
 	)
@@ -174,6 +159,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		ctx,
 		"kind-loadbalancer",
 		&components.Loadbalancer{
+			Version: "1.33.2",
 			Gateways: []components.Gateway{
 				capacitorGateway,
 				nativelinkGateway,

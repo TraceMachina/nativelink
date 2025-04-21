@@ -13,7 +13,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/pulumi/pulumi-docker/sdk/v3/go/docker"
+	"github.com/pulumi/pulumi-docker/sdk/v4/go/docker"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	apiv1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
@@ -42,6 +42,7 @@ type Gateway struct {
 
 // A local loadbalancer.
 type Loadbalancer struct {
+	Version      string
 	Gateways     []Gateway
 	Dependencies []pulumi.Resource
 }
@@ -217,7 +218,12 @@ func writeEnvoyConfigToFile(populatedConfig string) (string, error) {
 	}
 
 	// Ensure the file is closed properly.
-	defer tmpFile.Close()
+	defer func() {
+		err := tmpFile.Close()
+		if err != nil {
+			log.Printf("Error closing file: %v", err)
+		}
+	}()
 
 	// Write the populated configuration to the temporary file.
 	if _, err := tmpFile.WriteString(populatedConfig); err != nil {
@@ -328,7 +334,7 @@ func (component *Loadbalancer) Install(
 	loadbalancer, err := createDockerContainer(
 		ctx,
 		name,
-		"envoyproxy/envoy:v1.19.1",
+		fmt.Sprintf("envoyproxy/envoy:v%s", component.Version),
 		absolutePath,
 		dockerContainerPorts(component.Gateways),
 		component.Dependencies,

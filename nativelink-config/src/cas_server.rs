@@ -16,14 +16,14 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
+use crate::schedulers::SchedulerSpec;
 use crate::serde_utils::{
     convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
     convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
     convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
     convert_vec_string_with_shellexpand,
 };
-use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreRefName};
-use crate::{SchedulerConfigs, StoreConfigs};
+use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreRefName, StoreSpec};
 
 /// Name of the scheduler. This type will be used when referencing a
 /// scheduler in the `CasConfig::schedulers`'s map key.
@@ -32,15 +32,15 @@ pub type SchedulerRefName = String;
 /// Used when the config references `instance_name` in the protocol.
 pub type InstanceName = String;
 
-#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug, Default, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
 pub enum HttpCompressionAlgorithm {
     /// No compression.
     #[default]
-    none,
+    None,
 
     /// Zlib compression.
-    gzip,
+    Gzip,
 }
 
 /// Note: Compressing data in the cloud rarely has a benefit, since most
@@ -61,7 +61,7 @@ pub struct HttpCompressionConfig {
     /// latency.
     /// see: <https://github.com/tracemachina/nativelink/issues/109>
     ///
-    /// Default: `HttpCompressionAlgorithm::none`
+    /// Default: `HttpCompressionAlgorithm::None`
     pub send_compression_algorithm: Option<HttpCompressionAlgorithm>,
 
     /// The compression algorithm that the server will accept from clients.
@@ -129,6 +129,14 @@ pub struct ExecutionConfig {
     pub scheduler: SchedulerRefName,
 }
 
+#[derive(Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+pub struct FetchConfig {}
+
+#[derive(Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+pub struct PushConfig {}
+
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ByteStreamConfig {
@@ -165,18 +173,6 @@ pub struct WorkerApiConfig {
     /// The scheduler name referenced in the `schedulers` map in the main config.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub scheduler: SchedulerRefName,
-}
-
-#[derive(Deserialize, Debug, Default)]
-#[serde(deny_unknown_fields)]
-pub struct PrometheusConfig {
-    /// Path to register prometheus metrics. If path is "/metrics", and your
-    /// domain is "example.com", you can reach the endpoint with:
-    /// <http://example.com/metrics>.
-    ///
-    /// Default: "/metrics"
-    #[serde(default)]
-    pub path: String,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -273,6 +269,11 @@ pub struct ServicesConfig {
     /// interface to interact with the CAS when the data is large.
     pub bytestream: Option<ByteStreamConfig>,
 
+    /// These two are collectively the Remote Asset protocol, but it's
+    /// defined as two separate services
+    pub fetch: Option<FetchConfig>,
+    pub push: Option<PushConfig>,
+
     /// This is the service used for workers to connect and communicate
     /// through.
     /// NOTE: This service should be served on a different, non-public port.
@@ -286,10 +287,6 @@ pub struct ServicesConfig {
     /// the service that will consume build events from the client and
     /// publish them to a store for processing by an external service.
     pub experimental_bep: Option<BepConfig>,
-
-    /// Experimental - Prometheus metrics configuration. Metrics are gathered
-    /// as a singleton but may be served on multiple endpoints.
-    pub experimental_prometheus: Option<PrometheusConfig>,
 
     /// This is the service for any administrative tasks.
     /// It provides a REST API endpoint for administrative purposes.
@@ -327,7 +324,7 @@ pub struct TlsConfig {
 ///
 /// Note: All of these default to hyper's default values unless otherwise
 /// specified.
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 pub struct HttpServerConfig {
     /// Interval to send keep-alive pings via HTTP2.
@@ -394,11 +391,11 @@ pub struct HttpServerConfig {
     pub experimental_http2_max_header_list_size: Option<u32>,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
 pub enum ListenerConfig {
     /// Listener for HTTP/HTTPS/HTTP2 sockets.
-    http(HttpListener),
+    Http(HttpListener),
 }
 
 #[derive(Deserialize, Debug)]
@@ -447,18 +444,18 @@ pub struct ServerConfig {
     pub experimental_identity_header: IdentityHeaderSpec,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
 pub enum WorkerProperty {
     /// List of static values.
     /// Note: Generally there should only ever be 1 value, but if the platform
     /// property key is `PropertyType::Priority` it may have more than one value.
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
-    values(Vec<String>),
+    Values(Vec<String>),
 
     /// A dynamic configuration. The string will be executed as a command
     /// (not sell) and will be split by "\n" (new line character).
-    query_cmd(String),
+    QueryCmd(String),
 }
 
 /// Generic config for an endpoint and associated configs.
@@ -477,35 +474,35 @@ pub struct EndpointConfig {
     pub tls_config: Option<ClientTlsConfig>,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Deserialize, Debug, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum UploadCacheResultsStrategy {
     /// Only upload action results with an exit code of 0.
     #[default]
-    success_only,
+    SuccessOnly,
 
     /// Don't upload any action results.
-    never,
+    Never,
 
     /// Upload all action results that complete.
-    everything,
+    Everything,
 
     /// Only upload action results that fail.
-    failures_only,
+    FailuresOnly,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvironmentSource {
     /// The name of the platform property in the action to get the value from.
-    property(String),
+    Property(String),
 
     /// The raw value to set.
-    value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
+    Value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
 
     /// The max amount of time in milliseconds the command is allowed to run
     /// (requested by the client).
-    timeout_millis,
+    TimeoutMillis,
 
     /// A special file path will be provided that can be used to communicate
     /// with the parent process about out-of-band information. This file
@@ -523,7 +520,7 @@ pub enum EnvironmentSource {
     ///
     /// All fields are optional, file does not need to be created and may be
     /// empty.
-    side_channel_file,
+    SideChannelFile,
 
     /// A "root" directory for the action. This directory can be used to
     /// store temporary files that are not needed after the action has
@@ -538,7 +535,7 @@ pub enum EnvironmentSource {
     /// variable, `mkdir $ENV_VAR_NAME/tmp` and `export TMPDIR=$ENV_VAR_NAME/tmp`.
     /// Another example might be to bind-mount the `/tmp` path in a container to
     /// this path in `entrypoint`.
-    action_directory,
+    ActionDirectory,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -693,11 +690,11 @@ pub struct LocalWorkerConfig {
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
 pub enum WorkerConfig {
     /// A worker type that executes jobs locally on this machine.
-    local(LocalWorkerConfig),
+    Local(LocalWorkerConfig),
 }
 
 #[derive(Deserialize, Debug, Clone, Copy)]
@@ -707,42 +704,14 @@ pub struct GlobalConfig {
     /// This value is not strictly enforced, it is a best effort. Some internal libraries
     /// open files or read metadata from a files which do not obey this limit, however
     /// the vast majority of cases will have this limit be honored.
-    /// As a rule of thumb this value should be less than half the value of `ulimit -n`.
+    /// This value must be larger than `ulimit -n` to have any effect.
     /// Any network open file descriptors is not counted in this limit, but is counted
     /// in the kernel limit. It is a good idea to set a very large `ulimit -n`.
     /// Note: This value must be greater than 10.
     ///
-    /// Default: 512
+    /// Default: 24576 (= 24 * 1024)
     #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_open_files: usize,
-
-    /// If a file descriptor is idle for this many milliseconds, it will be closed.
-    /// In the event a client or store takes a long time to send or receive data
-    /// the file descriptor will be closed, and since `max_open_files` blocks new
-    /// `open_file` requests until a slot opens up, it will allow new requests to be
-    /// processed. If a read or write is attempted on a closed file descriptor, the
-    /// file will be reopened and the operation will continue.
-    ///
-    /// On services where worker(s) and scheduler(s) live in the same process, this
-    /// also prevents deadlocks if a file->file copy is happening, but cannot open
-    /// a new file descriptor because the limit has been reached.
-    ///
-    /// Default: 1000 (1 second)
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub idle_file_descriptor_timeout_millis: u64,
-
-    /// This flag can be used to prevent metrics from being collected at runtime.
-    /// Metrics are still able to be collected, but this flag prevents metrics that
-    /// are collected at runtime (performance metrics) from being tallied. The
-    /// overhead of collecting metrics is very low, so this flag should only be
-    /// used if there is a very good reason to disable metrics.
-    /// This flag can be forcibly set using the `NATIVELINK_DISABLE_METRICS` variable.
-    /// If the variable is set it will always disable metrics regardless of what
-    /// this flag is set to.
-    ///
-    /// Default: <true (disabled) if no prometheus service enabled, false otherwise>
-    #[serde(default)]
-    pub disable_metrics: bool,
 
     /// Default hash function to use while uploading blobs to the CAS when not set
     /// by client.
@@ -760,12 +729,22 @@ pub struct GlobalConfig {
     pub default_digest_size_health_check: usize,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct NamedConfig<Spec> {
+    pub name: String,
+    #[serde(flatten)]
+    pub spec: Spec,
+}
+
+pub type StoreConfig = NamedConfig<StoreSpec>;
+pub type SchedulerConfig = NamedConfig<SchedulerSpec>;
+
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct CasConfig {
     /// List of stores available to use in this config.
     /// The keys can be used in other configs when needing to reference a store.
-    pub stores: StoreConfigs,
+    pub stores: Vec<StoreConfig>,
 
     /// Worker configurations used to execute jobs.
     pub workers: Option<Vec<WorkerConfig>>,
@@ -773,7 +752,7 @@ pub struct CasConfig {
     /// List of schedulers available to use in this config.
     /// The keys can be used in other configs when needing to reference a
     /// scheduler.
-    pub schedulers: Option<SchedulerConfigs>,
+    pub schedulers: Option<Vec<SchedulerConfig>>,
 
     /// Servers to setup for this process.
     pub servers: Vec<ServerConfig>,

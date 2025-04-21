@@ -32,6 +32,8 @@ static_resources:
                         {{- end }}
                 http_filters:
                   - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
                 upgrade_configs:
                   - upgrade_type: websocket
     {{- end }}
@@ -41,7 +43,15 @@ static_resources:
       connect_timeout: 0.25s
       type: LOGICAL_DNS
       {{- if .HTTP2 }}
-      http2_protocol_options: {}
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          upstream_http_protocol_options:
+            auto_sni: true
+          common_http_protocol_options:
+            idle_timeout: 1s
+          explicit_http_config:
+            http2_protocol_options: {}
       {{- end }}
       lb_policy: ROUND_ROBIN
       load_assignment:

@@ -18,7 +18,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
   #### 1. Setup Reclient/Chromium for Linux
 
   Start with Chromium by following the instructions here:
-  [Checking out and building Chromium for Linux](https://chromium.googlesource.com/chromium/src/+/main/docs/linux_build_instructions.md).
+  [Checking out and building Chromium for Linux](https://chromium.googlesource.com/chromium/src/+/main/docs/linux/build_instructions.md).
   Follow the instructions up to "Setting up the build," then stop and follow our
   instructions below. Don't build Chromium yet.
 
@@ -120,7 +120,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
   cd $HOME/chromium/src
   source $HOME/nativelink-reclient/.env.local
   rm -rf out
-  gn gen --args="use_remoteexec=true is_debug=false is_component_build=true symbol_level=0 rbe_cfg_dir=\"../../buildtools/reclient_cfgs\"" out/Default
+  gn gen --args="use_remoteexec=true is_debug=false is_component_build=true symbol_level=0 reclient_cfg_dir=\"../../buildtools/reclient_cfgs\"" out/Default
   autoninja -C out/Default chrome
   ```
 
@@ -249,7 +249,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
   cd $HOME/chromium/src
   source $HOME/nativelink-reclient/.env.local
   rm -rf out
-  gn gen --args="use_remoteexec=true is_debug=false is_component_build=true symbol_level=0 rbe_cfg_dir=\"../../buildtools/reclient_cfgs\"" out/Default
+  gn gen --args="use_remoteexec=true is_debug=false is_component_build=true symbol_level=0 reclient_cfg_dir=\"../../buildtools/reclient_cfgs\"" out/Default
   autoninja -C out/Default chrome
   ```
 

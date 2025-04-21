@@ -16,16 +16,15 @@ use core::panic;
 use std::any::Any;
 use std::cell::RefCell;
 use std::clone::Clone;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::mem::ManuallyDrop;
 use std::pin::Pin;
-use std::ptr::from_ref;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::Future;
-use nativelink_error::{make_err, Code, Error};
+use nativelink_error::{Code, Error, make_err};
 use pin_project_lite::pin_project;
 use tracing::instrument::Instrumented;
 use tracing::{Instrument, Span};
@@ -40,10 +39,12 @@ use crate::background_spawn;
 /// data; we can use these symbols to let one module set the data
 /// and tie the data to a symbol and another module read the data
 /// with the symbol, without the two modules knowing about each other.
+///
+/// Safety: The symbol name must be globally unique.
 #[macro_export]
-macro_rules! make_symbol {
+macro_rules! unsafe_make_symbol {
     ($name:ident, $type:ident) => {
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         #[used]
         pub static $name: $crate::origin_context::NLSymbol<$type> =
             $crate::origin_context::NLSymbol {
@@ -55,8 +56,10 @@ macro_rules! make_symbol {
 
 // Symbol that represents the identity of the origin of a request.
 // See: IdentityHeaderSpec for details.
-make_symbol!(ORIGIN_IDENTITY, String);
+// Safety: There is no other symbol named `ORIGIN_IDENTITY`.
+unsafe_make_symbol!(ORIGIN_IDENTITY, String);
 
+#[derive(Debug)]
 pub struct NLSymbol<T: Send + Sync + 'static> {
     pub name: &'static str,
     pub _phantom: std::marker::PhantomData<T>,
@@ -70,34 +73,33 @@ impl<T: Send + Sync + 'static> Symbol for NLSymbol<T> {
     }
 }
 
-pub type RawSymbol = std::os::raw::c_void;
-
 pub trait Symbol {
     type Type: 'static;
 
     fn name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
+}
 
-    fn as_ptr(&'static self) -> *const RawSymbol {
-        from_ref::<Self>(self).cast::<RawSymbol>()
+/// Simple wrapper around a symbol address.
+///
+/// By using an address rather than a pointer, we can ensure that the struct
+/// is thread-safe and avoids any potential unsoundness from dereferencing a
+/// pointer.
+#[derive(Debug, Eq, PartialEq, Hash, Clone, Copy)]
+#[repr(transparent)]
+pub struct SymbolAddress(usize);
+
+impl SymbolAddress {
+    pub fn from_ptr<T: ?Sized>(ptr: *const T) -> Self {
+        Self(ptr.addr())
     }
 }
 
-/// Simple wrapper around a raw symbol pointer.
-/// This allows us to bypass the unsafe undefined behavior check
-/// when using raw pointers by manually implementing Send and Sync.
-#[derive(Eq, PartialEq, Hash, Clone)]
-#[repr(transparent)]
-pub struct RawSymbolWrapper(pub *const RawSymbol);
-
-unsafe impl Send for RawSymbolWrapper {}
-unsafe impl Sync for RawSymbolWrapper {}
-
 /// Context used to store data about the origin of a request.
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct OriginContext {
-    data: HashMap<RawSymbolWrapper, Arc<dyn Any + Send + Sync + 'static>>,
+    data: HashMap<SymbolAddress, Arc<dyn Any + Send + Sync + 'static>>,
 }
 
 impl OriginContext {
@@ -112,7 +114,7 @@ impl OriginContext {
         symbol: &'static impl Symbol<Type = T>,
         cb: impl FnOnce(Option<Arc<T>>) -> Option<Arc<T>>,
     ) {
-        let entry = self.data.entry(RawSymbolWrapper(symbol.as_ptr()));
+        let entry = self.data.entry(SymbolAddress::from_ptr(symbol));
         let old_value = match &entry {
             Entry::Occupied(data) => Arc::downcast(data.get().clone()).ok(),
             Entry::Vacant(_) => None,
@@ -135,7 +137,7 @@ impl OriginContext {
         symbol: &'static impl Symbol<Type = T>,
         value: Arc<T>,
     ) -> Option<Arc<dyn Any + Send + Sync + 'static>> {
-        self.data.insert(RawSymbolWrapper(symbol.as_ptr()), value)
+        self.data.insert(SymbolAddress::from_ptr(symbol), value)
     }
 
     /// Gets the value current set for a given symbol on the context.
@@ -145,7 +147,7 @@ impl OriginContext {
         symbol: &'static impl Symbol<Type = T>,
     ) -> Result<Option<Arc<T>>, Error> {
         self.data
-            .get(&RawSymbolWrapper(symbol.as_ptr()))
+            .get(&SymbolAddress::from_ptr(symbol))
             .map_or(Ok(None), |value| {
                 Arc::downcast::<T>(value.clone()).map_or_else(
                     |_| {
@@ -211,6 +213,7 @@ impl OriginContext {
 }
 
 /// Static struct to interact with the active global context.
+#[derive(Debug, Clone, Copy)]
 pub struct ActiveOriginContext;
 
 impl ActiveOriginContext {
@@ -361,7 +364,7 @@ impl<T> ContextAwareFuture<T> {
 
     #[must_use = "futures do nothing unless you `.await` or poll them"]
     #[inline]
-    pub(crate) fn new(context: Option<Arc<OriginContext>>, inner: Instrumented<T>) -> Self {
+    pub(crate) const fn new(context: Option<Arc<OriginContext>>, inner: Instrumented<T>) -> Self {
         Self {
             inner: ManuallyDrop::new(inner),
             context,

@@ -4,7 +4,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    flake-utils.url = "github:numtide/flake-utils";
     git-hooks = {
       url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -20,7 +19,6 @@
       # TODO(SchahinRohani): Use a specific commit hash until nix2container is stable.
       url = "github:nlewo/nix2container/cc96df7c3747c61c584d757cfc083922b4f4b33e";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
     };
   };
 
@@ -46,6 +44,18 @@
         ./tools/nixos/flake-module.nix
         ./flake-module.nix
       ];
+      flake = {
+        flakeModules = {
+          default = ./flake-module.nix;
+          darwin = ./tools/darwin/flake-module.nix;
+          lre = ./local-remote-execution/flake-module.nix;
+          nixos = ./tools/nixos/flake-module.nix;
+        };
+        overlays = {
+          lre = import ./local-remote-execution/overlays/default.nix {inherit nix2container;};
+          tools = import ./tools/public/default.nix {inherit nix2container;};
+        };
+      };
       perSystem = {
         config,
         pkgs,
@@ -89,16 +99,16 @@
           linkerPath =
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
-            else "${pkgs.llvmPackages_19.lld}/bin/ld.lld";
+            else "${pkgs.llvmPackages_20.lld}/bin/ld.lld";
 
           linkerEnvVar = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER";
         in
           {
             inherit src;
-            stdenv =
-              if isLinuxTarget
-              then p.pkgsMusl.stdenv
-              else p.stdenv;
+            stdenv = q:
+              if q.stdenv.targetPlatform.isLinux
+              then q.pkgsMusl.stdenv
+              else q.stdenv;
             strictDeps = true;
             buildInputs =
               [p.cacert]
@@ -110,7 +120,7 @@
               (
                 if isLinuxBuild
                 then [pkgs.mold]
-                else [pkgs.llvmPackages_19.lld]
+                else [pkgs.llvmPackages_20.lld]
               )
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
                 p.darwin.apple_sdk.frameworks.Security
@@ -146,14 +156,6 @@
         # darwin targets which are only buildable via native compilation.
         nativelink-aarch64-linux = nativelinkFor pkgs.pkgsCross.aarch64-multiplatform-musl;
         nativelink-x86_64-linux = nativelinkFor pkgs.pkgsCross.musl64;
-
-        nativelink-debug = (craneLibFor pkgs).buildPackage ((commonArgsFor pkgs)
-          // {
-            cargoArtifacts = cargoArtifactsFor pkgs;
-            CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static --cfg tokio_unstable";
-            CARGO_PROFILE = "smol";
-            cargoExtraArgs = "--features enable_tokio_console";
-          });
 
         nativelink-is-executable-test = pkgs.callPackage ./tools/nativelink-is-executable-test.nix {inherit nativelink;};
 
@@ -299,7 +301,6 @@
           inherit system;
           overlays = [
             self.overlays.lre
-            (import ./tools/nixpkgs-disable-ratehammering-pulumi-tests.nix)
             self.overlays.tools
             (import rust-overlay)
             (import ./tools/rust-overlay-cut-libsecret.nix)
@@ -321,7 +322,6 @@
               nativelink
               nativelinkCoverageForHost
               nativelink-aarch64-linux
-              nativelink-debug
               nativelink-image
               nativelink-is-executable-test
               nativelink-worker-init
@@ -342,6 +342,14 @@
             nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
+            pyroaring = pkgs.callPackage ./tools/buildstream/pyroaring.nix {pythonPkgs = pkgs.python312Packages;};
+            bst = pkgs.callPackage ./tools/buildstream/bst.nix {
+              inherit pkgs pyroaring;
+              pythonPkgs = pkgs.python312Packages;
+            };
+            buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
+              inherit nativelink bst;
+            };
           }
           // (
             # It's not possible to crosscompile to darwin, not even between
@@ -373,7 +381,7 @@
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
-        local-remote-execution.settings = {
+        lre = {
           Env = with pkgs.lre;
             if pkgs.stdenv.isDarwin
             then lre-rs.meta.Env # C++ doesn't support Darwin yet.
@@ -383,18 +391,16 @@
             then "macos"
             else "linux";
         };
-        nixos.settings = {
-          path = with pkgs; [
-            "/run/current-system/sw/bin"
-            "${binutils.bintools}/bin"
-            "${uutils-coreutils-noprefix}/bin"
-            "${pkgs.lre.clang}/bin"
-            "${git}/bin"
-            "${python3}/bin"
-          ];
-        };
+        nixos.path = with pkgs; [
+          "/run/current-system/sw/bin"
+          "${binutils.bintools}/bin"
+          "${uutils-coreutils-noprefix}/bin"
+          "${pkgs.lre.clang}/bin"
+          "${git}/bin"
+          "${python3}/bin"
+        ];
         devShells.default = pkgs.mkShell {
-          nativeBuildInputs = let
+          packages = let
             bazel = pkgs.writeShellScriptBin "bazel" ''
               unset TMPDIR TMP
               exec ${pkgs.bazelisk}/bin/bazelisk "$@"
@@ -409,6 +415,7 @@
               bazel
               pkgs.lre.stable-rust
               pkgs.lre.lre-rs.lre-rs-configs-gen
+              pkgs.rust-analyzer
 
               ## Infrastructure
               pkgs.awscli2
@@ -425,7 +432,7 @@
               pkgs.kind
               pkgs.tektoncd-cli
               pkgs.pulumi
-              pkgs.pulumiPackages.pulumi-language-go
+              pkgs.pulumiPackages.pulumi-go
               pkgs.fluxcd
               pkgs.go
               pkgs.kustomize
@@ -463,20 +470,21 @@
               # development shell.
               ${config.pre-commit.installationScript}
 
-              # Generate lre.bazelrc which configures LRE toolchains when
+              # Generate local-remote-execution.bazelrc which configures LRE toolchains when
               # running in the nix environment.
-              ${config.local-remote-execution.installationScript}
+              ${config.lre.installationScript}
 
               # Generate nativelink.bazelrc which gives Bazel invocations access
               # to NativeLink's read-only cache.
               ${config.nativelink.installationScript}
 
-              # If on NixOS, generate nixos.bazelrc which adds the required
+              # If on NixOS, generate nixos.bazelrc, which adds the required
               # NixOS binary paths to the bazel environment.
-              if [ -e /etc/nixos ]; then
-                ${config.nixos.installationScript}
-                export CC=customClang
-              fi
+              ${config.nixos.installationScript}
+
+              # If on Darwin, generate darwin.bazelrc, which configures darwin
+              # libs and frameworks.
+              ${config.darwin.installationScript}
 
               # The Bazel and Cargo builds in nix require a Clang toolchain.
               # TODO(aaronmondal): The Bazel build currently uses the
@@ -490,24 +498,11 @@
               export PATH=$HOME/.deno/bin:$PATH
               deno types > web/platform/utils/deno.d.ts
             ''
-            + (pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-              # On Darwin generate darwin.bazelrc which configures
-              # darwin libs & frameworks when running in the nix environment.
-              ${config.darwin.installationScript}
-            '');
+            # TODO(aaronmondal): Generalize this.
+            + pkgs.lib.optionalString (system == "x86_64-linux") ''
+              export CC_x86_64_unknown_linux_gnu=customClang
+            '';
         };
-      };
-    }
-    // {
-      flakeModule = {
-        default = ./flake-module.nix;
-        darwin = ./tools/darwin/flake-module.nix;
-        local-remote-execution = ./local-remote-execution/flake-module.nix;
-        nixos = ./tools/nixos/flake-module.nix;
-      };
-      overlays = {
-        lre = import ./local-remote-execution/overlays/default.nix {inherit nix2container;};
-        tools = import ./tools/public/default.nix {inherit nix2container;};
       };
     };
 }

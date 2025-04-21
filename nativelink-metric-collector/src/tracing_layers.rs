@@ -22,9 +22,9 @@ use parking_lot::Mutex;
 use tracing::span::Attributes;
 use tracing::subscriber::Interest;
 use tracing::{Event, Id, Metadata, Subscriber};
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::SpanRef;
-use tracing_subscriber::Layer;
 
 use crate::metrics_collection::{
     CollectedMetricChildren, CollectedMetricPrimitive, CollectedMetrics, RootMetricCollectedMetrics,
@@ -34,6 +34,7 @@ use crate::metrics_visitors::{MetricDataVisitor, SpanFields};
 /// The layer that is given to `tracing` to collect metrics.
 /// The output of the metrics will be populated in the `root_collected_metrics`
 /// field.
+#[derive(Debug)]
 pub struct MetricsCollectorLayer<S> {
     spans: Mutex<HashMap<Id, SpanFields>>,
     root_collected_metrics: Arc<Mutex<RootMetricCollectedMetrics>>,

@@ -16,7 +16,6 @@
 
 import argparse
 import os
-from pathlib import Path
 
 _HEADER = """\
 // Copyright 2022 The NativeLink Authors. All rights reserved.
@@ -38,11 +37,14 @@ _HEADER = """\
 // `bazel run nativelink-proto:update_protos`
 
 #![allow(
+    unknown_lints,
+    unused_qualifications,
     clippy::default_trait_access,
     clippy::doc_lazy_continuation,
     clippy::doc_markdown,
-    clippy::doc_markdown,
     clippy::large_enum_variant,
+    clippy::missing_const_for_fn,
+    clippy::doc_overindented_list_items,
     rustdoc::invalid_html_tags
 )]
 """

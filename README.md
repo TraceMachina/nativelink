@@ -79,7 +79,7 @@ curl -O \
 docker run \
     -v $(pwd)/basic_cas.json5:/config \
     -p 50051:50051 \
-    ghcr.io/tracemachina/nativelink:v0.5.4 \
+    ghcr.io/tracemachina/nativelink:v0.6.0 \
     config
 ```
 
@@ -96,7 +96,7 @@ Invoke-WebRequest `
 docker run `
     -v ${PWD}/basic_cas.json5:/config `
     -p 50051:50051 `
-    ghcr.io/tracemachina/nativelink:v0.5.4 `
+    ghcr.io/tracemachina/nativelink:v0.6.0 `
     config
 ```
 
@@ -139,6 +139,6 @@ Visit our [Contributing](https://github.com/tracemachina/nativelink/blob/main/CO
 
 ## 📜 License
 
-Copyright 2020–2024 Trace Machina, Inc.
+Copyright 2020–2025 Trace Machina, Inc.
 
 Licensed under the Apache 2.0 License, SPDX identifier `Apache-2.0`.

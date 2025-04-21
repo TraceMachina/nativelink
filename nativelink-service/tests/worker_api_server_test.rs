@@ -30,7 +30,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_server::WorkerApi;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, update_for_worker, ConnectWorkerRequest, ExecuteResult, KeepAliveRequest,
+    ConnectWorkerRequest, ExecuteResult, KeepAliveRequest, execute_result, update_for_worker,
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
@@ -46,7 +46,7 @@ use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use pretty_assertions::assert_eq;
 use tokio::join;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 use tokio_stream::StreamExt;
 use tonic::Request;
 
@@ -72,7 +72,7 @@ struct MockWorkerStateManager {
 }
 
 impl MockWorkerStateManager {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
         Self {
@@ -83,7 +83,7 @@ impl MockWorkerStateManager {
         }
     }
 
-    pub async fn expect_update_operation(
+    pub(crate) async fn expect_update_operation(
         &self,
         result: Result<(), Error>,
     ) -> (OperationId, WorkerId, UpdateOperationType) {
@@ -132,8 +132,11 @@ struct TestContext {
     worker_id: WorkerId,
 }
 
-#[allow(clippy::unnecessary_wraps)]
-fn static_now_fn() -> Result<Duration, Error> {
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "`setup_api_server` requires a method that returns a `Result`"
+)]
+const fn static_now_fn() -> Result<Duration, Error> {
     Ok(Duration::from_secs(BASE_NOW_S))
 }
 

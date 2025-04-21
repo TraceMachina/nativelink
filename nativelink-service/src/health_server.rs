@@ -22,7 +22,7 @@ use axum::body::Body;
 use bytes::Bytes;
 use futures::StreamExt;
 use http_body_util::Full;
-use hyper::header::{HeaderValue, CONTENT_TYPE};
+use hyper::header::{CONTENT_TYPE, HeaderValue};
 use hyper::{Request, Response, StatusCode};
 use nativelink_util::health_utils::{
     HealthRegistry, HealthStatus, HealthStatusDescription, HealthStatusReporter,
@@ -34,13 +34,13 @@ use tracing::error_span;
 /// Content type header value for JSON.
 const JSON_CONTENT_TYPE: &str = "application/json; charset=utf-8";
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct HealthServer {
     health_registry: HealthRegistry,
 }
 
 impl HealthServer {
-    pub fn new(health_registry: HealthRegistry) -> Self {
+    pub const fn new(health_registry: HealthRegistry) -> Self {
         Self { health_registry }
     }
 }

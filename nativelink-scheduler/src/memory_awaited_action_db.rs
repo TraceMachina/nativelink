@@ -19,7 +19,7 @@ use std::sync::Arc;
 use async_lock::Mutex;
 use futures::{FutureExt, Stream};
 use nativelink_config::stores::EvictionPolicy;
-use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId,
@@ -29,12 +29,12 @@ use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::{mpsc, watch, Notify};
-use tracing::{event, Level};
+use tokio::sync::{Notify, mpsc, watch};
+use tracing::{Level, event};
 
 use crate::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
-    SortedAwaitedActionState, CLIENT_KEEPALIVE_DURATION,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
+    SortedAwaitedAction, SortedAwaitedActionState,
 };
 
 /// Number of events to process per cycle.
@@ -53,14 +53,17 @@ struct ClientAwaitedAction {
 }
 
 impl ClientAwaitedAction {
-    pub fn new(operation_id: OperationId, event_tx: mpsc::UnboundedSender<ActionEvent>) -> Self {
+    pub(crate) const fn new(
+        operation_id: OperationId,
+        event_tx: mpsc::UnboundedSender<ActionEvent>,
+    ) -> Self {
         Self {
             operation_id,
             event_tx,
         }
     }
 
-    pub fn operation_id(&self) -> &OperationId {
+    pub(crate) const fn operation_id(&self) -> &OperationId {
         &self.operation_id
     }
 }
@@ -68,9 +71,9 @@ impl ClientAwaitedAction {
 impl Drop for ClientAwaitedAction {
     fn drop(&mut self) {
         // If we failed to send it means noone is listening.
-        let _ = self.event_tx.send(ActionEvent::ClientDroppedOperation(
+        drop(self.event_tx.send(ActionEvent::ClientDroppedOperation(
             self.operation_id.clone(),
-        ));
+        )));
     }
 }
 
@@ -100,6 +103,7 @@ pub(crate) enum ActionEvent {
 
 /// Information required to track an individual client
 /// keep alive config and state.
+#[derive(Debug)]
 struct ClientInfo<I: InstantWrapper, NowFn: Fn() -> I> {
     /// The client operation id.
     client_operation_id: OperationId,
@@ -112,6 +116,7 @@ struct ClientInfo<I: InstantWrapper, NowFn: Fn() -> I> {
 }
 
 /// Subscriber that clients can be used to monitor when `AwaitedActions` change.
+#[derive(Debug)]
 pub struct MemoryAwaitedActionSubscriber<I: InstantWrapper, NowFn: Fn() -> I> {
     /// The receiver to listen for changes.
     awaited_action_rx: watch::Receiver<AwaitedAction>,
@@ -175,9 +180,9 @@ where
                 if client_info.last_keep_alive.elapsed() > CLIENT_KEEPALIVE_DURATION {
                     client_info.last_keep_alive = (client_info.now_fn)();
                     // Failing to send just means our receiver dropped.
-                    let _ = client_info.event_tx.send(ActionEvent::ClientKeepAlive(
+                    drop(client_info.event_tx.send(ActionEvent::ClientKeepAlive(
                         client_info.client_operation_id.clone(),
-                    ));
+                    )));
                 }
                 let sleep_fut = (client_info.now_fn)().sleep(CLIENT_KEEPALIVE_DURATION);
                 tokio::select! {
@@ -214,7 +219,7 @@ where
 /// return early from a function.
 struct NoEarlyReturn;
 
-#[derive(Default, MetricsComponent)]
+#[derive(Debug, Default, MetricsComponent)]
 struct SortedAwaitedActions {
     #[metric(group = "unknown")]
     unknown: BTreeSet<SortedAwaitedAction>,
@@ -229,7 +234,7 @@ struct SortedAwaitedActions {
 }
 
 impl SortedAwaitedActions {
-    fn btree_for_state(&mut self, state: &ActionStage) -> &mut BTreeSet<SortedAwaitedAction> {
+    const fn btree_for_state(&mut self, state: &ActionStage) -> &mut BTreeSet<SortedAwaitedAction> {
         match state {
             ActionStage::Unknown => &mut self.unknown,
             ActionStage::CacheCheck => &mut self.cache_check,
@@ -292,7 +297,7 @@ impl SortedAwaitedActions {
 }
 
 /// The database for storing the state of all actions.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
     /// A lookup table to lookup the state of an action by its client operation id.
     #[metric(group = "client_operation_ids")]
@@ -479,7 +484,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         &self,
         start: Bound<&OperationId>,
         end: Bound<&OperationId>,
-    ) -> impl Iterator<Item = (&'_ OperationId, MemoryAwaitedActionSubscriber<I, NowFn>)> {
+    ) -> impl Iterator<Item = (&'_ OperationId, MemoryAwaitedActionSubscriber<I, NowFn>)>
+    + use<'_, I, NowFn> {
         self.operation_id_to_awaited_action
             .range((start, end))
             .map(|(operation_id, tx)| {
@@ -499,19 +505,19 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             .map(|tx| MemoryAwaitedActionSubscriber::<I, NowFn>::new(tx.subscribe()))
     }
 
-    fn get_range_of_actions<'a, 'b>(
-        &'a self,
+    fn get_range_of_actions(
+        &self,
         state: SortedAwaitedActionState,
-        range: impl RangeBounds<SortedAwaitedAction> + 'b,
+        range: impl RangeBounds<SortedAwaitedAction>,
     ) -> impl DoubleEndedIterator<
         Item = Result<
             (
-                &'a SortedAwaitedAction,
+                &SortedAwaitedAction,
                 MemoryAwaitedActionSubscriber<I, NowFn>,
             ),
             Error,
         >,
-    > + 'a {
+    > {
         let btree = match state {
             SortedAwaitedActionState::CacheCheck => &self.sorted_action_info_hash_keys.cache_check,
             SortedAwaitedActionState::Queued => &self.sorted_action_info_hash_keys.queued,
@@ -638,7 +644,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         // Notify all listeners of the new state and ignore if no one is listening.
         // Note: Do not use `.send()` as it will not update the state if all listeners
         // are dropped.
-        let _ = tx.send_replace(new_awaited_action);
+        drop(tx.send_replace(new_awaited_action));
 
         Ok(())
     }
@@ -819,7 +825,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct MemoryAwaitedActionDb<I: InstantWrapper, NowFn: Fn() -> I> {
     #[metric]
     inner: Arc<Mutex<AwaitedActionDbImpl<I, NowFn>>>,

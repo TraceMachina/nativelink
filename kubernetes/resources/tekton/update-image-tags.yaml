@@ -15,12 +15,15 @@ spec:
     - name: imageName
     - name: imageTag
     - name: configMapName
+    - name: configMapNamespace
   steps:
     - name: update-configmap
       image: bitnami/kubectl
       env:
         - name: CM_NAME
           value: "$(params.configMapName)"
+        - name: CM_NAMESPACE
+          value: "$(params.configMapNamespace)"
       script: |
         #!/bin/bash
         set -e
@@ -30,10 +33,10 @@ spec:
         TRANSFORMED_KEY=$(echo "$(params.imageName)" | tr '[:lower:]' '[:upper:]' | tr '-' '_')_TAG
 
         # Check if the ConfigMap exists
-        if kubectl get configmap $CM_NAME &>/dev/null; then
+        if kubectl get configmap -n $CM_NAMESPACE $CM_NAME &>/dev/null; then
           # ConfigMap exists, update it
-          kubectl patch configmap $CM_NAME --type=json -p='[{"op": "add", "path": "/data/'$TRANSFORMED_KEY'", "value": "$(params.imageTag)"}]'
+          kubectl patch configmap -n $CM_NAMESPACE $CM_NAME --type=json -p='[{"op": "add", "path": "/data/'$TRANSFORMED_KEY'", "value": "$(params.imageTag)"}]'
         else
           # ConfigMap doesn't exist, create it
-          kubectl create configmap $CM_NAME --from-literal=$TRANSFORMED_KEY=$(params.imageTag)
+          kubectl create configmap -n $CM_NAMESPACE $CM_NAME --from-literal=$TRANSFORMED_KEY=$(params.imageTag)
         fi

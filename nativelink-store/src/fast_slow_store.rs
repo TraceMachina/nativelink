@@ -14,6 +14,7 @@
 
 use std::borrow::BorrowMut;
 use std::cmp::{max, min};
+use std::ffi::OsString;
 use std::ops::Range;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,13 +26,13 @@ use nativelink_config::stores::{FastSlowSpec, StoreDirection};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::fs;
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    slow_update_store_with_file, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
-    UploadSizeInfo,
+    Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
+    slow_update_store_with_file,
 };
 
 // TODO(blaise.bruer) This store needs to be evaluated for more efficient memory usage,
@@ -41,7 +42,7 @@ use nativelink_util::store_trait::{
 // client to hang up while the data is buffered. An alternative is to possibly make a
 // "BufferedStore" that could be placed on the "slow" store that would hang up early
 // if data is in the buffer.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct FastSlowStore {
     #[metric(group = "fast_store")]
     fast_store: Store,
@@ -66,11 +67,11 @@ impl FastSlowStore {
         })
     }
 
-    pub fn fast_store(&self) -> &Store {
+    pub const fn fast_store(&self) -> &Store {
         &self.fast_store
     }
 
-    pub fn slow_store(&self) -> &Store {
+    pub const fn slow_store(&self) -> &Store {
         &self.slow_store
     }
 
@@ -198,9 +199,9 @@ impl StoreDriver for FastSlowStore {
                     .err_tip(|| "Failed to read buffer in fastslow store")?;
                 if buffer.is_empty() {
                     // EOF received.
-                    fast_tx.send_eof().err_tip(|| {
-                        "Failed to write eof to fast store in fast_slow store update"
-                    })?;
+                    fast_tx.send_eof().err_tip(
+                        || "Failed to write eof to fast store in fast_slow store update",
+                    )?;
                     slow_tx
                         .send_eof()
                         .err_tip(|| "Failed to write eof to writer in fast_slow store update")?;
@@ -247,9 +248,10 @@ impl StoreDriver for FastSlowStore {
     async fn update_with_whole_file(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        mut file: fs::ResumeableFileSlot,
+        path: OsString,
+        mut file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
+    ) -> Result<Option<fs::FileSlot>, Error> {
         if self
             .fast_store
             .optimized_for(StoreOptimizations::FileUpdates)
@@ -277,7 +279,7 @@ impl StoreDriver for FastSlowStore {
             }
             return self
                 .fast_store
-                .update_with_whole_file(key, file, upload_size)
+                .update_with_whole_file(key, path, file, upload_size)
                 .await;
         }
 
@@ -308,7 +310,7 @@ impl StoreDriver for FastSlowStore {
             }
             return self
                 .slow_store
-                .update_with_whole_file(key, file, upload_size)
+                .update_with_whole_file(key, path, file, upload_size)
                 .await;
         }
 
@@ -447,7 +449,7 @@ impl StoreDriver for FastSlowStore {
     }
 }
 
-#[derive(Default, MetricsComponent)]
+#[derive(Debug, Default, MetricsComponent)]
 struct FastSlowStoreMetrics {
     #[metric(help = "Hit count for the fast store")]
     fast_store_hit_count: AtomicU64,

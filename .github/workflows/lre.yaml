@@ -20,35 +20,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-15]
         toolchain: [lre-cc, lre-rs]
         exclude:
-          - os: macos-14
+          - os: macos-15
             toolchain: lre-cc
     name: Local / ${{ matrix.toolchain }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: >- # v4.1.1
-          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Install Nix
-        uses: >- # v10
-          DeterminateSystems/nix-installer-action@de22e16c4711fca50c816cc9081563429d1cf563
-
-      - name: Free disk space
-        uses: >- # v2.0.0
-          endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
-        with:
-          remove_android: true
-          remove_dotnet: true
-          remove_haskell: true
-          remove_tool_cache: false
-
-      - name: Cache Nix derivations
-        uses: >- # v4
-          DeterminateSystems/magic-nix-cache-action@fc6aaceb40b9845a02b91e059ec147e78d1b4e41
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
 
       - name: Build example with ${{ matrix.toolchain }} toolchain
         env:
@@ -70,25 +56,11 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: >- # v4.1.1
-          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Install Nix
-        uses: >- # v10
-          DeterminateSystems/nix-installer-action@de22e16c4711fca50c816cc9081563429d1cf563
-
-      - name: Free disk space
-        uses: >- # v2.0.0
-          endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
-        with:
-          remove_android: true
-          remove_dotnet: true
-          remove_haskell: true
-          remove_tool_cache: false
-
-      - name: Cache Nix derivations
-        uses: >- # v4
-          DeterminateSystems/magic-nix-cache-action@fc6aaceb40b9845a02b91e059ec147e78d1b4e41
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
 
       - name: Start Kubernetes cluster
         run: >
@@ -123,7 +95,7 @@ jobs:
                 value: ${COMMIT}
             target:
               kind: GitRepository
-              name: nativelink
+              name: nativelink-infra
           - patch: |-
               - op: replace
                 path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
@@ -152,7 +124,7 @@ jobs:
       - name: Wait for Tekton resources
         run: >
           nix develop --impure --command
-          bash -c "flux reconcile kustomization -n default \
+          bash -c "flux reconcile kustomization \
             --timeout=15m \
             nativelink-tekton-resources"
 
@@ -161,50 +133,54 @@ jobs:
           TOOLCHAIN: ${{ matrix.toolchain }}
         run: >
           nix develop --impure --command
-          bash -c "flux reconcile kustomization -n default \
+          bash -c "flux reconcile kustomization \
             --timeout=15m \
             nativelink-alert-core && \
-          flux reconcile kustomization -n default \
+          flux reconcile kustomization \
             --timeout=15m \
             nativelink-alert-worker-init && \
-          flux reconcile kustomization -n default \
+          flux reconcile kustomization \
             --timeout=15m \
             nativelink-alert-${TOOLCHAIN}"
 
       - name: Trigger pipelines
+        env:
+          REPO_URL: ${{ github.event.pull_request.head.repo.clone_url || format('https://github.com/{0}.git', github.repository) }}
+          BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
         run: |
-          nix develop --impure --command bash -c 'cat > dummy-repo.yaml << EOF
+          nix develop --impure --command bash -c 'cat > nativelink-repo.yaml << EOF
           apiVersion: source.toolkit.fluxcd.io/v1
           kind: GitRepository
           metadata:
-            name: dummy-repository
+            name: nativelink
             namespace: default
           spec:
             interval: 2m
-            url: https://github.com/TraceMachina/nativelink
+            url: ${REPO_URL}
             ref:
-              branch: main
+              branch: ${BRANCH}
           EOF
-          kubectl apply -f dummy-repo.yaml &&
-          rm dummy-repo.yaml'
+          kubectl apply -f nativelink-repo.yaml &&
+          rm nativelink-repo.yaml'
 
       - name: Wait for Tekton pipelines
         run: >
           nix develop --impure --command bash << 'EOF'
-            until pr=$(kubectl get pipelinerun -o name | \
+            until pr=$(kubectl get pipelinerun -n ci -o name | \
                        grep rebuild-nativelink-run-); do
               echo "Waiting for pipeline to be created..."
               sleep 1
             done
 
-            echo "Found pipeline: $pr"
-            kubectl wait --for=create $pr
+            echo "Found pipelinerun: $pr"
+            kubectl wait --for=create -n ci $pr
 
-            echo "Waiting for pipeline to succeed..."
+            echo "Waiting for pipelinerun to succeed..."
             kubectl wait \
               --for=condition=Succeeded \
               --timeout=45m \
               pipelinerun \
+              -n ci \
               -l tekton.dev/pipeline=rebuild-nativelink
           EOF
 

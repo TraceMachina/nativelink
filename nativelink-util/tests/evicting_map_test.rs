@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -354,11 +354,6 @@ async fn unref_called_on_replace() -> Result<(), Error> {
 
         fn is_empty(&self) -> bool {
             unreachable!("We are not testing this functionality");
-        }
-
-        async fn touch(&self) -> bool {
-            // Do nothing. We are not testing this functionality.
-            true
         }
 
         async fn unref(&self) {

@@ -16,7 +16,7 @@ use std::task::Poll;
 
 use bytes::{Bytes, BytesMut};
 use futures::poll;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use pretty_assertions::assert_eq;
@@ -278,11 +278,13 @@ async fn bind_buffered_test() -> Result<(), Error> {
         async move {
             let result = tx_bind.bind_buffered(&mut rx_bind).await;
             assert!(result.is_err(), "Should be error, got: {result:?}");
-            assert!(result
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("Sender dropped before sending EOF"));
+            assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("Sender dropped before sending EOF")
+            );
             Ok(())
         },
         async move {

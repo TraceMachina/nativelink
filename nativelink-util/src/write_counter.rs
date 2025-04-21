@@ -30,7 +30,7 @@ pin_project! {
 }
 
 impl<T: AsyncWrite> WriteCounter<T> {
-    pub fn new(inner: T) -> Self {
+    pub const fn new(inner: T) -> Self {
         WriteCounter {
             inner,
             bytes_written: 0,
@@ -38,20 +38,20 @@ impl<T: AsyncWrite> WriteCounter<T> {
         }
     }
 
-    pub fn inner_ref(&self) -> &T {
+    pub const fn inner_ref(&self) -> &T {
         &self.inner
     }
 
-    pub fn inner_mut(&mut self) -> &mut T {
+    pub const fn inner_mut(&mut self) -> &mut T {
         &mut self.inner
     }
 
     /// Returns the number of bytes written.
-    pub fn get_bytes_written(&self) -> u64 {
+    pub const fn get_bytes_written(&self) -> u64 {
         self.bytes_written
     }
 
-    pub fn did_fail(&self) -> bool {
+    pub const fn did_fail(&self) -> bool {
         self.failed
     }
 }
@@ -65,8 +65,8 @@ impl<T: AsyncWrite> AsyncWrite for WriteCounter<T> {
         let me = self.project();
         let result = me.inner.poll_write(cx, buf);
         match &result {
-            Poll::Ready(Result::Ok(sz)) => *me.bytes_written += *sz as u64,
-            Poll::Ready(Result::Err(_)) => *me.failed = true,
+            Poll::Ready(Ok(sz)) => *me.bytes_written += *sz as u64,
+            Poll::Ready(Err(_)) => *me.failed = true,
             _ => {}
         }
         result

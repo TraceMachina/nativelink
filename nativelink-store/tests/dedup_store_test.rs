@@ -26,8 +26,8 @@ use rand::{Rng, SeedableRng};
 
 fn make_default_config() -> DedupSpec {
     DedupSpec {
-        index_store: StoreSpec::memory(MemorySpec::default()),
-        content_store: StoreSpec::memory(MemorySpec::default()),
+        index_store: StoreSpec::Memory(MemorySpec::default()),
+        content_store: StoreSpec::Memory(MemorySpec::default()),
         min_size: 8 * 1024,
         normal_size: 32 * 1024,
         max_size: 128 * 1024,
@@ -75,8 +75,8 @@ async fn simple_round_trip_test() -> Result<(), Error> {
 async fn check_missing_last_chunk_test() -> Result<(), Error> {
     // This is the hash & size of the last chunk item in the content_store.
     const LAST_CHUNK_HASH: &str =
-        "7c8608f5b079bef66c45bd67f7d8ede15d2e1830ea38fd8ad4c6de08b6f21a0c";
-    const LAST_CHUNK_SIZE: usize = 25779;
+        "f6a29384357a77575b0a8cc79f731a4188d0155c00d5fb9a18becd92f6d1f074";
+    const LAST_CHUNK_SIZE: usize = 10669;
 
     let content_store = MemoryStore::new(&MemorySpec::default());
     let store = DedupStore::new(
@@ -154,15 +154,15 @@ async fn fetch_part_test() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test(
-) -> Result<(), Error> {
+async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test()
+-> Result<(), Error> {
     const DATA_SIZE: usize = 30;
     const START_READ_BYTE: usize = 7;
 
     let store = DedupStore::new(
         &DedupSpec {
-            index_store: StoreSpec::memory(MemorySpec::default()),
-            content_store: StoreSpec::memory(MemorySpec::default()),
+            index_store: StoreSpec::Memory(MemorySpec::default()),
+            content_store: StoreSpec::Memory(MemorySpec::default()),
             min_size: 5,
             normal_size: 6,
             max_size: 7,
@@ -206,8 +206,8 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
 
     let store = DedupStore::new(
         &DedupSpec {
-            index_store: StoreSpec::memory(MemorySpec::default()),
-            content_store: StoreSpec::memory(MemorySpec::default()),
+            index_store: StoreSpec::Memory(MemorySpec::default()),
+            content_store: StoreSpec::Memory(MemorySpec::default()),
             min_size: 5,
             normal_size: 6,
             max_size: 7,
@@ -281,7 +281,7 @@ async fn has_checks_content_store() -> Result<(), Error> {
     let index_store = MemoryStore::new(&MemorySpec::default());
     let content_store = MemoryStore::new(&MemorySpec {
         eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
-            max_count: 10,
+            max_bytes: DATA_SIZE + 1,
             ..Default::default()
         }),
     });
@@ -306,9 +306,8 @@ async fn has_checks_content_store() -> Result<(), Error> {
         assert_eq!(size_info, Some(DATA_SIZE as u64), "Expected sizes to match");
     }
     {
-        // There will be exactly 10 entries in our content_store based on our random seed data.
-        // If we add one more it will evict a single item from that will still be indexed.
-        // By doing this, we now check that it returns false when we call `.has()`.
+        // We now add one more item to the store, which will trigger eviction of one of
+        // the existing items because max_bytes will be exceeded.
         const DATA2: &str = "1234";
         let digest2 = DigestInfo::try_new(VALID_HASH2, DATA2.len()).unwrap();
         store

@@ -18,18 +18,20 @@ use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
 use nativelink_config::stores::RefSpec;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::store_manager::StoreManager;
 
 #[repr(C, align(8))]
+#[derive(Debug)]
 struct AlignedStoreCell(UnsafeCell<Option<Store>>);
 
+#[derive(Debug)]
 struct StoreReference {
     cell: AlignedStoreCell,
     mux: Mutex<()>,
@@ -37,20 +39,20 @@ struct StoreReference {
 
 unsafe impl Sync for StoreReference {}
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct RefStore {
     #[metric(help = "The store we are referencing")]
-    ref_store_name: String,
+    name: String,
     store_manager: Weak<StoreManager>,
-    ref_store: StoreReference,
+    inner: StoreReference,
 }
 
 impl RefStore {
     pub fn new(spec: &RefSpec, store_manager: Weak<StoreManager>) -> Arc<Self> {
         Arc::new(RefStore {
-            ref_store_name: spec.name.clone(),
+            name: spec.name.clone(),
             store_manager,
-            ref_store: StoreReference {
+            inner: StoreReference {
                 mux: Mutex::new(()),
                 cell: AlignedStoreCell(UnsafeCell::new(None)),
             },
@@ -66,7 +68,7 @@ impl RefStore {
     // 3. It is likely that the internals of how Option work protect us anyway.
     #[inline]
     fn get_store(&self) -> Result<&Store, Error> {
-        let ref_store = self.ref_store.cell.0.get();
+        let ref_store = self.inner.cell.0.get();
         unsafe {
             if let Some(ref store) = *ref_store {
                 return Ok(store);
@@ -74,7 +76,7 @@ impl RefStore {
         }
         // This should protect us against multiple writers writing the same location at the same
         // time.
-        let _lock = self.ref_store.mux.lock().map_err(|e| {
+        let _lock = self.inner.mux.lock().map_err(|e| {
             make_err!(
                 Code::Internal,
                 "Failed to lock mutex in ref_store : {:?}",
@@ -85,7 +87,7 @@ impl RefStore {
             .store_manager
             .upgrade()
             .err_tip(|| "Store manager is gone")?;
-        if let Some(store) = store_manager.get_store(&self.ref_store_name) {
+        if let Some(store) = store_manager.get_store(&self.name) {
             unsafe {
                 *ref_store = Some(store);
                 return Ok((*ref_store).as_ref().unwrap());
@@ -93,7 +95,7 @@ impl RefStore {
         }
         Err(make_input_err!(
             "Failed to find store '{}' in StoreManager in RefStore",
-            self.ref_store_name
+            self.name
         ))
     }
 }

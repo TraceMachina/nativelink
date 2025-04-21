@@ -19,7 +19,7 @@ use std::time::Duration;
 
 pub use awaited_action::{AwaitedAction, AwaitedActionSortKey};
 use futures::{Future, Stream};
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{ActionInfo, ActionStage, OperationId};
 use serde::{Deserialize, Serialize};

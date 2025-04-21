@@ -22,7 +22,7 @@ use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function, ActionResult, Digest, GetActionResultRequest, UpdateActionResultRequest,
+    ActionResult, Digest, GetActionResultRequest, UpdateActionResultRequest, digest_function,
 };
 use nativelink_service::ac_server::AcServer;
 use nativelink_store::default_store_factory::store_factory;
@@ -56,7 +56,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_cas",
         store_factory(
-            &StoreSpec::memory(MemorySpec::default()),
+            &StoreSpec::Memory(MemorySpec::default()),
             &store_manager,
             None,
         )
@@ -65,7 +65,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_ac",
         store_factory(
-            &StoreSpec::memory(MemorySpec::default()),
+            &StoreSpec::Memory(MemorySpec::default()),
             &store_manager,
             None,
         )

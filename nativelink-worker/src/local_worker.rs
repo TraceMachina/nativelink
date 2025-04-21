@@ -21,19 +21,19 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
-use futures::{select, Future, FutureExt, StreamExt, TryFutureExt};
+use futures::{Future, FutureExt, StreamExt, TryFutureExt, select};
 use nativelink_config::cas_server::LocalWorkerConfig;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
+    ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
 use nativelink_util::common::fs;
-use nativelink_util::digest_hasher::{DigestHasherFunc, ACTIVE_HASHER_FUNC};
+use nativelink_util::digest_hasher::{ACTIVE_HASHER_FUNC, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -44,7 +44,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
-use tracing::{event, info_span, instrument, Level};
+use tracing::{Level, event, info_span, instrument};
 
 use crate::running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
@@ -383,6 +383,18 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
     metrics: Arc<Metrics>,
 }
 
+impl<T: WorkerApiClientTrait + std::fmt::Debug, U: RunningActionsManager + std::fmt::Debug>
+    std::fmt::Debug for LocalWorker<T, U>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalWorker")
+            .field("config", &self.config)
+            .field("running_actions_manager", &self.running_actions_manager)
+            .field("metrics", &self.metrics)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Creates a new `LocalWorker`. The `cas_store` must be an instance of
 /// `FastSlowStore` and will be checked at runtime.
 pub async fn new_local_worker(
@@ -491,6 +503,10 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         }
     }
 
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "False positive on stable, but not on nightly"
+    )]
     pub fn name(&self) -> &String {
         &self.config.name
     }
@@ -521,7 +537,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                 return Err(make_input_err!(
                     "Expected first response from scheduler to be a ConnectResult got : {:?}",
                     other
-                ))
+                ));
             }
         };
         Ok((worker_id, update_for_worker_stream))
@@ -607,7 +623,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct Metrics {
     #[metric(
         help = "Total number of actions sent to this worker to process. This does not mean it started them, it just means it received a request to execute it."
@@ -622,6 +638,10 @@ pub struct Metrics {
     )]
     preconditions: AsyncCounterWrapper,
     #[metric]
+    #[allow(
+        clippy::struct_field_names,
+        reason = "TODO Fix this. Triggers on nightly"
+    )]
     running_actions_manager_metrics: Weak<RunningActionManagerMetrics>,
 }
 

@@ -1,11 +1,13 @@
+lints.workspace = true
+
 [package]
 name = "nativelink-metric"
-version = "0.5.4"
-edition = "2021"
+version = "0.6.0"
+edition = "2024"
 
 [dependencies]
 nativelink-metric-macro-derive = { path = "nativelink-metric-macro-derive" }
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 parking_lot = "0.12.3"
 tracing = { version = "0.1.41", default-features = false }
-tokio = { version = "1.43.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
+tokio = { version = "1.44.1", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }

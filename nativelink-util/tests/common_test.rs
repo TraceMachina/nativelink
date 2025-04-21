@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use nativelink_error::{make_input_err, Error};
+use nativelink_error::{Error, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_util::common::DigestInfo;
 use pretty_assertions::assert_eq;

@@ -24,8 +24,8 @@ use fred::clients::SubscriberClient;
 use fred::error::{Error as RedisError, ErrorKind as RedisErrorKind};
 use fred::mocks::{MockCommand, Mocks};
 use fred::prelude::{Builder, Pool as RedisPool};
-use fred::types::config::{Config as RedisConfig, PerformanceConfig};
 use fred::types::Value as RedisValue;
+use fred::types::config::{Config as RedisConfig, PerformanceConfig};
 use mock_instant::global::SystemTime as MockSystemTime;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
@@ -404,8 +404,9 @@ async fn add_action_smoke_test() -> Result<(), Error> {
 
     let store = {
         let mut builder = Builder::default_centralized();
+        let mocks = Arc::clone(&mocks);
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
         let (client_pool, subscriber_client) = make_clients(builder);

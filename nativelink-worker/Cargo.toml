@@ -1,7 +1,9 @@
+lints.workspace = true
+
 [package]
 name = "nativelink-worker"
-version = "0.5.4"
-edition = "2021"
+version = "0.6.0"
+edition = "2024"
 
 [features]
 nix = []
@@ -14,28 +16,29 @@ nativelink-util = { path = "../nativelink-util" }
 nativelink-store = { path = "../nativelink-store" }
 nativelink-metric = { path = "../nativelink-metric" }
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
-bytes = { version = "1.9.0", default-features = false }
+bytes = { version = "1.10.1", default-features = false }
 filetime = "0.2.25"
 formatx = "0.2.3"
 futures = { version = "0.3.31", default-features = false }
 parking_lot = "0.12.3"
-prost = { version = "0.13.4", default-features = false }
+prost = { version = "0.13.5", default-features = false }
 relative-path = "1.9.3"
 scopeguard = { version = "1.2.0", default-features = false }
-serde = { version = "1.0.217", default-features = false }
-serde_json5 = "0.1.0"
+serde = { version = "1.0.219", default-features = false }
+serde_json5 = "0.2.1"
 shlex = { version = "1.3.0", default-features = false }
-tokio = { version = "1.43.0", features = ["process", "fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
+tokio = { version = "1.44.1", features = ["process", "fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
 tokio-stream = { version = "0.1.17", default-features = false, features = ["fs"] }
-tonic = { version = "0.12.3", features = ["gzip", "tls", "transport"], default-features = false }
+tonic = { version = "0.13.0", features = ["gzip", "tls-ring", "transport"], default-features = false }
 tracing = { version = "0.1.41", default-features = false }
-uuid = { version = "1.12.0", default-features = false, features = ["v4", "serde"] }
+uuid = { version = "1.16.0", default-features = false, features = ["v4", "serde"] }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 
-hyper = "1.5.2"
-hyper-util = "0.1.10"
+hyper = "1.6.0"
+hyper-util = "0.1.11"
 pretty_assertions = { version = "1.4.1", features = ["std"] }
-prost-types = { version = "0.13.4", default-features = false }
-rand = { version = "0.8.5", default-features = false }
+prost-types = { version = "0.13.5", default-features = false }
+rand = { version = "0.9.0", default-features = false, features = ["thread_rng"] }
+serial_test = { version = "3.2.0", features = ["async"], default-features = false }

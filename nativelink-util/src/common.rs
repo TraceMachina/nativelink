@@ -20,7 +20,7 @@ use std::io::{Cursor, Write};
 use std::ops::{Deref, DerefMut};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
@@ -29,7 +29,7 @@ use prost::Message;
 use serde::de::Visitor;
 use serde::ser::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 pub use crate::fs;
 
@@ -63,7 +63,7 @@ impl DigestInfo {
 
     pub fn try_new<T>(hash: &str, size_bytes: T) -> Result<Self, Error>
     where
-        T: TryInto<u64> + std::fmt::Display + Copy,
+        T: TryInto<u64> + fmt::Display + Copy,
     {
         let packed_hash =
             PackedHash::from_hex(hash).err_tip(|| format!("Invalid sha256 hash: {hash}"))?;
@@ -96,7 +96,7 @@ impl DigestInfo {
         &self.packed_hash
     }
 
-    pub fn set_packed_hash(&mut self, packed_hash: [u8; 32]) {
+    pub const fn set_packed_hash(&mut self, packed_hash: [u8; 32]) {
         self.packed_hash = PackedHash(packed_hash);
     }
 
@@ -129,14 +129,14 @@ struct DigestStackStringifier<'a> {
     /// - Hex is '2 * sizeof(PackedHash)'.
     /// - Digits can be at most `count_digits(u64::MAX)`.
     /// - We also have a hyphen separator.
-    buf: [u8; std::mem::size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
+    buf: [u8; size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
 }
 
 impl<'a> DigestStackStringifier<'a> {
     const fn new(digest: &'a DigestInfo) -> Self {
         DigestStackStringifier {
             digest,
-            buf: [b'-'; std::mem::size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
+            buf: [b'-'; size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
         }
     }
 
@@ -344,7 +344,9 @@ impl From<&DigestInfo> for Digest {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord,
+)]
 pub struct PackedHash([u8; 32]);
 
 const SIZE_OF_PACKED_HASH: usize = 32;
@@ -407,14 +409,14 @@ pub trait VecExt<T> {
     fn try_map<F, U>(self, f: F) -> Result<Vec<U>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized;
+        F: (Fn(T) -> Result<U, Error>) + Sized;
 }
 
 impl<T> VecExt<T> for Vec<T> {
     fn try_map<F, U>(self, f: F) -> Result<Vec<U>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized,
+        F: (Fn(T) -> Result<U, Error>) + Sized,
     {
         let mut output = Vec::with_capacity(self.len());
         for item in self {
@@ -431,14 +433,14 @@ pub trait HashMapExt<K: Eq + Hash, T, S: BuildHasher> {
     fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U, S>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized;
+        F: (Fn(T) -> Result<U, Error>) + Sized;
 }
 
 impl<K: Eq + Hash, T, S: BuildHasher + Clone> HashMapExt<K, T, S> for HashMap<K, T, S> {
     fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U, S>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized,
+        F: (Fn(T) -> Result<U, Error>) + Sized,
     {
         let mut output = HashMap::with_capacity_and_hasher(self.len(), (*self.hasher()).clone());
         for (k, v) in self {
@@ -475,4 +477,14 @@ pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::
     }
 
     Ok(buf.freeze())
+}
+
+/// Small utility to reseed the global RNG.
+/// Done this way because we use it in a macro
+/// and macro's can't load external crates.
+#[inline]
+pub fn reseed_rng_for_test() -> Result<(), Error> {
+    rand::rng()
+        .reseed()
+        .map_err(|e| make_input_err!("Could not reseed RNG - {e:?}"))
 }

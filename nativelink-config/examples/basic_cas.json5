@@ -57,7 +57,8 @@
           "kernel_version": "exact",
           "OSFamily": "priority",
           "container-image": "priority",
-          "lre-rs": "priority"
+          "lre-rs": "priority",
+          "ISA": "exact",
         }
       }
     }
@@ -93,7 +94,10 @@
         },
         "lre-rs": {
           "values": [""]
-        }
+        },
+        "ISA": {
+          "values": ["x86-64"]
+        },
       }
     }
   }],
@@ -142,9 +146,6 @@
       }
     },
     "services": {
-      "experimental_prometheus": {
-        "path": "/metrics"
-      },
       // Note: This should be served on a different port, because it has
       // a different permission set than the other services.
       // In other words, this service is a backend api. The ones above
@@ -157,6 +158,6 @@
     }
   }],
   "global": {
-    "max_open_files": 512
+    "max_open_files": 24576
   }
 }

@@ -19,10 +19,10 @@ use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
-use rand::{thread_rng, Rng};
+use rand::Rng;
 use tokio::io::AsyncWriteExt;
 
 /// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
@@ -31,7 +31,7 @@ async fn make_temp_path(data: &str) -> OsString {
     let dir = format!(
         "{}/{}",
         env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
-        thread_rng().gen::<u64>(),
+        rand::rng().random::<u64>(),
     );
     fs::create_dir_all(&dir).await.unwrap();
     OsString::from(format!("{dir}/{data}"))
@@ -40,7 +40,7 @@ async fn make_temp_path(data: &str) -> OsString {
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
 const HASH1_SIZE: i64 = 147;
 
-// Regression test for bug created when implementing ResumeableFileSlot
+// Regression test for bug created when implementing FileSlot
 // where the timeout() success condition was breaking out of the outer
 // loop resulting in the file always being created with <= 4096 bytes.
 #[nativelink_test]
@@ -62,11 +62,15 @@ async fn upload_file_to_store_with_large_file() -> Result<(), Error> {
     }
     {
         // Upload our file.
-        let resumeable_file = fs::open_file(filepath, u64::MAX).await?;
+        let file = fs::open_file(&filepath, 0, u64::MAX)
+            .await
+            .unwrap()
+            .into_inner();
         store
             .update_with_whole_file(
                 digest,
-                resumeable_file,
+                filepath,
+                file,
                 UploadSizeInfo::ExactSize(expected_data.len() as u64),
             )
             .await?;

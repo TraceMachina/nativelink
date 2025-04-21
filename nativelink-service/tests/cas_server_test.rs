@@ -22,10 +22,10 @@ use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::ContentAddressableStorage;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    batch_read_blobs_response, batch_update_blobs_request, batch_update_blobs_response, compressor,
-    digest_function, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
+    BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, Digest, Directory, DirectoryNode, FindMissingBlobsRequest,
-    GetTreeRequest, GetTreeResponse, NodeProperties,
+    GetTreeRequest, GetTreeResponse, NodeProperties, batch_read_blobs_response,
+    batch_update_blobs_request, batch_update_blobs_response, compressor, digest_function,
 };
 use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_service::cas_server::CasServer;
@@ -50,7 +50,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_cas",
         store_factory(
-            &StoreSpec::memory(MemorySpec::default()),
+            &StoreSpec::Memory(MemorySpec::default()),
             &store_manager,
             None,
         )
@@ -573,8 +573,8 @@ async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::erro
 }
 
 #[nativelink_test]
-async fn batch_update_blobs_two_items_existence_with_third_missing(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn batch_update_blobs_two_items_existence_with_third_missing()
+-> Result<(), Box<dyn std::error::Error>> {
     const VALUE1: &str = "1";
     const VALUE2: &str = "23";
 

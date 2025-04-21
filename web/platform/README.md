@@ -1,6 +1,7 @@
 # The NativeLink documentation
 
-The NativeLink documentation gets deployed to <https://docs.nativelink.com>.
+The NativeLink documentation gets deployed to
+[Docs](https://docs.nativelink.com/).
 
 ## 📚 Stack
 

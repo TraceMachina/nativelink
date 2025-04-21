@@ -15,24 +15,27 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_error::{make_input_err, Error};
+use nativelink_error::{Error, make_input_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{ActionInfo, OperationId};
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
-#[allow(clippy::large_enum_variant)]
-#[allow(dead_code)] // See https://github.com/rust-lang/rust/issues/46379
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Testing, so this doesn't really matter. Doesn't trigger on nightly"
+)]
+#[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
 enum ActionSchedulerCalls {
     GetGetKnownProperties(String),
     AddAction((OperationId, ActionInfo)),
     FilterOperations(OperationFilter),
 }
 
-#[allow(dead_code)] // See https://github.com/rust-lang/rust/issues/46379
+#[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
 enum ActionSchedulerReturns {
     GetGetKnownProperties(Result<Vec<String>, Error>),
     AddAction(Result<Box<dyn ActionStateResult>, Error>),
@@ -40,7 +43,7 @@ enum ActionSchedulerReturns {
 }
 
 #[derive(MetricsComponent)]
-pub struct MockActionScheduler {
+pub(crate) struct MockActionScheduler {
     rx_call: Mutex<mpsc::UnboundedReceiver<ActionSchedulerCalls>>,
     tx_call: mpsc::UnboundedSender<ActionSchedulerCalls>,
 
@@ -55,7 +58,7 @@ impl Default for MockActionScheduler {
 }
 
 impl MockActionScheduler {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
         Self {
@@ -66,8 +69,8 @@ impl MockActionScheduler {
         }
     }
 
-    #[allow(dead_code)] // See https://github.com/rust-lang/rust/issues/46379
-    pub async fn expect_get_known_properties(&self, result: Result<Vec<String>, Error>) -> String {
+    #[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
+    pub(crate) async fn expect_get_known_properties(&self, result: Result<Vec<String>, Error>) -> String {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::GetGetKnownProperties(req) = rx_call_lock
             .recv()
@@ -83,7 +86,7 @@ impl MockActionScheduler {
         req
     }
 
-    pub async fn expect_add_action(
+    pub(crate) async fn expect_add_action(
         &self,
         result: Result<Box<dyn ActionStateResult>, Error>,
     ) -> (OperationId, ActionInfo) {
@@ -102,7 +105,7 @@ impl MockActionScheduler {
         req
     }
 
-    pub async fn expect_filter_operations(
+    pub(crate) async fn expect_filter_operations(
         &self,
         result: Result<ActionStateResultStream<'static>, Error>,
     ) -> OperationFilter {

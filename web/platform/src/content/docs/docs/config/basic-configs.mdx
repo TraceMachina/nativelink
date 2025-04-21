@@ -166,9 +166,6 @@ memory and filesystem stores instead of S3 and Redis.
       }
     },
     "services": {
-      "experimental_prometheus": {
-        "path": "/metrics"
-      },
       // Note: This should be served on a different port, because it has
       // a different permission set than the other services.
       // In other words, this service is a backend api. The ones above
@@ -181,7 +178,7 @@ memory and filesystem stores instead of S3 and Redis.
     }
   }],
   "global": {
-    "max_open_files": 512
+    "max_open_files": 24576
   }
 }
 
@@ -345,9 +342,6 @@ memory and filesystem stores instead of S3 and Redis.
       }
     },
     "services": {
-      "experimental_prometheus": {
-        "path": "/metrics"
-      },
       // Note: This should be served on a different port, because it has
       // a different permission set than the other services.
       // In other words, this service is a backend api. The ones above
@@ -360,7 +354,7 @@ memory and filesystem stores instead of S3 and Redis.
     }
   }],
   "global": {
-    "max_open_files": 512
+    "max_open_files": 24576
   }
 }
 ```

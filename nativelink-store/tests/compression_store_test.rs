@@ -21,11 +21,11 @@ use std::sync::Arc;
 use bincode::{DefaultOptions, Options};
 use bytes::Bytes;
 use nativelink_config::stores::{CompressionSpec, MemorySpec, StoreSpec};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::compression_store::{
-    CompressionStore, Footer, Lz4Config, SliceIndex, CURRENT_STREAM_FORMAT_VERSION,
-    DEFAULT_BLOCK_SIZE, FOOTER_FRAME_TYPE,
+    CURRENT_STREAM_FORMAT_VERSION, CompressionStore, DEFAULT_BLOCK_SIZE, FOOTER_FRAME_TYPE, Footer,
+    Lz4Config, SliceIndex,
 };
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
@@ -75,8 +75,8 @@ async fn simple_smoke_test() -> Result<(), Error> {
 
     let store = CompressionStore::new(
         &CompressionSpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
                 nativelink_config::stores::Lz4Config {
                     ..Default::default()
                 },
@@ -112,8 +112,8 @@ async fn partial_reads_test() -> Result<(), Error> {
 
     let store_owned = CompressionStore::new(
         &CompressionSpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
                 nativelink_config::stores::Lz4Config {
                     block_size: 10,
                     ..Default::default()
@@ -161,8 +161,8 @@ async fn partial_reads_test() -> Result<(), Error> {
 async fn rand_5mb_smoke_test() -> Result<(), Error> {
     let store_owned = CompressionStore::new(
         &CompressionSpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
                 nativelink_config::stores::Lz4Config {
                     ..Default::default()
                 },
@@ -194,8 +194,8 @@ async fn sanity_check_zero_bytes_test() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store_owned = CompressionStore::new(
         &CompressionSpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
                 nativelink_config::stores::Lz4Config {
                     ..Default::default()
                 },
@@ -249,8 +249,8 @@ async fn check_header_test() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store_owned = CompressionStore::new(
         &CompressionSpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
                 nativelink_config::stores::Lz4Config {
                     block_size: BLOCK_SIZE,
                     ..Default::default()
@@ -335,8 +335,8 @@ async fn check_footer_test() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store_owned = CompressionStore::new(
         &CompressionSpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
                 nativelink_config::stores::Lz4Config {
                     block_size: BLOCK_SIZE,
                     ..Default::default()
@@ -481,8 +481,8 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store_owned = CompressionStore::new(
         &CompressionSpec {
-            backend: StoreSpec::memory(MemorySpec::default()),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
                 nativelink_config::stores::Lz4Config {
                     block_size: BLOCK_SIZE,
                     ..Default::default()
@@ -497,11 +497,13 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     let (mut writer, mut reader) = make_buf_channel_pair();
 
     let _drop_guard = spawn!("get_part_is_zero_digest", async move {
-        let _ = store
-            .as_ref()
-            .get_part(digest, &mut writer, 0, None)
-            .await
-            .err_tip(|| "Failed to get_part");
+        drop(
+            store
+                .as_ref()
+                .get_part(digest, &mut writer, 0, None)
+                .await
+                .err_tip(|| "Failed to get_part"),
+        );
     });
 
     let file_data = reader

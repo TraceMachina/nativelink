@@ -18,7 +18,7 @@ use std::time::SystemTime;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::ExecuteResponse;
-use nativelink_proto::google::longrunning::{operation, Operation};
+use nativelink_proto::google::longrunning::{Operation, operation};
 use nativelink_proto::google::rpc::Status;
 use nativelink_util::action_messages::{
     ActionResult, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,

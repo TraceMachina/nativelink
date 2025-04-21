@@ -18,22 +18,23 @@ use blake3::Hasher as Blake3Hasher;
 use bytes::BytesMut;
 use futures::Future;
 use nativelink_config::stores::ConfigDigestHashFunction;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Value as ProtoDigestFunction;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 
 use crate::common::DigestInfo;
 use crate::origin_context::{ActiveOriginContext, OriginContext};
-use crate::{fs, make_symbol, spawn_blocking};
+use crate::{fs, spawn_blocking, unsafe_make_symbol};
 
 // The symbol can be used to retrieve the active hasher function.
 // from an `OriginContext`.
-make_symbol!(ACTIVE_HASHER_FUNC, DigestHasherFunc);
+// Safety: There is no other symbol named `ACTIVE_HASHER_FUNC`.
+unsafe_make_symbol!(ACTIVE_HASHER_FUNC, DigestHasherFunc);
 
 static DEFAULT_DIGEST_HASHER_FUNC: OnceLock<DigestHasherFunc> = OnceLock::new();
 
@@ -98,8 +99,8 @@ impl DigestHasherFunc {
 impl From<ConfigDigestHashFunction> for DigestHasherFunc {
     fn from(value: ConfigDigestHashFunction) -> Self {
         match value {
-            ConfigDigestHashFunction::sha256 => Self::Sha256,
-            ConfigDigestHashFunction::blake3 => Self::Blake3,
+            ConfigDigestHashFunction::Sha256 => Self::Sha256,
+            ConfigDigestHashFunction::Blake3 => Self::Blake3,
         }
     }
 }
@@ -164,7 +165,7 @@ impl From<&DigestHasherFunc> for DigestHasherImpl {
     fn from(value: &DigestHasherFunc) -> Self {
         let hash_func_impl = match value {
             DigestHasherFunc::Sha256 => DigestHasherFuncImpl::Sha256(Sha256::new()),
-            DigestHasherFunc::Blake3 => DigestHasherFuncImpl::Blake3(Box::new(Blake3Hasher::new())),
+            DigestHasherFunc::Blake3 => DigestHasherFuncImpl::Blake3(Box::default()),
         };
         Self {
             hashed_size: 0,
@@ -187,9 +188,10 @@ pub trait DigestHasher {
     /// the file and feed it into the hasher.
     fn digest_for_file(
         self,
-        file: fs::ResumeableFileSlot,
+        file_path: impl AsRef<std::path::Path>,
+        file: fs::FileSlot,
         size_hint: Option<u64>,
-    ) -> impl Future<Output = Result<(DigestInfo, fs::ResumeableFileSlot), Error>>;
+    ) -> impl Future<Output = Result<(DigestInfo, fs::FileSlot), Error>>;
 
     /// Utility function to compute a hash from a generic reader.
     fn compute_from_reader<R: AsyncRead + Unpin + Send>(
@@ -214,12 +216,18 @@ pub trait DigestHasher {
     }
 }
 
+#[expect(
+    variant_size_differences,
+    reason = "some variants are already boxed; this is acceptable"
+)]
+#[derive(Debug)]
 pub enum DigestHasherFuncImpl {
     Sha256(Sha256),
     Blake3(Box<Blake3Hasher>), // Box because Blake3Hasher is 1.3kb in size.
 }
 
 /// The individual implementation of the hash function.
+#[derive(Debug)]
 pub struct DigestHasherImpl {
     hashed_size: u64,
     hash_func_impl: DigestHasherFuncImpl,
@@ -229,11 +237,10 @@ impl DigestHasherImpl {
     #[inline]
     async fn hash_file(
         &mut self,
-        mut file: fs::ResumeableFileSlot,
-    ) -> Result<(DigestInfo, fs::ResumeableFileSlot), Error> {
-        let reader = file.as_reader().await.err_tip(|| "In digest_for_file")?;
+        mut file: fs::FileSlot,
+    ) -> Result<(DigestInfo, fs::FileSlot), Error> {
         let digest = self
-            .compute_from_reader(reader)
+            .compute_from_reader(&mut file)
             .await
             .err_tip(|| "In digest_for_file")?;
         Ok((digest, file))
@@ -263,9 +270,10 @@ impl DigestHasher for DigestHasherImpl {
 
     async fn digest_for_file(
         mut self,
-        mut file: fs::ResumeableFileSlot,
+        file_path: impl AsRef<std::path::Path>,
+        mut file: fs::FileSlot,
         size_hint: Option<u64>,
-    ) -> Result<(DigestInfo, fs::ResumeableFileSlot), Error> {
+    ) -> Result<(DigestInfo, fs::FileSlot), Error> {
         let file_position = file
             .stream_position()
             .await
@@ -280,11 +288,12 @@ impl DigestHasher for DigestHasherImpl {
                 return self.hash_file(file).await;
             }
         }
+        let file_path = file_path.as_ref().to_path_buf();
         match self.hash_func_impl {
             DigestHasherFuncImpl::Sha256(_) => self.hash_file(file).await,
             DigestHasherFuncImpl::Blake3(mut hasher) => {
                 spawn_blocking!("digest_for_file", move || {
-                    hasher.update_mmap(file.get_path()).map_err(|e| {
+                    hasher.update_mmap(file_path).map_err(|e| {
                         make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}")
                     })?;
                     Result::<_, Error>::Ok((

@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueQualifier, OperationId,
@@ -34,11 +34,11 @@ use nativelink_util::store_trait::{
 };
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::Notify;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
-    SortedAwaitedActionState, CLIENT_KEEPALIVE_DURATION,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
+    SortedAwaitedAction, SortedAwaitedActionState,
 };
 
 type ClientOperationId = OperationId;
@@ -61,13 +61,32 @@ pub struct OperationSubscriber<S: SchedulerStore, I: InstantWrapper, NowFn: Fn()
     last_known_keepalive_ts: AtomicU64,
     now_fn: NowFn,
 }
+
+impl<S: SchedulerStore, I: InstantWrapper, NowFn: Fn() -> I + std::fmt::Debug> std::fmt::Debug
+    for OperationSubscriber<S, I, NowFn>
+where
+    OperationSubscriberState<
+        <S::SubscriptionManager as SchedulerSubscriptionManager>::Subscription,
+    >: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OperationSubscriber")
+            .field("maybe_client_operation_id", &self.maybe_client_operation_id)
+            .field("subscription_key", &self.subscription_key)
+            .field("weak_store", &self.weak_store)
+            .field("state", &self.state)
+            .field("last_known_keepalive_ts", &self.last_known_keepalive_ts)
+            .field("now_fn", &self.now_fn)
+            .finish()
+    }
+}
 impl<S, I, NowFn> OperationSubscriber<S, I, NowFn>
 where
     S: SchedulerStore,
     I: InstantWrapper,
     NowFn: Fn() -> I,
 {
-    fn new(
+    const fn new(
         maybe_client_operation_id: Option<ClientOperationId>,
         subscription_key: OperationIdToAwaitedAction<'static>,
         weak_store: Weak<S>,
@@ -303,7 +322,7 @@ impl SchedulerStoreDecodeTo for SearchStateToAwaitedAction {
     }
 }
 
-fn get_state_prefix(state: SortedAwaitedActionState) -> &'static str {
+const fn get_state_prefix(state: SortedAwaitedActionState) -> &'static str {
     match state {
         SortedAwaitedActionState::CacheCheck => "cache_check",
         SortedAwaitedActionState::Queued => "queued",
@@ -399,7 +418,7 @@ async fn inner_update_awaited_action(
     Ok(())
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct StoreAwaitedActionDb<S, F, I, NowFn>
 where
     S: SchedulerStore,
@@ -606,9 +625,9 @@ where
             .update_data(UpdateOperationIdToAwaitedAction(awaited_action))
             .await
             .err_tip(|| "In RedisAwaitedActionDb::add_action")?
-            .err_tip(|| {
-                "Version match failed for new action insert in RedisAwaitedActionDb::add_action"
-            })?;
+            .err_tip(
+                || "Version match failed for new action insert in RedisAwaitedActionDb::add_action",
+            )?;
 
         self.store
             .update_data(UpdateClientIdToOperationId {

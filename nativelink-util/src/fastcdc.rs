@@ -7,13 +7,14 @@
 use bytes::{Bytes, BytesMut};
 use tokio_util::codec::Decoder;
 
+#[derive(Debug)]
 struct State {
     hash: u32,
     position: usize,
 }
 
 impl State {
-    fn reset(&mut self) {
+    const fn reset(&mut self) {
         self.hash = 0;
         self.position = 0;
     }
@@ -38,6 +39,7 @@ impl State {
 ///
 /// Or put simply, it helps upload only the parts of the files that change, instead
 /// of the entire file.
+#[derive(Debug)]
 pub struct FastCDC {
     min_size: usize,
     avg_size: usize,
@@ -55,7 +57,7 @@ impl FastCDC {
         assert!(min_size < avg_size, "Expected {min_size} < {avg_size}");
         assert!(avg_size < max_size, "Expected {avg_size} < {max_size}");
         let norm_size = {
-            let mut offset = min_size + ((min_size + 1) / 2);
+            let mut offset = min_size + min_size.div_ceil(2);
             if offset > avg_size {
                 offset = avg_size;
             }

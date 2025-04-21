@@ -14,8 +14,8 @@
 
 use std::sync::Arc;
 
-use base64::prelude::BASE64_STANDARD_NO_PAD;
 use base64::Engine;
+use base64::prelude::BASE64_STANDARD_NO_PAD;
 use futures::future::BoxFuture;
 use futures::task::{Context, Poll};
 use hyper::http::{self, StatusCode};
@@ -24,12 +24,12 @@ use nativelink_proto::build::bazel::remote::execution::v2::RequestMetadata;
 use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
 use prost::Message;
 use tokio::sync::mpsc;
-use tower::layer::Layer;
 use tower::Service;
+use tower::layer::Layer;
 use tracing::trace_span;
 
 use crate::origin_context::{ActiveOriginContext, ORIGIN_IDENTITY};
-use crate::origin_event::{OriginEventCollector, OriginMetadata, ORIGIN_EVENT_COLLECTOR};
+use crate::origin_event::{ORIGIN_EVENT_COLLECTOR, OriginEventCollector, OriginMetadata};
 
 /// Default identity header name.
 /// Note: If this is changed, the default value in the [`IdentityHeaderSpec`]
@@ -37,13 +37,13 @@ use crate::origin_event::{OriginEventCollector, OriginMetadata, ORIGIN_EVENT_COL
 // We should consolidate these.
 const DEFAULT_IDENTITY_HEADER: &str = "x-identity";
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct OriginRequestMetadata {
     pub identity: String,
     pub bazel_metadata: Option<RequestMetadata>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct OriginEventMiddlewareLayer {
     maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     idenity_header_config: Arc<IdentityHeaderSpec>,
@@ -73,7 +73,7 @@ impl<S> Layer<S> for OriginEventMiddlewareLayer {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct OriginEventMiddleware<S> {
     inner: S,
     maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,

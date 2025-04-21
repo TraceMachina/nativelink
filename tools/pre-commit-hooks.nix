@@ -57,14 +57,8 @@ in {
   };
   forbid-binary-files = {
     excludes = [
-      # Landing page image for the website.
-      "nativelink-docs/static/img/hero-dark.png"
-
       # Testdata for fastcdc.
       "nativelink-util/tests/data/SekienAkashita.jpg"
-
-      # Bun binary lockfile
-      "web/platform/bun.lockb"
     ];
     enable = true;
     types = ["binary"];
@@ -129,7 +123,7 @@ in {
         if [ ''${IN_NIX_SHELL} = "impure" ]; then
           export PATH=${pkgs.go}/bin:$PATH
           cd native-cli
-          ${pkgs.golangci-lint}/bin/golangci-lint run --modules-download-mode=readonly
+          CC=customClang ${pkgs.golangci-lint}/bin/golangci-lint run --modules-download-mode=readonly
         fi
       '';
     in

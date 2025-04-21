@@ -15,6 +15,7 @@
 use std::borrow::{Borrow, BorrowMut, Cow};
 use std::collections::hash_map::DefaultHasher as StdHasher;
 use std::convert::Into;
+use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
 use std::ops::{Bound, RangeBounds};
 use std::pin::Pin;
@@ -23,20 +24,18 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use futures::future::{select, Either};
-use futures::{join, try_join, Future, FutureExt, Stream};
-use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use futures::{Future, FutureExt, Stream, join, try_join};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncSeekExt;
-use tokio::time::timeout;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use crate::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
+use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair};
 use crate::common::DigestInfo;
-use crate::digest_hasher::{default_digest_hasher_func, DigestHasher, DigestHasherFunc};
-use crate::fs::{self, idle_file_descriptor_timeout};
+use crate::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
+use crate::fs;
 use crate::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 
 static DEFAULT_DIGEST_SIZE_HEALTH_CHECK: OnceLock<usize> = OnceLock::new();
@@ -79,54 +78,37 @@ pub enum UploadSizeInfo {
 pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
     store: Pin<&S>,
     digest: impl Into<StoreKey<'_>>,
-    file: &mut fs::ResumeableFileSlot,
+    file: &mut fs::FileSlot,
     upload_size: UploadSizeInfo,
 ) -> Result<(), Error> {
-    file.as_writer()
-        .await
-        .err_tip(|| "Failed to get writer in upload_file_to_store")?
-        .rewind()
+    file.rewind()
         .await
         .err_tip(|| "Failed to rewind in upload_file_to_store")?;
-    let (tx, rx) = make_buf_channel_pair();
+    let (mut tx, rx) = make_buf_channel_pair();
 
-    let mut update_fut = store
+    let update_fut = store
         .update(digest.into(), rx, upload_size)
         .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
-    let read_result = {
-        let read_data_fut = async {
-            let (_, mut tx) = file
-                .read_buf_cb(
-                    (BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE), tx),
-                    move |(chunk, mut tx)| async move {
-                        tx.send(chunk.freeze())
-                            .await
-                            .err_tip(|| "Failed to send in upload_file_to_store")?;
-                        Ok((BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE), tx))
-                    },
-                )
+    let read_data_fut = async move {
+        loop {
+            let mut buf = BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE);
+            let read = file
+                .read_buf(&mut buf)
                 .await
-                .err_tip(|| "Error in upload_file_to_store::read_buf_cb section")?;
-            tx.send_eof()
-                .err_tip(|| "Could not send EOF to store in upload_file_to_store")?;
-            Ok(())
-        };
-        tokio::pin!(read_data_fut);
-        match select(&mut update_fut, read_data_fut).await {
-            Either::Left((update_result, read_data_fut)) => {
-                return update_result.merge(read_data_fut.await)
+                .err_tip(|| "Failed to read in upload_file_to_store")?;
+            if read == 0 {
+                break;
             }
-            Either::Right((read_result, _)) => read_result,
+            tx.send(buf.freeze())
+                .await
+                .err_tip(|| "Failed to send in upload_file_to_store")?;
         }
+        tx.send_eof()
+            .err_tip(|| "Could not send EOF to store in upload_file_to_store")
     };
-    if let Ok(update_result) = timeout(idle_file_descriptor_timeout(), &mut update_fut).await {
-        update_result.merge(read_result)
-    } else {
-        file.close_file()
-            .await
-            .err_tip(|| "Failed to close file in upload_file_to_store")?;
-        update_fut.await.merge(read_result)
-    }
+    tokio::pin!(read_data_fut);
+    let (update_res, read_res) = tokio::join!(update_fut, read_data_fut);
+    update_res.merge(read_res)
 }
 
 /// Optimizations that stores may want to expose to the callers.
@@ -203,6 +185,10 @@ impl<'a> StoreKey<'a> {
     /// This is extremely cheap and should be used when clone
     /// is needed but the key is not going to be modified.
     #[must_use]
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "False positive on stable, but not on nightly"
+    )]
     pub fn borrow(&'a self) -> StoreKey<'a> {
         match self {
             StoreKey::Str(Cow::Owned(s)) => StoreKey::Str(Cow::Borrowed(s)),
@@ -334,6 +320,12 @@ impl From<&DigestInfo> for StoreKey<'_> {
 pub struct Store {
     #[metric]
     inner: Arc<dyn StoreDriver>,
+}
+
+impl std::fmt::Debug for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Store").finish_non_exhaustive()
+    }
 }
 
 impl Store {
@@ -495,18 +487,19 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
         self.as_store_driver_pin().optimized_for(optimization)
     }
 
-    /// Specialized version of `.update()` which takes a `ResumeableFileSlot`.
+    /// Specialized version of `.update()` which takes a `FileSlot`.
     /// This is useful if the underlying store can optimize the upload process
     /// when it knows the data is coming from a file.
     #[inline]
     fn update_with_whole_file<'a>(
         &'a self,
         digest: impl Into<StoreKey<'a>>,
-        file: fs::ResumeableFileSlot,
+        path: OsString,
+        file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> impl Future<Output = Result<Option<fs::ResumeableFileSlot>, Error>> + Send + 'a {
+    ) -> impl Future<Output = Result<Option<fs::FileSlot>, Error>> + Send + 'a {
         self.as_store_driver_pin()
-            .update_with_whole_file(digest.into(), file, upload_size)
+            .update_with_whole_file(digest.into(), path, file, upload_size)
     }
 
     /// Utility to send all the data to the store when you have all the bytes.
@@ -635,9 +628,10 @@ pub trait StoreDriver:
     async fn update_with_whole_file(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        mut file: fs::ResumeableFileSlot,
+        path: OsString,
+        mut file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
+    ) -> Result<Option<fs::FileSlot>, Error> {
         let inner_store = self.inner_store(Some(key.borrow()));
         if inner_store.optimized_for(StoreOptimizations::FileUpdates) {
             error_if!(
@@ -645,7 +639,7 @@ pub trait StoreDriver:
                 "Store::inner_store() returned self when optimization present"
             );
             return Pin::new(inner_store)
-                .update_with_whole_file(key, file, upload_size)
+                .update_with_whole_file(key, path, file, upload_size)
                 .await;
         }
         slow_update_store_with_file(self, key, &mut file, upload_size).await?;
@@ -748,7 +742,7 @@ pub trait StoreDriver:
         let digest_data_len = digest_data.len() as u64;
         let digest_info = StoreKey::from(digest_hasher.finalize_digest());
 
-        let digest_bytes = bytes::Bytes::copy_from_slice(&digest_data);
+        let digest_bytes = Bytes::copy_from_slice(&digest_data);
 
         if let Err(e) = self
             .update_oneshot(digest_info.borrow(), digest_bytes.clone())
@@ -948,6 +942,7 @@ pub trait IsFalse {}
 pub trait IsTrue {}
 
 /// Compile time true value.
+#[derive(Debug, Clone, Copy)]
 pub struct TrueValue;
 impl BoolValue for TrueValue {
     const VALUE: bool = true;
@@ -955,6 +950,7 @@ impl BoolValue for TrueValue {
 impl IsTrue for TrueValue {}
 
 /// Compile time false value.
+#[derive(Debug, Clone, Copy)]
 pub struct FalseValue;
 impl BoolValue for FalseValue {
     const VALUE: bool = false;

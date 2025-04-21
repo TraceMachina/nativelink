@@ -51,24 +51,12 @@ Specifically, under servers, we've two separate servers defined:
        }
      }
    }
- },
- {
-   "listener": {
-     "http": {
-       "socket_address": "0.0.0.0:50061"
-     }
-   },
-   "services": {
-     "experimental_prometheus": {
-       "path": "/metrics"
-     }
-   }
  }
 ]
 
 ```
 
-We’ll cover the metrics service (`experimental_prometheus`) in NativeLink another time. For now, let’s focus on the main server that exposes the CAS and ActionCache services.
+Let’s focus on the main server that exposes the CAS and ActionCache services.
 ```json
  {
    "listener": {
@@ -472,9 +460,6 @@ Here is the final CAS Config JSON without the 99 extra shards for writing to S3.
        }
      },
      "services": {
-       "experimental_prometheus": {
-         "path": "/metrics"
-       },
        "health": {}
      }
    }

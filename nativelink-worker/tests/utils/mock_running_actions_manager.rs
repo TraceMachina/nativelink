@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use async_lock::Mutex;
 use futures::Future;
-use nativelink_error::{make_input_err, Error};
+use nativelink_error::{Error, make_input_err};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use nativelink_util::action_messages::{ActionResult, OperationId};
 use nativelink_util::common::DigestInfo;
@@ -36,7 +36,7 @@ enum RunningActionManagerReturns {
     CreateAndAddAction(Result<Arc<MockRunningAction>, Error>),
 }
 
-pub struct MockRunningActionsManager {
+pub(crate) struct MockRunningActionsManager {
     rx_call: Mutex<mpsc::UnboundedReceiver<RunningActionManagerCalls>>,
     tx_call: mpsc::UnboundedSender<RunningActionManagerCalls>,
 
@@ -58,7 +58,7 @@ impl Default for MockRunningActionsManager {
 }
 
 impl MockRunningActionsManager {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
         let (tx_kill_all, rx_kill_all) = mpsc::unbounded_channel();
@@ -78,7 +78,7 @@ impl MockRunningActionsManager {
 }
 
 impl MockRunningActionsManager {
-    pub async fn expect_create_and_add_action(
+    pub(crate) async fn expect_create_and_add_action(
         &self,
         result: Result<Arc<MockRunningAction>, Error>,
     ) -> (String, StartExecute) {
@@ -97,7 +97,7 @@ impl MockRunningActionsManager {
         req
     }
 
-    pub async fn expect_cache_action_result(&self) -> (DigestInfo, ActionResult, DigestHasherFunc) {
+    pub(crate) async fn expect_cache_action_result(&self) -> (DigestInfo, ActionResult, DigestHasherFunc) {
         let mut rx_call_lock = self.rx_call.lock().await;
         match rx_call_lock
             .recv()
@@ -111,7 +111,7 @@ impl MockRunningActionsManager {
         }
     }
 
-    pub async fn expect_kill_all(&self) {
+    pub(crate) async fn expect_kill_all(&self) {
         let mut rx_kill_all_lock = self.rx_kill_all.lock().await;
         rx_kill_all_lock
             .recv()
@@ -119,7 +119,7 @@ impl MockRunningActionsManager {
             .expect("Could not receive msg in mpsc");
     }
 
-    pub async fn expect_kill_operation(&self) -> OperationId {
+    pub(crate) async fn expect_kill_operation(&self) -> OperationId {
         let mut rx_kill_operation_lock = self.rx_kill_operation.lock().await;
         rx_kill_operation_lock
             .recv()
@@ -209,7 +209,7 @@ enum RunningActionReturns {
 }
 
 #[derive(Debug)]
-pub struct MockRunningAction {
+pub(crate) struct MockRunningAction {
     rx_call: Mutex<mpsc::UnboundedReceiver<RunningActionCalls>>,
     tx_call: mpsc::UnboundedSender<RunningActionCalls>,
 
@@ -224,7 +224,7 @@ impl Default for MockRunningAction {
 }
 
 impl MockRunningAction {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
         Self {
@@ -235,7 +235,7 @@ impl MockRunningAction {
         }
     }
 
-    pub async fn simple_expect_get_finished_result(
+    pub(crate) async fn simple_expect_get_finished_result(
         self: &Arc<Self>,
         result: Result<ActionResult, Error>,
     ) -> Result<(), Error> {
@@ -247,7 +247,7 @@ impl MockRunningAction {
         result
     }
 
-    pub async fn expect_prepare_action(
+    pub(crate) async fn expect_prepare_action(
         self: &Arc<Self>,
         result: Result<(), Error>,
     ) -> Result<(), Error> {
@@ -270,7 +270,7 @@ impl MockRunningAction {
         Ok(())
     }
 
-    pub async fn expect_execute(self: &Arc<Self>, result: Result<(), Error>) -> Result<(), Error> {
+    pub(crate) async fn expect_execute(self: &Arc<Self>, result: Result<(), Error>) -> Result<(), Error> {
         let mut rx_call_lock = self.rx_call.lock().await;
         match rx_call_lock
             .recv()
@@ -290,7 +290,7 @@ impl MockRunningAction {
         Ok(())
     }
 
-    pub async fn upload_results(self: &Arc<Self>, result: Result<(), Error>) -> Result<(), Error> {
+    pub(crate) async fn upload_results(self: &Arc<Self>, result: Result<(), Error>) -> Result<(), Error> {
         let mut rx_call_lock = self.rx_call.lock().await;
         match rx_call_lock
             .recv()
@@ -310,7 +310,7 @@ impl MockRunningAction {
         Ok(())
     }
 
-    pub async fn cleanup(self: &Arc<Self>, result: Result<(), Error>) -> Result<(), Error> {
+    pub(crate) async fn cleanup(self: &Arc<Self>, result: Result<(), Error>) -> Result<(), Error> {
         let mut rx_call_lock = self.rx_call.lock().await;
         match rx_call_lock
             .recv()
@@ -330,7 +330,7 @@ impl MockRunningAction {
         Ok(())
     }
 
-    pub async fn get_finished_result(
+    pub(crate) async fn get_finished_result(
         self: &Arc<Self>,
         result: Result<ActionResult, Error>,
     ) -> Result<(), Error> {

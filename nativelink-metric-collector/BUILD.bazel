@@ -3,6 +3,7 @@ load(
     "rust_doc",
     "rust_doc_test",
     "rust_library",
+    "rust_test",
     "rust_test_suite",
 )
 
@@ -40,12 +41,21 @@ rust_test_suite(
         "//nativelink-error",
         "//nativelink-metric",
         "@crates//:opentelemetry",
-        "@crates//:opentelemetry-prometheus",
         "@crates//:opentelemetry_sdk",
-        "@crates//:prometheus",
         "@crates//:serde_json",
         "@crates//:tracing",
         "@crates//:tracing-subscriber",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-metric-collector",
+    deps = [
+        "//nativelink-error",
+        "@crates//:opentelemetry_sdk",
+        "@crates//:serde_json",
     ],
 )
 

@@ -59,7 +59,7 @@ else
 fi
 
 echo "Generating ninja projects"
-gn gen --args="use_remoteexec=true rbe_cfg_dir=\"../../buildtools/reclient_cfgs/linux\"" out/Default
+gn gen --args="use_remoteexec=true reclient_cfg_dir=\"../../buildtools/reclient_cfgs/linux\"" out/Default
 
 # Fetch cache and schedular IP address for passing to ninja
 NATIVELINK=$(kubectl get gtw nativelink-gateway -o=jsonpath='{.status.addresses[0].value}')

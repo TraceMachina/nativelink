@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::BytesMut;
-use futures::stream::{unfold, FuturesUnordered};
-use futures::{future, Future, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::stream::{FuturesUnordered, unfold};
+use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
 use nativelink_config::stores::GrpcSpec;
-use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
@@ -39,7 +39,7 @@ use nativelink_proto::google::bytestream::{
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
-use nativelink_util::digest_hasher::{default_digest_hasher_func, ACTIVE_HASHER_FUNC};
+use nativelink_util::digest_hasher::{ACTIVE_HASHER_FUNC, default_digest_hasher_func};
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::proto_stream_utils::{
@@ -51,17 +51,16 @@ use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::{default_health_status_indicator, tls_utils};
 use parking_lot::Mutex;
 use prost::Message;
-use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::time::sleep;
 use tonic::{IntoRequest, Request, Response, Status, Streaming};
-use tracing::{event, Level};
+use tracing::{Level, event};
 use uuid::Uuid;
 
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct GrpcStore {
     #[metric(help = "Instance name for the store")]
     instance_name: String,
@@ -81,7 +80,7 @@ impl GrpcStore {
                 }
                 let min = 1. - (jitter_amt / 2.);
                 let max = 1. + (jitter_amt / 2.);
-                delay.mul_f32(OsRng.gen_range(min..max))
+                delay.mul_f32(rand::rng().random_range(min..max))
             }),
         )
         .await
@@ -146,7 +145,7 @@ impl GrpcStore {
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -171,7 +170,7 @@ impl GrpcStore {
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -196,7 +195,7 @@ impl GrpcStore {
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -221,7 +220,7 @@ impl GrpcStore {
         grpc_request: Request<GetTreeRequest>,
     ) -> Result<Response<Streaming<GetTreeResponse>>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -254,7 +253,7 @@ impl GrpcStore {
     async fn read_internal(
         &self,
         request: ReadRequest,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<>, Error> {
         let channel = self
             .connection_manager
             .connection()
@@ -272,12 +271,15 @@ impl GrpcStore {
         Ok(FirstStream::new(first_response, response))
     }
 
-    pub async fn read(
+    pub async fn read<R>(
         &self,
-        grpc_request: impl IntoRequest<ReadRequest>,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
+        grpc_request: R,
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<R>, Error>
+    where
+        R: IntoRequest<ReadRequest>,
+    {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -297,7 +299,7 @@ impl GrpcStore {
         E: Into<Error> + 'static,
     {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -361,7 +363,7 @@ impl GrpcStore {
         const IS_UPLOAD_TRUE: bool = true;
 
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -514,7 +516,7 @@ impl StoreDriver for GrpcStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             keys.iter()
                 .zip(results.iter_mut())
                 .map(|(key, result)| async move {
@@ -581,15 +583,22 @@ impl StoreDriver for GrpcStore {
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
-        if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
 
+        let digest_function = ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
+            .err_tip(|| "In GrpcStore::update()")?
+            .map_or_else(default_digest_hasher_func, |v| *v)
+            .proto_digest_func()
+            .as_str_name()
+            .to_ascii_lowercase();
         let mut buf = Uuid::encode_buffer();
         let resource_name = format!(
-            "{}/uploads/{}/blobs/{}/{}",
+            "{}/uploads/{}/blobs/{}/{}/{}",
             &self.instance_name,
             Uuid::new_v4().hyphenated().encode_lower(&mut buf),
+            digest_function,
             digest.packed_hash(),
             digest.size_bytes(),
         );
@@ -661,7 +670,7 @@ impl StoreDriver for GrpcStore {
         length: Option<u64>,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
-        if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
             let length = length
                 .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
@@ -676,10 +685,16 @@ impl StoreDriver for GrpcStore {
         if digest.size_bytes() == 0 {
             return writer.send_eof();
         }
-
+        let digest_function = ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
+            .err_tip(|| "In GrpcStore::update()")?
+            .map_or_else(default_digest_hasher_func, |v| *v)
+            .proto_digest_func()
+            .as_str_name()
+            .to_ascii_lowercase();
         let resource_name = format!(
-            "{}/blobs/{}/{}",
+            "{}/blobs/{}/{}/{}",
             &self.instance_name,
+            digest_function,
             digest.packed_hash(),
             digest.size_bytes(),
         );
@@ -727,7 +742,7 @@ impl StoreDriver for GrpcStore {
                                         .append("While fetching message in GrpcStore::get_part()"),
                                 ),
                                 local_state,
-                            ))
+                            ));
                         }
                     };
                     let length = data.len() as i64;

@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use futures::stream::unfold;
 use futures::{StreamExt, TryFutureExt};
 use nativelink_config::schedulers::GrpcSpec;
-use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_client::ExecutionClient;
@@ -30,7 +30,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionState, ActionUniqueQualifier, OperationId, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionState, ActionUniqueQualifier, DEFAULT_EXECUTION_PRIORITY, OperationId,
 };
 use nativelink_util::connection_manager::ConnectionManager;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
@@ -41,13 +41,12 @@ use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
-use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{Request, Streaming};
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 struct GrpcActionStateResult {
     client_operation_id: OperationId,
@@ -88,7 +87,7 @@ impl ActionStateResult for GrpcActionStateResult {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct GrpcScheduler {
     #[metric(group = "property_managers")]
     supported_props: Mutex<HashMap<String, Vec<String>>>,
@@ -107,7 +106,7 @@ impl GrpcScheduler {
                 }
                 let min = 1. - (jitter_amt / 2.);
                 let max = 1. + (jitter_amt / 2.);
-                delay.mul_f32(OsRng.gen_range(min..max))
+                delay.mul_f32(rand::rng().random_range(min..max))
             }),
         )
     }
@@ -308,10 +307,14 @@ impl GrpcScheduler {
         &self,
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
-        error_if!(filter != OperationFilter {
-            client_operation_id: filter.client_operation_id.clone(),
-            ..Default::default()
-        }, "Unsupported filter in GrpcScheduler::filter_operations. Only client_operation_id is supported - {filter:?}");
+        error_if!(
+            filter
+                != OperationFilter {
+                    client_operation_id: filter.client_operation_id.clone(),
+                    ..Default::default()
+                },
+            "Unsupported filter in GrpcScheduler::filter_operations. Only client_operation_id is supported - {filter:?}"
+        );
         let client_operation_id = filter.client_operation_id.ok_or_else(|| {
             make_err!(Code::InvalidArgument, "`client_operation_id` is the only supported filter in GrpcScheduler::filter_operations")
         })?;

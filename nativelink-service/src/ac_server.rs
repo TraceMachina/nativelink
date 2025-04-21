@@ -18,14 +18,14 @@ use std::fmt::Debug;
 
 use bytes::BytesMut;
 use nativelink_config::cas_server::{AcStoreConfig, InstanceName};
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::{
     ActionCache, ActionCacheServer as Server,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult, GetActionResultRequest, UpdateActionResultRequest,
 };
-use nativelink_store::ac_utils::{get_and_decode_digest, ESTIMATED_DIGEST_SIZE};
+use nativelink_store::ac_utils::{ESTIMATED_DIGEST_SIZE, get_and_decode_digest};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
@@ -34,9 +34,9 @@ use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::{Store, StoreLike};
 use prost::Message;
 use tonic::{Request, Response, Status};
-use tracing::{error_span, event, instrument, Level};
+use tracing::{Level, error_span, event, instrument};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AcStoreInfo {
     store: Store,
     read_only: bool,
@@ -169,7 +169,6 @@ impl AcServer {
 
 #[tonic::async_trait]
 impl ActionCache for AcServer {
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         ret(level = Level::INFO),
         level = Level::ERROR,
@@ -199,7 +198,6 @@ impl ActionCache for AcServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),

@@ -118,7 +118,7 @@ export const Footer = component$(() => {
             <div class="text-center">
               Lets <span class="text-[#AD96FF]">build</span> together.
             </div>
-            <div class="text-center"> We launch soon!</div>
+            <div class="text-center">We launched!</div>
           </div>
         </div>
 
@@ -200,7 +200,7 @@ export const Footer = component$(() => {
                   alt="Nativelink Logo"
                 />
               </a>
-              <span class="text-white! font-thin">© Trace Machina 2024</span>
+              <span class="text-white! font-thin">© Trace Machina 2025</span>
             </div>
           </div>
         </div>

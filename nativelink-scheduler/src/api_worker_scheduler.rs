@@ -18,25 +18,26 @@ use std::sync::Arc;
 use async_lock::Mutex;
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
-use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_metric::{
-    group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
-    RootMetricsComponent,
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    RootMetricsComponent, group,
 };
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::Notify;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tonic::async_trait;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
 
+#[derive(Debug)]
 struct Workers(LruCache<WorkerId, Worker>);
 
 impl Deref for Workers {
@@ -86,6 +87,17 @@ struct ApiWorkerSchedulerImpl {
     worker_change_notify: Arc<Notify>,
     /// A channel to notify that an operation is still alive.
     operation_keep_alive_tx: UnboundedSender<(OperationId, WorkerId)>,
+}
+
+impl std::fmt::Debug for ApiWorkerSchedulerImpl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiWorkerSchedulerImpl")
+            .field("workers", &self.workers)
+            .field("allocation_strategy", &self.allocation_strategy)
+            .field("worker_change_notify", &self.worker_change_notify)
+            .field("operation_keep_alive_tx", &self.operation_keep_alive_tx)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ApiWorkerSchedulerImpl {
@@ -181,11 +193,11 @@ impl ApiWorkerSchedulerImpl {
         let mut workers_iter = self.workers.iter();
         let workers_iter = match self.allocation_strategy {
             // Use rfind to get the least recently used that satisfies the properties.
-            WorkerAllocationStrategy::least_recently_used => workers_iter.rfind(|(_, w)| {
+            WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter.rfind(|(_, w)| {
                 w.can_accept_work() && platform_properties.is_satisfied_by(&w.platform_properties)
             }),
             // Use find to get the most recently used that satisfies the properties.
-            WorkerAllocationStrategy::most_recently_used => workers_iter.find(|(_, w)| {
+            WorkerAllocationStrategy::MostRecentlyUsed => workers_iter.find(|(_, w)| {
                 w.can_accept_work() && platform_properties.is_satisfied_by(&w.platform_properties)
             }),
         };
@@ -315,7 +327,7 @@ impl ApiWorkerSchedulerImpl {
         let mut result = Ok(());
         if let Some(mut worker) = self.remove_worker(worker_id) {
             // We don't care if we fail to send message to worker, this is only a best attempt.
-            let _ = worker.notify_update(WorkerUpdate::Disconnect).await;
+            drop(worker.notify_update(WorkerUpdate::Disconnect).await);
             for (operation_id, _) in worker.running_action_infos.drain() {
                 result = result.merge(
                     self.worker_state_manager
@@ -335,7 +347,7 @@ impl ApiWorkerSchedulerImpl {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct ApiWorkerScheduler {
     #[metric]
     inner: Mutex<ApiWorkerSchedulerImpl>,
@@ -390,7 +402,11 @@ impl ApiWorkerScheduler {
                                 )
                                 .await;
                             if let Err(err) = update_operation_res {
-                                event!(Level::WARN, ?err, "Error while running worker_keep_alive_received, maybe job is done?");
+                                event!(
+                                    Level::WARN,
+                                    ?err,
+                                    "Error while running worker_keep_alive_received, maybe job is done?"
+                                );
                             }
                         }
                     }

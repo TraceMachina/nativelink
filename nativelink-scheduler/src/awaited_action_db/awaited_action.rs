@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
@@ -23,7 +23,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
 use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::origin_event::{OriginMetadata, ORIGIN_EVENT_COLLECTOR};
+use nativelink_util::origin_event::{ORIGIN_EVENT_COLLECTOR, OriginMetadata};
 use serde::{Deserialize, Serialize};
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 
@@ -124,55 +124,55 @@ impl AwaitedAction {
         }
     }
 
-    pub(crate) fn version(&self) -> u64 {
+    pub(crate) const fn version(&self) -> u64 {
         self.version.0
     }
 
-    pub(crate) fn set_version(&mut self, version: u64) {
+    pub(crate) const fn set_version(&mut self, version: u64) {
         self.version = AwaitedActionVersion(version);
     }
 
-    pub(crate) fn increment_version(&mut self) {
+    pub(crate) const fn increment_version(&mut self) {
         self.version = AwaitedActionVersion(self.version.0 + 1);
     }
 
-    pub fn action_info(&self) -> &Arc<ActionInfo> {
+    pub const fn action_info(&self) -> &Arc<ActionInfo> {
         &self.action_info
     }
 
-    pub fn operation_id(&self) -> &OperationId {
+    pub const fn operation_id(&self) -> &OperationId {
         &self.operation_id
     }
 
-    pub(crate) fn sort_key(&self) -> AwaitedActionSortKey {
+    pub(crate) const fn sort_key(&self) -> AwaitedActionSortKey {
         self.sort_key
     }
 
-    pub fn state(&self) -> &Arc<ActionState> {
+    pub const fn state(&self) -> &Arc<ActionState> {
         &self.state
     }
 
-    pub(crate) fn maybe_origin_metadata(&self) -> Option<&OriginMetadata> {
+    pub(crate) const fn maybe_origin_metadata(&self) -> Option<&OriginMetadata> {
         self.maybe_origin_metadata.as_ref()
     }
 
-    pub(crate) fn worker_id(&self) -> Option<&WorkerId> {
+    pub(crate) const fn worker_id(&self) -> Option<&WorkerId> {
         self.worker_id.as_ref()
     }
 
-    pub(crate) fn last_worker_updated_timestamp(&self) -> SystemTime {
+    pub(crate) const fn last_worker_updated_timestamp(&self) -> SystemTime {
         self.last_worker_updated_timestamp
     }
 
-    pub(crate) fn worker_keep_alive(&mut self, now: SystemTime) {
+    pub(crate) const fn worker_keep_alive(&mut self, now: SystemTime) {
         self.last_worker_updated_timestamp = now;
     }
 
-    pub(crate) fn last_client_keepalive_timestamp(&self) -> SystemTime {
+    pub(crate) const fn last_client_keepalive_timestamp(&self) -> SystemTime {
         self.last_client_keepalive_timestamp
     }
 
-    pub(crate) fn update_client_keep_alive(&mut self, now: SystemTime) {
+    pub(crate) const fn update_client_keep_alive(&mut self, now: SystemTime) {
         self.last_client_keepalive_timestamp = now;
     }
 
@@ -251,7 +251,7 @@ impl AwaitedActionSortKey {
         Self::new(priority, timestamp)
     }
 
-    pub(crate) fn as_u64(self) -> u64 {
+    pub(crate) const fn as_u64(self) -> u64 {
         self.0
     }
 }

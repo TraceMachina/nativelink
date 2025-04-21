@@ -29,13 +29,13 @@ use nativelink_util::operation_state_manager::{
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
 use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::origin_event::{OriginEventCollector, OriginMetadata, ORIGIN_EVENT_COLLECTOR};
+use nativelink_util::origin_event::{ORIGIN_EVENT_COLLECTOR, OriginEventCollector, OriginMetadata};
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
 use tokio_stream::StreamExt;
-use tracing::{event, info_span, Level};
+use tracing::{Level, event, info_span};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
@@ -138,6 +138,20 @@ pub struct SimpleScheduler {
     _task_worker_matching_spawn: JoinHandleDropGuard<()>,
 }
 
+impl std::fmt::Debug for SimpleScheduler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimpleScheduler")
+            .field("platform_property_manager", &self.platform_property_manager)
+            .field("worker_scheduler", &self.worker_scheduler)
+            .field("maybe_origin_event_tx", &self.maybe_origin_event_tx)
+            .field(
+                "_task_worker_matching_spawn",
+                &self._task_worker_matching_spawn,
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 impl SimpleScheduler {
     /// Attempts to find a worker to execute an action and begins executing it.
     /// If an action is already running that is cacheable it may merge this
@@ -209,9 +223,9 @@ impl SimpleScheduler {
             // it with the ActionInfo when we receive it.
             let platform_properties = platform_property_manager
                 .make_platform_properties(action_info.platform_properties.clone())
-                .err_tip(|| {
-                    "Failed to make platform properties in SimpleScheduler::do_try_match"
-                })?;
+                .err_tip(
+                    || "Failed to make platform properties in SimpleScheduler::do_try_match",
+                )?;
 
             let action_info = ActionInfoWithProps {
                 inner: action_info,
@@ -372,7 +386,12 @@ impl SimpleScheduler {
         // tasks are going to be dropped all over the place, this isn't a good
         // setting.
         if client_action_timeout_s <= CLIENT_KEEPALIVE_DURATION.as_secs() {
-            event!(Level::ERROR, client_action_timeout_s, "Setting client_action_timeout_s to less than the client keep alive interval is going to cause issues, please set above {}.", CLIENT_KEEPALIVE_DURATION.as_secs());
+            event!(
+                Level::ERROR,
+                client_action_timeout_s,
+                "Setting client_action_timeout_s to less than the client keep alive interval is going to cause issues, please set above {}.",
+                CLIENT_KEEPALIVE_DURATION.as_secs()
+            );
         }
 
         let mut max_job_retries = spec.max_job_retries;

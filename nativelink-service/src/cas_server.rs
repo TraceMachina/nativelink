@@ -20,14 +20,15 @@ use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
 use futures::{StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{CasStoreConfig, InstanceName};
-use nativelink_error::{error_if, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer as Server,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    batch_read_blobs_response, batch_update_blobs_response, compressor, BatchReadBlobsRequest,
-    BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, Directory,
-    FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest, GetTreeResponse,
+    BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
+    BatchUpdateBlobsResponse, Directory, FindMissingBlobsRequest, FindMissingBlobsResponse,
+    GetTreeRequest, GetTreeResponse, batch_read_blobs_response, batch_update_blobs_response,
+    compressor,
 };
 use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_store::ac_utils::get_and_decode_digest;
@@ -38,8 +39,9 @@ use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::{Store, StoreLike};
 use tonic::{Request, Response, Status};
-use tracing::{error_span, event, instrument, Level};
+use tracing::{Level, error_span, event, instrument};
 
+#[derive(Debug)]
 pub struct CasServer {
     stores: HashMap<String, Store>,
 }
@@ -210,7 +212,7 @@ impl CasServer {
     async fn inner_get_tree(
         &self,
         request: GetTreeRequest,
-    ) -> Result<impl Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static, Error> {
+    ) -> Result<impl Stream<Item = Result<GetTreeResponse, Status>> + Send + use<>, Error> {
         let instance_name = &request.instance_name;
 
         let store = self
@@ -305,7 +307,6 @@ impl CasServer {
 impl ContentAddressableStorage for CasServer {
     type GetTreeStream = GetTreeStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -332,7 +333,6 @@ impl ContentAddressableStorage for CasServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -359,7 +359,6 @@ impl ContentAddressableStorage for CasServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -386,7 +385,6 @@ impl ContentAddressableStorage for CasServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,

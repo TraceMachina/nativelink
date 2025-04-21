@@ -23,8 +23,8 @@ use fred::clients::SubscriberClient;
 use fred::error::Error as RedisError;
 use fred::mocks::{MockCommand, Mocks};
 use fred::prelude::{Builder, Pool as RedisPool};
-use fred::types::config::{Config as RedisConfig, PerformanceConfig};
 use fred::types::Value as RedisValue;
+use fred::types::config::{Config as RedisConfig, PerformanceConfig};
 use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::{MetricFieldData, MetricKind, MetricsComponent, RootMetricsComponent};
@@ -37,7 +37,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use parking_lot::RwLock;
 use pretty_assertions::assert_eq;
-use serde_json::{from_str, to_string, Value};
+use serde_json::{Value, from_str, to_string};
 use tokio::sync::watch;
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -263,8 +263,9 @@ async fn upload_and_get_data() -> Result<(), Error> {
 
     let store = {
         let mut builder = Builder::default_centralized();
+        let mocks = Arc::clone(&mocks);
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
         let (client_pool, subscriber_client) = make_clients(builder);
@@ -366,8 +367,9 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
 
     let store = {
         let mut builder = Builder::default_centralized();
+        let mocks = Arc::clone(&mocks);
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
 
@@ -547,7 +549,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
     let store = {
         let mut builder = Builder::default_centralized();
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
 
@@ -699,8 +701,9 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
 
     let store = {
         let mut builder = Builder::default_centralized();
+        let mocks = Arc::clone(&mocks);
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
 
@@ -790,7 +793,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
     let store = {
         let mut builder = Builder::default_centralized();
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
 
@@ -818,8 +821,9 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
 async fn dont_loop_forever_on_empty() -> Result<(), Error> {
     let store = {
         let mut builder = Builder::default_centralized();
+        let mocks = Arc::new(MockRedisBackend::new());
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::new(MockRedisBackend::new()) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
 
@@ -863,8 +867,9 @@ async fn test_redis_fingerprint_metric() -> Result<(), Error> {
     {
         let store = {
             let mut builder = Builder::default_centralized();
+            let mocks = Arc::new(MockRedisBackend::new());
             builder.set_config(RedisConfig {
-                mocks: Some(Arc::new(MockRedisBackend::new()) as Arc<dyn Mocks>),
+                mocks: Some(mocks),
                 ..Default::default()
             });
 
@@ -906,10 +911,10 @@ async fn test_redis_fingerprint_metric() -> Result<(), Error> {
 
     let parsed_output: Value = from_str(&output_json_data).unwrap();
 
-    let fingerprint_create_index = parsed_output["stores"]["redis_store"]
-        ["fingerprint_create_index"]
-        .as_str()
-        .expect("fingerprint_create_index should be a hex string");
+    let fingerprint_create_index =
+        parsed_output["stores"]["redis_store"]["fingerprint_create_index"]
+            .as_str()
+            .expect("fingerprint_create_index should be a hex string");
 
     assert_eq!(fingerprint_create_index, expected_fingerprint_value);
 

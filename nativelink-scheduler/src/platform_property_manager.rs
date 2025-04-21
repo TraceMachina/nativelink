@@ -15,13 +15,14 @@
 use std::collections::HashMap;
 
 use nativelink_config::schedulers::PropertyType;
-use nativelink_error::{make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_input_err};
 use nativelink_metric::{
-    group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 
 /// Helps manage known properties and conversion into `PlatformPropertyValue`.
+#[derive(Debug)]
 pub struct PlatformPropertyManager {
     known_properties: HashMap<String, PropertyType>,
 }
@@ -77,7 +78,7 @@ impl PlatformPropertyManager {
     pub fn make_prop_value(&self, key: &str, value: &str) -> Result<PlatformPropertyValue, Error> {
         if let Some(prop_type) = self.known_properties.get(key) {
             return match prop_type {
-                PropertyType::minimum => Ok(PlatformPropertyValue::Minimum(
+                PropertyType::Minimum => Ok(PlatformPropertyValue::Minimum(
                     value.parse::<u64>().err_tip_with_code(|e| {
                         (
                             Code::InvalidArgument,
@@ -85,8 +86,8 @@ impl PlatformPropertyManager {
                         )
                     })?,
                 )),
-                PropertyType::exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
-                PropertyType::priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
+                PropertyType::Exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
+                PropertyType::Priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
             };
         }
         Err(make_input_err!("Unknown platform property '{}'", key))
