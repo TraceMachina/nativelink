@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::str;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use std::process::Stdio;
-use std::str;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
@@ -383,10 +383,10 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
     metrics: Arc<Metrics>,
 }
 
-impl<T: WorkerApiClientTrait + std::fmt::Debug, U: RunningActionsManager + std::fmt::Debug>
-    std::fmt::Debug for LocalWorker<T, U>
+impl<T: WorkerApiClientTrait + core::fmt::Debug, U: RunningActionsManager + core::fmt::Debug>
+    core::fmt::Debug for LocalWorker<T, U>
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LocalWorker")
             .field("config", &self.config)
             .field("running_actions_manager", &self.running_actions_manager)

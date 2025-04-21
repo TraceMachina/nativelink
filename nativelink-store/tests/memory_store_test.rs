@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ops::RangeBounds;
-use std::pin::Pin;
+use core::ops::RangeBounds;
+use core::pin::Pin;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use memory_stats::memory_stats;

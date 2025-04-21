@@ -239,7 +239,7 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
                 .await
                 .err_tip(|| "Failed to get_part from dedup store")?;
 
-            let len_fenced = std::cmp::min(len, rt_data.len());
+            let len_fenced = core::cmp::min(len, rt_data.len());
             assert_eq!(
                 rt_data.len(),
                 len_fenced,

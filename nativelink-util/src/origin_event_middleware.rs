@@ -84,7 +84,7 @@ impl<S, ReqBody, ResBody> Service<http::Request<ReqBody>> for OriginEventMiddlew
 where
     S: Service<http::Request<ReqBody>, Response = http::Response<ResBody>> + Clone + Send + 'static,
     S::Future: Send + 'static,
-    ReqBody: std::fmt::Debug + Send + 'static,
+    ReqBody: core::fmt::Debug + Send + 'static,
     ResBody: From<String> + Send + 'static,
 {
     type Response = S::Response;
@@ -99,7 +99,7 @@ where
         // We must take the current `inner` and not the clone.
         // See: https://docs.rs/tower/latest/tower/trait.Service.html#be-careful-when-cloning-inner-services
         let clone = self.inner.clone();
-        let mut inner = std::mem::replace(&mut self.inner, clone);
+        let mut inner = core::mem::replace(&mut self.inner, clone);
 
         let mut context = ActiveOriginContext::fork().unwrap_or_default();
         let identity = {

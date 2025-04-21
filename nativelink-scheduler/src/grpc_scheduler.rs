@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::future::Future;
+use core::time::Duration;
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream::unfold;
@@ -125,7 +125,7 @@ impl GrpcScheduler {
                 spec.retry.clone(),
             ),
             connection_manager: ConnectionManager::new(
-                std::iter::once(endpoint),
+                core::iter::once(endpoint),
                 spec.connections_per_endpoint,
                 spec.max_concurrent_requests,
                 spec.retry.clone(),

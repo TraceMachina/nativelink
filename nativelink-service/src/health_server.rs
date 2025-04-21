@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::convert::Infallible;
-use std::future::Future;
-use std::pin::Pin;
+use core::convert::Infallible;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use axum::body::Body;
 use bytes::Bytes;

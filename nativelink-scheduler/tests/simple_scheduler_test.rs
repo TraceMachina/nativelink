@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::future::Future;
+use core::ops::Bound;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use std::collections::HashMap;
-use std::future::Future;
-use std::ops::Bound;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex;
 use futures::task::Poll;

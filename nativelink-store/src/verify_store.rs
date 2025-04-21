@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -77,7 +77,7 @@ impl VerifyStore {
             // Ensure if a user sends us too much data we fail quickly.
             if let Some(expected_size) = maybe_expected_digest_size {
                 match sum_size.cmp(&expected_size) {
-                    std::cmp::Ordering::Greater => {
+                    core::cmp::Ordering::Greater => {
                         self.size_verification_failures.inc();
                         return Err(make_input_err!(
                             "Expected size {} but already received {} on insert",
@@ -85,7 +85,7 @@ impl VerifyStore {
                             sum_size
                         ));
                     }
-                    std::cmp::Ordering::Equal => {
+                    core::cmp::Ordering::Equal => {
                         // Ensure our next chunk is the EOF chunk.
                         // If this was an error it'll be caught on the .recv()
                         // on next cycle.
@@ -99,7 +99,7 @@ impl VerifyStore {
                             }
                         }
                     }
-                    std::cmp::Ordering::Less => {}
+                    core::cmp::Ordering::Less => {}
                 }
             }
 
@@ -223,11 +223,11 @@ impl StoreDriver for VerifyStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

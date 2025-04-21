@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::Into;
+use core::pin::Pin;
+use core::time::Duration;
 use std::collections::HashMap;
-use std::convert::Into;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::stream::unfold;
 use futures::Stream;
@@ -52,8 +53,8 @@ pub struct WorkerApiServer {
     node_id: [u8; 6],
 }
 
-impl std::fmt::Debug for WorkerApiServer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for WorkerApiServer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("WorkerApiServer")
             .field("node_id", &self.node_id)
             .finish_non_exhaustive()

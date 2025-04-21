@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ptr::from_ref;
+use core::ptr::from_ref;
 use std::sync::Arc;
 
 use nativelink_config::stores::{MemorySpec, RefSpec};

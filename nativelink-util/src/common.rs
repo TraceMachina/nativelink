@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::{Eq, Ordering};
+use core::cmp::{Eq, Ordering};
+use core::hash::{BuildHasher, Hash};
+use core::ops::{Deref, DerefMut};
 use std::collections::HashMap;
 use std::fmt;
-use std::hash::{BuildHasher, Hash};
 use std::io::{Cursor, Write};
-use std::ops::{Deref, DerefMut};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use nativelink_error::{Error, ResultExt, make_input_err};
@@ -163,7 +163,7 @@ impl<'a> DigestStackStringifier<'a> {
             cursor.position() as usize
         };
         // Convert the buffer into utf8 string.
-        std::str::from_utf8(&self.buf[..len]).map_err(|e| {
+        core::str::from_utf8(&self.buf[..len]).map_err(|e| {
             make_input_err!(
                 "Could not convert [u8] to string - {} - {:?} - {:?}",
                 self.digest,
@@ -381,7 +381,7 @@ impl PackedHash {
 impl fmt::Display for PackedHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let hash = self.to_hex()?;
-        match std::str::from_utf8(&hash) {
+        match core::str::from_utf8(&hash) {
             Ok(hash) => f.write_str(hash)?,
             Err(_) => f.write_str(&format!("Could not convert hash to utf8 {:?}", self.0))?,
         }
@@ -451,9 +451,9 @@ impl<K: Eq + Hash, T, S: BuildHasher + Clone> HashMapExt<K, T, S> for HashMap<K,
 }
 
 // Utility to encode our proto into GRPC stream format.
-pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::error::Error>> {
+pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn core::error::Error>> {
     // See below comment on spec.
-    use std::mem::size_of;
+    use core::mem::size_of;
     const PREFIX_BYTES: usize = size_of::<u8>() + size_of::<u32>();
 
     let mut buf = BytesMut::new();

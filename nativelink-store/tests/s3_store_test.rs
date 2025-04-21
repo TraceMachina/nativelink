@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
 use std::sync::Arc;
-use std::time::Duration;
 
 use aws_sdk_s3::config::{BehaviorVersion, Builder, Region};
 use aws_sdk_s3::primitives::ByteStream;
@@ -184,7 +184,7 @@ async fn simple_has_retries() -> Result<(), Error> {
 // As of `BehaviorVersion::v2025_01_17` responses contain checksums. This helper
 // function removes them for easier comparison.
 fn extract_payload_from_chunked_data(chunked_data: &[u8]) -> Result<Bytes, Error> {
-    let data_str = std::str::from_utf8(chunked_data)
+    let data_str = core::str::from_utf8(chunked_data)
         .map_err(|e| make_input_err!("Invalid UTF-8 in chunked data: {e:?}"))?;
     let parts: Vec<&str> = data_str.split("\r\n").collect();
     if parts.len() > 1 {

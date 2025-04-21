@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::thread::panicking;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use bytes::Bytes;
 use fred::bytes_utils::string::Str;
@@ -112,7 +113,7 @@ impl Mocks for MockRedisBackend {
             args: Vec::new(),
         };
 
-        let results = std::iter::once(MULTI.clone())
+        let results = core::iter::once(MULTI.clone())
             .chain(commands)
             .chain([EXEC.clone()])
             .map(|command| self.process_command(command))

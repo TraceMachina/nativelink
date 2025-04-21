@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::Into;
+use core::pin::Pin;
+use core::time::Duration;
 use std::collections::HashMap;
-use std::convert::Into;
 use std::fmt;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::stream::unfold;
 use futures::{Stream, StreamExt};
@@ -386,7 +387,7 @@ impl Execution for ExecutionServer {
 
 #[cfg(test)]
 #[test]
-fn test_nl_op_id_from_name() -> Result<(), Box<dyn std::error::Error>> {
+fn test_nl_op_id_from_name() -> Result<(), Box<dyn core::error::Error>> {
     let examples = [("foo/bar", "foo"), ("a/b/c/d", "a/b/c")];
 
     for (input, expected) in examples {

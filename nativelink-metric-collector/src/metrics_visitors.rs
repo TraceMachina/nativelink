@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
 use std::borrow::Cow;
-use std::fmt::Debug;
 
 use nativelink_metric::MetricKind;
 use serde::Serialize;
@@ -140,7 +140,7 @@ impl Visit for MetricDataVisitor {
             field => panic!("UNKNOWN FIELD {field}"),
         }
     }
-    fn record_error(&mut self, _field: &Field, _value: &(dyn std::error::Error + 'static)) {}
+    fn record_error(&mut self, _field: &Field, _value: &(dyn core::error::Error + 'static)) {}
 }
 
 /// An intermediate structed that will have it's contents populated

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ops::{Deref, DerefMut};
+use core::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -89,8 +89,8 @@ struct ApiWorkerSchedulerImpl {
     operation_keep_alive_tx: UnboundedSender<(OperationId, WorkerId)>,
 }
 
-impl std::fmt::Debug for ApiWorkerSchedulerImpl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for ApiWorkerSchedulerImpl {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ApiWorkerSchedulerImpl")
             .field("workers", &self.workers)
             .field("allocation_strategy", &self.allocation_strategy)

@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::Into;
+use core::fmt::{Debug, Formatter};
+use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::convert::Into;
-use std::fmt::{Debug, Formatter};
-use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use futures::future::{BoxFuture, pending};
 use futures::stream::unfold;
@@ -72,7 +72,7 @@ struct StreamState {
 }
 
 impl Debug for StreamState {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("StreamState")
             .field("uuid", &self.uuid)
             .finish()
@@ -167,7 +167,7 @@ pub struct ByteStreamServer {
 }
 
 impl Debug for ByteStreamServer {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ByteStreamServer")
             .field("stores", &self.stores)
             .field("max_bytes_per_stream", &self.max_bytes_per_stream)

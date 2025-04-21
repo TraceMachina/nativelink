@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::{iter, mem};
 use std::sync::Arc;
-use std::{iter, mem};
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -380,11 +380,11 @@ impl StoreDriver for CompletenessCheckingStore {
         self
     }
 
-    fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

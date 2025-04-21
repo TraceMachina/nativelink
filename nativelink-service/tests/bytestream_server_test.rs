@@ -107,7 +107,7 @@ fn make_stream_and_writer_spawn(
     (tx, join_handle)
 }
 
-fn make_resource_name(data_len: impl std::fmt::Display) -> String {
+fn make_resource_name(data_len: impl core::fmt::Display) -> String {
     format!(
         "{}/uploads/{}/blobs/{}/{}",
         INSTANCE_NAME,
@@ -184,7 +184,7 @@ async fn server_and_client_stub(
 }
 
 #[nativelink_test]
-pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -260,8 +260,8 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error
             .get_part_unchunked(DigestInfo::try_new(HASH1, raw_data.len())?, 0, None)
             .await?;
         assert_eq!(
-            std::str::from_utf8(&store_data),
-            std::str::from_utf8(raw_data),
+            core::str::from_utf8(&store_data),
+            core::str::from_utf8(raw_data),
             "Expected store to have been updated to new value"
         );
     }
@@ -269,7 +269,7 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error
 }
 
 #[nativelink_test]
-pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn resume_write_success() -> Result<(), Box<dyn core::error::Error>> {
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     // Chunk our data into two chunks to simulate something a client
@@ -343,7 +343,7 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn restart_write_success() -> Result<(), Box<dyn core::error::Error>> {
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     // Chunk our data into two chunks to simulate something a client
@@ -422,7 +422,7 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn core::error::Error>> {
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     // Chunk our data into two chunks to simulate something a client
@@ -502,7 +502,7 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
 
 #[nativelink_test]
 pub async fn ensure_write_is_not_done_until_write_request_is_set()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), Box<dyn core::error::Error>> {
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     let store_manager = make_store_manager().await?;
@@ -579,7 +579,7 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set()
 }
 
 #[nativelink_test]
-pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn out_of_order_data_fails() -> Result<(), Box<dyn core::error::Error>> {
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     // Chunk our data into two chunks to simulate something a client
@@ -634,7 +634,7 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[nativelink_test]
-pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -673,7 +673,7 @@ pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[nativelink_test]
-pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -701,7 +701,7 @@ pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn std::error::
 }
 
 #[nativelink_test]
-pub async fn out_of_sequence_write() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn out_of_sequence_write() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -729,7 +729,7 @@ pub async fn out_of_sequence_write() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn core::error::Error>> {
     const VALUE1: &str = "12456789abcdefghijk";
 
     let store_manager = make_store_manager().await?;
@@ -765,7 +765,7 @@ pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std:
 }
 
 #[nativelink_test]
-pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn core::error::Error>> {
     const DATA_SIZE: usize = 10_000_000;
 
     let store_manager = make_store_manager().await?;
@@ -860,7 +860,7 @@ pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn core::error::Error>> {
     const BYTE_SPLIT_OFFSET: usize = 8;
 
     let store_manager = make_store_manager()
@@ -954,7 +954,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
 }
 
 #[nativelink_test]
-pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error::Error>> {
     const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB.
 
     // This is the size of the wrapper proto around the data.

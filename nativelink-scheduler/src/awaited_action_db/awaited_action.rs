@@ -190,7 +190,7 @@ impl AwaitedAction {
 
     /// Sets the current state of the action and updates the last worker updated timestamp.
     pub fn worker_set_state(&mut self, mut state: Arc<ActionState>, now: SystemTime) {
-        std::mem::swap(&mut self.state, &mut state);
+        core::mem::swap(&mut self.state, &mut state);
         self.worker_keep_alive(now);
     }
 }

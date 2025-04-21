@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp;
+use core::cmp;
+use core::pin::Pin;
+use core::str::from_utf8;
 use std::io::Cursor;
-use std::pin::Pin;
-use std::str::from_utf8;
 use std::sync::Arc;
 
 use bincode::{DefaultOptions, Options};

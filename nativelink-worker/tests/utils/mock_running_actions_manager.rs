@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::future;
+use core::future;
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -97,7 +97,9 @@ impl MockRunningActionsManager {
         req
     }
 
-    pub(crate) async fn expect_cache_action_result(&self) -> (DigestInfo, ActionResult, DigestHasherFunc) {
+    pub(crate) async fn expect_cache_action_result(
+        &self,
+    ) -> (DigestInfo, ActionResult, DigestHasherFunc) {
         let mut rx_call_lock = self.rx_call.lock().await;
         match rx_call_lock
             .recv()
@@ -270,7 +272,10 @@ impl MockRunningAction {
         Ok(())
     }
 
-    pub(crate) async fn expect_execute(self: &Arc<Self>, result: Result<(), Error>) -> Result<(), Error> {
+    pub(crate) async fn expect_execute(
+        self: &Arc<Self>,
+        result: Result<(), Error>,
+    ) -> Result<(), Error> {
         let mut rx_call_lock = self.rx_call.lock().await;
         match rx_call_lock
             .recv()
@@ -290,7 +295,10 @@ impl MockRunningAction {
         Ok(())
     }
 
-    pub(crate) async fn upload_results(self: &Arc<Self>, result: Result<(), Error>) -> Result<(), Error> {
+    pub(crate) async fn upload_results(
+        self: &Arc<Self>,
+        result: Result<(), Error>,
+    ) -> Result<(), Error> {
         let mut rx_call_lock = self.rx_call.lock().await;
         match rx_call_lock
             .recv()

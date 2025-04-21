@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::net::SocketAddr;
+use core::time::Duration;
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
@@ -165,8 +166,10 @@ impl RootMetricsComponent for ConnectedClientsMetrics {}
 trait RoutesExt {
     fn add_optional_service<S>(self, svc: Option<S>) -> Self
     where
-        S: tower::Service<axum::http::Request<tonic::body::Body>, Error = std::convert::Infallible>
-            + tonic::server::NamedService
+        S: tower::Service<
+                axum::http::Request<tonic::body::Body>,
+                Error = core::convert::Infallible,
+            > + tonic::server::NamedService
             + Clone
             + Send
             + Sync
@@ -178,8 +181,10 @@ trait RoutesExt {
 impl RoutesExt for Routes {
     fn add_optional_service<S>(mut self, svc: Option<S>) -> Self
     where
-        S: tower::Service<axum::http::Request<tonic::body::Body>, Error = std::convert::Infallible>
-            + tonic::server::NamedService
+        S: tower::Service<
+                axum::http::Request<tonic::body::Body>,
+                Error = core::convert::Infallible,
+            > + tonic::server::NamedService
             + Clone
             + Send
             + Sync
@@ -939,7 +944,7 @@ async fn inner_main(
     Ok(())
 }
 
-fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
+fn get_config() -> Result<CasConfig, Box<dyn core::error::Error>> {
     let args = Args::parse();
     let json_contents = String::from_utf8(
         std::fs::read(&args.config_file)
@@ -948,7 +953,7 @@ fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
     Ok(serde_json5::from_str(&json_contents)?)
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn core::error::Error>> {
     init_tracing()?;
 
     let mut cfg = get_config()?;

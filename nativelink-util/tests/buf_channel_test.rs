@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::task::Poll;
+use core::task::Poll;
 
 use bytes::{Bytes, BytesMut};
 use futures::poll;
@@ -226,7 +226,7 @@ async fn send_and_take_fuzz_test() -> Result<(), Error> {
 
                 let tx_fut = async move {
                     for i in (0..data_size).step_by(write_size) {
-                        tx.send(tx_data.slice(i..std::cmp::min(data_size, i + write_size)))
+                        tx.send(tx_data.slice(i..core::cmp::min(data_size, i + write_size)))
                             .await?;
                     }
                     tx.send_eof()?;

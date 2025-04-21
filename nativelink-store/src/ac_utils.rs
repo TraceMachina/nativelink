@@ -17,7 +17,7 @@
 //                    THREADSAFETY. FIGURE OUT WHY AND MOVE IT TO UTILS.
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
-use std::pin::Pin;
+use core::pin::Pin;
 
 use bytes::BytesMut;
 use futures::TryFutureExt;

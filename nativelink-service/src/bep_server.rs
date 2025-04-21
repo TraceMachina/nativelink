@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
 use std::borrow::Cow;
-use std::pin::Pin;
 
 use bytes::BytesMut;
 use futures::Stream;

@@ -82,7 +82,7 @@ fn get_bep_store(store_manager: &StoreManager) -> Result<Store, Error> {
 
 /// Asserts that a gRPC request for a [`PublishLifecycleEventRequest`] is correctly dumped into a [`Store`]
 #[nativelink_test]
-async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn publish_lifecycle_event_test() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bep_server = make_bep_server(&store_manager)?;
     let bep_store = get_bep_store(&store_manager)?;
@@ -156,7 +156,7 @@ async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[nativelink_test]
-async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bep_server = make_bep_server(&store_manager)?;
     let bep_store = get_bep_store(&store_manager)?;
@@ -172,7 +172,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
             .err_tip(|| "While invoking publish_build_tool_event_stream")?
             .into_inner();
 
-        Ok::<_, Box<dyn std::error::Error>>((tx, stream))
+        Ok::<_, Box<dyn core::error::Error>>((tx, stream))
     }
     .await?;
 

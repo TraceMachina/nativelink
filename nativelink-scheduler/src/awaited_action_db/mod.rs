@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp;
-use std::ops::Bound;
+use core::cmp;
+use core::ops::Bound;
+use core::time::Duration;
 use std::sync::Arc;
-use std::time::Duration;
 
 pub use awaited_action::{AwaitedAction, AwaitedActionSortKey};
 use futures::{Future, Stream};
@@ -89,9 +89,9 @@ impl Ord for SortedAwaitedAction {
     }
 }
 
-impl std::fmt::Display for SortedAwaitedAction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::write(
+impl core::fmt::Display for SortedAwaitedAction {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::write(
             f,
             format_args!("{}-{}", self.sort_key.as_u64(), self.operation_id),
         )

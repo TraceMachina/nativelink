@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use bytes::Bytes;
 use mock_instant::thread_local::MockClock;
@@ -585,7 +585,7 @@ async fn remove_evicts_on_time() -> Result<(), Error> {
 async fn range_multiple_items_test() -> Result<(), Error> {
     async fn get_map_range(
         evicting_map: &EvictingMap<String, BytesWrapper, MockInstantWrapped>,
-        range: impl std::ops::RangeBounds<String> + Send,
+        range: impl core::ops::RangeBounds<String> + Send,
     ) -> Vec<(String, Bytes)> {
         let mut found_values = Vec::new();
         evicting_map

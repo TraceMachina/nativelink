@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::time::Duration;
+use core::time::Duration;
 
 use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::{

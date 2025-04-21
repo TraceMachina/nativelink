@@ -22,9 +22,7 @@ debug = false
 name = "nativelink"
 
 [features]
-nix = [
-  "nativelink-worker/nix"
-]
+nix = ["nativelink-worker/nix"]
 
 [dependencies]
 nativelink-error = { path = "nativelink-error" }
@@ -44,14 +42,24 @@ hyper = "1.6.0"
 hyper-util = "0.1.11"
 mimalloc = "0.1.44"
 parking_lot = "0.12.3"
-rustls-pemfile = { version = "2.2.0", features = ["std"], default-features = false }
+rustls-pemfile = { version = "2.2.0", features = [
+  "std",
+], default-features = false }
 scopeguard = { version = "1.2.0", default-features = false }
 serde_json5 = "0.2.1"
-tokio = { version = "1.44.1", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
+tokio = { version = "1.44.1", features = [
+  "fs",
+  "rt-multi-thread",
+  "signal",
+  "io-util",
+], default-features = false }
 tokio-rustls = { version = "0.26.2", default-features = false, features = [
   "ring",
 ] }
-tonic = { version = "0.13.0", features = ["transport", "tls-ring"], default-features = false }
+tonic = { version = "0.13.0", features = [
+  "transport",
+  "tls-ring",
+], default-features = false }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
 opentelemetry_sdk = { version = "0.29.0", default-features = false }
@@ -117,4 +125,7 @@ unused-qualifications = "warn"
 variant-size-differences = "warn"
 
 [workspace.lints.clippy]
+alloc-instead-of-core = "deny"
+std-instead-of-core = "deny"
+
 all = { level = "warn", priority = -1 }

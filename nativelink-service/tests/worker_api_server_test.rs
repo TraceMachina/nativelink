@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex as AsyncMutex;
 use async_trait::async_trait;
@@ -207,8 +208,8 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
 }
 
 #[nativelink_test]
-pub async fn connect_worker_adds_worker_to_scheduler_test() -> Result<(), Box<dyn std::error::Error>>
-{
+pub async fn connect_worker_adds_worker_to_scheduler_test()
+-> Result<(), Box<dyn core::error::Error>> {
     let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
     let worker_exists = test_context
@@ -221,7 +222,7 @@ pub async fn connect_worker_adds_worker_to_scheduler_test() -> Result<(), Box<dy
 }
 
 #[nativelink_test]
-pub async fn server_times_out_workers_test() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn server_times_out_workers_test() -> Result<(), Box<dyn core::error::Error>> {
     let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
     let mut now_timestamp = BASE_NOW_S;
@@ -256,7 +257,7 @@ pub async fn server_times_out_workers_test() -> Result<(), Box<dyn std::error::E
 }
 
 #[nativelink_test]
-pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn std::error::Error>>
+pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn core::error::Error>>
 {
     let now_timestamp = Arc::new(Mutex::new(BASE_NOW_S));
     let now_timestamp_clone = now_timestamp.clone();
@@ -312,7 +313,7 @@ pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn 
 }
 
 #[nativelink_test]
-pub async fn worker_receives_keep_alive_request_test() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn worker_receives_keep_alive_request_test() -> Result<(), Box<dyn core::error::Error>> {
     let mut test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
     // Send keep alive to client.
@@ -345,7 +346,7 @@ pub async fn worker_receives_keep_alive_request_test() -> Result<(), Box<dyn std
 }
 
 #[nativelink_test]
-pub async fn going_away_removes_worker_test() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn going_away_removes_worker_test() -> Result<(), Box<dyn core::error::Error>> {
     let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
     let worker_exists = test_context
@@ -377,7 +378,7 @@ fn make_system_time(time: u64) -> SystemTime {
 }
 
 #[nativelink_test]
-pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error::Error>> {
     let mut test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
     let action_digest = DigestInfo::new([7u8; 32], 123);

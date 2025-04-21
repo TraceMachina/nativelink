@@ -39,12 +39,14 @@ _HEADER = """\
 #![allow(
     unknown_lints,
     unused_qualifications,
+    clippy::alloc_instead_of_core,
     clippy::default_trait_access,
     clippy::doc_lazy_continuation,
     clippy::doc_markdown,
+    clippy::doc_overindented_list_items,
     clippy::large_enum_variant,
     clippy::missing_const_for_fn,
-    clippy::doc_overindented_list_items,
+    clippy::std_instead_of_core,
     rustdoc::invalid_html_tags
 )]
 """

@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::Into;
+use core::pin::Pin;
 use std::collections::{HashMap, VecDeque};
-use std::convert::Into;
-use std::pin::Pin;
 
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};

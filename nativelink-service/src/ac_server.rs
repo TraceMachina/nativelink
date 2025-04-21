@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::Into;
+use core::fmt::Debug;
 use std::collections::HashMap;
-use std::convert::Into;
-use std::fmt::Debug;
 
 use bytes::BytesMut;
 use nativelink_config::cas_server::{AcStoreConfig, InstanceName};
@@ -47,7 +47,7 @@ pub struct AcServer {
 }
 
 impl Debug for AcServer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AcServer").finish()
     }
 }

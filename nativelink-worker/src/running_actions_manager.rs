@@ -12,23 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::cmp::min;
+use core::convert::Into;
+use core::fmt::Debug;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use std::borrow::Cow;
-use std::cmp::min;
 use std::collections::HashMap;
 use std::collections::vec_deque::VecDeque;
-use std::convert::Into;
 use std::ffi::{OsStr, OsString};
-use std::fmt::Debug;
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
-use std::pin::Pin;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use bytes::{Bytes, BytesMut};
 use filetime::{FileTime, set_file_mtime};
@@ -768,7 +769,7 @@ impl RunningActionImpl {
             .execution_configuration
             .entrypoint
         {
-            std::iter::once(entrypoint.as_ref())
+            core::iter::once(entrypoint.as_ref())
                 .chain(command_proto.arguments.iter().map(AsRef::as_ref))
                 .collect()
         } else {
@@ -1148,8 +1149,8 @@ impl RunningActionImpl {
         if execution_result.exit_code != 0 {
             // Don't convert our stdout/stderr to strings unless we are need too.
             if enabled!(Level::ERROR) {
-                let stdout = std::str::from_utf8(&execution_result.stdout).unwrap_or("<no-utf8>");
-                let stderr = std::str::from_utf8(&execution_result.stderr).unwrap_or("<no-utf8>");
+                let stdout = core::str::from_utf8(&execution_result.stdout).unwrap_or("<no-utf8>");
+                let stderr = core::str::from_utf8(&execution_result.stderr).unwrap_or("<no-utf8>");
                 event!(
                     Level::ERROR,
                     exit_code = ?execution_result.exit_code,
@@ -1369,7 +1370,7 @@ pub struct Callbacks {
 }
 
 impl Debug for Callbacks {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Callbacks").finish_non_exhaustive()
     }
 }
