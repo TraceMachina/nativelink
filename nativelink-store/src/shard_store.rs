@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::hash::{DefaultHasher, Hasher};
-use std::ops::BitXor;
-use std::pin::Pin;
+use core::hash::Hasher;
+use core::ops::BitXor;
+use core::pin::Pin;
+use std::hash::DefaultHasher;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -229,11 +230,11 @@ impl StoreDriver for ShardStore {
         self.weights_and_stores[index].store.inner_store(Some(key))
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

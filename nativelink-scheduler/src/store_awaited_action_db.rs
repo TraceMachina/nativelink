@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::ops::Bound;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use std::borrow::Cow;
-use std::ops::Bound;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
@@ -62,14 +62,14 @@ pub struct OperationSubscriber<S: SchedulerStore, I: InstantWrapper, NowFn: Fn()
     now_fn: NowFn,
 }
 
-impl<S: SchedulerStore, I: InstantWrapper, NowFn: Fn() -> I + std::fmt::Debug> std::fmt::Debug
+impl<S: SchedulerStore, I: InstantWrapper, NowFn: Fn() -> I + core::fmt::Debug> core::fmt::Debug
     for OperationSubscriber<S, I, NowFn>
 where
     OperationSubscriberState<
         <S::SubscriptionManager as SchedulerSubscriptionManager>::Subscription,
-    >: std::fmt::Debug,
+    >: core::fmt::Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("OperationSubscriber")
             .field("maybe_client_operation_id", &self.maybe_client_operation_id)
             .field("subscription_key", &self.subscription_key)

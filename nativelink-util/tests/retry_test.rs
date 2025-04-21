@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
 
 use futures::future::ready;
 use futures::stream::repeat_with;

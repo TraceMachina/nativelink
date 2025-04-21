@@ -95,7 +95,7 @@ impl Decoder for FastCDC {
         // Zero means not found.
         let mut split_point = 0;
 
-        let start_point = std::cmp::max(self.state.position, self.min_size);
+        let start_point = core::cmp::max(self.state.position, self.min_size);
 
         // Note: We use this kind of loop because it improved performance of this loop by 20%.
         let mut i = start_point;

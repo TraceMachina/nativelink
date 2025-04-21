@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::any::Any;
+use core::cell::RefCell;
+use core::clone::Clone;
+use core::mem::ManuallyDrop;
 use core::panic;
-use std::any::Any;
-use std::cell::RefCell;
-use std::clone::Clone;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::mem::ManuallyDrop;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use futures::Future;
 use nativelink_error::{Code, Error, make_err};
@@ -49,7 +49,7 @@ macro_rules! unsafe_make_symbol {
         pub static $name: $crate::origin_context::NLSymbol<$type> =
             $crate::origin_context::NLSymbol {
                 name: concat!(module_path!(), "::", stringify!($name)),
-                _phantom: std::marker::PhantomData {},
+                _phantom: core::marker::PhantomData {},
             };
     };
 }
@@ -62,7 +62,7 @@ unsafe_make_symbol!(ORIGIN_IDENTITY, String);
 #[derive(Debug)]
 pub struct NLSymbol<T: Send + Sync + 'static> {
     pub name: &'static str,
-    pub _phantom: std::marker::PhantomData<T>,
+    pub _phantom: core::marker::PhantomData<T>,
 }
 
 impl<T: Send + Sync + 'static> Symbol for NLSymbol<T> {
@@ -77,7 +77,7 @@ pub trait Symbol {
     type Type: 'static;
 
     fn name(&self) -> &'static str {
-        std::any::type_name::<Self>()
+        core::any::type_name::<Self>()
     }
 }
 
@@ -300,7 +300,7 @@ impl ContextDropGuard {
     #[inline]
     fn release(mut self) -> Arc<OriginContext> {
         let new_ctx = self.restore_global_context();
-        std::mem::forget(self); // Prevent the destructor from being called.
+        core::mem::forget(self); // Prevent the destructor from being called.
         new_ctx
     }
 }

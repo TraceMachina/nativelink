@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -293,11 +293,11 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             self
         }
 
-        fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static) {
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
             self
         }
 
-        fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
             self
         }
     }

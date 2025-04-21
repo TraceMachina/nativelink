@@ -138,8 +138,8 @@ pub struct SimpleScheduler {
     _task_worker_matching_spawn: JoinHandleDropGuard<()>,
 }
 
-impl std::fmt::Debug for SimpleScheduler {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for SimpleScheduler {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SimpleScheduler")
             .field("platform_property_manager", &self.platform_property_manager)
             .field("worker_scheduler", &self.worker_scheduler)

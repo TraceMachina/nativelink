@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp;
-use std::pin::Pin;
+use core::cmp;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -221,8 +221,8 @@ pub struct CompressionStore {
     bincode_options: BincodeOptions,
 }
 
-impl std::fmt::Debug for CompressionStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for CompressionStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CompressionStore")
             .field("inner_store", &self.inner_store)
             .field("config", &self.config)
@@ -332,7 +332,7 @@ impl StoreDriver for CompressionStore {
                 // For efficiency reasons we do some raw slice manipulation so we can write directly
                 // into our buffer instead of having to do another allocation.
                 let raw_compressed_data = unsafe {
-                    std::slice::from_raw_parts_mut(
+                    core::slice::from_raw_parts_mut(
                         compressed_data_buf.chunk_mut().as_mut_ptr(),
                         max_output_size,
                     )
@@ -512,7 +512,7 @@ impl StoreDriver for CompressionStore {
                     // For efficiency reasons we do some raw slice manipulation so we can write directly
                     // into our buffer instead of having to do another allocation.
                     let raw_decompressed_data = unsafe {
-                        std::slice::from_raw_parts_mut(
+                        core::slice::from_raw_parts_mut(
                             uncompressed_data.chunk_mut().as_mut_ptr(),
                             max_output_size,
                         )
@@ -624,11 +624,11 @@ impl StoreDriver for CompressionStore {
         self
     }
 
-    fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

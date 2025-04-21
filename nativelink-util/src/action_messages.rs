@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::Ordering;
+use core::cmp::Ordering;
+use core::convert::Into;
+use core::hash::Hash;
+use core::time::Duration;
 use std::collections::HashMap;
-use std::convert::Into;
-use std::hash::Hash;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 use nativelink_metric::{
@@ -68,8 +69,8 @@ impl Default for OperationId {
     }
 }
 
-impl std::fmt::Display for OperationId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for OperationId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Uuid(uuid) => uuid.fmt(f),
             Self::String(name) => f.write_str(name),
@@ -124,7 +125,7 @@ impl TryFrom<Bytes> for OperationId {
             }
             // We could not take ownership of the Bytes, so we may need to copy our data.
             Err(value) => {
-                let value = std::str::from_utf8(&value).map_err(|e| {
+                let value = core::str::from_utf8(&value).map_err(|e| {
                     make_input_err!(
                         "Failed to convert bytes to string in try_from<Bytes> for OperationId : {e:?}"
                     )
@@ -149,15 +150,15 @@ impl MetricsComponent for WorkerId {
     }
 }
 
-impl std::fmt::Display for WorkerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for WorkerId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("{}", self.0))
     }
 }
 
-impl std::fmt::Debug for WorkerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self, f)
+impl core::fmt::Debug for WorkerId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self, f)
     }
 }
 
@@ -228,8 +229,8 @@ impl ActionUniqueQualifier {
     }
 }
 
-impl std::fmt::Display for ActionUniqueQualifier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ActionUniqueQualifier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let (cachable, unique_key) = match self {
             Self::Cachable(action) => (true, action),
             Self::Uncachable(action) => (false, action),
@@ -262,8 +263,8 @@ pub struct ActionUniqueKey {
     pub digest: DigestInfo,
 }
 
-impl std::fmt::Display for ActionUniqueKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ActionUniqueKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!(
             "{}/{}/{}",
             self.instance_name, self.digest_function, self.digest,

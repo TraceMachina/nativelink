@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ops::Bound;
+use core::ops::Bound;
+use core::time::Duration;
 use std::string::ToString;
 use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use async_lock::Mutex;
 use async_trait::async_trait;

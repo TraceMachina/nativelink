@@ -67,8 +67,8 @@ pub struct CacheLookupScheduler {
     inflight_cache_checks: Arc<Mutex<CheckActions>>,
 }
 
-impl std::fmt::Debug for CacheLookupScheduler {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for CacheLookupScheduler {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CacheLookupScheduler")
             .field("ac_store", &self.ac_store)
             .finish_non_exhaustive()

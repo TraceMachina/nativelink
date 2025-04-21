@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::hash::BuildHasher;
+use core::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::hash::BuildHasher;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use nativelink_metric_macro_derive::MetricsComponent;
 pub use tracing::{error as __metric_error, info as __metric_event, info_span as __metric_span};
@@ -29,13 +30,13 @@ pub use tracing::{error as __metric_error, info as __metric_event, info_span as 
 #[derive(Debug)]
 pub struct Error(String);
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
 /// Holds metadata about the field that is being published.
 #[derive(Debug, Default, Clone)]

@@ -12,14 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::{Borrow, BorrowMut, Cow};
+use core::borrow::{Borrow, BorrowMut};
+use core::convert::Into;
+use core::hash::{Hash, Hasher};
+use core::ops::{Bound, RangeBounds};
+use core::pin::Pin;
+use core::ptr::addr_eq;
+use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher as StdHasher;
-use std::convert::Into;
 use std::ffi::OsString;
-use std::hash::{Hash, Hasher};
-use std::ops::{Bound, RangeBounds};
-use std::pin::Pin;
-use std::ptr::addr_eq;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
@@ -243,18 +244,18 @@ impl Clone for StoreKey<'static> {
 }
 
 impl PartialOrd for StoreKey<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for StoreKey<'_> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         match (self, other) {
             (StoreKey::Str(a), StoreKey::Str(b)) => a.cmp(b),
             (StoreKey::Digest(a), StoreKey::Digest(b)) => a.cmp(b),
-            (StoreKey::Str(_), StoreKey::Digest(_)) => std::cmp::Ordering::Less,
-            (StoreKey::Digest(_), StoreKey::Str(_)) => std::cmp::Ordering::Greater,
+            (StoreKey::Str(_), StoreKey::Digest(_)) => core::cmp::Ordering::Less,
+            (StoreKey::Digest(_), StoreKey::Str(_)) => core::cmp::Ordering::Greater,
         }
     }
 }
@@ -322,8 +323,8 @@ pub struct Store {
     inner: Arc<dyn StoreDriver>,
 }
 
-impl std::fmt::Debug for Store {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Store {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Store").finish_non_exhaustive()
     }
 }
@@ -804,8 +805,8 @@ pub trait StoreDriver:
     fn inner_store(&self, _digest: Option<StoreKey<'_>>) -> &dyn StoreDriver;
 
     /// Returns an Any variation of whatever Self is.
-    fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static);
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static>;
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static);
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static>;
 
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}

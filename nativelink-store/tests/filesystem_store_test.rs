@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::{Debug, Formatter};
+use core::marker::PhantomData;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::time::Duration;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fmt::{Debug, Formatter};
-use std::marker::PhantomData;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
 
 use async_lock::RwLock;
 use bytes::Bytes;
@@ -61,7 +61,7 @@ struct TestFileEntry<Hooks: FileEntryHooks + 'static + Sync + Send> {
 }
 
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> Debug for TestFileEntry<Hooks> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), core::fmt::Error> {
         f.debug_struct("TestFileEntry")
             .field("inner", &self.inner)
             .finish()

@@ -133,8 +133,8 @@ impl TryFrom<&str> for DigestHasherFunc {
     }
 }
 
-impl std::fmt::Display for DigestHasherFunc {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for DigestHasherFunc {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             DigestHasherFunc::Sha256 => write!(f, "SHA256"),
             DigestHasherFunc::Blake3 => write!(f, "BLAKE3"),

@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::mem::forget;
-use std::sync::atomic::{AtomicU64, Ordering};
+use core::mem::forget;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use futures::Future;

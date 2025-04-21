@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::convert::Into;
+use core::convert::Into;
 
 use nativelink_config::cas_server::FetchConfig;
 use nativelink_error::{Code, Error, ResultExt, make_err};

@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::task::{Context, Poll};
 use std::fs::Metadata;
 use std::io::{IoSlice, Seek};
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::task::{Context, Poll};
 
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use rlimit::increase_nofile_limit;

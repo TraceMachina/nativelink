@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::cmp;
+use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
-use std::cmp;
-use std::pin::Pin;
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -574,11 +574,11 @@ impl StoreDriver for RedisStore {
         self
     }
 
-    fn as_any(&self) -> &(dyn std::any::Any + Sync + Send) {
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send> {
         self
     }
 

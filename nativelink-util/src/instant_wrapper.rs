@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::future::Future;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use core::future::Future;
+use core::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use mock_instant::thread_local::{Instant as MockInstant, MockClock};
 

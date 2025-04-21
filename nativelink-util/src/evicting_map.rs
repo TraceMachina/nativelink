@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::Borrow;
-use std::cmp::Eq;
+use core::borrow::Borrow;
+use core::cmp::Eq;
+use core::fmt::Debug;
+use core::future::Future;
+use core::hash::Hash;
+use core::ops::RangeBounds;
 use std::collections::BTreeSet;
-use std::fmt::Debug;
-use std::future::Future;
-use std::hash::Hash;
-use std::ops::RangeBounds;
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -64,7 +64,7 @@ pub trait LenEntry: 'static {
     /// the `EvictionMap` globally (including inside `unref()`).
     #[inline]
     fn unref(&self) -> impl Future<Output = ()> + Send {
-        std::future::ready(())
+        core::future::ready(())
     }
 }
 
