@@ -32,7 +32,7 @@ use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
 use nativelink_config::stores::{
     FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
 };
-use nativelink_error::{make_err, make_input_err, Code, Error};
+use nativelink_error::{Code, Error, make_err, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::Platform;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;

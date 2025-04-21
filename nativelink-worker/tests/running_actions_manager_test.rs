@@ -29,7 +29,7 @@ use nativelink_config::cas_server::EnvironmentSource;
 use nativelink_config::stores::{
     FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
 };
-use nativelink_error::{make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable;
 #[cfg_attr(target_family = "windows", allow(unused_imports))]

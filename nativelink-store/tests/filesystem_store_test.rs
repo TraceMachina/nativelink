@@ -25,11 +25,11 @@ use async_lock::RwLock;
 use bytes::Bytes;
 use futures::executor::block_on;
 use futures::task::Poll;
-use futures::{poll, Future, FutureExt};
+use futures::{Future, FutureExt, poll};
 use nativelink_config::stores::{
     FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
 };
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
     DIGEST_FOLDER, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
@@ -1154,8 +1154,6 @@ async fn update_with_whole_file_closes_file() -> Result<(), Error> {
     );
     store.update_oneshot(digest, value.clone().into()).await?;
 
-    // TODO(chrisstaite): Considder documenting how this changed because it's a significant. 
-    // It's clear that direction was added to the test but there's simply a lot more here.
     let mut file = fs::create_file(OsString::from(format!("{temp_path}/dummy_file"))).await?;
     {
         let writer = file.as_writer().await?;
