@@ -1,9 +1,7 @@
-lints.workspace = true
-
 [package]
 name = "nativelink-store"
 version = "0.6.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 nativelink-error = { path = "../nativelink-error" }
@@ -66,7 +64,7 @@ serde = { version = "1.0.219", default-features = false }
 tokio = { version = "1.44.1", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
 tokio-stream = { version = "0.1.17", features = ["fs"], default-features = false }
 tokio-util = { version = "0.7.14" }
-tonic = { version = "0.13.0", features = ["transport", "tls-ring"], default-features = false }
+tonic = { version = "0.12.3", features = ["transport", "tls"], default-features = false }
 tracing = { version = "0.1.41", default-features = false }
 uuid = { version = "1.16.0", default-features = false, features = ["v4", "serde"] }
 
