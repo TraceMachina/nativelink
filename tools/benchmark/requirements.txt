@@ -1,0 +1,11 @@
+# Requirements for NativeLink Enhanced Benchmarking System
+
+# Core dependencies
+psutil>=5.9.0  # For system resource monitoring
+matplotlib>=3.5.0  # For visualization
+numpy>=1.22.0  # For numerical operations
+pandas>=1.4.0  # For data manipulation
+seaborn>=0.11.0  # For advanced visualizations
+
+# Optional dependencies
+requests>=2.27.0  # For API interactions (if needed)

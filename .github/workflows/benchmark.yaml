@@ -1,0 +1,123 @@
+---
+name: NativeLink Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  benchmark:
+    name: Run NativeLink Benchmarks
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Setup Bazel
+        uses: >- # v0.13.0
+          bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Checkout Test Project (Rust)
+        uses: actions/checkout@v4
+        with:
+          repository: 'rust-lang/rustlings'
+          path: 'benchmark-projects/rustlings'
+
+      - name: Checkout Test Project (C++)
+        uses: actions/checkout@v4
+        with:
+          repository: 'google/googletest'
+          path: 'benchmark-projects/googletest'
+
+      - name: Get Previous Commit
+        id: get-prev-commit
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "prev_commit=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
+          else
+            echo "prev_commit=$(git rev-parse HEAD~1)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Benchmarks (Rust Project)
+        run: |
+          python3 tools/benchmark/benchmark.py \
+            --project=benchmark-projects/rustlings \
+            --commit=${{ github.sha }} \
+            --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
+            --nativelink-url=https://app.nativelink.com \
+            --api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+            --output-dir=./benchmark_results
+
+      - name: Run Benchmarks (C++ Project)
+        run: |
+          python3 tools/benchmark/benchmark.py \
+            --project=benchmark-projects/googletest \
+            --commit=${{ github.sha }} \
+            --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
+            --nativelink-url=https://app.nativelink.com \
+            --api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+            --output-dir=./benchmark_results
+
+      - name: Upload Benchmark Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: ./benchmark_results
+          retention-days: 90
+
+      - name: Generate Benchmark Report
+        run: |
+          echo "## NativeLink Benchmark Results" > benchmark_report.md
+          echo "" >> benchmark_report.md
+          echo "### Commit: ${{ github.sha }}" >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          echo "#### Rust Project (rustlings)" >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          echo '```' >> benchmark_report.md
+          cat ./benchmark_results/rustlings_${{ github.sha }}_*.json >> benchmark_report.md
+          echo '```' >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          echo "#### C++ Project (googletest)" >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          echo '```' >> benchmark_report.md
+          cat ./benchmark_results/googletest_${{ github.sha }}_*.json >> benchmark_report.md
+          echo '```' >> benchmark_report.md
+
+      - name: Comment PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('benchmark_report.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
