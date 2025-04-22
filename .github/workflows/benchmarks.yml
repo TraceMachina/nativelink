@@ -4,7 +4,7 @@ on: [push]
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    container: nativelink-benchmark-env  # Frozen environment image
+    # container: nativelink-benchmark-env  # Comment out until image exists
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -20,6 +20,10 @@ jobs:
       env:
         NATIVELINK_API_KEY: ${{ secrets.NATIVELINK_API_KEY }}
       run: |
+        echo "Benchmarking commit: $GITHUB_SHA"
+        echo "Current directory: $(pwd)"
+        ls -la ./tools/benchmark/
+        
         ./tools/benchmark/run_benchmarks.sh \
           --project=./integration_tests/test_project \
           --commit=$GITHUB_SHA \
@@ -37,10 +41,16 @@ jobs:
           --baseline ./baseline_metrics \
           --output ./report.md
         
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v3
+    - name: Upload Benchmark Results
+      uses: actions/upload-artifact@v4
       with:
         name: benchmark-results
-        path: |
-          benchmark_results/
-          report.md
+        path: ./benchmark_results
+        retention-days: 90
+    
+    - name: Upload Benchmark Visualizations
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-visualizations
+        path: ./benchmark_viz
+        retention-days: 90
