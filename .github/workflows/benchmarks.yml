@@ -12,7 +12,7 @@ jobs:
     - name: Setup Bazel
       uses: bazelbuild/setup-bazelisk@v1
       with:
-        bazelisk_version: 1.13.2
+        bazelisk-version: "1.11.0"  # Correct parameter name and use quotes
       
     - name: Install Python dependencies
       run: |
