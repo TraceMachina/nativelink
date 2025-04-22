@@ -1,0 +1,46 @@
+name: NativeLink Benchmarks
+on: [push]
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    container: nativelink-benchmark-env  # Frozen environment image
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Bazel
+      uses: bazelbuild/setup-bazelisk@v2
+      
+    - name: Install Python dependencies
+      run: |
+        python3 -m pip install -r tools/benchmark/requirements.txt
+        
+    - name: Run Benchmarks
+      env:
+        NATIVELINK_API_KEY: ${{ secrets.NATIVELINK_API_KEY }}
+      run: |
+        ./tools/benchmark/run_benchmarks.sh \
+          --project=./integration_tests/test_project \
+          --commit=$GITHUB_SHA \
+          --output-dir=./benchmark_results \
+          --nativelink-url=https://app.nativelink.com \
+          --iterations=5 \
+          --cold-cache \
+          --warm-cache \
+          --incremental-build
+        
+    - name: Analyze Results
+      run: |
+        python3 tools/benchmark/analyze_results.py \
+          --current ./benchmark_results \
+          --baseline ./baseline_metrics \
+          --output ./report.md
+        
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: benchmark-results
+        path: |
+          benchmark_results/
+          report.md
