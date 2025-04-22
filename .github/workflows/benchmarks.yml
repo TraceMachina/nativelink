@@ -10,9 +10,9 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Bazel
-      uses: bazelbuild/setup-bazelisk@v1
+      uses: bazelbuild/setup-bazelisk@v2
       with:
-        bazelisk-version: "1.11.0"  # Correct parameter name and use quotes
+        bazelisk-version: "1.17.0"  # Correct parameter name and use quotes
       
     - name: Install Python dependencies
       run: |
