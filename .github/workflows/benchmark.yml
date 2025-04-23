@@ -46,7 +46,7 @@ jobs:
         uses: bazelbuild/setup-bazelisk@v2
         with:
           bazelisk-version: 'v1.19.0'
-          # Disable caching until the issue is resolved
+          # Remove these cache options or set them to false
           bazelisk-cache: false
           repository-cache: false
 
