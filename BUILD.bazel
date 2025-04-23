@@ -1,8 +1,3 @@
 exports_files(["clippy.toml", ".rustfmt.toml"])
-load("@rules_rust//rust:defs.bzl", "rust_binary")
 
-rust_binary(
-    name = "rustlings",
-    srcs = glob(["src/**/*.rs"]),
-    deps = [],
-)
+# Remove the rust_binary target from here since it should be defined in src/bin/BUILD.bazel
