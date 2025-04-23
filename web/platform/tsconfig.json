@@ -11,7 +11,7 @@
       "@utils/*": ["./utils/*"]
     },
     "types": ["bun"],
-    "jsx": "react-jsx",
-    "jsxImportSource": "@builder.io/qwik"
+    "jsx": "preserve",
+    "jsxImportSource": "@builder.io/qwik",
   }
 }

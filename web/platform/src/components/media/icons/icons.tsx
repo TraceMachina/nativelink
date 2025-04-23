@@ -1,9 +1,18 @@
 import type { PropsOf } from "@builder.io/qwik";
 
-export const Slack = (props: PropsOf<"svg">, key: string) => {
+type SafeSVGProps = PropsOf<"svg"> & {
+    className?: string;
+    onClick?: () => void;
+};
+
+export const Slack = (props: SafeSVGProps, key: string) => {
+  // Whitelist allowed props to prevent XSS
+  const { className, style, onClick } = props;
+  const safeProps = { class: className, style, onClick };
+  
   return (
     <svg
-      {...props}
+      {...safeProps}
       key={key}
       preserveAspectRatio="xMidYMid meet"
       data-bbox="0 0 111 42"
