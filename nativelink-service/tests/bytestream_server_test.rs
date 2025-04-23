@@ -23,8 +23,7 @@ use hyper::body::Frame;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
-use maplit::hashmap;
-use nativelink_config::cas_server::ByteStreamConfig;
+use nativelink_config::cas_server::{ByteStreamConfig, WithInstanceName};
 use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
@@ -75,9 +74,10 @@ fn make_bytestream_server(
     config: Option<ByteStreamConfig>,
 ) -> Result<ByteStreamServer, Error> {
     let config = config.unwrap_or(ByteStreamConfig {
-        cas_stores: hashmap! {
-            "foo_instance_name".to_string() => "main_cas".to_string(),
-        },
+        cas_stores: vec![WithInstanceName {
+            instance_name: "foo_instance_name".to_owned(),
+            config: "main_cas".to_owned(),
+        }],
         persist_stream_on_disconnect_timeout: 0,
         max_bytes_per_stream: 1024,
         max_decoding_message_size: 0,
@@ -962,9 +962,10 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
 
     let store_manager = make_store_manager().await?;
     let config = ByteStreamConfig {
-        cas_stores: hashmap! {
-            INSTANCE_NAME.to_string() => "main_cas".to_string(),
-        },
+        cas_stores: vec![WithInstanceName {
+            instance_name: INSTANCE_NAME.to_owned(),
+            config: "main_cas".to_owned(),
+        }],
         max_decoding_message_size: MAX_MESSAGE_SIZE,
         ..Default::default()
     };
