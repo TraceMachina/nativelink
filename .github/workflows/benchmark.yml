@@ -39,8 +39,7 @@ jobs:
           pip install -r tools/benchmark/requirements.txt
 
       - name: Setup Bazel
-        uses: >- # v0.13.0
-          bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
+        uses: bazel-contrib/setup-bazel@v0.13.0
         with:
           bazelisk-version: 'v1.19.0'
           bazelisk-cache: true
