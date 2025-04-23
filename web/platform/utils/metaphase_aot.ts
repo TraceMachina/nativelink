@@ -17,6 +17,7 @@ export async function generateDocs(config: {
     console.info(`Generated: ${outputPath}`);
   } catch (error) {
     console.error("An error occurred during generation:", error);
+    throw error;
   }
 }
 
