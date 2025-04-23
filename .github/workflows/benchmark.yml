@@ -8,12 +8,8 @@ on:
     branches: [main]
     paths-ignore:
       - 'docs/**'
-  workflow_dispatch:  # Allow manual triggering
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+permissions: read-all
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,7 +23,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
@@ -39,33 +36,23 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install -r tools/benchmark/requirements.txt
 
       - name: Setup Bazel
-        uses: bazelbuild/setup-bazelisk@v2
+        uses: >- # v0.13.0
+          bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
         with:
           bazelisk-version: 'v1.19.0'
-          # Remove these cache options or set them to false
-          bazelisk-cache: false
-          repository-cache: false
+          bazelisk-cache: true
+          repository-cache: true
 
-      # Checkout test projects - including a smaller project for faster feedback
-      - name: Checkout Small Test Project (Hello World)
-        uses: actions/checkout@v4
-        with:
-          repository: 'bazelbuild/examples'
-          path: 'benchmark-projects/bazel-examples'
-          sparse-checkout: |
-            cpp-tutorial/stage1
-
-      - name: Checkout Medium Test Project (Rust)
+      - name: Checkout Test Project (Rust)
         uses: actions/checkout@v4
         with:
           repository: 'rust-lang/rustlings'
           path: 'benchmark-projects/rustlings'
 
-      - name: Checkout Large Test Project (C++)
+      - name: Checkout Test Project (C++)
         uses: actions/checkout@v4
         with:
           repository: 'google/googletest'
@@ -80,58 +67,27 @@ jobs:
             echo "prev_commit=$(git rev-parse HEAD~1)" >> $GITHUB_OUTPUT
           fi
 
-      # Run benchmarks on small project first for quick feedback
-      - name: Run Benchmarks (Small Project)
+      - name: Run Benchmarks (Rust Project)
         run: |
-          python3 tools/benchmark/enhanced_benchmark.py \
-            --project=benchmark-projects/bazel-examples/cpp-tutorial/stage1 \
-            --commit=${{ github.sha }} \
-            --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
-            --nativelink-url=https://app.nativelink.com \
-            --api-key=${{ secrets.NATIVELINK_API_KEY }} \
-            --output-dir=./benchmark_results \
-            --incremental=True \
-            --network-stats=True \
-            --github-run-id=${{ github.run_id }} \
-            --github-sha=${{ github.sha }}
-
-      # Run benchmarks on medium project
-      - name: Run Benchmarks (Medium Project)
-        run: |
-          python3 tools/benchmark/enhanced_benchmark.py \
+          python3 tools/benchmark/benchmark.py \
             --project=benchmark-projects/rustlings \
             --commit=${{ github.sha }} \
             --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
             --nativelink-url=https://app.nativelink.com \
-            --api-key=${{ secrets.NATIVELINK_API_KEY }} \
+            --api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
             --output-dir=./benchmark_results \
-            --incremental=True \
-            --network-stats=True \
-            --github-run-id=${{ github.run_id }} \
-            --github-sha=${{ github.sha }}
+            --runs=3
 
-      # Run benchmarks on large project
-      - name: Run Benchmarks (Large Project)
+      - name: Run Benchmarks (C++ Project)
         run: |
-          python3 tools/benchmark/enhanced_benchmark.py \
+          python3 tools/benchmark/benchmark.py \
             --project=benchmark-projects/googletest \
             --commit=${{ github.sha }} \
             --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
             --nativelink-url=https://app.nativelink.com \
-            --api-key=${{ secrets.NATIVELINK_API_KEY }} \
+            --api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
             --output-dir=./benchmark_results \
-            --incremental=True \
-            --network-stats=True \
-            --github-run-id=${{ github.run_id }} \
-            --github-sha=${{ github.sha }}
-
-      - name: Generate Visualizations
-        run: |
-          python3 tools/benchmark/enhanced_visualize.py \
-            --input-dir=./benchmark_results \
-            --output-dir=./benchmark_viz \
-            --last-n-commits=10 \
-            --html-report=True
+            --runs=3
 
       - name: Upload Benchmark Results
         uses: actions/upload-artifact@v4
@@ -140,55 +96,27 @@ jobs:
           path: ./benchmark_results
           retention-days: 90
 
-      - name: Upload Benchmark Visualizations
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-visualizations
-          path: ./benchmark_viz
-          retention-days: 90
-
       - name: Generate Benchmark Report
         run: |
           echo "## NativeLink Benchmark Results" > benchmark_report.md
           echo "" >> benchmark_report.md
           echo "### Commit: ${{ github.sha }}" >> benchmark_report.md
           echo "" >> benchmark_report.md
-          
-          echo "#### Small Project (Bazel Hello World)" >> benchmark_report.md
-          echo "" >> benchmark_report.md
-          echo '```' >> benchmark_report.md
-          cat ./benchmark_results/stage1_${{ github.sha }}_*.json >> benchmark_report.md
-          echo '```' >> benchmark_report.md
-          echo "" >> benchmark_report.md
-          
-          echo "#### Medium Project (Rustlings)" >> benchmark_report.md
+          echo "#### Rust Project (rustlings)" >> benchmark_report.md
           echo "" >> benchmark_report.md
           echo '```' >> benchmark_report.md
           cat ./benchmark_results/rustlings_${{ github.sha }}_*.json >> benchmark_report.md
           echo '```' >> benchmark_report.md
           echo "" >> benchmark_report.md
-          
-          echo "#### Large Project (GoogleTest)" >> benchmark_report.md
+          echo "#### C++ Project (googletest)" >> benchmark_report.md
           echo "" >> benchmark_report.md
           echo '```' >> benchmark_report.md
           cat ./benchmark_results/googletest_${{ github.sha }}_*.json >> benchmark_report.md
           echo '```' >> benchmark_report.md
-          echo "" >> benchmark_report.md
-          
-          echo "### Visualizations" >> benchmark_report.md
-          echo "" >> benchmark_report.md
-          echo "Detailed visualizations are available in the benchmark-visualizations artifact." >> benchmark_report.md
-          
-          echo "### Benchmark Configurations" >> benchmark_report.md
-          echo "" >> benchmark_report.md
-          echo "1. **Remote Cache Only**: Tests build performance using only NativeLink's remote caching capabilities" >> benchmark_report.md
-          echo "2. **Remote Cache and Execution**: Tests build performance using both remote caching and remote execution" >> benchmark_report.md
-          echo "3. **Clean Remote Execution**: Tests pure remote execution performance without caching" >> benchmark_report.md
-          echo "4. **Incremental Build**: Tests performance of incremental builds with remote cache and execution" >> benchmark_report.md
 
       - name: Comment PR
-        uses: actions/github-script@v7
         if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
