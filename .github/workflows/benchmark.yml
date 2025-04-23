@@ -1,107 +1,216 @@
-name: NativeLink Performance Benchmarks
+---
+name: NativeLink Benchmarks
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main]
   pull_request:
-    branches: [ main, master ]
-  schedule:
-    # Run nightly at 2 AM UTC
-    - cron: '0 2 * * *'
-  workflow_dispatch:
-    inputs:
-      compare_to:
-        description: 'Previous commit hash to compare against'
-        required: false
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+  workflow_dispatch:  # Allow manual triggering
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   benchmark:
-    name: Run Performance Benchmarks
-    runs-on: ubuntu-latest
-    
+    name: Run NativeLink Benchmarks
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 60
     steps:
-      - name: Checkout NativeLink
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-          
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          
-      - name: Install dependencies
+
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install psutil matplotlib pandas
-          
-      - name: Set up Bazel
-        uses: bazelbuild/setup-bazelisk@v2
-          
-      - name: Checkout test project - TensorFlow Lite
-        uses: actions/checkout@v3
+          pip install -r tools/benchmark/requirements.txt
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@v0.13.0
         with:
-          repository: tensorflow/tensorflow
-          path: test-projects/tensorflow
-          fetch-depth: 1
-          
-      - name: Checkout test project - gRPC
-        uses: actions/checkout@v3
+          bazelisk-cache: true
+          repository-cache: true
+
+      # Checkout test projects - including a smaller project for faster feedback
+      - name: Checkout Small Test Project (Hello World)
+        uses: actions/checkout@v4
         with:
-          repository: grpc/grpc
-          path: test-projects/grpc
-          fetch-depth: 1
-          
-      - name: Run benchmarks
-        id: run_benchmarks
+          repository: 'bazelbuild/examples'
+          path: 'benchmark-projects/bazel-examples'
+          sparse-checkout: |
+            cpp-tutorial/stage1
+
+      - name: Checkout Medium Test Project (Rust)
+        uses: actions/checkout@v4
+        with:
+          repository: 'rust-lang/rustlings'
+          path: 'benchmark-projects/rustlings'
+
+      - name: Checkout Large Test Project (C++)
+        uses: actions/checkout@v4
+        with:
+          repository: 'google/googletest'
+          path: 'benchmark-projects/googletest'
+
+      - name: Get Previous Commit
+        id: get-prev-commit
         run: |
-          COMMIT_HASH=$(git rev-parse HEAD)
-          COMPARE_TO=${{ github.event.inputs.compare_to || '' }}
-          
-          # If no explicit comparison commit is provided and this is not a PR
-          if [ -z "$COMPARE_TO" ] && [ "${{ github.event_name }}" != "pull_request" ]; then
-            # Compare against the previous commit on the same branch
-            COMPARE_TO=$(git rev-parse HEAD~1)
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "prev_commit=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
+          else
+            echo "prev_commit=$(git rev-parse HEAD~1)" >> $GITHUB_OUTPUT
           fi
-          
-          # If this is a PR, compare against the base branch
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            COMPARE_TO=${{ github.event.pull_request.base.sha }}
-          fi
-          
-          COMPARE_ARG=""
-          if [ ! -z "$COMPARE_TO" ]; then
-            COMPARE_ARG="--compare-to=$COMPARE_TO"
-          fi
-          
-          # Run benchmarks for TensorFlow Lite
-          ./tools/benchmark/run_benchmarks.sh \
-            --project=./test-projects/tensorflow \
-            --commit=$COMMIT_HASH \
+
+      # Run benchmarks on small project first for quick feedback
+      - name: Run Benchmarks (Small Project)
+        run: |
+          python3 tools/benchmark/enhanced_benchmark.py \
+            --project=benchmark-projects/bazel-examples/cpp-tutorial/stage1 \
+            --commit=${{ github.sha }} \
+            --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
+            --nativelink-url=https://app.nativelink.com \
+            --api-key=${{ secrets.NATIVELINK_API_KEY }} \
             --output-dir=./benchmark_results \
-            --viz-dir=./benchmark_viz \
-            $COMPARE_ARG
-            
-          # Run benchmarks for gRPC
-          ./tools/benchmark/run_benchmarks.sh \
-            --project=./test-projects/grpc \
-            --commit=$COMMIT_HASH \
+            --incremental=True \
+            --network-stats=True \
+            --github-run-id=${{ github.run_id }} \
+            --github-sha=${{ github.sha }}
+
+      # Run benchmarks on medium project
+      - name: Run Benchmarks (Medium Project)
+        run: |
+          python3 tools/benchmark/enhanced_benchmark.py \
+            --project=benchmark-projects/rustlings \
+            --commit=${{ github.sha }} \
+            --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
+            --nativelink-url=https://app.nativelink.com \
+            --api-key=${{ secrets.NATIVELINK_API_KEY }} \
             --output-dir=./benchmark_results \
-            --viz-dir=./benchmark_viz \
-            $COMPARE_ARG
-            
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v3
+            --incremental=True \
+            --network-stats=True \
+            --github-run-id=${{ github.run_id }} \
+            --github-sha=${{ github.sha }}
+
+      # Run benchmarks on large project
+      - name: Run Benchmarks (Large Project)
+        run: |
+          python3 tools/benchmark/enhanced_benchmark.py \
+            --project=benchmark-projects/googletest \
+            --commit=${{ github.sha }} \
+            --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
+            --nativelink-url=https://app.nativelink.com \
+            --api-key=${{ secrets.NATIVELINK_API_KEY }} \
+            --output-dir=./benchmark_results \
+            --incremental=True \
+            --network-stats=True \
+            --github-run-id=${{ github.run_id }} \
+            --github-sha=${{ github.sha }}
+
+      - name: Generate Visualizations
+        run: |
+          python3 tools/benchmark/enhanced_visualize.py \
+            --input-dir=./benchmark_results \
+            --output-dir=./benchmark_viz \
+            --last-n-commits=10 \
+            --html-report=True
+
+      - name: Upload Benchmark Results
+        uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
-          path: |
-            benchmark_results/
-            benchmark_viz/
-            
-      - name: Deploy visualization to GitHub Pages
-        if: github.event_name == 'push' || github.event_name == 'schedule'
-        uses: peaceiris/actions-gh-pages@v3
+          path: ./benchmark_results
+          retention-days: 90
+
+      - name: Upload Benchmark Visualizations
+        uses: actions/upload-artifact@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./benchmark_viz
-          destination_dir: benchmarks
+          name: benchmark-visualizations
+          path: ./benchmark_viz
+          retention-days: 90
+
+      - name: Generate Benchmark Report
+        run: |
+          echo "## NativeLink Benchmark Results" > benchmark_report.md
+          echo "" >> benchmark_report.md
+          echo "### Commit: ${{ github.sha }}" >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          
+          echo "#### Small Project (Bazel Hello World)" >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          echo '```' >> benchmark_report.md
+          cat ./benchmark_results/stage1_${{ github.sha }}_*.json >> benchmark_report.md
+          echo '```' >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          
+          echo "#### Medium Project (Rustlings)" >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          echo '```' >> benchmark_report.md
+          cat ./benchmark_results/rustlings_${{ github.sha }}_*.json >> benchmark_report.md
+          echo '```' >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          
+          echo "#### Large Project (GoogleTest)" >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          echo '```' >> benchmark_report.md
+          cat ./benchmark_results/googletest_${{ github.sha }}_*.json >> benchmark_report.md
+          echo '```' >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          
+          echo "### Visualizations" >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          echo "Detailed visualizations are available in the benchmark-visualizations artifact." >> benchmark_report.md
+          
+          echo "### Benchmark Configurations" >> benchmark_report.md
+          echo "" >> benchmark_report.md
+          echo "1. **Remote Cache Only**: Tests build performance using only NativeLink's remote caching capabilities" >> benchmark_report.md
+          echo "2. **Remote Cache and Execution**: Tests build performance using both remote caching and remote execution" >> benchmark_report.md
+          echo "3. **Clean Remote Execution**: Tests pure remote execution performance without caching" >> benchmark_report.md
+          echo "4. **Incremental Build**: Tests performance of incremental builds with remote cache and execution" >> benchmark_report.md
+
+      - name: Comment PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('benchmark_report.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
+
+      # Setup GitHub Pages deployment
+      - name: Setup Pages
+        if: github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v4
+
+      - name: Upload Pages Artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './benchmark_viz'
+
+      - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main'
+        id: deployment
+        uses: actions/deploy-pages@v4
