@@ -1,0 +1,107 @@
+name: NativeLink Performance Benchmarks
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    # Run nightly at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      compare_to:
+        description: 'Previous commit hash to compare against'
+        required: false
+
+jobs:
+  benchmark:
+    name: Run Performance Benchmarks
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout NativeLink
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install psutil matplotlib pandas
+          
+      - name: Set up Bazel
+        uses: bazelbuild/setup-bazelisk@v2
+          
+      - name: Checkout test project - TensorFlow Lite
+        uses: actions/checkout@v3
+        with:
+          repository: tensorflow/tensorflow
+          path: test-projects/tensorflow
+          fetch-depth: 1
+          
+      - name: Checkout test project - gRPC
+        uses: actions/checkout@v3
+        with:
+          repository: grpc/grpc
+          path: test-projects/grpc
+          fetch-depth: 1
+          
+      - name: Run benchmarks
+        id: run_benchmarks
+        run: |
+          COMMIT_HASH=$(git rev-parse HEAD)
+          COMPARE_TO=${{ github.event.inputs.compare_to || '' }}
+          
+          # If no explicit comparison commit is provided and this is not a PR
+          if [ -z "$COMPARE_TO" ] && [ "${{ github.event_name }}" != "pull_request" ]; then
+            # Compare against the previous commit on the same branch
+            COMPARE_TO=$(git rev-parse HEAD~1)
+          fi
+          
+          # If this is a PR, compare against the base branch
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            COMPARE_TO=${{ github.event.pull_request.base.sha }}
+          fi
+          
+          COMPARE_ARG=""
+          if [ ! -z "$COMPARE_TO" ]; then
+            COMPARE_ARG="--compare-to=$COMPARE_TO"
+          fi
+          
+          # Run benchmarks for TensorFlow Lite
+          ./tools/benchmark/run_benchmarks.sh \
+            --project=./test-projects/tensorflow \
+            --commit=$COMMIT_HASH \
+            --output-dir=./benchmark_results \
+            --viz-dir=./benchmark_viz \
+            $COMPARE_ARG
+            
+          # Run benchmarks for gRPC
+          ./tools/benchmark/run_benchmarks.sh \
+            --project=./test-projects/grpc \
+            --commit=$COMMIT_HASH \
+            --output-dir=./benchmark_results \
+            --viz-dir=./benchmark_viz \
+            $COMPARE_ARG
+            
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v3
+        with:
+          name: benchmark-results
+          path: |
+            benchmark_results/
+            benchmark_viz/
+            
+      - name: Deploy visualization to GitHub Pages
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./benchmark_viz
+          destination_dir: benchmarks
