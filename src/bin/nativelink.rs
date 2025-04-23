@@ -468,18 +468,12 @@ async fn inner_main(
                     .err_tip(|| "Could not create ByteStream service")?,
             )
             .add_optional_service(
-                OptionFuture::from(
-                    services
-                        .capabilities
-                        .as_ref()
-                        // Borrow checker fighting here...
-                        .map(|_| {
-                            CapabilitiesServer::new(
-                                services.capabilities.as_ref().unwrap(),
-                                &action_schedulers,
-                            )
-                        }),
-                )
+                OptionFuture::from(services.capabilities.as_ref().map(|_| {
+                    CapabilitiesServer::new(
+                        services.capabilities.as_ref().unwrap(),
+                        &action_schedulers,
+                    )
+                }))
                 .await
                 .map_or(Ok::<Option<CapabilitiesServer>, Error>(None), |server| {
                     Ok(Some(server?))

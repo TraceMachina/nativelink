@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::stream::unfold;
 use futures::{Stream, StreamExt};
-use nativelink_config::cas_server::{ExecutionConfig, InstanceName};
+use nativelink_config::cas_server::{ExecutionConfig, InstanceName, NamedConfig};
 use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{
     Execution, ExecutionServer as Server,
@@ -170,29 +170,27 @@ type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send
 
 impl ExecutionServer {
     pub fn new(
-        config: &HashMap<InstanceName, ExecutionConfig>,
+        config: &[NamedConfig<ExecutionConfig>],
         scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
         let mut instance_infos = HashMap::with_capacity(config.len());
-        for (instance_name, exec_cfg) in config {
-            let cas_store = store_manager
-                .get_store(&exec_cfg.cas_store)
-                .ok_or_else(|| {
-                    make_input_err!("'cas_store': '{}' does not exist", exec_cfg.cas_store)
-                })?;
+        for NamedConfig { name, spec } in config {
+            let cas_store = store_manager.get_store(&spec.cas_store).ok_or_else(|| {
+                make_input_err!("'cas_store': '{}' does not exist", spec.cas_store)
+            })?;
             let scheduler = scheduler_map
-                .get(&exec_cfg.scheduler)
+                .get(&spec.scheduler)
                 .err_tip(|| {
                     format!(
                         "Scheduler needs config for '{}' because it exists in execution",
-                        exec_cfg.scheduler
+                        spec.scheduler
                     )
                 })?
                 .clone();
 
             instance_infos.insert(
-                instance_name.to_string(),
+                name.to_string(),
                 InstanceInfo {
                     scheduler,
                     cas_store,

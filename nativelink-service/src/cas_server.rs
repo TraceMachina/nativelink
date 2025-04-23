@@ -19,7 +19,7 @@ use std::collections::{HashMap, VecDeque};
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
 use futures::{StreamExt, TryStreamExt};
-use nativelink_config::cas_server::{CasStoreConfig, InstanceName};
+use nativelink_config::cas_server::{CasStoreConfig, NamedConfig};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer as Server,
@@ -50,15 +50,15 @@ type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> 
 
 impl CasServer {
     pub fn new(
-        config: &HashMap<InstanceName, CasStoreConfig>,
+        config: &[NamedConfig<CasStoreConfig>],
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
         let mut stores = HashMap::with_capacity(config.len());
-        for (instance_name, cas_cfg) in config {
-            let store = store_manager.get_store(&cas_cfg.cas_store).ok_or_else(|| {
-                make_input_err!("'cas_store': '{}' does not exist", cas_cfg.cas_store)
+        for NamedConfig { name, spec } in config {
+            let store = store_manager.get_store(&spec.cas_store).ok_or_else(|| {
+                make_input_err!("'cas_store': '{}' does not exist", spec.cas_store)
             })?;
-            stores.insert(instance_name.to_string(), store);
+            stores.insert(name.to_string(), store);
         }
         Ok(CasServer { stores })
     }

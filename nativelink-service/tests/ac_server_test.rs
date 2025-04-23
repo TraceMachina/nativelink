@@ -16,7 +16,7 @@ use core::pin::Pin;
 use std::sync::Arc;
 
 use bytes::BytesMut;
-use maplit::hashmap;
+use nativelink_config::cas_server::NamedConfig;
 use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
@@ -76,12 +76,13 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
 
 fn make_ac_server(store_manager: &StoreManager) -> Result<AcServer, Error> {
     AcServer::new(
-        &hashmap! {
-            "foo_instance_name".to_string() => nativelink_config::cas_server::AcStoreConfig{
+        &[NamedConfig {
+            name: "foo_instance_name".to_string(),
+            spec: nativelink_config::cas_server::AcStoreConfig {
                 ac_store: "main_ac".to_string(),
                 read_only: false,
-            }
-        },
+            },
+        }],
         store_manager,
     )
 }
