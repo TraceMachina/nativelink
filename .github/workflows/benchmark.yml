@@ -51,6 +51,12 @@ jobs:
         with:
           repository: 'rust-lang/rustlings'
           path: 'benchmark-projects/rustlings'
+              
+      # 新增Bazel初始化步骤        
+      - name: Initialize Bazel workspace
+        run: |
+          cd benchmark-projects/rustlings
+          touch WORKSPACE.bazel
 
       - name: Checkout Test Project (C++)
         uses: actions/checkout@v4
