@@ -73,8 +73,8 @@ const isEnumItem = (
   return "enum" in item.inner;
 };
 
-const removePrefix = (name: string): string => {
-  return name
+const removePrefix = (path: string): string => {
+  return path
     .replace(/^(crate::)?stores::/, "")
     .replace(/^std::collections::/, "");
 };
@@ -146,8 +146,8 @@ const generateResolvedPathJsonExample = (
   crate: Crate,
   depth: number,
 ): JsonExample => {
-  const { name, id, args } = type.resolved_path;
-  const cleanName = removePrefix(name);
+  const { path, id, args } = type.resolved_path;
+  const cleanName = removePrefix(path);
   switch (cleanName) {
     case "Option":
       return null;
@@ -311,7 +311,7 @@ const generateTypeDescription = (type: Type): string => {
   }
 
   if (isResolvedPathType(type)) {
-    const { name, args } = type.resolved_path;
+    const { path, args } = type.resolved_path;
 
     const getInnerType = (index: number): string => {
       if (args && "angle_bracketed" in args) {
@@ -323,7 +323,7 @@ const generateTypeDescription = (type: Type): string => {
       return "Unknown";
     };
 
-    const finalTypeName = removePrefix(name.split("::").pop() || name);
+    const finalTypeName = removePrefix(path.split("::").pop() || path);
 
     switch (finalTypeName) {
       case "Option":
