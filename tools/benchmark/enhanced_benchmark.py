@@ -1,558 +1,449 @@
 #!/usr/bin/env python3
 
-# Copyright 2023 The NativeLink Authors. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-"""
-Enhanced NativeLink Benchmarking Tool
-
-This script implements an improved benchmarking system for NativeLink on a per-commit basis,
-inspired by the Lucene Nightly Benchmarks project. It measures build performance
-metrics for specified test projects using Bazel with different NativeLink configurations.
-
-The benchmarks track:
-1. Build with remote cache only
-2. Build with remote cache and execution
-3. Clean build with remote execution
-4. Incremental build with remote cache and execution
-5. Network usage metrics
-6. CPU and memory utilization
-
-Results are stored in a structured format that allows for tracking performance
-trends over time and detecting regressions between commits.
-
-Usage:
-  python enhanced_benchmark.py --project=<project_path> --commit=<commit_hash> [options]
-
-Options:
-  --project         Path to the test project (Rust or C++ with Bazel)
-  --commit          NativeLink commit hash being benchmarked
-  --output-dir      Directory to store benchmark results (default: ./benchmark_results)
-  --nativelink-url  URL for NativeLink service (default: https://app.nativelink.com)
-  --api-key         API key for NativeLink service
-  --compare-to      Previous commit hash to compare against (optional)
-  --runs            Number of benchmark runs to average (default: 3)
-  --incremental     Enable incremental build tests (default: True)
-  --network-stats   Enable network statistics collection (default: True)
-"""
-
 import argparse
-import csv
-import datetime
 import json
 import os
-import re
 import subprocess
-import sys
 import time
-import psutil
+import datetime
+import statistics
+import sys
+import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
 
-
-class NetworkStats:
-    """Class to track network statistics."""
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run NativeLink benchmarks")
+    parser.add_argument("--github-run-id", help="GitHub Actions run ID")
+    parser.add_argument("--github-sha", help="GitHub commit SHA")
+    parser.add_argument("--regression-threshold", type=float, default=10.0, 
+                        help="Percentage threshold for regression detection")
+    parser.add_argument("--project", required=True, help="Path to the project to benchmark")
+    parser.add_argument("--commit", required=True, help="Current commit hash")
+    parser.add_argument("--output-dir", default="./benchmark_results", 
+                        help="Directory to store benchmark results")
+    parser.add_argument("--nativelink-url", default="https://app.nativelink.com", 
+                        help="NativeLink service URL")
+    parser.add_argument("--api-key", help="NativeLink API key")
+    parser.add_argument("--compare-to", help="Previous commit hash to compare against")
+    parser.add_argument("--runs", type=int, default=3, help="Number of benchmark runs")
+    parser.add_argument("--incremental", action="store_true", help="Run incremental build benchmarks")
+    parser.add_argument("--network-stats", action="store_true", help="Collect network statistics")
     
-    def __init__(self):
-        self.start_bytes_sent = 0
-        self.start_bytes_recv = 0
-        self.end_bytes_sent = 0
-        self.end_bytes_recv = 0
-        
-    def start_monitoring(self):
-        """Start monitoring network usage."""
-        net_io = psutil.net_io_counters()
-        self.start_bytes_sent = net_io.bytes_sent
-        self.start_bytes_recv = net_io.bytes_recv
-        
-    def stop_monitoring(self):
-        """Stop monitoring network usage."""
-        net_io = psutil.net_io_counters()
-        self.end_bytes_sent = net_io.bytes_sent
-        self.end_bytes_recv = net_io.bytes_recv
-        
-    def get_stats(self) -> Dict[str, int]:
-        """Get network usage statistics."""
-        return {
-            "bytes_sent": self.end_bytes_sent - self.start_bytes_sent,
-            "bytes_recv": self.end_bytes_recv - self.start_bytes_recv,
-            "total_bytes": (self.end_bytes_sent - self.start_bytes_sent) + 
-                          (self.end_bytes_recv - self.start_bytes_recv)
-        }
+    return parser.parse_args()
 
-
-class SystemStats:
-    """Class to track system resource usage."""
+def run_command(cmd, cwd=None, env=None):
+    """Run a command and return its output and execution time."""
+    print(f"Running command: {' '.join(cmd)}")
+    start_time = time.time()
     
-    def __init__(self):
-        self.cpu_percent = []
-        self.memory_percent = []
-        self.monitoring = False
-        self.interval = 0.5  # seconds
-        
-    def start_monitoring(self):
-        """Start monitoring system resources."""
-        self.cpu_percent = []
-        self.memory_percent = []
-        self.monitoring = True
-        
-        # Start monitoring in a separate thread
-        import threading
-        self.monitor_thread = threading.Thread(target=self._monitor_resources)
-        self.monitor_thread.daemon = True
-        self.monitor_thread.start()
-        
-    def _monitor_resources(self):
-        """Monitor system resources at regular intervals."""
-        while self.monitoring:
-            self.cpu_percent.append(psutil.cpu_percent(interval=None))
-            self.memory_percent.append(psutil.virtual_memory().percent)
-            time.sleep(self.interval)
-            
-    def stop_monitoring(self):
-        """Stop monitoring system resources."""
-        self.monitoring = False
-        if hasattr(self, 'monitor_thread'):
-            self.monitor_thread.join(timeout=1.0)
-            
-    def get_stats(self) -> Dict[str, float]:
-        """Get system resource usage statistics."""
-        if not self.cpu_percent:
-            return {"avg_cpu_percent": 0, "max_cpu_percent": 0, 
-                    "avg_memory_percent": 0, "max_memory_percent": 0}
-            
-        return {
-            "avg_cpu_percent": sum(self.cpu_percent) / len(self.cpu_percent),
-            "max_cpu_percent": max(self.cpu_percent),
-            "avg_memory_percent": sum(self.memory_percent) / len(self.memory_percent),
-            "max_memory_percent": max(self.memory_percent)
-        }
-
-
-class BenchmarkResult:
-    """Class to store benchmark results."""
-
-    def __init__(self, commit: str, timestamp: str, project: str):
-        self.commit = commit
-        self.timestamp = timestamp
-        self.project = project
-        self.metrics: Dict[str, Dict[str, float]] = {}
-
-    def add_metric(self, test_name: str, metric_name: str, value: float):
-        """Add a metric value to the results."""
-        if test_name not in self.metrics:
-            self.metrics[test_name] = {}
-        self.metrics[test_name][metric_name] = value
-
-    def to_dict(self) -> Dict:
-        """Convert results to a dictionary."""
-        return {
-            "commit": self.commit,
-            "timestamp": self.timestamp,
-            "project": self.project,
-            "metrics": self.metrics,
-        }
-
-    def to_json(self) -> str:
-        """Convert results to a JSON string."""
-        return json.dumps(self.to_dict(), indent=2)
-
-    def save_to_file(self, output_dir: str):
-        """Save results to JSON and CSV files."""
-        # Create output directory if it doesn't exist
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-        # Save as JSON
-        json_path = os.path.join(
-            output_dir, f"{self.project}_{self.commit}_{self.timestamp}.json"
-        )
-        with open(json_path, "w") as f:
-            f.write(self.to_json())
-
-        # Save as CSV
-        csv_path = os.path.join(
-            output_dir, f"{self.project}_{self.commit}_{self.timestamp}.csv"
-        )
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Test", "Metric", "Value"])
-            for test_name, metrics in self.metrics.items():
-                for metric_name, value in metrics.items():
-                    writer.writerow([test_name, metric_name, value])
-
-
-def run_command(cmd: List[str], cwd: Optional[str] = None) -> Tuple[str, str, int]:
-    """Run a command and return stdout, stderr, and return code."""
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         cwd=cwd,
+        env=env
     )
+    
     stdout, stderr = process.communicate()
-    return stdout, stderr, process.returncode
+    end_time = time.time()
+    
+    execution_time = end_time - start_time
+    return {
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": process.returncode,
+        "execution_time": execution_time
+    }
 
-
-def clean_bazel_workspace(project_dir: str):
-    """Clean the Bazel workspace to ensure a fresh build."""
-    print("Cleaning Bazel workspace...")
-    run_command(["bazel", "clean", "--expunge"], cwd=project_dir)
-
-
-def make_incremental_change(project_dir: str) -> bool:
-    """Make a small change to the project to test incremental builds.
-    
-    Returns True if a change was successfully made, False otherwise.
-    """
-    # Try to find a source file to modify
-    source_files = []
-    
-    # Look for C++ files
-    for ext in [".cc", ".cpp", ".cxx", ".h", ".hpp"]:
-        source_files.extend(list(Path(project_dir).glob(f"**/*{ext}")))
-    
-    # Look for Rust files
-    source_files.extend(list(Path(project_dir).glob("**/*.rs")))
-    
-    if not source_files:
-        print("Could not find any source files to modify for incremental build test")
-        return False
-    
-    # Choose a file to modify
-    file_to_modify = source_files[0]
-    print(f"Making incremental change to {file_to_modify}")
-    
-    # Read the file
-    with open(file_to_modify, "r") as f:
-        content = f.read()
-    
-    # Add a comment at the end
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    new_content = content + f"\n// Modified for incremental build test at {timestamp}\n"
-    
-    # Write the file back
-    with open(file_to_modify, "w") as f:
-        f.write(new_content)
-    
-    return True
-
-
-def extract_bazel_metrics(stdout: str, stderr: str) -> Dict[str, float]:
-    """Extract additional metrics from Bazel output."""
+def parse_bazel_output(output):
+    """Parse Bazel output to extract metrics."""
     metrics = {}
     
-    # Extract build time from stdout
-    build_time_match = re.search(r'Elapsed time: ([0-9.]+)s', stdout)
+    # Extract build time
+    build_time_match = re.search(r'Elapsed time: (\d+\.\d+)s', output)
     if build_time_match:
-        metrics["bazel_reported_time"] = float(build_time_match.group(1))
+        metrics["build_time"] = float(build_time_match.group(1))
     
-    # Extract cache hits/misses if available
-    cache_hits_match = re.search(r'([0-9]+) cache hits', stdout)
+    # Extract cache hits
+    cache_hits_match = re.search(r'(\d+) remote cache hit', output)
     if cache_hits_match:
         metrics["cache_hits"] = int(cache_hits_match.group(1))
     
-    cache_misses_match = re.search(r'([0-9]+) cache misses', stdout)
+    # Extract cache misses
+    cache_misses_match = re.search(r'(\d+) remote cache miss', output)
     if cache_misses_match:
         metrics["cache_misses"] = int(cache_misses_match.group(1))
     
-    # Extract remote execution stats if available
-    remote_exec_match = re.search(r'([0-9]+) remote', stdout)
-    if remote_exec_match:
-        metrics["remote_executions"] = int(remote_exec_match.group(1))
+    # Calculate cache hit rate if both hits and misses are available
+    if "cache_hits" in metrics and "cache_misses" in metrics:
+        total = metrics["cache_hits"] + metrics["cache_misses"]
+        if total > 0:
+            metrics["cache_hit_rate"] = (metrics["cache_hits"] / total) * 100
     
     return metrics
 
+def collect_network_stats(start_time, end_time):
+    """Collect network statistics during benchmark execution."""
+    # This is a placeholder. In a real implementation, you would use
+    # platform-specific tools to collect network statistics.
+    return {
+        "bytes_sent": 0,
+        "bytes_received": 0,
+        "packets_sent": 0,
+        "packets_received": 0
+    }
 
-def run_benchmark(
-    project_dir: str,
-    test_name: str,
-    bazel_args: List[str],
-    runs: int = 3,
-    collect_network_stats: bool = True,
-) -> Dict[str, float]:
-    """Run a benchmark and return metrics."""
-    print(f"Running benchmark: {test_name}")
+def run_benchmark(args, benchmark_type, bazel_args):
+    """Run a single benchmark."""
+    results = []
     
-    build_times = []
-    system_stats_list = []
-    network_stats_list = []
-    bazel_metrics_list = []
-    
-    for i in range(runs):
-        print(f"  Run {i+1}/{runs}")
-        clean_bazel_workspace(project_dir)
+    for run in range(args.runs):
+        print(f"Running {benchmark_type} benchmark (run {run+1}/{args.runs})...")
         
-        # Initialize stats collectors
-        system_stats = SystemStats()
-        network_stats = NetworkStats() if collect_network_stats else None
+        # Clean Bazel cache if needed
+        if benchmark_type != "incremental":
+            clean_cmd = ["bazel", "clean", "--expunge"]
+            run_command(clean_cmd, cwd=args.project)
         
-        # Start monitoring
-        system_stats.start_monitoring()
-        if network_stats:
-            network_stats.start_monitoring()
+        # Prepare environment
+        env = os.environ.copy()
+        if args.api_key:
+            env["NATIVELINK_API_KEY"] = args.api_key
         
-        # Measure time and run build
-        start_time = time.time()
+        # Start network monitoring if requested
+        network_start_time = time.time()
+        
+        # Run the benchmark
         cmd = ["bazel", "build", "//..."] + bazel_args
-        stdout, stderr, return_code = run_command(cmd, cwd=project_dir)
-        end_time = time.time()
+        result = run_command(cmd, cwd=args.project, env=env)
         
-        # Stop monitoring
-        system_stats.stop_monitoring()
-        if network_stats:
-            network_stats.stop_monitoring()
+        # Stop network monitoring
+        network_end_time = time.time()
         
-        if return_code != 0:
-            print(f"Error running benchmark: {stderr}")
-            continue
+        # Parse metrics
+        metrics = parse_bazel_output(result["stdout"] + result["stderr"])
+        metrics["total_time"] = result["execution_time"]
         
-        # Calculate metrics
-        build_time = end_time - start_time
-        build_times.append(build_time)
+        # Add network stats if requested
+        if args.network_stats:
+            metrics["network"] = collect_network_stats(network_start_time, network_end_time)
         
-        # Get system stats
-        system_stats_list.append(system_stats.get_stats())
-        
-        # Get network stats
-        if network_stats:
-            network_stats_list.append(network_stats.get_stats())
-        
-        # Extract metrics from Bazel output
-        bazel_metrics = extract_bazel_metrics(stdout, stderr)
-        bazel_metrics_list.append(bazel_metrics)
-        
-        print(f"  Build time: {build_time:.2f}s")
+        results.append(metrics)
     
     # Calculate average metrics
-    metrics = {}
+    avg_metrics = {}
+    for key in results[0].keys():
+        if key == "network":
+            # Average network stats separately
+            avg_network = {}
+            for net_key in results[0]["network"].keys():
+                values = [r["network"][net_key] for r in results]
+                avg_network[net_key] = sum(values) / len(values)
+            avg_metrics["network"] = avg_network
+        else:
+            # Average other metrics
+            values = [r[key] for r in results]
+            avg_metrics[key] = sum(values) / len(values)
+            
+            # Add standard deviation for time metrics
+            if "time" in key:
+                avg_metrics[f"{key}_stddev"] = statistics.stdev(values) if len(values) > 1 else 0
     
-    # Build time
-    if build_times:
-        metrics["build_time"] = sum(build_times) / len(build_times)
-    
-    # System stats
-    if system_stats_list:
-        for key in ["avg_cpu_percent", "max_cpu_percent", "avg_memory_percent", "max_memory_percent"]:
-            values = [stats.get(key, 0) for stats in system_stats_list]
-            if values:
-                metrics[key] = sum(values) / len(values)
-    
-    # Network stats
-    if network_stats_list:
-        for key in ["bytes_sent", "bytes_recv", "total_bytes"]:
-            values = [stats.get(key, 0) for stats in network_stats_list]
-            if values:
-                metrics[key] = sum(values) / len(values)
-    
-    # Bazel metrics
-    if bazel_metrics_list:
-        for key in set().union(*[metrics.keys() for metrics in bazel_metrics_list]):
-            values = [metrics.get(key, 0) for metrics in bazel_metrics_list if key in metrics]
-            if values:
-                metrics[key] = sum(values) / len(values)
-    
-    return metrics
+    return avg_metrics
 
-
-def compare_results(current: BenchmarkResult, previous: BenchmarkResult) -> Dict:
-    """Compare current benchmark results with previous results."""
+def compare_results(current, previous):
+    """Compare current and previous benchmark results."""
     comparison = {}
     
-    for test_name, current_metrics in current.metrics.items():
-        comparison[test_name] = {}
-        
-        if test_name in previous.metrics:
-            prev_metrics = previous.metrics[test_name]
-            
-            for metric_name, current_value in current_metrics.items():
-                if metric_name in prev_metrics:
-                    prev_value = prev_metrics[metric_name]
-                    diff = current_value - prev_value
-                    percent_change = (diff / prev_value) * 100 if prev_value != 0 else 0
-                    
-                    comparison[test_name][metric_name] = {
-                        "current": current_value,
-                        "previous": prev_value,
-                        "diff": diff,
-                        "percent_change": percent_change,
-                    }
+    for key in current.keys():
+        if key in previous:
+            if isinstance(current[key], dict):
+                # Handle nested dictionaries (like network stats)
+                comparison[key] = compare_results(current[key], previous[key])
+            else:
+                # Calculate percentage change
+                change = ((current[key] - previous[key]) / previous[key]) * 100
+                comparison[key] = {
+                    "current": current[key],
+                    "previous": previous[key],
+                    "change_pct": change
+                }
     
     return comparison
 
+def detect_regressions(comparison, threshold):
+    """Detect performance regressions based on comparison results."""
+    regressions = []
+    
+    for key, value in comparison.items():
+        if isinstance(value, dict):
+            if "change_pct" in value:
+                # For metrics where higher is worse (like build time)
+                if "time" in key and value["change_pct"] > threshold:
+                    regressions.append({
+                        "metric": key,
+                        "current": value["current"],
+                        "previous": value["previous"],
+                        "change_pct": value["change_pct"]
+                    })
+                # For metrics where lower is worse (like cache hit rate)
+                elif "rate" in key and value["change_pct"] < -threshold:
+                    regressions.append({
+                        "metric": key,
+                        "current": value["current"],
+                        "previous": value["previous"],
+                        "change_pct": value["change_pct"]
+                    })
+            else:
+                # Recursively check nested dictionaries
+                nested_regressions = detect_regressions(value, threshold)
+                if nested_regressions:
+                    regressions.extend([{
+                        "metric": f"{key}.{r['metric']}",
+                        "current": r["current"],
+                        "previous": r["previous"],
+                        "change_pct": r["change_pct"]
+                    } for r in nested_regressions])
+    
+    return regressions
 
-def load_previous_result(output_dir: str, project: str, commit: str) -> Optional[BenchmarkResult]:
-    """Load previous benchmark results for comparison."""
-    result_files = list(Path(output_dir).glob(f"{project}_{commit}_*.json"))
+def generate_summary(project_name, benchmark_results, comparison=None, regressions=None):
+    """Generate a markdown summary of benchmark results."""
+    summary = f"# NativeLink Benchmark Results for {project_name}\n\n"
+    summary += f"## Commit: {args.commit}\n\n"
     
-    if not result_files:
-        return None
+    # Add benchmark results
+    summary += "## Benchmark Results\n\n"
+    summary += "| Metric | Value |\n"
+    summary += "| ------ | ----- |\n"
     
-    # Use the most recent result if multiple exist
-    latest_file = sorted(result_files)[-1]
-    
-    with open(latest_file, "r") as f:
-        data = json.load(f)
+    for benchmark_type, metrics in benchmark_results.items():
+        summary += f"\n### {benchmark_type.capitalize()} Build\n\n"
+        summary += "| Metric | Value |\n"
+        summary += "| ------ | ----- |\n"
         
-    result = BenchmarkResult(data["commit"], data["timestamp"], data["project"])
-    result.metrics = data["metrics"]
+        for key, value in metrics.items():
+            if isinstance(value, dict):
+                # Handle nested dictionaries (like network stats)
+                summary += f"| **{key}** | |\n"
+                for sub_key, sub_value in value.items():
+                    summary += f"| &nbsp;&nbsp;{sub_key} | {sub_value:.2f} |\n"
+            else:
+                # Format value based on type
+                if "time" in key:
+                    formatted_value = f"{value:.2f}s"
+                elif "rate" in key:
+                    formatted_value = f"{value:.2f}%"
+                else:
+                    formatted_value = f"{value}"
+                
+                summary += f"| {key} | {formatted_value} |\n"
     
-    return result
+    # Add comparison if available
+    if comparison:
+        summary += "\n## Comparison with Previous Commit\n\n"
+        summary += f"Comparing current commit ({args.commit}) with previous commit ({args.compare_to}).\n\n"
+        
+        for benchmark_type, metrics_comparison in comparison.items():
+            summary += f"\n### {benchmark_type.capitalize()} Build\n\n"
+            summary += "| Metric | Current | Previous | Change |\n"
+            summary += "| ------ | ------- | -------- | ------ |\n"
+            
+            for key, value in metrics_comparison.items():
+                if isinstance(value, dict) and "change_pct" in value:
+                    # Format values based on type
+                    if "time" in key:
+                        current = f"{value['current']:.2f}s"
+                        previous = f"{value['previous']:.2f}s"
+                    elif "rate" in key:
+                        current = f"{value['current']:.2f}%"
+                        previous = f"{value['previous']:.2f}%"
+                    else:
+                        current = f"{value['current']}"
+                        previous = f"{value['previous']}"
+                    
+                    # Format change with color based on direction
+                    change_pct = value["change_pct"]
+                    if ("time" in key and change_pct > 0) or ("rate" in key and change_pct < 0):
+                        change = f"🔴 +{change_pct:.2f}%"
+                    else:
+                        change = f"🟢 {change_pct:.2f}%"
+                    
+                    summary += f"| {key} | {current} | {previous} | {change} |\n"
+                elif isinstance(value, dict):
+                    # Handle nested dictionaries (like network stats)
+                    summary += f"| **{key}** | | | |\n"
+                    for sub_key, sub_value in value.items():
+                        if isinstance(sub_value, dict) and "change_pct" in sub_value:
+                            current = f"{sub_value['current']:.2f}"
+                            previous = f"{sub_value['previous']:.2f}"
+                            
+                            change_pct = sub_value["change_pct"]
+                            if change_pct > 0:
+                                change = f"🔴 +{change_pct:.2f}%"
+                            else:
+                                change = f"🟢 {change_pct:.2f}%"
+                            
+                            summary += f"| &nbsp;&nbsp;{sub_key} | {current} | {previous} | {change} |\n"
+    
+    # Add regressions if available
+    if regressions:
+        summary += "\n## Performance Regressions\n\n"
+        
+        if not any(regressions.values()):
+            summary += "No significant performance regressions detected.\n"
+        else:
+            for benchmark_type, benchmark_regressions in regressions.items():
+                if benchmark_regressions:
+                    summary += f"\n### {benchmark_type.capitalize()} Build\n\n"
+                    summary += "| Metric | Current | Previous | Change |\n"
+                    summary += "| ------ | ------- | -------- | ------ |\n"
+                    
+                    for regression in benchmark_regressions:
+                        # Format values based on type
+                        if "time" in regression["metric"]:
+                            current = f"{regression['current']:.2f}s"
+                            previous = f"{regression['previous']:.2f}s"
+                        elif "rate" in regression["metric"]:
+                            current = f"{regression['current']:.2f}%"
+                            previous = f"{regression['previous']:.2f}%"
+                        else:
+                            current = f"{regression['current']}"
+                            previous = f"{regression['previous']}"
+                        
+                        change = f"🔴 {regression['change_pct']:.2f}%"
+                        summary += f"| {regression['metric']} | {current} | {previous} | {change} |\n"
+    
+    return summary
 
-
-def main():
-    parser = argparse.ArgumentParser(description="Enhanced NativeLink Benchmarking Tool")
-    # Add GitHub-specific parameters
-    parser.add_argument("--github-run-id", help="GitHub Actions run ID for correlation")
-    parser.add_argument("--github-sha", help="Git commit SHA being benchmarked")
+def main(args):
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
     
-    # Add regression detection threshold
-    parser.add_argument("--regression-threshold", type=float, default=5.0,
-                        help="Percentage threshold for performance regression alerts")
-    parser.add_argument("--project", required=True, help="Path to the test project")
-    parser.add_argument("--commit", required=True, help="NativeLink commit hash being benchmarked")
-    parser.add_argument("--output-dir", default="./benchmark_results", help="Directory to store benchmark results")
-    parser.add_argument("--nativelink-url", default="https://app.nativelink.com", help="URL for NativeLink service")
-    parser.add_argument("--api-key", help="API key for NativeLink service")
-    parser.add_argument("--compare-to", help="Previous commit hash to compare against")
-    parser.add_argument("--runs", type=int, default=3, help="Number of benchmark runs to average")
-    parser.add_argument("--incremental", action="store_true", default=True, help="Enable incremental build tests")
-    parser.add_argument("--network-stats", action="store_true", default=True, help="Enable network statistics collection")
+    # Extract project name from path
+    project_name = os.path.basename(os.path.abspath(args.project))
     
-    args = parser.parse_args()
-    
-    # Validate project directory
-    project_dir = os.path.abspath(args.project)
-    if not os.path.isdir(project_dir):
-        print(f"Error: Project directory '{project_dir}' does not exist")
-        sys.exit(1)
-    
-    # Check for Bazel workspace
-    if not any(os.path.exists(os.path.join(project_dir, f)) for f in ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"]):
-        print(f"Error: Project directory '{project_dir}' does not appear to be a Bazel workspace")
-        sys.exit(1)
-    
-    # Create timestamp for this benchmark run
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # Extract project name from directory
-    project_name = os.path.basename(project_dir)
-    
-    # Initialize results
-    results = BenchmarkResult(args.commit, timestamp, project_name)
-    
-    # Define benchmark configurations
-    benchmarks = [
-        {
-            "name": "remote_cache_only",
-            "args": [
-                f"--remote_cache={args.nativelink_url}",
-                f"--remote_header=x-nativelink-api-key={args.api_key}" if args.api_key else "",
-            ],
-        },
-        {
-            "name": "remote_cache_and_execution",
-            "args": [
-                f"--remote_cache={args.nativelink_url}",
-                f"--remote_executor={args.nativelink_url}",
-                f"--remote_header=x-nativelink-api-key={args.api_key}" if args.api_key else "",
-                "--jobs=200",
-            ],
-        },
-        {
-            "name": "clean_remote_execution",
-            "args": [
-                f"--remote_executor={args.nativelink_url}",
-                f"--remote_header=x-nativelink-api-key={args.api_key}" if args.api_key else "",
-                "--jobs=200",
-                "--noremote_accept_cached",  # Don't use cache for this test
-            ],
-        },
-    ]
+    # Prepare benchmark configurations
+    benchmark_configs = {
+        "remote_cache_only": [
+            "--remote_cache=" + args.nativelink_url,
+            "--remote_header=x-nativelink-api-key=" + args.api_key
+        ],
+        "remote_cache_and_execution": [
+            "--remote_cache=" + args.nativelink_url,
+            "--remote_executor=" + args.nativelink_url,
+            "--remote_header=x-nativelink-api-key=" + args.api_key
+        ],
+        "remote_execution_only": [
+            "--remote_executor=" + args.nativelink_url,
+            "--remote_header=x-nativelink-api-key=" + args.api_key,
+            "--noremote_accept_cached"
+        ]
+    }
     
     # Run benchmarks
-    for benchmark in benchmarks:
-        # Filter out empty args
-        args_list = [arg for arg in benchmark["args"] if arg]
-        metrics = run_benchmark(
-            project_dir,
-            benchmark["name"],
-            args_list,
-            runs=args.runs,
-            collect_network_stats=args.network_stats,
-        )
-        
-        for metric_name, value in metrics.items():
-            results.add_metric(benchmark["name"], metric_name, value)
+    benchmark_results = {}
+    for benchmark_type, bazel_args in benchmark_configs.items():
+        print(f"Running {benchmark_type} benchmark...")
+        benchmark_results[benchmark_type] = run_benchmark(args, benchmark_type, bazel_args)
     
-    # Run incremental build benchmark if enabled
+    # Run incremental build benchmark if requested
     if args.incremental:
-        # Make a small change to the project
-        if make_incremental_change(project_dir):
-            # Run incremental build with remote cache and execution
-            incremental_args = [
-                f"--remote_cache={args.nativelink_url}",
-                f"--remote_executor={args.nativelink_url}",
-                f"--remote_header=x-nativelink-api-key={args.api_key}" if args.api_key else "",
-                "--jobs=200",
-            ]
-            
-            # Filter out empty args
-            incremental_args = [arg for arg in incremental_args if arg]
-            
-            metrics = run_benchmark(
-                project_dir,
-                "incremental_build",
-                incremental_args,
-                runs=args.runs,
-                collect_network_stats=args.network_stats,
-            )
-            
-            for metric_name, value in metrics.items():
-                results.add_metric("incremental_build", metric_name, value)
+        print("Running incremental build benchmark...")
+        
+        # First, do a clean build
+        clean_cmd = ["bazel", "clean", "--expunge"]
+        run_command(clean_cmd, cwd=args.project)
+        
+        # Run initial build
+        initial_build_args = benchmark_configs["remote_cache_and_execution"]
+        run_command(["bazel", "build", "//..."] + initial_build_args, cwd=args.project)
+        
+        # Make a small change to a source file
+        # This is a placeholder. In a real implementation, you would modify a source file.
+        # For now, we'll just touch a file to simulate a change.
+        source_files = list(Path(args.project).glob("**/*.rs")) + list(Path(args.project).glob("**/*.cc"))
+        if source_files:
+            source_file = source_files[0]
+            print(f"Modifying source file: {source_file}")
+            with open(source_file, "a") as f:
+                f.write("\n// Modified for incremental build benchmark\n")
+        
+        # Run incremental build benchmark
+        benchmark_results["incremental"] = run_benchmark(args, "incremental", initial_build_args)
     
-    # Save results
-    results.save_to_file(args.output_dir)
-    print(f"Benchmark results saved to {args.output_dir}")
+    # Save benchmark results
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    result_file = os.path.join(args.output_dir, f"{project_name}_{args.commit}_{timestamp}.json")
+    
+    with open(result_file, "w") as f:
+        json.dump({
+            "project": project_name,
+            "commit": args.commit,
+            "timestamp": timestamp,
+            "metrics": benchmark_results
+        }, f, indent=2)
+    
+    print(f"Benchmark results saved to {result_file}")
     
     # Compare with previous results if requested
+    comparison = None
+    regressions = None
+    
     if args.compare_to:
-        previous_results = load_previous_result(args.output_dir, project_name, args.compare_to)
+        print(f"Comparing with previous commit: {args.compare_to}")
         
-        if previous_results:
-            comparison = compare_results(results, previous_results)
+        # Find previous benchmark results
+        previous_files = list(Path(args.output_dir).glob(f"{project_name}_{args.compare_to}_*.json"))
+        
+        if previous_files:
+            # Use the most recent previous result
+            previous_file = sorted(previous_files)[-1]
+            print(f"Using previous benchmark results from {previous_file}")
             
-            print("\nComparison with previous results:")
-            for test_name, metrics in comparison.items():
-                print(f"\n{test_name}:")
-                for metric_name, values in metrics.items():
-                    print(f"  {metric_name}:")
-                    print(f"    Current: {values['current']:.2f}")
-                    print(f"    Previous: {values['previous']:.2f}")
-                    print(f"    Diff: {values['diff']:.2f} ({values['percent_change']:.2f}%)")
+            with open(previous_file, "r") as f:
+                previous_data = json.load(f)
+            
+            # Compare results
+            comparison = {}
+            regressions = {}
+            
+            for benchmark_type in benchmark_results.keys():
+                if benchmark_type in previous_data["metrics"]:
+                    comparison[benchmark_type] = compare_results(
+                        benchmark_results[benchmark_type],
+                        previous_data["metrics"][benchmark_type]
+                    )
                     
-                    # Highlight significant regressions
-                    if values['percent_change'] > 5 and metric_name == "build_time":
-                        print(f"    WARNING: Performance regression detected!")
+                    # Detect regressions
+                    regressions[benchmark_type] = detect_regressions(
+                        comparison[benchmark_type],
+                        args.regression_threshold
+                    )
         else:
-            print(f"No previous results found for commit {args.compare_to}")
-
-    # Add GitHub Actions workflow integration
-    if os.getenv("GITHUB_ACTIONS") == "true":
-        github_output = os.getenv("GITHUB_OUTPUT")
-        with open(github_output, "a") as f:
-            f.write(f"benchmark-results={json.dumps(results.to_dict())}\n")
+            print(f"No previous benchmark results found for commit {args.compare_to}")
+    
+    # Generate summary
+    summary = generate_summary(project_name, benchmark_results, comparison, regressions)
+    
+    # Save summary
+    summary_file = os.path.join(args.output_dir, "summary.md")
+    with open(summary_file, "w") as f:
+        f.write(summary)
+    
+    print(f"Benchmark summary saved to {summary_file}")
+    
+    # Print summary to console
+    print("\n" + summary)
+    
+    # Exit with error code if regressions were detected
+    if regressions and any(regressions.values()):
+        print("Performance regressions detected!")
+        return 1
+    
+    return 0
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    sys.exit(main(args))

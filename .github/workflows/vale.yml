@@ -1,0 +1,18 @@
+name: Vale Linting
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  vale:
+    name: Vale Linter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: errata-ai/vale-action@91ac403e8d26f5aa1b3feaa86ca63065936a85b6
+        with:
+          files: '**/*.md'
+          fail_on_error: false

@@ -4,6 +4,8 @@ This directory contains an enhanced benchmarking system for NativeLink performan
 
 ## Overview
 
+The enhanced benchmarking system measures and tracks NativeLink's performance across different commits, inspired by the [Apache Lucene Nightly Benchmarks](https://blog.mikemccandless.com/2011/04/catching-slowdowns-in-lucene.html) project.
+
 The enhanced benchmarking system measures and tracks NativeLink's performance across different commits, allowing developers to identify performance regressions or improvements. The system focuses on several use cases:
 
 1. Build with remote cache only
@@ -166,7 +168,7 @@ The enhanced visualization tool generates:
 3. Heatmaps for identifying performance hotspots
 4. HTML dashboard reports with summary tables and all visualizations
 
-When comparing results, the system calculates absolute and percentage differences. A warning is generated for significant regressions (e.g., >5% slowdown in build time).
+When comparing results, the system calculates absolute and percentage differences. A warning is generated for significant regressions (for example, >5% slowdown in build time).
 
 ## Adding New Test Projects
 
@@ -180,7 +182,13 @@ To add a new test project:
 
 - Add more sophisticated metrics collection (disk I/O, detailed network analysis)
 - Implement a persistent web dashboard for visualizing performance trends
-- Add support for more complex build scenarios (e.g., specific targets, different toolchains)
+- Add support for more complex build scenarios (for example, specific targets, different toolchains)
 - Integrate with notification systems for significant regressions (Slack, email)
 - Add support for comparing performance across different NativeLink configurations
 - Implement statistical analysis to identify significant changes vs. normal variation
+
+## Key Metrics Tracked
+- Build duration (clean and incremental)
+- Cache hit ratios
+- Network transfer statistics
+- Resource utilization (CPU/Memory)

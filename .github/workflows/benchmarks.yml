@@ -1,58 +1,92 @@
 name: NativeLink Benchmarks
-on: [push]
+
+on:
+  push:
+    branches: [main]
+  pull_request:
 
 jobs:
+  pre-commit-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Vale Linter
+        run: |
+          sudo apt-get install -y vale
+          wget https://github.com/reviewdog/reviewdog/releases/download/v0.17.1/reviewdog_0.17.1_Linux_x86_64.tar.gz
+          tar -xvzf reviewdog_0.17.1_Linux_x86_64.tar.gz -C /usr/local/bin/
+
+      - name: Run Vale checks (Benchmarks)
+        run: |
+          vale --output=stdout tools/benchmark/*.md \
+            | reviewdog -efm="%f:%l:%c:%m" -reporter=github-pr-check
+          
+      - name: Run Vale checks (Documentation)
+        run: |
+          vale --output=stdout web/platform/src/content/**/*.mdx \
+            | reviewdog -efm="%f:%l:%c:%m" -filter-mode=nofilter
+
+      - name: Setup Nix
+        uses: cachix/install-nix-action@v20
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            
+      - name: Setup Nix Cache
+        uses: actions/cache@v3
+        with:
+          path: /nix/store
+          key: ${{ runner.os }}-nix-store-${{ hashFiles('flake.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-nix-store-
+
+      - name: Run pre-commit checks
+        run: nix flake check --show-trace
+
   benchmark:
     runs-on: ubuntu-latest
-    # container: nativelink-benchmark-env  # Comment out until image exists
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout test projects
+        uses: actions/checkout@v3
+        with:
+          repository: 'rust-lang/rustlings'
+          path: 'benchmark-projects/rustlings'
       
-    - name: Setup Bazel
-      uses: bazelbuild/setup-bazelisk@v2
-      with:
-        bazelisk-version: "1.19.0"  # Correct parameter name and use quotes
-      
-    - name: Install Python dependencies
-      run: |
-        python3 -m pip install -r tools/benchmark/requirements.txt
-        
-    - name: Run Benchmarks
-      env:
-        NATIVELINK_API_KEY: ${{ secrets.NATIVELINK_API_KEY }}
-      run: |
-        echo "Benchmarking commit: $GITHUB_SHA"
-        echo "Current directory: $(pwd)"
-        ls -la ./tools/benchmark/
-        
-        ./tools/benchmark/run_benchmarks.sh \
-          --project=./integration_tests/test_project \
-          --commit=$GITHUB_SHA \
-          --output-dir=./benchmark_results \
-          --nativelink-url=https://app.nativelink.com \
-          --iterations=5 \
-          --cold-cache \
-          --warm-cache \
-          --incremental-build
-        
-    - name: Analyze Results
-      run: |
-        python3 tools/benchmark/analyze_results.py \
-          --current ./benchmark_results \
-          --baseline ./baseline_metrics \
-          --output ./report.md
-        
-    - name: Upload Benchmark Results
-      uses: actions/upload-artifact@v4
-      with:
-        name: benchmark-results
-        path: ./benchmark_results
-        retention-days: 90
-    
-    - name: Upload Benchmark Visualizations
-      uses: actions/upload-artifact@v4
-      with:
-        name: benchmark-visualizations
-        path: ./benchmark_viz
-        retention-days: 90
+      - name: Run enhanced benchmarks
+        run: |
+          python3 tools/benchmark/enhanced_benchmark.py \
+            --project=benchmark-projects/rustlings \
+            --commit=${{ github.sha }} \
+            --nativelink-url=https://app.nativelink.com \
+            --api-key=${{ secrets.NATIVELINK_API_KEY }} \
+            --runs=3
+
+      - name: Cache Bazel build outputs
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/bazel
+            !~/.cache/bazel/install/
+          key: ${{ runner.os }}-bazel-${{ hashFiles('**/MODULE.bazel', '**/WORKSPACE') }}
+          restore-keys: |
+            ${{ runner.os }}-bazel-
+
+      - name: Set up Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Configure Bazel
+        run: |
+          echo "build --remote_cache=grpc://remote-cache.nativelink.example" >> .bazelrc
+          echo "build --remote_executor=grpc://remote-exec.nativelink.example" >> .bazelrc
+
+      - name: Run Bazel benchmarks
+        run: |
+          bazel clean --expunge
+          bazel build //...
+          bazel test //...

@@ -1,0 +1,8 @@
+// ... existing code ...
+    steps:
+      - name: Vale linting (docs)
+        run: vale --output=stdout web/platform/src/content/**/*.mdx
+
+      - name: Vale linting (benchmarks)
+        run: vale --output=stdout tools/benchmark/*.md
+// ... existing code ...

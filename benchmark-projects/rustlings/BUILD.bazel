@@ -1,4 +1,3 @@
-exports_files(["clippy.toml"])
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 rust_binary(

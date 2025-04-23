@@ -1,9 +1,8 @@
----
-name: NativeLink Benchmarks
+name: NativeLink Per-Commit Benchmarks
 
 on:
   push:
-    branches: [main, benchmark-test]  # Add your current branch here
+    branches: [main]
   pull_request:
     branches: [main]
     paths-ignore:
@@ -23,8 +22,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: >- # v4.2.2
-          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # Need at least 2 commits for comparison
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
@@ -37,39 +37,61 @@ jobs:
       - name: Install Dependencies
         run: |
           pip install -r tools/benchmark/requirements.txt
-
-      - name: Clean GitHub Actions cache
-        uses: actions/cache/restore@v3
-        with:
-          path: |
-            ~/.cache/bazel
-            ~/.bazelisk
-          key: ${{ runner.os }}-bazel-cache-${{ hashFiles('.github/workflows/benchmark.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-bazel-cache-
+          pip install matplotlib pandas seaborn plotly
 
       - name: Setup Bazel
-        uses: bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
+        uses: bazel-contrib/setup-bazel@v0.13.0
         with:
           bazelisk-version: 'v1.19.0'
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Initialize Bazel workspace for test projects
+        run: |
+          mkdir -p benchmark-projects
 
       - name: Checkout Test Project (Rust)
         uses: actions/checkout@v4
         with:
           repository: 'rust-lang/rustlings'
           path: 'benchmark-projects/rustlings'
-              
-      # 新增Bazel初始化步骤        
-      - name: Initialize Bazel workspace
+          
+      - name: Setup Rust Project for Bazel
         run: |
           cd benchmark-projects/rustlings
           touch WORKSPACE.bazel
+          cat > BUILD.bazel << 'EOF'
+          load("@rules_rust//rust:defs.bzl", "rust_binary")
+          
+          rust_binary(
+              name = "rustlings",
+              srcs = glob(["src/**/*.rs"]),
+              deps = [],
+          )
+          EOF
 
       - name: Checkout Test Project (C++)
         uses: actions/checkout@v4
         with:
           repository: 'google/googletest'
           path: 'benchmark-projects/googletest'
+          
+      - name: Setup C++ Project for Bazel
+        run: |
+          cd benchmark-projects/googletest
+          touch WORKSPACE.bazel
+          cat > BUILD.bazel << 'EOF'
+          cc_library(
+              name = "gtest",
+              srcs = glob(["googletest/src/*.cc"]),
+              hdrs = glob([
+                  "googletest/include/**/*.h",
+                  "googletest/src/*.h"
+              ]),
+              includes = ["googletest/include"],
+              visibility = ["//visibility:public"],
+          )
+          EOF
 
       - name: Get Previous Commit
         id: get-prev-commit
@@ -80,27 +102,389 @@ jobs:
             echo "prev_commit=$(git rev-parse HEAD~1)" >> $GITHUB_OUTPUT
           fi
 
-      - name: Run Benchmarks (Rust Project)
+      # Benchmark 1: Remote Cache Only
+      - name: Benchmark - Remote Cache Only (Rust)
         run: |
-          python3 tools/benchmark/benchmark.py \
-            --project=benchmark-projects/rustlings \
-            --commit=${{ github.sha }} \
-            --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
-            --nativelink-url=https://app.nativelink.com \
-            --api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-            --output-dir=./benchmark_results \
-            --runs=3
+          cd benchmark-projects/rustlings
+          # Clean any previous builds
+          bazel clean --expunge
+          
+          # First build to populate cache
+          { time bazel build //:rustlings \
+            --remote_cache=https://app.nativelink.com \
+            --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+            --remote_executor= ; } 2> time_output.txt
+          
+          # Extract time metrics
+          REAL_TIME=$(grep real time_output.txt | awk '{print $2}')
+          USER_TIME=$(grep user time_output.txt | awk '{print $2}')
+          SYS_TIME=$(grep sys time_output.txt | awk '{print $2}')
+          
+          echo "First build times: REAL=$REAL_TIME, USER=$USER_TIME, SYS=$SYS_TIME"
+          
+          # Clean local artifacts
+          bazel clean
+          
+          # Second build to measure cache performance
+          time bazel build //:rustlings \
+            --remote_cache=https://app.nativelink.com \
+            --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+            --remote_executor= \
+            --execution_log_json_file=cache_only_rust.json
+          
+          # Extract metrics
+          python3 -c "
+          import json, os
+          with open('cache_only_rust.json', 'r') as f:
+              data = json.load(f)
+          
+          cache_hits = sum(1 for action in data.get('actions', []) if action.get('actionResult', {}).get('exitCode', -1) == 0)
+          total_actions = len(data.get('actions', []))
+          hit_rate = cache_hits / total_actions if total_actions > 0 else 0
+          
+          metrics = {
+              'cache_hit_rate': hit_rate,
+              'total_actions': total_actions,
+              'cache_hits': cache_hits
+          }
+          
+          with open('../rust_cache_only_metrics.json', 'w') as f:
+              json.dump(metrics, f)
+          "
 
-      - name: Run Benchmarks (C++ Project)
+      # Benchmark 2: Remote Cache + Execution
+      - name: Benchmark - Remote Cache + Execution (Rust)
         run: |
-          python3 tools/benchmark/benchmark.py \
-            --project=benchmark-projects/googletest \
-            --commit=${{ github.sha }} \
-            --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
-            --nativelink-url=https://app.nativelink.com \
-            --api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-            --output-dir=./benchmark_results \
-            --runs=3
+          cd benchmark-projects/rustlings
+          # Clean any previous builds
+          bazel clean --expunge
+          
+          # Build with remote cache and execution
+          time bazel build //:rustlings \
+            --remote_cache=https://app.nativelink.com \
+            --remote_executor=https://app.nativelink.com \
+            --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+            --execution_log_json_file=cache_exec_rust.json
+          
+          # Extract metrics
+          python3 -c "
+          import json, os
+          with open('cache_exec_rust.json', 'r') as f:
+              data = json.load(f)
+          
+          remote_executed = sum(1 for action in data.get('actions', []) if action.get('worker', {}).get('executionStatus', '') == 'REMOTE_EXECUTION')
+          cache_hits = sum(1 for action in data.get('actions', []) if action.get('actionResult', {}).get('exitCode', -1) == 0)
+          total_actions = len(data.get('actions', []))
+          
+          metrics = {
+              'remote_execution_rate': remote_executed / total_actions if total_actions > 0 else 0,
+              'cache_hit_rate': cache_hits / total_actions if total_actions > 0 else 0,
+              'total_actions': total_actions,
+              'remote_executed': remote_executed,
+              'cache_hits': cache_hits
+          }
+          
+          with open('../rust_cache_exec_metrics.json', 'w') as f:
+              json.dump(metrics, f)
+          "
+
+      # Benchmark 3: Incremental Build Performance
+      - name: Benchmark - Incremental Build (Rust)
+        run: |
+          cd benchmark-projects/rustlings
+          # Clean any previous builds
+          bazel clean --expunge
+          
+          # First build
+          time bazel build //:rustlings \
+            --remote_cache=https://app.nativelink.com \
+            --remote_executor=https://app.nativelink.com \
+            --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }}
+          
+          # Make a small change
+          echo "// Small change" >> src/main.rs
+          
+          # Incremental build
+          time bazel build //:rustlings \
+            --remote_cache=https://app.nativelink.com \
+            --remote_executor=https://app.nativelink.com \
+            --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+            --execution_log_json_file=incremental_rust.json
+          
+          # Extract metrics
+          python3 -c "
+          import json, os
+          with open('incremental_rust.json', 'r') as f:
+              data = json.load(f)
+          
+          rebuilt_actions = sum(1 for action in data.get('actions', []) if action.get('worker', {}).get('executionStatus', '') in ['REMOTE_EXECUTION', 'LOCAL_EXECUTION'])
+          total_actions = len(data.get('actions', []))
+          
+          metrics = {
+              'rebuilt_action_rate': rebuilt_actions / total_actions if total_actions > 0 else 0,
+              'total_actions': total_actions,
+              'rebuilt_actions': rebuilt_actions
+          }
+          
+          with open('../rust_incremental_metrics.json', 'w') as f:
+              json.dump(metrics, f)
+          "
+
+      # Similar benchmarks for C++ project
+      - name: Benchmark - Remote Cache Only (C++)
+        run: |
+          cd benchmark-projects/googletest
+          # Clean any previous builds
+          bazel clean --expunge
+          
+          # First build to populate cache
+          time bazel build //:gtest \
+            --remote_cache=https://app.nativelink.com \
+            --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+            --remote_executor=
+          
+          # Clean local artifacts
+          bazel clean
+          
+          # Second build to measure cache performance
+          time bazel build //:gtest \
+            --remote_cache=https://app.nativelink.com \
+            --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+            --remote_executor= \
+            --execution_log_json_file=cache_only_cpp.json
+          
+          # Extract metrics (similar to Rust)
+          python3 -c "
+          import json, os
+          with open('cache_only_cpp.json', 'r') as f:
+              data = json.load(f)
+          
+          cache_hits = sum(1 for action in data.get('actions', []) if action.get('actionResult', {}).get('exitCode', -1) == 0)
+          total_actions = len(data.get('actions', []))
+          hit_rate = cache_hits / total_actions if total_actions > 0 else 0
+          
+          metrics = {
+              'cache_hit_rate': hit_rate,
+              'total_actions': total_actions,
+              'cache_hits': cache_hits
+          }
+          
+          with open('../cpp_cache_only_metrics.json', 'w') as f:
+              json.dump(metrics, f)
+          "
+
+      - name: Create Results Directory
+        run: |
+          mkdir -p benchmark_results
+      - name: Generate Benchmark Report
+        run: |
+          python3 - << 'EOF'
+          import json
+          import os
+          import matplotlib.pyplot as plt
+          import pandas as pd
+          from datetime import datetime
+          
+          # Create output directory
+          os.makedirs('benchmark_viz', exist_ok=True)
+          
+          # Load metrics
+          metrics_files = [
+              'benchmark-projects/rust_cache_only_metrics.json',
+              'benchmark-projects/rust_cache_exec_metrics.json',
+              'benchmark-projects/rust_incremental_metrics.json',
+              'benchmark-projects/cpp_cache_only_metrics.json'
+          ]
+          
+          # Add timestamp and commit info to metrics
+          commit_sha = "${{ github.sha }}"
+          timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+          
+          all_metrics = {}
+          for file_path in metrics_files:
+              if os.path.exists(file_path):
+                  try:
+                      with open(file_path, 'r') as f:
+                          metrics_name = os.path.basename(file_path).replace('.json', '')
+                          metrics_data = json.load(f)
+                          metrics_data['commit'] = commit_sha
+                          metrics_data['timestamp'] = timestamp
+                          all_metrics[metrics_name] = metrics_data
+                          
+                          # Save to historical data file
+                          historical_file = f'benchmark_viz/{metrics_name}_history.json'
+                          history = []
+                          if os.path.exists(historical_file):
+                              with open(historical_file, 'r') as hf:
+                                  try:
+                                      history = json.load(hf)
+                                  except:
+                                      history = []
+                          
+                          history.append(metrics_data)
+                          with open(historical_file, 'w') as hf:
+                              json.dump(history, hf)
+          
+
+          # Generate trend charts if historical data exists
+          for metrics_name in all_metrics.keys():
+              historical_file = f'benchmark_viz/{metrics_name}_history.json'
+              if os.path.exists(historical_file):
+                  with open(historical_file, 'r') as f:
+                      history = json.load(f)
+                  
+                  if len(history) > 1:
+                      # Plot cache hit rate trend
+                      if 'cache_hit_rate' in history[0]:
+                          dates = [entry.get('timestamp', '') for entry in history]
+                          values = [entry.get('cache_hit_rate', 0) for entry in history]
+                          
+                          plt.figure(figsize=(12, 6))
+                          plt.plot(range(len(dates)), values, 'o-')
+                          plt.title(f'{metrics_name} - Cache Hit Rate Trend')
+                          plt.ylabel('Hit Rate')
+                          plt.xticks(range(len(dates)), [d.split(' ')[0] for d in dates], rotation=45)
+                          plt.grid(True)
+                          plt.tight_layout()
+                          plt.savefig(f'benchmark_viz/{metrics_name}_trend.png')
+                          plt.close()
+          
+          # Detect regressions
+          regressions = []
+          for metrics_name in all_metrics.keys():
+              historical_file = f'benchmark_viz/{metrics_name}_history.json'
+              if os.path.exists(historical_file):
+                  with open(historical_file, 'r') as f:
+                      history = json.load(f)
+                  
+                  if len(history) > 1:
+                      current = history[-1]
+                      previous = history[-2]
+                      
+                      # Check cache hit rate regression
+                      if 'cache_hit_rate' in current and 'cache_hit_rate' in previous:
+                          current_rate = current['cache_hit_rate']
+                          previous_rate = previous['cache_hit_rate']
+                          
+                          if current_rate < previous_rate * 0.9:  # 10% regression threshold
+                              regressions.append({
+                                  'metric': f'{metrics_name} - cache_hit_rate',
+                                  'previous': previous_rate,
+                                  'current': current_rate,
+                                  'change': (current_rate - previous_rate) / previous_rate
+                              })
+          
+          # Generate summary markdown first
+          with open('benchmark_results/summary.md', 'w') as f:
+              f.write("# NativeLink Benchmark Results\n\n")
+              f.write(f"## Commit: ${{ github.sha }}\n\n")
+              
+              f.write("### Rust Project (rustlings)\n\n")
+              f.write("| Benchmark | Cache Hit Rate | Actions | Notes |\n")
+              f.write("|-----------|---------------|---------|-------|\n")
+              
+              if 'rust_cache_only_metrics' in all_metrics:
+                  m = all_metrics['rust_cache_only_metrics']
+                  f.write(f"| Remote Cache Only | {m.get('cache_hit_rate', 0):.2%} | {m.get('total_actions', 0)} | |\n")
+              
+              if 'rust_cache_exec_metrics' in all_metrics:
+                  m = all_metrics['rust_cache_exec_metrics']
+                  f.write(f"| Remote Cache + Execution | {m.get('cache_hit_rate', 0):.2%} | {m.get('total_actions', 0)} | Remote Execution: {m.get('remote_execution_rate', 0):.2%} |\n")
+              
+              if 'rust_incremental_metrics' in all_metrics:
+                  m = all_metrics['rust_incremental_metrics']
+                  f.write(f"| Incremental Build | - | {m.get('total_actions', 0)} | Rebuilt: {m.get('rebuilt_action_rate', 0):.2%} |\n")
+              
+              f.write("\n### C++ Project (googletest)\n\n")
+              f.write("| Benchmark | Cache Hit Rate | Actions | Notes |\n")
+              f.write("|-----------|---------------|---------|-------|\n")
+              
+              if 'cpp_cache_only_metrics' in all_metrics:
+                  m = all_metrics['cpp_cache_only_metrics']
+                  f.write(f"| Remote Cache Only | {m.get('cache_hit_rate', 0):.2%} | {m.get('total_actions', 0)} | |\n")
+          
+          # Generate visualizations
+          if all_metrics:
+              # Cache hit rate comparison
+              labels = []
+              values = []
+              
+              if 'rust_cache_only_metrics' in all_metrics:
+                  labels.append('Rust - Cache Only')
+                  values.append(all_metrics['rust_cache_only_metrics'].get('cache_hit_rate', 0))
+              
+              if 'rust_cache_exec_metrics' in all_metrics:
+                  labels.append('Rust - Cache+Exec')
+                  values.append(all_metrics['rust_cache_exec_metrics'].get('cache_hit_rate', 0))
+              
+              if 'cpp_cache_only_metrics' in all_metrics:
+                  labels.append('C++ - Cache Only')
+                  values.append(all_metrics['cpp_cache_only_metrics'].get('cache_hit_rate', 0))
+              
+              if labels and values:
+                  plt.figure(figsize=(10, 6))
+                  plt.bar(labels, values)
+                  plt.title('Cache Hit Rate Comparison')
+                  plt.ylabel('Hit Rate')
+                  plt.ylim(0, 1)
+                  plt.grid(axis='y', linestyle='--', alpha=0.7)
+                  
+                  # Add value labels on top of bars
+                  for i, v in enumerate(values):
+                      plt.text(i, v + 0.02, f'{v:.2%}', ha='center')
+                  
+                  plt.savefig('benchmark_viz/cache_hit_rates.png')
+                  plt.close()
+          
+          # Create index.html for visualization
+          with open('benchmark_viz/index.html', 'w') as f:
+              f.write("""<!DOCTYPE html>
+          <html>
+          <head>
+              <title>NativeLink Benchmark Results</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 20px; }
+                  h1, h2, h3 { color: #333; }
+                  .chart-container { margin: 20px 0; }
+                  table { border-collapse: collapse; width: 100%; }
+                  th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                  th { background-color: #f2f2f2; }
+                  tr:nth-child(even) { background-color: #f9f9f9; }
+              </style>
+          </head>
+          <body>
+              <h1>NativeLink Performance Dashboard</h1>
+              <p>Commit: ${{ github.sha }}</p>
+              
+              <div class="chart-container">
+                  <h2>Cache Hit Rate Comparison</h2>
+                  <img src="cache_hit_rates.png" alt="Cache Hit Rate Comparison" width="800">
+              </div>
+              
+              <h2>Raw Metrics</h2>
+          """)
+              
+              # Add metrics tables
+              for metrics_name, metrics in all_metrics.items():
+                  f.write(f"<h3>{metrics_name}</h3>")
+                  f.write("<table>")
+                  f.write("<tr><th>Metric</th><th>Value</th></tr>")
+                  
+                  for key, value in metrics.items():
+                      if isinstance(value, float) and key.endswith('rate'):
+                          formatted_value = f"{value:.2%}"
+                      else:
+                          formatted_value = value
+                      
+                      f.write(f"<tr><td>{key}</td><td>{formatted_value}</td></tr>")
+                  
+                  f.write("</table>")
+              
+              f.write("""
+          </body>
+          </html>
+          """)
+          EOF
 
       - name: Upload Benchmark Results
         uses: actions/upload-artifact@v4
@@ -109,40 +493,38 @@ jobs:
           path: ./benchmark_results
           retention-days: 90
 
-      - name: Generate Benchmark Report
-        run: |
-          echo "## NativeLink Benchmark Results" > benchmark_report.md
-          echo "" >> benchmark_report.md
-          echo "### Commit: ${{ github.sha }}" >> benchmark_report.md
-          echo "" >> benchmark_report.md
-          echo "#### Rust Project (rustlings)" >> benchmark_report.md
-          echo "" >> benchmark_report.md
-          echo '```' >> benchmark_report.md
-          cat ./benchmark_results/rustlings_${{ github.sha }}_*.json >> benchmark_report.md
-          echo '```' >> benchmark_report.md
-          echo "" >> benchmark_report.md
-          echo "#### C++ Project (googletest)" >> benchmark_report.md
-          echo "" >> benchmark_report.md
-          echo '```' >> benchmark_report.md
-          cat ./benchmark_results/googletest_${{ github.sha }}_*.json >> benchmark_report.md
-          echo '```' >> benchmark_report.md
+      - name: Upload Visualizations
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-visualizations
+          path: ./benchmark_viz
+          retention-days: 90
 
-      - name: Comment PR
+      - name: Post PR Comment (if PR)
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const report = fs.readFileSync('benchmark_report.md', 'utf8');
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: report
-            });
+            try {
+              const summaryPath = './benchmark_results/summary.md';
+              if (fs.existsSync(summaryPath)) {
+                const summary = fs.readFileSync(summaryPath, 'utf8');
+                github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: summary
+                });
+              } else {
+                console.log('No summary file found');
+              }
+            } catch (error) {
+              console.error('Error posting comment:', error);
+            }
 
-      # Setup GitHub Pages deployment
+      # Setup GitHub Pages deployment for historical data
       - name: Setup Pages
         if: github.ref == 'refs/heads/main'
         uses: actions/configure-pages@v4
@@ -157,3 +539,61 @@ jobs:
         if: github.ref == 'refs/heads/main'
         id: deployment
         uses: actions/deploy-pages@v4
+
+      # Generate trend charts if historical data exists
+      for metrics_name in all_metrics.keys():
+          historical_file = f'benchmark_viz/{metrics_name}_history.json'
+          if os.path.exists(historical_file):
+              with open(historical_file, 'r') as f:
+                  history = json.load(f)
+              
+                  if len(history) > 1:
+                      # Plot cache hit rate trend
+                      if 'cache_hit_rate' in history[0]:
+                          dates = [entry.get('timestamp', '') for entry in history]
+                          values = [entry.get('cache_hit_rate', 0) for entry in history]
+                          
+                          plt.figure(figsize=(12, 6))
+                          plt.plot(range(len(dates)), values, 'o-')
+                          plt.title(f'{metrics_name} - Cache Hit Rate Trend')
+                          plt.ylabel('Hit Rate')
+                          plt.xticks(range(len(dates)), [d.split(' ')[0] for d in dates], rotation=45)
+                          plt.grid(True)
+                          plt.tight_layout()
+                          plt.savefig(f'benchmark_viz/{metrics_name}_trend.png')
+                          plt.close()
+          
+          # Detect regressions
+          regressions = []
+          for metrics_name in all_metrics.keys():
+              historical_file = f'benchmark_viz/{metrics_name}_history.json'
+              if os.path.exists(historical_file):
+                  with open(historical_file, 'r') as f:
+                      history = json.load(f)
+                  
+                  if len(history) > 1:
+                      current = history[-1]
+                      previous = history[-2]
+                      
+                      # Check cache hit rate regression
+                      if 'cache_hit_rate' in current and 'cache_hit_rate' in previous:
+                          current_rate = current['cache_hit_rate']
+                          previous_rate = previous['cache_hit_rate']
+                          
+                          if current_rate < previous_rate * 0.9:  # 10% regression threshold
+                              regressions.append({
+                                  'metric': f'{metrics_name} - cache_hit_rate',
+                                  'previous': previous_rate,
+                                  'current': current_rate,
+                                  'change': (current_rate - previous_rate) / previous_rate
+                              })
+          
+          # Then append regressions if any
+          if regressions:
+              with open('benchmark_results/summary.md', 'a') as f:
+                  f.write("\n## ⚠️ Performance Regressions Detected\n\n")
+                  f.write("| Metric | Previous | Current | Change |\n")
+                  f.write("|--------|----------|---------|--------|\n")
+                  
+                  for reg in regressions:
+                      f.write(f"| {reg['metric']} | {reg['previous']:.2%} | {reg['current']:.2%} | {reg['change']:.2%} |\n")
