@@ -38,13 +38,20 @@ jobs:
         run: |
           pip install -r tools/benchmark/requirements.txt
 
+      - name: Clean GitHub Actions cache
+        uses: actions/cache/restore@v3
+        with:
+          path: |
+            ~/.cache/bazel
+            ~/.bazelisk
+          key: ${{ runner.os }}-bazel-cache-${{ hashFiles('.github/workflows/benchmark.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-bazel-cache-
+
       - name: Setup Bazel
         uses: bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
         with:
           bazelisk-version: 'v1.19.0'
-          # Completely remove cache parameters
-          bazelisk-cache: false
-          repository-cache: false
 
       - name: Checkout Test Project (Rust)
         uses: actions/checkout@v4
