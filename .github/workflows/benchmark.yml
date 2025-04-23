@@ -3,7 +3,7 @@ name: NativeLink Benchmarks
 
 on:
   push:
-    branches: [main]
+    branches: [main, benchmark-test]  # Add your current branch here
   pull_request:
     branches: [main]
     paths-ignore:
@@ -39,11 +39,11 @@ jobs:
           pip install -r tools/benchmark/requirements.txt
 
       - name: Setup Bazel
-        uses: bazel-contrib/setup-bazel@v0.13.0
+        uses: bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
         with:
           bazelisk-version: 'v1.19.0'
-          bazelisk-cache: true
-          repository-cache: true
+          bazelisk-cache: false
+          repository-cache: false
 
       - name: Checkout Test Project (Rust)
         uses: actions/checkout@v4
