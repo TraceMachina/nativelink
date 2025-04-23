@@ -43,8 +43,10 @@ jobs:
           pip install -r tools/benchmark/requirements.txt
 
       - name: Setup Bazel
-        uses: bazel-contrib/setup-bazel@v0.13.0
+        uses: bazelbuild/setup-bazelisk@v2
         with:
+          bazelisk-version: 'v1.19.0'
+          # Remove cache-related options that might be causing issues
           bazelisk-cache: true
           repository-cache: true
 
