@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NativeLink Benchmark Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .chart-container {
+            margin: 20px 0;
+            height: 400px;
+        }
+        .filters {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        select, button {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>NativeLink Benchmark Dashboard</h1>
+        
+        <div class="filters">
+            <select id="projectFilter">
+                <option value="all">All Projects</option>
+            </select>
+            
+            <select id="timeRange">
+                <option value="7">Last 7 days</option>
+                <option value="14">Last 14 days</option>
+                <option value="30" selected>Last 30 days</option>
+                <option value="all">All time</option>
+            </select>
+            
+            <button id="refreshData">Refresh Data</button>
+        </div>
+        
+        <div class="chart-container">
+            <canvas id="buildTimeChart"></canvas>
+        </div>
+    </div>
+    
+    <script>
+        // Global variables
+        let buildTimeChart;
+        let benchmarkData = { projects: [], benchmarks: [] };
+        
+        // Initialize the dashboard
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Load data
+            await loadData();
+            
+            // Setup event listeners
+            setupEventListeners();
+            
+            // Initialize charts
+            initializeCharts();
+        });
+        
+        // Load benchmark data from API
+        async function loadData() {
+            try {
+                // Load projects
+                const projectsResponse = await fetch('/api/projects');
+                benchmarkData.projects = await projectsResponse.json();
+                
+                // Populate project filter
+                const projectFilter = document.getElementById('projectFilter');
+                benchmarkData.projects.forEach(project => {
+                    const option = document.createElement('option');
+                    option.value = project;
+                    option.textContent = project;
+                    projectFilter.appendChild(option);
+                });
+                
+                // Load benchmark results
+                const resultsResponse = await fetch('/api/results');
+                const results = await resultsResponse.json();
+                
+                // Process results
+                benchmarkData.benchmarks = results;
+                
+                return results;
+            } catch (error) {
+                console.error('Error loading data:', error);
+                return [];
+            }
+        }
+        
+        // Setup event listeners
+        function setupEventListeners() {
+            document.getElementById('refreshData').addEventListener('click', async function() {
+                this.textContent = 'Loading...';
+                this.disabled = true;
+                
+                await loadData();
+                updateCharts();
+                
+                this.textContent = 'Refresh Data';
+                this.disabled = false;
+            });
+            
+            document.getElementById('projectFilter').addEventListener('change', updateCharts);
+            document.getElementById('timeRange').addEventListener('change', updateCharts);
+        }
+        
+        // Initialize charts
+        function initializeCharts() {
+            const ctx = document.getElementById('buildTimeChart').getContext('2d');
+            buildTimeChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Build Time (seconds)'
+                            },
+                            beginAtZero: true
+                        }
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Build Time Trends'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.dataset.label}: ${context.raw.toFixed(2)}s`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            
+            updateCharts();
+        }
+        
+        // Update charts based on filters
+        function updateCharts() {
+            const projectFilter = document.getElementById('projectFilter').value;
+            const timeRange = document.getElementById('timeRange').value;
+            
+            // Filter data
+            let filteredData = benchmarkData.benchmarks;
+            
+            // Filter by project
+            if (projectFilter !== 'all') {
+                filteredData = filteredData.filter(item => 
+                    item.metadata && item.metadata.project === projectFilter
+                );
+            }
+            
+            // Filter by time range
+            if (timeRange !== 'all') {
+                const daysAgo = parseInt(timeRange);
+                const cutoffDate = new Date();
+                cutoffDate.setDate(cutoffDate.getDate() - daysAgo);
+                
+                filteredData = filteredData.filter(item => {
+                    if (!item.metadata || !item.metadata.timestamp) return false;
+                    const itemDate = new Date(item.metadata.timestamp);
+                    return itemDate >= cutoffDate;
+                });
+            }
+            
+            // Sort by timestamp
+            filteredData.sort((a, b) => {
+                const dateA = new Date(a.metadata.timestamp);
+                const dateB = new Date(b.metadata.timestamp);
+                return dateA - dateB;
+            });
+            
+            // Update build time chart
+            updateBuildTimeChart(filteredData);
+        }
+        
+        // Update build time chart
+        function updateBuildTimeChart(data) {
+            // Prepare data for chart
+            const labels = data.map(item => {
+                const date = new Date(item.metadata.timestamp);
+                return date.toLocaleDateString();
+            });
+            
+            // Create datasets for each configuration
+            const datasets = [];
+            const configs = ['local_build', 'remote_cache', 'remote_execution'];
+            const colors = ['#4CAF50', '#2196F3', '#FF5722'];
+            
+            configs.forEach((config, index) => {
+                const values = data.map(item => {
+                    if (item.results && item.results[config]) {
+                        return item.results[config].build_time_seconds;
+                    }
+                    return null;
+                });
+                
+                datasets.push({
+                    label: config.replace('_', ' ').toUpperCase(),
+                    data: values,
+                    borderColor: colors[index],
+                    backgroundColor: colors[index] + '33',
+                    tension: 0.1
+                });
+            });
+            
+            // Update chart
+            buildTimeChart.data.labels = labels;
+            buildTimeChart.data.datasets = datasets;
+            buildTimeChart.update();
+        }
+    </script>
+</body>
+</html>
