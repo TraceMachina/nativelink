@@ -1,0 +1,15 @@
+{
+  "project": "test",
+  "commit": "def5678",
+  "timestamp": "20230102_120000",
+  "metrics": {
+    "hello_world": {
+      "build_time": 1.2,
+      "memory_usage": 95
+    },
+    "simple_app": {
+      "build_time": 3.5,
+      "memory_usage": 210
+    }
+  }
+}

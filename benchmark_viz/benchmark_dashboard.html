@@ -1,0 +1,1235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NativeLink Nightly Benchmarks</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #4a6fa5;
+            --secondary-color: #6c757d;
+            --success-color: #28a745;
+            --danger-color: #dc3545;
+            --warning-color: #ffc107;
+            --info-color: #17a2b8;
+            --light-color: #f8f9fa;
+            --dark-color: #343a40;
+            --background-color: #f5f7fa;
+            --card-bg: #ffffff;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: var(--dark-color);
+            background-color: var(--background-color);
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        h1, h2, h3 {
+            color: var(--primary-color);
+        }
+
+        .intro {
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+
+        .benchmark-categories {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .category {
+            background-color: var(--card-bg);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .category h3 {
+            margin-bottom: 15px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+
+        .benchmark-list {
+            list-style-type: none;
+        }
+
+        .benchmark-list li {
+            margin-bottom: 8px;
+        }
+
+        .benchmark-list a {
+            color: var(--primary-color);
+            text-decoration: none;
+            display: block;
+            padding: 5px 0;
+            transition: all 0.2s ease;
+        }
+
+        .benchmark-list a:hover {
+            color: #3a5a8a;
+            padding-left: 5px;
+        }
+
+        .metrics-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .metric-card {
+            background-color: var(--card-bg);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 10px 0;
+            color: var(--primary-color);
+        }
+
+        .metric-label {
+            font-size: 14px;
+            color: var(--secondary-color);
+        }
+
+        .improvement {
+            color: var(--success-color);
+        }
+
+        .regression {
+            color: var(--danger-color);
+        }
+
+        .controls {
+            background-color: var(--card-bg);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .control-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+
+        .control-item {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+
+        select, input {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        button {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+        }
+
+        button:hover {
+            background-color: #3a5a8a;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(600px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-container {
+            background-color: var(--card-bg);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .chart-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+
+        .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            text-align: center;
+            color: var(--secondary-color);
+            font-size: 14px;
+        }
+
+        @media (max-width: 768px) {
+            .dashboard {
+                grid-template-columns: 1fr;
+            }
+            .benchmark-categories {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>NativeLink Nightly Benchmarks</h1>
+            <div>
+                <button id="refreshData">Refresh Data</button>
+            </div>
+        </header>
+
+        <div class="intro">
+            <p>Each night, an automated tool checks out the NativeLink trunk source code and runs multiple benchmarks: build time, execution time, memory usage, and cache hit rates across various configurations. The tests take around 2.5 hours to run, and the results are verified against the previous run and then added to the graphs linked below.</p>
+            <p>The goal is to spot any long-term regressions (or, gains!) in NativeLink's performance that might otherwise accidentally slip past the committers, hopefully avoiding the fate of the boiling frog.</p>
+            <p><strong>Chart Navigation:</strong> Click and drag to zoom; shift + click and drag to scroll after zooming; hover over an annotation (labeled A, B, C, etc.) to see details about significant changes.</p>
+        </div>
+
+        <div class="metrics-summary">
+            <div class="metric-card">
+                <div class="metric-label">Average Build Time</div>
+                <div class="metric-value" id="avgBuildTime">--</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Build Time Change</div>
+                <div class="metric-value" id="buildTimeChange">--</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Total Benchmarks</div>
+                <div class="metric-value" id="totalBenchmarks">--</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Latest Commit</div>
+                <div class="metric-value" id="latestCommit">--</div>
+            </div>
+        </div>
+
+        <div class="benchmark-categories">
+            <div class="category">
+                <h3>Indexing</h3>
+                <ul class="benchmark-list">
+                    <li><a href="time_series_build_time.html">Build throughput</a></li>
+                    <li><a href="#">Execution throughput</a></li>
+                    <li><a href="#">Near-real-time refresh latency</a></li>
+                    <li><a href="#">GB/hour for medium projects</a></li>
+                    <li><a href="#">GB/hour for large projects</a></li>
+                    <li><a href="#">Indexing JIT/GC times</a></li>
+                    <li><a href="#">Disk usage</a></li>
+                </ul>
+            </div>
+
+            <div class="category">
+                <h3>Cache Performance</h3>
+                <ul class="benchmark-list">
+                    <li><a href="#">Cache hit rate</a></li>
+                    <li><a href="#">Cache miss penalty</a></li>
+                    <li><a href="#">Cache eviction rate</a></li>
+                    <li><a href="#">Cache size impact</a></li>
+                    <li><a href="#">Multi-level cache performance</a></li>
+                </ul>
+            </div>
+
+            <div class="category">
+                <h3>Memory Usage</h3>
+                <ul class="benchmark-list">
+                    <li><a href="#">Peak memory usage</a></li>
+                    <li><a href="#">Memory usage over time</a></li>
+                    <li><a href="#">Memory fragmentation</a></li>
+                    <li><a href="#">GC pressure</a></li>
+                </ul>
+            </div>
+
+            <div class="category">
+                <h3>Execution Performance</h3>
+                <ul class="benchmark-list">
+                    <li><a href="#">Small task execution</a></li>
+                    <li><a href="#">Large task execution</a></li>
+                    <li><a href="#">Task scheduling overhead</a></li>
+                    <li><a href="#">Parallel execution scaling</a></li>
+                    <li><a href="#">Resource utilization</a></li>
+                </ul>
+            </div>
+
+            <div class="category">
+                <h3>Network Performance</h3>
+                <ul class="benchmark-list">
+                    <li><a href="#">Bandwidth utilization</a></li>
+                    <li><a href="#">Connection latency</a></li>
+                    <li><a href="#">Protocol overhead</a></li>
+                    <li><a href="#">Multi-node scaling</a></li>
+                </ul>
+            </div>
+
+            <div class="category">
+                <h3>System Integration</h3>
+                <ul class="benchmark-list">
+                    <li><a href="#">Bazel integration</a></li>
+                    <li><a href="#">Buck2 integration</a></li>
+                    <li><a href="#">BuildStream integration</a></li>
+                    <li><a href="#">Custom client performance</a></li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="chart-container full-width">
+            <div class="chart-header">
+                <h2>Performance Over Time</h2>
+                <div class="chart-actions">
+                    <button id="resetZoom1">Reset Zoom</button>
+                </div>
+            </div>
+            <canvas id="timeSeriesChart"></canvas>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <div class="control-item">
+                    <label for="timeRange">Time Range</label>
+                    <select id="timeRange">
+                        <option value="7">Last 7 days</option>
+                        <option value="30" selected>Last 30 days</option>
+                        <option value="90">Last 90 days</option>
+                        <option value="all">All time</option>
+                    </select>
+                </div>
+                <div class="control-item">
+                    <label for="metricType">Metric Type</label>
+                    <select id="metricType">
+                        <option value="build_time">Build Time</option>
+                        <option value="execution_time">Execution Time</option>
+                        <option value="memory_usage">Memory Usage</option>
+                        <option value="cache_hits">Cache Hits</option>
+                    </select>
+                </div>
+                <div class="control-item">
+                    <label for="projectFilter">Project</label>
+                    <select id="projectFilter">
+                        <option value="all">All Projects</option>
+                    </select>
+                </div>
+            </div>
+            <div class="control-group">
+                <div class="control-item">
+                    <label for="compareCommits">Compare Commits</label>
+                    <select id="compareCommits" multiple>
+                        <!-- Will be populated dynamically -->
+                    </select>
+                </div>
+                <div class="control-item">
+                    <label for="normalizeData">Normalize Data</label>
+                    <select id="normalizeData">
+                        <option value="none">No Normalization</option>
+                        <option value="percent">Percentage Change</option>
+                        <option value="baseline">Relative to Baseline</option>
+                    </select>
+                </div>
+                <div class="control-item">
+                    <button id="applyFilters">Apply Filters</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="dashboard">
+            <div class="chart-container">
+                <div class="chart-header">
+                    <h2>Commit Comparison</h2>
+                </div>
+                <canvas id="comparisonChart"></canvas>
+            </div>
+
+            <div class="chart-container">
+                <div class="chart-header">
+                    <h2>Performance Distribution</h2>
+                </div>
+                <canvas id="distributionChart"></canvas>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>[last updated: <span id="lastUpdated"></span>; send questions to NativeLink Team]</p>
+        </div>
+    </div>
+
+    <script>
+        // Data structure to hold benchmark data
+        let benchmarkData = {
+            benchmarks: []
+        };
+
+        // Function to load benchmark data from JSON files
+        async function loadBenchmarkData() {
+            try {
+                // Show loading state
+                document.getElementById('avgBuildTime').textContent = 'Loading...';  
+                document.getElementById('buildTimeChange').textContent = 'Loading...';  
+                document.getElementById('totalBenchmarks').textContent = 'Loading...';  
+                document.getElementById('latestCommit').textContent = 'Loading...';  
+                
+                // Fetch the list of benchmark files
+                const response = await fetch('../benchmark_results/');
+                const text = await response.text();
+                
+                // Parse the directory listing to find JSON files
+                const parser = new DOMParser();
+                const htmlDoc = parser.parseFromString(text, 'text/html');
+                const links = htmlDoc.querySelectorAll('a');
+                
+                const jsonFiles = Array.from(links)
+                    .map(link => link.getAttribute('href'))
+                    .filter(href => href && href.endsWith('.json'));
+                
+                // Load each JSON file
+                const benchmarks = [];
+                for (const file of jsonFiles) {
+                    try {
+                        const fileResponse = await fetch(`../benchmark_results/${file}`);
+                        const jsonData = await fileResponse.json();
+                        
+                        // Process the benchmark data
+                        // Convert the metrics object to individual benchmark entries
+                        const timestamp = jsonData.timestamp;
+                        const formattedTimestamp = formatTimestamp(timestamp);
+                        
+                        Object.entries(jsonData.metrics).forEach(([testName, metrics]) => {
+                            benchmarks.push({
+                                commit: jsonData.commit,
+                                timestamp: formattedTimestamp,
+                                project: jsonData.project,
+                                test: testName,
+                                build_time: metrics.build_time || 0,
+                                execution_time: metrics.execution_time || 0,
+                                memory_usage: metrics.memory_usage || 0,
+                                cache_hits: metrics.cache_hits || 0
+                            });
+                        });
+                    } catch (error) {
+                        console.error(`Error loading benchmark file ${file}:`, error);
+                    }
+                }
+                
+                benchmarkData.benchmarks = benchmarks;
+                return benchmarks;
+            } catch (error) {
+                console.error('Error loading benchmark data:', error);
+                return [];
+            }
+        }
+        
+        // Helper function to format timestamp
+        function formatTimestamp(timestamp) {
+            // Convert from format like "20230101_120000" to "2023-01-01T12:00:00Z"
+            if (timestamp && timestamp.includes('_')) {
+                const [datePart, timePart] = timestamp.split('_');
+                const year = datePart.substring(0, 4);
+                const month = datePart.substring(4, 6);
+                const day = datePart.substring(6, 8);
+                
+                const hours = timePart.substring(0, 2);
+                const minutes = timePart.substring(2, 4);
+                const seconds = timePart.substring(4, 6);
+                
+                return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+            }
+            return timestamp;
+        }
+
+        // Initialize charts and populate data
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Set last updated date
+            const now = new Date();
+            document.getElementById('lastUpdated').textContent = now.toISOString().replace('T', ' ').substring(0, 19);
+            
+            // Load benchmark data
+            await loadBenchmarkData();
+            const data = benchmarkData.benchmarks;
+            
+            // Populate project filter
+            const projects = [...new Set(data.map(b => b.project))];
+            const projectFilter = document.getElementById('projectFilter');
+            projects.forEach(project => {
+                const option = document.createElement('option');
+                option.value = project;
+                option.textContent = project;
+                projectFilter.appendChild(option);
+            });
+
+            // Populate commit comparison dropdown
+            const commits = [...new Set(data.map(b => b.commit))];
+            const compareCommits = document.getElementById('compareCommits');
+            commits.forEach(commit => {
+                const option = document.createElement('option');
+                option.value = commit;
+                option.textContent = commit.substring(0, 7);
+                compareCommits.appendChild(option);
+            });
+
+            // Update summary metrics
+            updateSummaryMetrics(data);
+
+            // Initialize charts
+            initializeTimeSeriesChart(data);
+            initializeComparisonChart(data);
+            initializeDistributionChart(data);
+
+            // Add event listeners
+            document.getElementById('applyFilters').addEventListener('click', function() {
+                const timeRange = document.getElementById('timeRange').value;
+                const metricType = document.getElementById('metricType').value;
+                const projectFilter = document.getElementById('projectFilter').value;
+                const normalizeData = document.getElementById('normalizeData').value;
+                
+                // Filter data based on selections
+                let filteredData = filterData(benchmarkData.benchmarks, timeRange, projectFilter);
+                
+                // Update charts with filtered data
+                updateCharts(filteredData, metricType, normalizeData);
+                updateSummaryMetrics(filteredData);
+            });
+
+            document.getElementById('refreshData').addEventListener('click', async function() {
+                this.textContent = 'Loading...';
+                this.disabled = true;
+                
+                // Reload benchmark data
+                await loadBenchmarkData();
+                const refreshedData = benchmarkData.benchmarks;
+                
+                // Update all visualizations with new data
+                const timeRange = document.getElementById('timeRange').value;
+                const metricType = document.getElementById('metricType').value;
+                const projectFilter = document.getElementById('projectFilter').value;
+                const normalizeData = document.getElementById('normalizeData').value;
+                
+                // Filter data based on selections
+                let filteredData = filterData(refreshedData, timeRange, projectFilter);
+                
+                // Update charts with filtered data
+                updateCharts(filteredData, metricType, normalizeData);
+                updateSummaryMetrics(filteredData);
+                
+                this.textContent = 'Refresh Data';
+                this.disabled = false;
+            });
+
+            document.getElementById('resetZoom1').addEventListener('click', function() {
+                timeSeriesChart.resetZoom();
+            });
+        });
+
+        // Filter data based on time range and project
+        function filterData(data, timeRange, projectFilter) {
+            let filteredData = [...data];
+            
+            // Filter by time range
+            if (timeRange !== 'all') {
+                const daysAgo = parseInt(timeRange);
+                const cutoffDate = new Date();
+                cutoffDate.setDate(cutoffDate.getDate() - daysAgo);
+                
+                filteredData = filteredData.filter(item => new Date(item.timestamp) >= cutoffDate);
+            }
+            
+            // Filter by project
+            if (projectFilter !== 'all') {
+                filteredData = filteredData.filter(item => item.project === projectFilter);
+            }
+            
+            return filteredData;
+        }
+
+        // Update all charts with new data
+        function updateCharts(data, metricType, normalizeData) {
+            // Update time series chart
+            updateTimeSeriesChart(data, metricType, normalizeData);
+            
+            // Update comparison chart
+            updateComparisonChart(data, metricType, normalizeData);
+            
+            // Update distribution chart
+            updateDistributionChart(data, metricType);
+        }
+
+        // Define significant changes/annotations for the charts
+        const significantChanges = [
+            {
+                date: '2023-01-15',
+                label: 'A',
+                description: 'Switched to SSD storage for build cache'
+            },
+            {
+                date: '2023-02-10',
+                label: 'B',
+                description: 'Implemented concurrent task execution'
+            },
+            {
+                date: '2023-03-05',
+                label: 'C',
+                description: 'Optimized dependency resolution algorithm'
+            },
+            {
+                date: '2023-04-20',
+                label: 'D',
+                description: 'Increased worker thread count from 6 to 20'
+            },
+            {
+                date: '2023-05-15',
+                label: 'E',
+                description: 'Added memory caching for frequently accessed artifacts'
+            }
+        ];
+
+        // Initialize time series chart
+        function initializeTimeSeriesChart(data) {
+            const ctx = document.getElementById('timeSeriesChart').getContext('2d');
+            
+            // Sort data by timestamp
+            const sortedData = [...data].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            
+            // Prepare data for chart
+            const labels = sortedData.map(item => new Date(item.timestamp));
+            const buildTimeData = sortedData.map(item => item.build_time);
+            
+            // Create annotations from significant changes
+            const annotations = {};
+            significantChanges.forEach((change, index) => {
+                annotations[`change-${index}`] = {
+                    type: 'line',
+                    scaleID: 'x',
+                    value: new Date(change.date),
+                    borderColor: 'rgba(255, 99, 132, 0.7)',
+                    borderWidth: 2,
+                    label: {
+                        backgroundColor: 'rgba(255, 99, 132, 0.7)',
+                        content: change.label,
+                        enabled: true,
+                        position: 'top'
+                    }
+                };
+            });
+            
+            // Create chart
+            window.timeSeriesChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Build Time (s)',
+                        data: buildTimeData,
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        pointHoverRadius: 5,
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                displayFormats: {
+                                    day: 'MMM d'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Build Time (s)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        zoom: {
+                            pan: {
+                                enabled: true,
+                                mode: 'x',
+                                modifierKey: 'shift',  // Hold shift key to pan after zooming
+                            },
+                            zoom: {
+                                wheel: {
+                                    enabled: true
+                                },
+                                pinch: {
+                                    enabled: true
+                                },
+                                mode: 'x',
+                                onZoomComplete: function() {
+                                    // Update tooltip to show more details when zoomed in
+                                    timeSeriesChart.options.plugins.tooltip.mode = 'nearest';
+                                }
+                            }
+                        },
+                        annotation: {
+                            annotations: annotations
+                        },
+                        tooltip: {
+                            callbacks: {
+                                title: function(tooltipItems) {
+                                    const date = new Date(tooltipItems[0].parsed.x);
+                                    return date.toLocaleDateString();
+                                },
+                                afterTitle: function(tooltipItems) {
+                                    // Check if this point is near a significant change
+                                    const pointDate = new Date(tooltipItems[0].parsed.x);
+                                    
+                                    for (const change of significantChanges) {
+                                        const changeDate = new Date(change.date);
+                                        const diffDays = Math.abs((pointDate - changeDate) / (1000 * 60 * 60 * 24));
+                                        
+                                        if (diffDays < 3) { // Within 3 days of a change
+                                            return `Change: ${change.label} - ${change.description}`;
+                                        }
+                                    }
+                                    return '';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Initialize comparison chart
+        function initializeComparisonChart(data) {
+            const ctx = document.getElementById('comparisonChart').getContext('2d');
+            
+            // Get the latest 5 commits for comparison
+            const sortedData = [...data].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            const latestCommits = [];
+            const seenCommits = new Set();
+            
+            for (const item of sortedData) {
+                if (!seenCommits.has(item.commit)) {
+                    seenCommits.add(item.commit);
+                    latestCommits.push(item);
+                    
+                    if (latestCommits.length >= 5) break;
+                }
+            }
+            
+            // Prepare data for chart
+            const labels = latestCommits.map(item => item.commit.substring(0, 7));
+            const buildTimeData = latestCommits.map(item => item.build_time);
+            
+            // Create chart
+            window.comparisonChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Build Time (s)',
+                        data: buildTimeData,
+                        backgroundColor: 'rgba(54, 162, 235, 0.7)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Build Time (s)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                title: function(tooltipItems) {
+                                    const index = tooltipItems[0].dataIndex;
+                                    return `Commit: ${latestCommits[index].commit}`;
+                                },
+                                afterTitle: function(tooltipItems) {
+                                    const index = tooltipItems[0].dataIndex;
+                                    return `Date: ${new Date(latestCommits[index].timestamp).toLocaleDateString()}`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Initialize distribution chart
+        function initializeDistributionChart(data) {
+            const ctx = document.getElementById('distributionChart').getContext('2d');
+            
+            // Group data by project
+            const projectGroups = {};
+            data.forEach(item => {
+                if (!projectGroups[item.project]) {
+                    projectGroups[item.project] = [];
+                }
+                projectGroups[item.project].push(item.build_time);
+            });
+            
+            // Calculate statistics for each project
+            const projects = Object.keys(projectGroups);
+            const datasets = projects.map((project, index) => {
+                const metricValues = projectGroups[project];
+                const min = Math.min(...metricValues);
+                const max = Math.max(...metricValues);
+                const avg = metricValues.reduce((sum, value) => sum + value, 0) / metricValues.length;
+                
+                return {
+                    label: project,
+                    data: [{
+                        x: project,
+                        y: avg,
+                        min: min,
+                        max: max
+                    }],
+                    backgroundColor: `hsla(${210 + index * 40}, 70%, 60%, 0.7)`
+                };
+            });
+            
+            // Create chart
+            window.distributionChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Build Time (s)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const dataPoint = context.raw;
+                                    return [
+                                        `Avg: ${dataPoint.y.toFixed(2)}s`,
+                                        `Min: ${dataPoint.min.toFixed(2)}s`,
+                                        `Max: ${dataPoint.max.toFixed(2)}s`
+                                    ];
+                                }
+                            }
+                        },
+                        legend: {
+                            display: true,
+                            position: 'top'
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update summary metrics
+        function updateSummaryMetrics(data) {
+            if (!data || data.length === 0) {
+                document.getElementById('avgBuildTime').textContent = 'No data';
+                document.getElementById('buildTimeChange').textContent = 'No data';
+                document.getElementById('totalBenchmarks').textContent = '0';
+                document.getElementById('latestCommit').textContent = 'None';
+                return;
+            }
+            
+            // Extract all build times from all benchmarks
+            const buildTimes = data.map(item => item.build_time).filter(time => time > 0);
+            
+            // Calculate average build time
+            const avgBuildTime = buildTimes.length > 0 ? 
+                buildTimes.reduce((sum, time) => sum + time, 0) / buildTimes.length : 0;
+            document.getElementById('avgBuildTime').textContent = `${avgBuildTime.toFixed(2)}s`;
+            
+            // Count total benchmarks
+            const totalBenchmarks = data.length;
+            document.getElementById('totalBenchmarks').textContent = totalBenchmarks;
+            
+            // Sort benchmarks by timestamp (newest first)
+            const sortedByDate = [...data].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            
+            // Get the latest commit
+            if (sortedByDate.length > 0) {
+                const latestCommit = sortedByDate[0].commit;
+                document.getElementById('latestCommit').textContent = latestCommit.substring(0, 7);
+            }
+            
+            // Calculate build time change between the two most recent commits
+            const commitData = {};
+            const processedCommits = new Set();
+            
+            // Group benchmarks by commit and calculate average build time for each commit
+            sortedByDate.forEach(benchmark => {
+                const commit = benchmark.commit;
+                if (!processedCommits.has(commit)) {
+                    processedCommits.add(commit);
+                    
+                    // Get all benchmarks for this commit
+                    const commitBenchmarks = data.filter(item => item.commit === commit);
+                    const commitBuildTimes = commitBenchmarks.map(item => item.build_time).filter(time => time > 0);
+                    
+                    if (commitBuildTimes.length > 0) {
+                        const avgTime = commitBuildTimes.reduce((sum, time) => sum + time, 0) / commitBuildTimes.length;
+                        commitData[commit] = {
+                            commit: commit,
+                            timestamp: benchmark.timestamp,
+                            build_time: avgTime
+                        };
+                    }
+                }
+            });
+            
+            
+            // Get the two most recent commits
+            const uniqueCommits = Object.values(commitData);
+
+            // Sort commits by timestamp (newest first)
+            const sortedCommits = uniqueCommits.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+            // Calculate build time change if we have at least two commits
+            if (sortedCommits.length >= 2) {
+                const latest = sortedCommits[0];
+                const previous = sortedCommits[1];
+                
+                const change = ((latest.build_time - previous.build_time) / previous.build_time) * 100;
+                const changeElement = document.getElementById('buildTimeChange');
+                
+                if (change < 0) {
+                    // Improvement (negative change)
+                    changeElement.textContent = `${Math.abs(change).toFixed(2)}% faster`;
+                    changeElement.classList.add('improvement');
+                    changeElement.classList.remove('regression');
+                } else if (change > 0) {
+                    // Regression (positive change)
+                    changeElement.textContent = `${change.toFixed(2)}% slower`;
+                    changeElement.classList.add('regression');
+                    changeElement.classList.remove('improvement');
+                } else {
+                    // No change
+                    changeElement.textContent = 'No change';
+                    changeElement.classList.remove('improvement', 'regression');
+                }
+            } else {
+                document.getElementById('buildTimeChange').textContent = 'Not enough data';
+            }
+            
+            // Set total benchmarks count (total number of test cases across all benchmarks)
+            document.getElementById('totalBenchmarks').textContent = totalBenchmarks.toString();
+            
+            // Set latest commit
+            if (uniqueCommits.length > 0) {
+                const latestCommit = uniqueCommits[0].commit;
+                document.getElementById('latestCommit').textContent = latestCommit.substring(0, 7);
+            } else {
+                document.getElementById('latestCommit').textContent = 'None';
+            }
+        }
+
+        // Update time series chart
+        function updateTimeSeriesChart(data, metricType, normalizeData) {
+            // Sort data by timestamp
+            const sortedData = [...data].sort((a, b) => {
+                return new Date(a.timestamp.replace(/_/g, ' ')) - new Date(b.timestamp.replace(/_/g, ' '));
+            });
+            
+            // Extract metric data from each benchmark
+            const chartData = [];
+            
+            sortedData.forEach(benchmark => {
+                const metrics = benchmark.metrics || {};
+                
+                // Calculate average for the specified metric across all tests
+                const metricValues = [];
+                Object.values(metrics).forEach(testMetrics => {
+                    if (testMetrics[metricType] !== undefined) {
+                        metricValues.push(testMetrics[metricType]);
+                    }
+                });
+                
+                if (metricValues.length > 0) {
+                    const avgValue = metricValues.reduce((sum, value) => sum + value, 0) / metricValues.length;
+                    chartData.push({
+                        timestamp: benchmark.timestamp,
+                        value: avgValue
+                    });
+                }
+            });
+            
+            // Prepare data for chart
+            const labels = chartData.map(item => new Date(item.timestamp.replace(/_/g, ' ')));
+            let metricData = chartData.map(item => item.value);
+            
+            // Apply normalization if needed
+            if (normalizeData === 'percent' && metricData.length > 0) {
+                const baseline = metricData[0];
+                metricData = metricData.map(value => ((value - baseline) / baseline) * 100);
+            } else if (normalizeData === 'baseline' && metricData.length > 0) {
+                const baseline = metricData[0];
+                metricData = metricData.map(value => value / baseline);
+            }
+            
+            // Update chart data
+            timeSeriesChart.data.labels = labels;
+            timeSeriesChart.data.datasets[0].data = metricData;
+            
+            // Update chart labels based on metric type
+            let metricLabel = 'Value';
+            switch(metricType) {
+                case 'build_time':
+                    metricLabel = 'Build Time (s)';
+                    break;
+                case 'execution_time':
+                    metricLabel = 'Execution Time (s)';
+                    break;
+                case 'memory_usage':
+                    metricLabel = 'Memory Usage (MB)';
+                    break;
+                case 'cache_hits':
+                    metricLabel = 'Cache Hits (%)';
+                    break;
+            }
+            
+            // Update y-axis label
+            timeSeriesChart.options.scales.y.title.text = metricLabel;
+            timeSeriesChart.data.datasets[0].label = metricLabel;
+            
+            // Update chart
+            timeSeriesChart.update();
+        }
+
+        // Update comparison chart
+        function updateComparisonChart(data, metricType, normalizeData) {
+            // Get selected commits for comparison
+            const selectedCommits = Array.from(document.getElementById('compareCommits').selectedOptions)
+                .map(option => option.value);
+            
+            // If no commits selected, use the latest 5
+            let commitsToCompare = selectedCommits;
+            if (commitsToCompare.length === 0) {
+                const sortedData = [...data].sort((a, b) => {
+                    return new Date(b.timestamp.replace(/_/g, ' ')) - new Date(a.timestamp.replace(/_/g, ' '));
+                });
+                const latestCommits = [];
+                const seenCommits = new Set();
+                
+                for (const item of sortedData) {
+                    if (!seenCommits.has(item.commit)) {
+                        seenCommits.add(item.commit);
+                        latestCommits.push(item);
+                        
+                        if (latestCommits.length >= 5) break;
+                    }
+                }
+                
+                commitsToCompare = latestCommits.map(item => item.commit);
+            }
+            
+            // Filter data for selected commits
+            const filteredData = data.filter(item => commitsToCompare.includes(item.commit));
+            
+            // Group by commit and calculate average for each metric
+            const commitGroups = {};
+            filteredData.forEach(benchmark => {
+                const commit = benchmark.commit;
+                if (!commitGroups[commit]) {
+                    commitGroups[commit] = [];
+                }
+                
+                // Extract metric values from each test in the benchmark
+                const metrics = benchmark.metrics || {};
+                Object.values(metrics).forEach(testMetrics => {
+                    if (testMetrics[metricType] !== undefined) {
+                        commitGroups[commit].push(testMetrics[metricType]);
+                    }
+                });
+            });
+            
+            // Calculate average for each commit
+            const commits = Object.keys(commitGroups);
+            const averages = commits.map(commit => {
+                const values = commitGroups[commit];
+                return values.reduce((sum, value) => sum + value, 0) / values.length;
+            });
+            
+            // Apply normalization if needed
+            let normalizedAverages = [...averages];
+            if (normalizeData === 'percent' && averages.length > 0) {
+                const baseline = averages[0];
+                normalizedAverages = averages.map(value => ((value - baseline) / baseline) * 100);
+            } else if (normalizeData === 'baseline' && averages.length > 0) {
+                const baseline = averages[0];
+                normalizedAverages = averages.map(value => value / baseline);
+            }
+            
+            // Update chart data
+            comparisonChart.data.labels = commits.map(commit => commit.substring(0, 7));
+            comparisonChart.data.datasets[0].data = normalizedAverages;
+            
+            // Update chart labels based on metric type
+            let metricLabel = 'Value';
+            switch(metricType) {
+                case 'build_time':
+                    metricLabel = 'Build Time (s)';
+                    break;
+                case 'execution_time':
+                    metricLabel = 'Execution Time (s)';
+                    break;
+                case 'memory_usage':
+                    metricLabel = 'Memory Usage (MB)';
+                    break;
+                case 'cache_hits':
+                    metricLabel = 'Cache Hits (%)';
+                    break;
+            }
+            
+            // Update y-axis label
+            comparisonChart.options.scales.y.title.text = metricLabel;
+            comparisonChart.data.datasets[0].label = metricLabel;
+            
+            // Update chart
+            comparisonChart.update();
+        }
+
+        // Update distribution chart
+        function updateDistributionChart(data, metricType) {
+            // Group data by project
+            const projectGroups = {};
+            data.forEach(benchmark => {
+                const project = benchmark.project;
+                if (!projectGroups[project]) {
+                    projectGroups[project] = [];
+                }
+                
+                // Extract metric values from each test in the benchmark
+                const metrics = benchmark.metrics || {};
+                Object.values(metrics).forEach(testMetrics => {
+                    if (testMetrics[metricType] !== undefined) {
+                        projectGroups[project].push(testMetrics[metricType]);
+                    }
+                });
+            });
+            
+            // Calculate statistics for each project
+            const projects = Object.keys(projectGroups);
+            const datasets = projects.map((project, index) => {
+                const metricValues = projectGroups[project];
+                const min = Math.min(...metricValues);
+                const max = Math.max(...metricValues);
+                const avg = metricValues.reduce((sum, value) => sum + value, 0) / metricValues.length;
+                
+                return {
+                    label: project,
+                    data: [{
+                        x: project,
+                        y: avg,
+                        min: min,
+                        max: max
+                    }],
+                    backgroundColor: `hsla(${210 + index * 40}, 70%, 60%, 0.7)`
+                };
+            });
+            
+            // Update chart data
+            distributionChart.data.datasets = datasets;
+            
+            // Update chart labels based on metric type
+            let metricLabel = 'Value';
+            switch(metricType) {
+                case 'build_time':
+                    metricLabel = 'Build Time (s)';
+                    break;
+                case 'execution_time':
+                    metricLabel = 'Execution Time (s)';
+                    break;
+                case 'memory_usage':
+                    metricLabel = 'Memory Usage (MB)';
+                    break;
+                case 'cache_hits':
+                    metricLabel = 'Cache Hits (%)';
+                    break;
+            }
+            
+            // Update y-axis label
+            distributionChart.options.scales.y.title.text = metricLabel;
+            
+            // Update chart
+            distributionChart.update();
+        }

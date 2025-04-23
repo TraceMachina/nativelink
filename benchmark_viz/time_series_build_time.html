@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>NativeLink Build Time Performance</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #343a40;
+            background-color: #f5f7fa;
+            padding: 20px;
+            margin: 0;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        header {
+            margin-bottom: 30px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #ddd;
+        }
+        h1, h2, h3 {
+            color: #4a6fa5;
+        }
+        .chart-container {
+            background-color: #ffffff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .chart-title {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .chart-description {
+            color: #6c757d;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+        .navigation-help {
+            background-color: #e9ecef;
+            padding: 10px 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .plotly-graph-div {
+            width: 100%;
+            height: 500px;
+        }
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .control-label {
+            font-size: 14px;
+            font-weight: bold;
+        }
+        select, button {
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: 1px solid #ced4da;
+            background-color: white;
+            font-size: 14px;
+        }
+        button {
+            cursor: pointer;
+            background-color: #4a6fa5;
+            color: white;
+            border: none;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #3a5a80;
+        }
+        .annotation-tooltip {
+            position: absolute;
+            background-color: rgba(255, 255, 255, 0.9);
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            pointer-events: none;
+            z-index: 1000;
+            max-width: 300px;
+            font-size: 14px;
+            display: none;
+        }
+    </style>
+    <script type="text/javascript">window.PlotlyConfig = {MathJaxConfig: 'local'};</script>
+    <script charset="utf-8" src="https://cdn.plot.ly/plotly-3.0.1.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>NativeLink Build Time Performance</h1>
+        </header>
+        
+        <div class="navigation-help">
+            <strong>Chart Navigation:</strong> Click and drag to zoom; shift + click and drag to scroll after zooming; double-click to reset zoom; hover over data points to see details about each commit; click on annotation markers to see detailed information about significant changes.
+        </div>
+        
+        <div class="chart-container">
+            <div class="chart-header">
+                <h2>Build Time Over Time</h2>
+            </div>
+            <div class="controls">
+                <div class="control-group">
+                    <span class="control-label">Project:</span>
+                    <select id="projectSelector">
+                        <option value="all">All Projects</option>
+                        <option value="hello_world">Hello World</option>
+                        <option value="simple_app">Simple App</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <span class="control-label">Metric:</span>
+                    <select id="metricSelector">
+                        <option value="build_time">Build Time</option>
+                        <option value="memory_usage">Memory Usage</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <span class="control-label">Time Range:</span>
+                    <select id="timeRangeSelector">
+                        <option value="all">All Time</option>
+                        <option value="last_week">Last Week</option>
+                        <option value="last_month">Last Month</option>
+                        <option value="last_3_months">Last 3 Months</option>
+                    </select>
+                </div>
+                <button id="resetZoomBtn">Reset Zoom</button>
+            </div>
+            <div class="chart-description">
+                This chart shows the performance metrics across different commits. For build time, lower values indicate better performance.
+            </div>
+            <div id="buildTimeChart" class="plotly-graph-div"></div>
+        </div>
+    </div>
+
+    <div id="annotationTooltip" class="annotation-tooltip"></div>
+
+    <script>
+        // Function to load benchmark data from JSON files
+        async function loadBenchmarkData() {
+            try {
+                const response1 = await fetch('/benchmark_results/test_20230101_120000.json');
+                const data1 = await response1.json();
+                
+                const response2 = await fetch('/benchmark_results/test_20230102_120000.json');
+                const data2 = await response2.json();
+                
+                return [data1, data2];
+            } catch (error) {
+                console.error('Error loading benchmark data:', error);
+                // Fallback to sample data if loading fails
+                return getSampleData();
+            }
+        }
+        
+        // Function to get sample data if loading fails
+        function getSampleData() {
+            return [
+                {
+                    "project": "test",
+                    "commit": "abc1234",
+                    "timestamp": "20230101_120000",
+                    "metrics": {
+                        "hello_world": {
+                            "build_time": 1.5,
+                            "memory_usage": 100
+                        },
+                        "simple_app": {
+                            "build_time": 3.2,
+                            "memory_usage": 200
+                        }
+                    }
+                },
+                {
+                    "project": "test",
+                    "commit": "def5678",
+                    "timestamp": "20230102_120000",
+                    "metrics": {
+                        "hello_world": {
+                            "build_time": 1.2,
+                            "memory_usage": 95
+                        },
+                        "simple_app": {
+                            "build_time": 3.5,
+                            "memory_usage": 210
+                        }
+                    }
+                },
+                // Additional sample data points for better visualization
+                {
+                    "project": "test",
+                    "commit": "ghi9012",
+                    "timestamp": "20230103_120000",
+                    "metrics": {
+                        "hello_world": {
+                            "build_time": 1.4,
+                            "memory_usage": 98
+                        },
+                        "simple_app": {
+                            "build_time": 3.3,
+                            "memory_usage": 205
+                        }
+                    }
+                },
+                {
+                    "project": "test",
+                    "commit": "jkl3456",
+                    "timestamp": "20230104_120000",
+                    "metrics": {
+                        "hello_world": {
+                            "build_time": 1.1,
+                            "memory_usage": 90
+                        },
+                        "simple_app": {
+                            "build_time": 3.0,
+                            "memory_usage": 195
+                        }
+                    }
+                },
+                {
+                    "project": "test",
+                    "commit": "mno7890",
+                    "timestamp": "20230105_120000",
+                    "metrics": {
+                        "hello_world": {
+                            "build_time": 1.0,
+                            "memory_usage": 85
+                        },
+                        "simple_app": {
+                            "build_time": 2.8,
+                            "memory_usage": 190
+                        }
+                    }
+                }
+            ];
+        }
+        
+        // Function to process benchmark data and create the chart
+        async function createChart() {
+            const benchmarkData = await loadBenchmarkData();
+            
+            // Sort data by timestamp
+            benchmarkData.sort((a, b) => {
+                return a.timestamp.localeCompare(b.timestamp);
+            });
+            
+            // Extract data for plotting
+            const commits = benchmarkData.map(data => data.commit);
+            const timestamps = benchmarkData.map(data => {
+                const ts = data.timestamp;
+                // Format timestamp for display (assuming format YYYYMMDD_HHMMSS)
+                const year = ts.substring(0, 4);
+                const month = ts.substring(4, 6);
+                const day = ts.substring(6, 8);
+                return `${year}-${month}-${day}`;
+            });
+            
+            // Create annotations for significant changes
+            const annotations = [
+                {
+                    x: 1,  // Index in the data array
+                    y: benchmarkData[1].metrics.hello_world.build_time,
+                    text: "A",
+                    showarrow: true,
+                    arrowhead: 2,
+                    arrowsize: 1,
+                    arrowwidth: 2,
+                    arrowcolor: "#636efa",
+                    bgcolor: "#636efa",
+                    font: { color: "white", size: 10 },
+                    bordercolor: "#636efa",
+                    borderwidth: 2,
+                    borderpad: 4,
+                    hovertext: "Improved build process, reduced build time",
+                    clickinfo: "Commit def5678: Optimized compiler flags and reduced unnecessary dependencies"
+                },
+                {
+                    x: 4,  // Index in the data array (using sample data)
+                    y: benchmarkData.length > 4 ? benchmarkData[4].metrics.simple_app.build_time : 2.8,
+                    text: "B",
+                    showarrow: true,
+                    arrowhead: 2,
+                    arrowsize: 1,
+                    arrowwidth: 2,
+                    arrowcolor: "#00cc96",
+                    bgcolor: "#00cc96",
+                    font: { color: "white", size: 10 },
+                    bordercolor: "#00cc96",
+                    borderwidth: 2,
+                    borderpad: 4,
+                    hovertext: "Major optimization in build system",
+                    clickinfo: "Commit mno7890: Implemented parallel compilation and caching improvements"
+                }
+            ];
+            
+            // Function to update the chart based on selected options
+            function updateChart() {
+                const selectedProject = document.getElementById('projectSelector').value;
+                const selectedMetric = document.getElementById('metricSelector').value;
+                
+                // Filter data based on selected project
+                let filteredData;
+                let yAxisTitle;
+                
+                if (selectedProject === 'all') {
+                    // Create traces for each project
+                    const traces = [];
+                    const projects = ['hello_world', 'simple_app'];
+                    
+                    projects.forEach(project => {
+                        const projectData = benchmarkData.map(data => data.metrics[project][selectedMetric]);
+                        
+                        // Create hover text with more details
+                        const hoverTexts = benchmarkData.map((data, i) => {
+                            return `<b>Commit:</b> ${data.commit}<br>
+                                   <b>Date:</b> ${timestamps[i]}<br>
+                                   <b>Project:</b> ${project}<br>
+                                   <b>${selectedMetric === 'build_time' ? 'Build Time' : 'Memory Usage'}:</b> ${data.metrics[project][selectedMetric]}${selectedMetric === 'build_time' ? 's' : ' MB'}`;
+                        });
+                        
+                        traces.push({
+                            x: commits,
+                            y: projectData,
+                            mode: 'lines+markers',
+                            type: 'scatter',
+                            name: project,
+                            hovertemplate: '%{text}<extra></extra>',
+                            text: hoverTexts,
+                            line: {
+                                width: 2
+                            },
+                            marker: {
+                                size: 8
+                            }
+                        });
+                    });
+                    
+                    filteredData = traces;
+                    yAxisTitle = selectedMetric === 'build_time' ? 'Build Time (seconds)' : 'Memory Usage (MB)';
+                } else {
+                    // Create a single trace for the selected project
+                    const projectData = benchmarkData.map(data => data.metrics[selectedProject][selectedMetric]);
+                    
+                    // Create hover text with more details
+                    const hoverTexts = benchmarkData.map((data, i) => {
+                        return `<b>Commit:</b> ${data.commit}<br>
+                               <b>Date:</b> ${timestamps[i]}<br>
+                               <b>Project:</b> ${selectedProject}<br>
+                               <b>${selectedMetric === 'build_time' ? 'Build Time' : 'Memory Usage'}:</b> ${data.metrics[selectedProject][selectedMetric]}${selectedMetric === 'build_time' ? 's' : ' MB'}`;
+                    });
+                    
+                    filteredData = [{
+                        x: commits,
+                        y: projectData,
+                        mode: 'lines+markers',
+                        type: 'scatter',
+                        name: selectedProject,
+                        hovertemplate: '%{text}<extra></extra>',
+                        text: hoverTexts,
+                        line: {
+                            color: '#4a6fa5',
+                            width: 2
+                        },
+                        marker: {
+                            size: 8,
+                            color: '#4a6fa5'
+                        }
+                    }];
+                    
+                    yAxisTitle = selectedMetric === 'build_time' ? 'Build Time (seconds)' : 'Memory Usage (MB)';
+                }
+                
+                // Update layout
+                const layout = {
+                    title: {
+                        text: `NativeLink Performance: ${selectedMetric === 'build_time' ? 'Build Time' : 'Memory Usage'} Over Time`,
+                        font: {
+                            size: 24
+                        }
+                    },
+                    xaxis: {
+                        title: {
+                            text: 'Commit',
+                            font: {
+                                size: 16
+                            }
+                        },
+                        tickangle: 45
+                    },
+                    yaxis: {
+                        title: {
+                            text: yAxisTitle,
+                            font: {
+                                size: 16
+                            }
+                        }
+                    },
+                    hovermode: 'closest',
+                    annotations: annotations,
+                    margin: {
+                        l: 60,
+                        r: 40,
+                        t: 80,
+                        b: 80
+                    },
+                    dragmode: 'zoom',  // Enable zoom by default
+                    showlegend: true,
+                    legend: {
+                        orientation: 'h',
+                        yanchor: 'bottom',
+                        y: 1.02,
+                        xanchor: 'right',
+                        x: 1
+                    }
+                };
+                
+                const config = {
+                    responsive: true,
+                    scrollZoom: true,  // Enable scroll wheel zooming
+                    displayModeBar: true,  // Always show the mode bar
+                    modeBarButtonsToAdd: [
+                        'resetScale2d'  // Add reset zoom button
+                    ],
+                    toImageButtonOptions: {
+                        format: 'png',
+                        filename: 'nativelink_performance_chart',
+                        height: 800,
+                        width: 1200,
+                        scale: 2
+                    }
+                };
+                
+                Plotly.react('buildTimeChart', filteredData, layout, config);
+            }
+            
+            // Initial chart creation
+            updateChart();
+            
+            // Add event listeners for controls
+            document.getElementById('projectSelector').addEventListener('change', updateChart);
+            document.getElementById('metricSelector').addEventListener('change', updateChart);
+            document.getElementById('timeRangeSelector').addEventListener('change', updateChart);
+            document.getElementById('resetZoomBtn').addEventListener('click', function() {
+                Plotly.relayout('buildTimeChart', {
+                    'xaxis.autorange': true,
+                    'yaxis.autorange': true
+                });
+            });
+            
+            // Add event listener for annotation clicks
+            const tooltipElement = document.getElementById('annotationTooltip');
+            
+            document.getElementById('buildTimeChart').on('plotly_click', function(data) {
+                // Check if an annotation was clicked
+                if (data.points && data.points[0]) {
+                    const pointIndex = data.points[0].pointIndex;
+                    const annotationIndex = annotations.findIndex(a => a.x === pointIndex);
+                    
+                    if (annotationIndex >= 0) {
+                        const annotation = annotations[annotationIndex];
+                        
+                        // Show tooltip with detailed information
+                        tooltipElement.innerHTML = annotation.clickinfo;
+                        tooltipElement.style.display = 'block';
+                        tooltipElement.style.left = (data.event.pageX + 10) + 'px';
+                        tooltipElement.style.top = (data.event.pageY + 10) + 'px';
+                        
+                        // Hide tooltip after 5 seconds
+                        setTimeout(() => {
+                            tooltipElement.style.display = 'none';
+                        }, 5000);
+                    }
+                }
+            });
+            
+            // Hide tooltip when clicking elsewhere
+            document.addEventListener('click', function(event) {
+                if (!event.target.closest('#buildTimeChart') && !event.target.closest('#annotationTooltip')) {
+                    tooltipElement.style.display = 'none';
+                }
+            });
+        }
+        
+        // Initialize the chart when the page loads
+        document.addEventListener('DOMContentLoaded', createChart);
+    </script>
+</body>
+</html>

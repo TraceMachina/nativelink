@@ -42,6 +42,7 @@ jobs:
         uses: bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
         with:
           bazelisk-version: 'v1.19.0'
+          # Completely remove cache parameters
           bazelisk-cache: false
           repository-cache: false
 
