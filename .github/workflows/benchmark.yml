@@ -46,9 +46,9 @@ jobs:
         uses: bazelbuild/setup-bazelisk@v2
         with:
           bazelisk-version: 'v1.19.0'
-          # Remove cache-related options
-          bazelisk-cache: true
-          repository-cache: true
+          # Disable caching until the issue is resolved
+          bazelisk-cache: false
+          repository-cache: false
 
       # Checkout test projects - including a smaller project for faster feedback
       - name: Checkout Small Test Project (Hello World)
