@@ -41,4 +41,3 @@ jobs:
       with:
         name: benchmark-results
         path: benchmark_results.csv
-

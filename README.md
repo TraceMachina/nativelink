@@ -147,7 +147,7 @@ Licensed under the Apache 2.0 License, SPDX identifier `Apache-2.0`.
 Implemented automated performance benchmarking to track build time across commits using NativeLink as a remote cache.
 
 ####  How It Works
-- Uses a simplified [NativeLink config](nativelink-config/examples/basic_cas.json5)
+- Uses a simplified [NativeLink Config](nativelink-config/examples/basic_cas.json5)
 - Benchmarks the Bazel target `//main:hello-world`
 - Measures total build time using `benchmark.sh`
 - Logs results in `benchmark_results.csv`
@@ -163,4 +163,3 @@ A GitHub Action is configured in `.github/workflows/benchmark.yml` that:
 ```bash
 nix run github:TraceMachina/nativelink ./nativelink-config/examples/basic_cas.json5 &
 ./benchmark.sh
-

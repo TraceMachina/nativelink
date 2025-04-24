@@ -1,0 +1,57 @@
+{
+  "stores": [
+    {
+      "name": "CAS_STORE",
+      "filesystem": {
+        "content_path": "/tmp/nativelink/cas",
+        "temp_path": "/tmp/nativelink/cas-tmp",
+        "eviction_policy": {
+          "max_bytes": 5000000000
+        }
+      }
+    },
+    {
+      "name": "AC_STORE",
+      "filesystem": {
+        "content_path": "/tmp/nativelink/ac",
+        "temp_path": "/tmp/nativelink/ac-tmp",
+        "eviction_policy": {
+          "max_bytes": 1000000000
+        }
+      }
+    }
+  ],
+  "servers": [
+    {
+      "name": "public",
+      "listener": {
+        "http": {
+          "socket_address": "0.0.0.0:50051"
+        }
+      },
+      "services": {
+        "cas": {
+          "main": {
+            "cas_store": "CAS_STORE"
+          }
+        },
+        "ac": {
+          "main": {
+            "ac_store": "AC_STORE"
+          }
+        },
+        "capabilities": {
+          "main": {}
+        },
+        "bytestream": {
+          "cas_stores": {
+            "main": "CAS_STORE"
+          }
+        }
+      }
+    }
+  ],
+  "global": {
+    "max_open_files": 24576
+  }
+}
