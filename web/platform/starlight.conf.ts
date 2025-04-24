@@ -92,6 +92,10 @@ export const starlightConfig = {
           label: "Classic RBE Examples",
           link: `${docsRoot}/rbe/remote-execution-examples`,
         },
+        {
+          label: "Nix templates",
+          link: `${docsRoot}/rbe/nix-templates`,
+        },
       ],
     },
     {

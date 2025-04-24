@@ -1,0 +1,59 @@
+---
+name: Templates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  remote-execution:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        template: [bazel]
+        exclude:
+          - os: macos-15
+    name: Local / ${{ matrix.template }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    environment: production
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: nativelink
+
+      - name: Prepare Worker
+        uses: ./nativelink/.github/actions/prepare-nix
+
+      - name: Build ${{ matrix.template }} examples
+        env:
+          TEMPLATE: ${{ matrix.template }}
+          NL_COM_API_KEY: ${{ secrets.NATIVELINK_COM_API_HEADER || '065f02f53f26a12331d5cfd00a778fb243bfb4e857b8fcd4c99273edfb15deae' }}
+        run: |
+          mkdir ${TEMPLATE}
+          cd ${TEMPLATE}
+          nix flake init -t ../nativelink#${TEMPLATE}
+          rm user.bazelrc
+          git init
+          git add .
+          nix develop -c bazel build \
+            --verbose_failures \
+            --remote_header=x-nativelink-api-key=$NL_COM_API_KEY \
+            --bes_backend=grpcs://tm-ci-bep.build-faster.nativelink.net \
+            --bes_header=x-nativelink-api-key=$NL_COM_API_KEY \
+            --bes_results_url=https://tm-ci-web.build-faster.nativelink.net \
+            ${{ github.ref == 'refs/heads/main' && '--remote_cache=grpcs://tm-ci-cas.build-faster.nativelink.net --remote_executor=grpcs://tm-ci-cas.build-faster.nativelink.net' || '' }} \
+            //...
