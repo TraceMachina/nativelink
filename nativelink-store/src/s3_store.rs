@@ -52,7 +52,7 @@ use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::Client as LegacyClient;
 use hyper_util::client::legacy::connect::HttpConnector as LegacyHttpConnector;
 use hyper_util::rt::TokioExecutor;
-use nativelink_config::stores::S3Spec;
+use nativelink_config::stores::CloudSpec;
 // Note: S3 store should be very careful about the error codes it returns
 // when in a retryable wrapper. Always prefer Code::Aborted or another
 // retryable code over Code::InvalidArgument or make_input_err!().
@@ -102,7 +102,10 @@ pub struct TlsClient {
 
 impl TlsClient {
     #[must_use]
-    pub fn new(spec: &S3Spec, jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>) -> Self {
+    pub fn new(
+        spec: &CloudSpec,
+        jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
+    ) -> Self {
         let connector_with_roots = HttpsConnectorBuilder::new().with_webpki_roots();
 
         let connector_with_schemes = if spec.insecure_allow_http {
@@ -435,7 +438,15 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
-    pub async fn new(spec: &S3Spec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
+    pub async fn new(spec: &CloudSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
+        // Check if region is specified
+        let region = spec.region.as_ref().ok_or_else(|| {
+            make_err!(
+                Code::InvalidArgument,
+                "Region must be specified in CloudSpec configuration for S3"
+            )
+        })?;
+
         let jitter_amt = spec.retry.jitter;
         let jitter_fn = Arc::new(move |delay: Duration| {
             if jitter_amt == 0. {
@@ -445,13 +456,14 @@ where
             let max = 1. + (jitter_amt / 2.);
             delay.mul_f32(rand::rng().random_range(min..max))
         });
+
         let s3_client = {
             let http_client = TlsClient::new(&spec.clone(), jitter_fn.clone());
 
             let credential_provider = credentials::DefaultCredentialsChain::builder()
                 .configure(
                     ProviderConfig::without_region()
-                        .with_region(Some(Region::new(Cow::Owned(spec.region.clone()))))
+                        .with_region(Some(Region::new(Cow::Owned(region.clone()))))
                         .with_http_client(http_client.clone()),
                 )
                 .build()
@@ -465,7 +477,7 @@ where
                         .connect_timeout(Duration::from_secs(15))
                         .build(),
                 )
-                .region(Region::new(Cow::Owned(spec.region.clone())))
+                .region(Region::new(Cow::Owned(region.clone())))
                 .http_client(http_client)
                 .load()
                 .await;
@@ -476,7 +488,7 @@ where
     }
 
     pub fn new_with_client_and_jitter(
-        spec: &S3Spec,
+        spec: &CloudSpec,
         s3_client: Client,
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
         now_fn: NowFn,

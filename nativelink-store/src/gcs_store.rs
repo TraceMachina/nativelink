@@ -12,16 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
+use core::pin::Pin;
 use std::borrow::Cow;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::stream::{unfold, FuturesUnordered};
 use futures::TryStreamExt;
-use nativelink_config::stores::GcsSpec;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use futures::stream::{FuturesUnordered, unfold};
+use nativelink_config::stores::CloudSpec;
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
@@ -32,46 +33,15 @@ use rand::Rng;
 use tokio::time::sleep;
 
 use crate::cas_utils::is_zero_digest;
-use crate::gcs_client::client::GcsClient;
-use crate::gcs_client::operations::GcsOperations;
+use crate::gcs_client::client::{GcsClient, GcsOperations};
 use crate::gcs_client::types::{
-    ObjectPath, CHUNK_SIZE, DEFAULT_CONCURRENT_UPLOADS, DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST,
-    MIN_MULTIPART_SIZE,
+    CHUNK_SIZE, DEFAULT_CONCURRENT_UPLOADS, DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST,
+    MIN_MULTIPART_SIZE, ObjectPath,
 };
 
-struct ConnectionPool {
-    semaphore: Arc<tokio::sync::Semaphore>,
-    client: Arc<dyn GcsOperations>,
-}
-
-impl ConnectionPool {
-    fn new(max_connections: usize, client: Arc<dyn GcsOperations>) -> Self {
-        Self {
-            semaphore: Arc::new(tokio::sync::Semaphore::new(max_connections)),
-            client,
-        }
-    }
-
-    async fn acquire(&self) -> Result<PooledConnection<'_>, Error> {
-        let permit =
-            self.semaphore.acquire().await.map_err(|e| {
-                make_err!(Code::Internal, "Failed to acquire connection permit: {}", e)
-            })?;
-        Ok(PooledConnection {
-            client: self.client.clone(),
-            _permit: permit,
-        })
-    }
-}
-
-struct PooledConnection<'a> {
-    client: Arc<dyn GcsOperations>,
-    _permit: tokio::sync::SemaphorePermit<'a>,
-}
-
-#[derive(MetricsComponent)]
+#[derive(MetricsComponent, Debug)]
 pub struct GcsStore<NowFn> {
-    connection_pool: Arc<ConnectionPool>,
+    client: Arc<dyn GcsOperations>,
     now_fn: NowFn,
     #[metric(help = "The bucket name for the GCS store")]
     bucket: String,
@@ -93,23 +63,22 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
-    pub async fn new(spec: &GcsSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
+    pub async fn new(spec: &CloudSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
         let client = GcsClient::new(spec).await?;
-        let client = Arc::new(client) as Arc<dyn GcsOperations>;
+        let client: Arc<dyn GcsOperations> = Arc::new(client);
 
         Self::new_with_ops(spec, client, now_fn)
     }
 
     // Primarily used for injecting a mock or real operations implementation
     pub fn new_with_ops(
-        spec: &GcsSpec,
-        ops: Arc<dyn GcsOperations>,
+        spec: &CloudSpec,
+        client: Arc<dyn GcsOperations>,
         now_fn: NowFn,
     ) -> Result<Arc<Self>, Error> {
         let max_connections = spec
-            .max_concurrent_uploads
+            .multipart_max_concurrent_uploads
             .unwrap_or(DEFAULT_CONCURRENT_UPLOADS);
-        let connection_pool = Arc::new(ConnectionPool::new(max_connections, ops));
 
         let jitter_amt = spec.retry.jitter;
         let jitter_fn = Arc::new(move |delay: tokio::time::Duration| {
@@ -124,7 +93,7 @@ where
         });
 
         Ok(Arc::new(Self {
-            connection_pool,
+            client,
             now_fn,
             bucket: spec.bucket.clone(),
             key_prefix: spec.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
@@ -147,41 +116,42 @@ where
 
     async fn has(self: Pin<&Self>, key: &StoreKey<'_>) -> Result<Option<u64>, Error> {
         let object = self.make_object_path(key);
+        let client = self.client.clone();
+        let consider_expired_after_s = self.consider_expired_after_s;
+        let now_fn = &self.now_fn;
 
         self.retrier
-            .retry(unfold(object.clone(), move |object| async move {
-                let conn = match self.connection_pool.acquire().await {
-                    Ok(conn) => conn,
-                    Err(e) => return Some((RetryResult::Retry(e), object.clone())),
-                };
-
-                match conn.client.read_object_metadata(object.clone()).await {
-                    Ok(Some(metadata)) => {
-                        if self.consider_expired_after_s != 0 {
-                            if let Some(update_time) = &metadata.update_time {
-                                let now_s = (self.now_fn)().unix_timestamp() as i64;
-                                if update_time.seconds + self.consider_expired_after_s <= now_s {
-                                    return Some((RetryResult::Ok(None), object));
+            .retry(unfold(object, move |object| {
+                let client = client.clone();
+                async move {
+                    match client.read_object_metadata(object.clone()).await {
+                        Ok(Some(metadata)) => {
+                            if consider_expired_after_s != 0 {
+                                if let Some(update_time) = &metadata.update_time {
+                                    let now_s = now_fn().unix_timestamp() as i64;
+                                    if update_time.seconds + consider_expired_after_s <= now_s {
+                                        return Some((RetryResult::Ok(None), object));
+                                    }
                                 }
                             }
-                        }
 
-                        if metadata.size >= 0 {
-                            Some((RetryResult::Ok(Some(metadata.size as u64)), object))
-                        } else {
-                            Some((
-                                RetryResult::Err(make_err!(
-                                    Code::InvalidArgument,
-                                    "Invalid metadata size in GCS: {}",
-                                    metadata.size
-                                )),
-                                object,
-                            ))
+                            if metadata.size >= 0 {
+                                Some((RetryResult::Ok(Some(metadata.size as u64)), object))
+                            } else {
+                                Some((
+                                    RetryResult::Err(make_err!(
+                                        Code::InvalidArgument,
+                                        "Invalid metadata size in GCS: {}",
+                                        metadata.size
+                                    )),
+                                    object,
+                                ))
+                            }
                         }
+                        Ok(None) => Some((RetryResult::Ok(None), object)),
+                        Err(e) if e.code == Code::NotFound => Some((RetryResult::Ok(None), object)),
+                        Err(e) => Some((RetryResult::Retry(e), object)),
                     }
-                    Ok(None) => Some((RetryResult::Ok(None), object)),
-                    Err(e) if e.code == Code::NotFound => Some((RetryResult::Ok(None), object)),
-                    Err(e) => Some((RetryResult::Retry(e), object)),
                 }
             }))
             .await
@@ -240,64 +210,61 @@ where
         // For small files with exact size, use simple upload
         if max_size < MIN_MULTIPART_SIZE && matches!(upload_size, UploadSizeInfo::ExactSize(_)) {
             let content = reader.consume(Some(max_size as usize)).await?;
+            let client = self.client.clone();
+            let object_clone = object.clone();
 
             return self
                 .retrier
-                .retry(unfold(
-                    (content.clone(), object.clone()),
-                    move |(content, object)| async move {
-                        let conn = match self.connection_pool.acquire().await {
-                            Ok(conn) => conn,
-                            Err(e) => {
-                                return Some((
-                                    RetryResult::Retry(e),
-                                    (content.clone(), object.clone()),
-                                ))
-                            }
-                        };
-
-                        match conn.client.write_object(&object, content.to_vec()).await {
-                            Ok(()) => Some((RetryResult::Ok(()), (content, object))),
-                            Err(e) => {
-                                Some((RetryResult::Retry(e), (content.clone(), object.clone())))
-                            }
+                .retry(unfold(content, move |content| {
+                    let client = client.clone();
+                    let object_clone = object_clone.clone();
+                    async move {
+                        match client.write_object(&object_clone, content.to_vec()).await {
+                            Ok(()) => Some((RetryResult::Ok(()), content)),
+                            Err(e) => Some((RetryResult::Retry(e), content)),
                         }
-                    },
-                ))
+                    }
+                }))
                 .await;
         }
 
         // For larger files, use resumable upload
         // First, initiate the upload session
+        let client = self.client.clone();
+        let object_for_start = object.clone();
         let upload_id = self
             .retrier
-            .retry(unfold(object.clone(), move |object| async move {
-                let conn = match self.connection_pool.acquire().await {
-                    Ok(conn) => conn,
-                    Err(e) => return Some((RetryResult::Retry(e), object.clone())),
-                };
-
-                match conn.client.start_resumable_write(&object).await {
-                    Ok(id) => Some((RetryResult::Ok(id), object)),
-                    Err(e) => Some((
-                        RetryResult::Retry(make_err!(
-                            Code::Aborted,
-                            "Failed to start resumable upload: {:?}",
-                            e
+            .retry(unfold((), move |()| {
+                let client = client.clone();
+                let object_clone = object_for_start.clone();
+                async move {
+                    match client.start_resumable_write(&object_clone).await {
+                        Ok(id) => Some((RetryResult::Ok(id), ())),
+                        Err(e) => Some((
+                            RetryResult::Retry(make_err!(
+                                Code::Aborted,
+                                "Failed to start resumable upload: {:?}",
+                                e
+                            )),
+                            (),
                         )),
-                        object.clone(),
-                    )),
+                    }
                 }
             }))
             .await?;
 
         // Stream and upload data in chunks
-        let chunk_size = std::cmp::min(self.max_chunk_size, max_size as usize);
+        let chunk_size = core::cmp::min(self.max_chunk_size, max_size as usize);
         let mut offset = 0u64;
         let mut total_uploaded = 0u64;
 
+        // Clone these outside the loop to avoid ownership issues
+        let client = self.client.clone();
+        let upload_id = upload_id.clone();
+        let object_for_chunks = object.clone();
+
         loop {
-            let to_read = std::cmp::min(chunk_size, (max_size - total_uploaded) as usize);
+            let to_read = core::cmp::min(chunk_size, (max_size - total_uploaded) as usize);
             if to_read == 0 {
                 break;
             }
@@ -310,51 +277,35 @@ where
             let chunk_size_u64 = chunk.len() as u64;
             total_uploaded += chunk_size_u64;
             let is_final = total_uploaded >= max_size || chunk.len() < to_read;
+            let current_offset = offset;
+            let object_clone = object_for_chunks.clone();
+            let upload_id_clone = upload_id.clone();
+            // Create a new clone for this iteration
+            let client_clone = client.clone();
 
             // Upload the chunk with retry
             self.retrier
-                .retry(unfold(
-                    (
-                        chunk.clone(),
-                        object.clone(),
-                        upload_id.clone(),
-                        offset,
-                        is_final,
-                    ),
-                    move |(chunk, obj, url, offs, final_chunk)| async move {
-                        let conn = match self.connection_pool.acquire().await {
-                            Ok(conn) => conn,
-                            Err(e) => {
-                                return Some((
-                                    RetryResult::Retry(e),
-                                    (chunk.clone(), obj.clone(), url.clone(), offs, final_chunk),
-                                ))
-                            }
-                        };
-
-                        match conn
-                            .client
+                .retry(unfold(chunk, move |chunk| {
+                    let client = client_clone.clone();
+                    let object_clone = object_clone.clone();
+                    let upload_id_clone = upload_id_clone.clone();
+                    async move {
+                        match client
                             .upload_chunk(
-                                &url,
-                                &obj,
+                                &upload_id_clone,
+                                &object_clone,
                                 chunk.to_vec(),
-                                offs as i64,
-                                (offs + chunk.len() as u64) as i64,
-                                final_chunk,
+                                current_offset as i64,
+                                (current_offset + chunk.len() as u64) as i64,
+                                is_final,
                             )
                             .await
                         {
-                            Ok(()) => Some((
-                                RetryResult::Ok(()),
-                                (chunk, obj.clone(), url.clone(), offs, final_chunk),
-                            )),
-                            Err(e) => Some((
-                                RetryResult::Retry(e),
-                                (chunk.clone(), obj.clone(), url.clone(), offs, final_chunk),
-                            )),
+                            Ok(()) => Some((RetryResult::Ok(()), chunk)),
+                            Err(e) => Some((RetryResult::Retry(e), chunk)),
                         }
-                    },
-                ))
+                    }
+                }))
                 .await?;
 
             offset += chunk_size_u64;
@@ -366,48 +317,48 @@ where
 
         // Handle edge case: empty file (nothing uploaded)
         if offset == 0 {
-            self.retrier
-                .retry(unfold(
-                    (object.clone(), upload_id.clone()),
-                    move |(obj, url)| async move {
-                        let conn = match self.connection_pool.acquire().await {
-                            Ok(conn) => conn,
-                            Err(e) => {
-                                return Some((RetryResult::Retry(e), (obj.clone(), url.clone())))
-                            }
-                        };
+            let client = self.client.clone();
+            let object_clone = object.clone();
+            let upload_id_clone = upload_id.clone();
 
-                        match conn
-                            .client
-                            .upload_chunk(&url, &obj, Vec::new(), 0, 0, true)
+            self.retrier
+                .retry(unfold((), move |()| {
+                    let client = client.clone();
+                    let object_clone = object_clone.clone();
+                    let upload_id_clone = upload_id_clone.clone();
+                    async move {
+                        match client
+                            .upload_chunk(&upload_id_clone, &object_clone, Vec::new(), 0, 0, true)
                             .await
                         {
-                            Ok(()) => Some((RetryResult::Ok(()), (obj.clone(), url.clone()))),
-                            Err(e) => Some((RetryResult::Retry(e), (obj.clone(), url.clone()))),
+                            Ok(()) => Some((RetryResult::Ok(()), ())),
+                            Err(e) => Some((RetryResult::Retry(e), ())),
                         }
-                    },
-                ))
+                    }
+                }))
                 .await?;
         }
 
         // Verify the upload was successful
-        self.retrier
-            .retry(unfold(object.clone(), move |obj| async move {
-                let conn = match self.connection_pool.acquire().await {
-                    Ok(conn) => conn,
-                    Err(e) => return Some((RetryResult::Retry(e), obj.clone())),
-                };
+        let client = self.client.clone();
+        let object_clone = object.clone();
 
-                match conn.client.object_exists(&obj).await {
-                    Ok(true) => Some((RetryResult::Ok(()), obj)),
-                    Ok(false) => Some((
-                        RetryResult::Retry(make_err!(
-                            Code::Internal,
-                            "Object not found after upload completion"
+        self.retrier
+            .retry(unfold((), move |()| {
+                let client = client.clone();
+                let object_clone = object_clone.clone();
+                async move {
+                    match client.object_exists(&object_clone).await {
+                        Ok(true) => Some((RetryResult::Ok(()), ())),
+                        Ok(false) => Some((
+                            RetryResult::Retry(make_err!(
+                                Code::Internal,
+                                "Object not found after upload completion"
+                            )),
+                            (),
                         )),
-                        obj,
-                    )),
-                    Err(e) => Some((RetryResult::Retry(e), obj)),
+                        Err(e) => Some((RetryResult::Retry(e), ())),
+                    }
                 }
             }))
             .await?;
@@ -429,26 +380,16 @@ where
 
         let object = self.make_object_path(&key);
         let end_offset = length.map(|len| offset + len);
+        let client = self.client.clone();
 
         let result = self
             .retrier
             .retry(unfold(
-                (object.clone(), offset, end_offset),
-                move |(object, start_offset, end_offset)| {
-                    let connection_pool = self.connection_pool.clone();
+                (offset, end_offset, object.clone()),
+                move |(start_offset, end_offset, object)| {
+                    let client = client.clone();
                     async move {
-                        let conn = match connection_pool.acquire().await {
-                            Ok(conn) => conn,
-                            Err(e) => {
-                                return Some((
-                                    RetryResult::Retry(e),
-                                    (object.clone(), start_offset, end_offset),
-                                ))
-                            }
-                        };
-
-                        match conn
-                            .client
+                        match client
                             .read_object_content(
                                 object.clone(),
                                 start_offset as i64,
@@ -456,18 +397,15 @@ where
                             )
                             .await
                         {
-                            Ok(data) => Some((
-                                RetryResult::Ok(data),
-                                (object.clone(), start_offset, end_offset),
-                            )),
-                            Err(e) if e.code == Code::NotFound => Some((
-                                RetryResult::Err(e),
-                                (object.clone(), start_offset, end_offset),
-                            )),
-                            Err(e) => Some((
-                                RetryResult::Retry(e),
-                                (object.clone(), start_offset, end_offset),
-                            )),
+                            Ok(data) => {
+                                Some((RetryResult::Ok(data), (start_offset, end_offset, object)))
+                            }
+                            Err(e) if e.code == Code::NotFound => {
+                                Some((RetryResult::Err(e), (start_offset, end_offset, object)))
+                            }
+                            Err(e) => {
+                                Some((RetryResult::Retry(e), (start_offset, end_offset, object)))
+                            }
                         }
                     }
                 },
@@ -483,24 +421,21 @@ where
                 Ok(())
             }
             Err(e) => {
-                let _ = writer.send_eof();
+                drop(writer.send_eof());
                 Err(e)
             }
         }
     }
 
-    #[inline]
     fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
         self
     }
 
-    #[inline]
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    #[inline]
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 

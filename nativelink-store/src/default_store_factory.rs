@@ -52,7 +52,7 @@ pub fn store_factory<'a>(
         let store: Arc<dyn StoreDriver> = match backend {
             StoreSpec::Memory(spec) => MemoryStore::new(spec),
             StoreSpec::ExperimentalS3Store(spec) => S3Store::new(spec, SystemTime::now).await?,
-            StoreSpec::experimental_gcs_store(spec) => GcsStore::new(spec, SystemTime::now).await?,
+            StoreSpec::ExperimentalGcsStore(spec) => GcsStore::new(spec, SystemTime::now).await?,
             StoreSpec::RedisStore(spec) => RedisStore::new(spec.clone())?,
             StoreSpec::Verify(spec) => VerifyStore::new(
                 spec,
