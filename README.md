@@ -142,3 +142,25 @@ Visit our [Contributing](https://github.com/tracemachina/nativelink/blob/main/CO
 Copyright 2020–2025 Trace Machina, Inc.
 
 Licensed under the Apache 2.0 License, SPDX identifier `Apache-2.0`.
+###  Benchmarking on a Per-Commit Basis
+
+Implemented automated performance benchmarking to track build time across commits using NativeLink as a remote cache.
+
+####  How It Works
+- Uses a simplified [NativeLink config](nativelink-config/examples/basic_cas.json5)
+- Benchmarks the Bazel target `//main:hello-world`
+- Measures total build time using `benchmark.sh`
+- Logs results in `benchmark_results.csv`
+
+####  GitHub Action
+A GitHub Action is configured in `.github/workflows/benchmark.yml` that:
+- Starts NativeLink with Nix
+- Runs the benchmark script on each commit or PR
+- Uploads benchmark results as a build artifact
+
+####  How to Run Locally
+
+```bash
+nix run github:TraceMachina/nativelink ./nativelink-config/examples/basic_cas.json5 &
+./benchmark.sh
+
