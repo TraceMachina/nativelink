@@ -976,6 +976,9 @@ pub struct RedisSpec {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_chunk_uploads_per_update: usize,
 
+    #[serde(default)]
+    pub experimental_pub_sub_timestamp: Option<bool>,
+
     /// Retry configuration to use when a network request fails.
     /// See the `Retry` struct for more information.
     ///
