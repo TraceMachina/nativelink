@@ -1,0 +1,44 @@
+name: NativeLink Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Install Nix
+      uses: cachix/install-nix-action@v22
+
+    - name: Download NativeLink config
+      run: |
+        mkdir -p benchmark
+        curl -o benchmark/basic_cas.json5 https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5
+
+    - name: Start NativeLink in background
+      run: |
+        nix run github:TraceMachina/nativelink ./benchmark/basic_cas.json5 &
+        sleep 5
+
+    - name: Install Bazel
+      run: |
+        sudo apt-get update && sudo apt-get install -y curl unzip
+        curl -Lo bazelisk https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
+        chmod +x bazelisk
+        sudo mv bazelisk /usr/local/bin/bazel
+
+    - name: Run Benchmark Script
+      run: ./benchmark.sh
+
+    - name: Upload benchmark log
+      uses: actions/upload-artifact@v3
+      with:
+        name: benchmark-results
+        path: benchmark_results.csv
+
