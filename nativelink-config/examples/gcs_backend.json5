@@ -17,7 +17,8 @@
                   }
                 },
                 "slow": {
-                  "experimental_gcs_store": {
+                  "experimental_blob_store": {
+                    "provider": "gcs",
                     "bucket": "nativelink-test-aman",
                     "key_prefix": "test-prefix-index/",
                     "retry": {
@@ -47,7 +48,8 @@
                       }
                     },
                     "slow": {
-                      "experimental_gcs_store": {
+                      "experimental_blob_store": {
+                        "provider": "gcs",
                         "bucket": "nativelink-test-aman",
                         "key_prefix": "test-prefix-dedup-cas/",
                         "retry": {
@@ -80,7 +82,8 @@
           }
         },
         "slow": {
-          "experimental_gcs_store": {
+          "experimental_blob_store": {
+            "provider": "gcs",
             "bucket": "nativelink-test-aman",
             "key_prefix": "test-prefix-ac/",
             "retry": {

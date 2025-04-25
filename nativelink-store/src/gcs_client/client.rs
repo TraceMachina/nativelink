@@ -28,7 +28,7 @@ use google_cloud_storage::http::objects::download::Range;
 use google_cloud_storage::http::objects::get::GetObjectRequest;
 use google_cloud_storage::http::objects::upload::{Media, UploadObjectRequest, UploadType};
 use google_cloud_storage::http::resumable_upload_client::{ChunkSize, UploadStatus};
-use nativelink_config::stores::CloudSpec;
+use nativelink_config::stores::ExperimentalGcsConfig;
 use nativelink_error::{Code, Error, make_err};
 use nativelink_util::buf_channel::DropCloserReadHalf;
 use rand::Rng;
@@ -96,7 +96,7 @@ pub struct GcsClient {
 
 impl GcsClient {
     /// Create a new GCS client from the provided spec
-    pub async fn new(spec: &CloudSpec) -> Result<Self, Error> {
+    pub async fn new(spec: &ExperimentalGcsConfig) -> Result<Self, Error> {
         // Creating default config without authentication initially
         let mut client_config = ClientConfig::default();
         let mut auth_success = false;
@@ -198,6 +198,7 @@ impl GcsClient {
 
         // Get max connections from config
         let max_connections = spec
+            .common
             .multipart_max_concurrent_uploads
             .unwrap_or(DEFAULT_CONCURRENT_UPLOADS);
 
