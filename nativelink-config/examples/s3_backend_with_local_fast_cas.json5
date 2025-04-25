@@ -23,7 +23,8 @@
                   // }
                 },
                 "slow": {
-                  "experimental_s3_store": {
+                  "experimental_cloud_object_store": {
+                    "provider": "aws",
                     "region": "eu-central-1",
                     "bucket": "mybucket-1b19581ba67b64d50b4325d1727205756",
                     "key_prefix": "test-prefix-index/",
@@ -58,7 +59,8 @@
                       // }
                     },
                     "slow": {
-                      "experimental_s3_store": {
+                      "experimental_cloud_object_store": {
+                        "provider": "aws",
                         "region": "eu-central-1",
                         "bucket": "mybucket-1b19581ba67b64d50b4325d1727205756",
                         "key_prefix": "test-prefix-dedup-cas/",
@@ -95,7 +97,8 @@
           // }
         },
         "slow": {
-          "experimental_s3_store": {
+          "experimental_cloud_object_store": {
+            "provider": "aws",
             "region": "eu-central-1",
             "bucket": "mybucket-1b19581ba67b64d50b4325d1727205756",
             "key_prefix": "test-prefix-ac/",
