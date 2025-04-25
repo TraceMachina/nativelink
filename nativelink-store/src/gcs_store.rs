@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::TryStreamExt;
 use futures::stream::{FuturesUnordered, unfold};
-use nativelink_config::stores::CloudSpec;
+use nativelink_config::stores::ExperimentalGcsConfig;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -63,7 +63,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
-    pub async fn new(spec: &CloudSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
+    pub async fn new(spec: &ExperimentalGcsConfig, now_fn: NowFn) -> Result<Arc<Self>, Error> {
         let client = GcsClient::new(spec).await?;
         let client: Arc<dyn GcsOperations> = Arc::new(client);
 
@@ -72,15 +72,16 @@ where
 
     // Primarily used for injecting a mock or real operations implementation
     pub fn new_with_ops(
-        spec: &CloudSpec,
+        spec: &ExperimentalGcsConfig,
         client: Arc<dyn GcsOperations>,
         now_fn: NowFn,
     ) -> Result<Arc<Self>, Error> {
         let max_connections = spec
+            .common
             .multipart_max_concurrent_uploads
             .unwrap_or(DEFAULT_CONCURRENT_UPLOADS);
 
-        let jitter_amt = spec.retry.jitter;
+        let jitter_amt = spec.common.retry.jitter;
         let jitter_fn = Arc::new(move |delay: tokio::time::Duration| {
             if jitter_amt == 0.0 {
                 return delay;
@@ -96,14 +97,20 @@ where
             client,
             now_fn,
             bucket: spec.bucket.clone(),
-            key_prefix: spec.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
+            key_prefix: spec
+                .common
+                .key_prefix
+                .as_ref()
+                .unwrap_or(&String::new())
+                .clone(),
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn,
-                spec.retry.clone(),
+                spec.common.retry.clone(),
             ),
-            consider_expired_after_s: i64::from(spec.consider_expired_after_s),
+            consider_expired_after_s: i64::from(spec.common.consider_expired_after_s),
             max_retry_buffer_size: spec
+                .common
                 .max_retry_buffer_per_request
                 .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST),
             max_chunk_size: spec

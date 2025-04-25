@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use mock_instant::thread_local::MockClock;
-use nativelink_config::stores::CloudSpec;
+use nativelink_config::stores::{CommonBlobConfig, ExperimentalGcsConfig};
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::gcs_client::client::GcsOperations;
@@ -531,9 +531,12 @@ async fn create_test_store(
     ops: Arc<dyn GcsOperations>,
 ) -> Result<Arc<GcsStore<fn() -> MockInstantWrapped>>, Error> {
     GcsStore::new_with_ops(
-        &CloudSpec {
+        &ExperimentalGcsConfig {
             bucket: BUCKET_NAME.to_string(),
-            key_prefix: Some(KEY_PREFIX.to_string()),
+            common: CommonBlobConfig {
+                key_prefix: Some(KEY_PREFIX.to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         },
         ops,
@@ -547,10 +550,13 @@ async fn create_test_store_with_expiration(
     expiration_seconds: i64,
 ) -> Result<Arc<GcsStore<fn() -> MockInstantWrapped>>, Error> {
     GcsStore::new_with_ops(
-        &CloudSpec {
+        &ExperimentalGcsConfig {
             bucket: BUCKET_NAME.to_string(),
-            key_prefix: Some(KEY_PREFIX.to_string()),
-            consider_expired_after_s: expiration_seconds as u32,
+            common: CommonBlobConfig {
+                key_prefix: Some(KEY_PREFIX.to_string()),
+                consider_expired_after_s: expiration_seconds as u32,
+                ..Default::default()
+            },
             ..Default::default()
         },
         ops,

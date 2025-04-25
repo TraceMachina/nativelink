@@ -18,7 +18,7 @@ use std::time::SystemTime;
 
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
-use nativelink_config::stores::StoreSpec;
+use nativelink_config::stores::{ExperimentalBlobSpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::store_trait::{Store, StoreDriver};
@@ -51,8 +51,14 @@ pub fn store_factory<'a>(
     Box::pin(async move {
         let store: Arc<dyn StoreDriver> = match backend {
             StoreSpec::Memory(spec) => MemoryStore::new(spec),
-            StoreSpec::ExperimentalS3Store(spec) => S3Store::new(spec, SystemTime::now).await?,
-            StoreSpec::ExperimentalGcsStore(spec) => GcsStore::new(spec, SystemTime::now).await?,
+            StoreSpec::ExperimentalBlobStore(spec) => match spec {
+                ExperimentalBlobSpec::Aws(aws_config) => {
+                    S3Store::new(aws_config, SystemTime::now).await?
+                }
+                ExperimentalBlobSpec::Gcs(gcs_config) => {
+                    GcsStore::new(gcs_config, SystemTime::now).await?
+                }
+            },
             StoreSpec::RedisStore(spec) => RedisStore::new(spec.clone())?,
             StoreSpec::Verify(spec) => VerifyStore::new(
                 spec,

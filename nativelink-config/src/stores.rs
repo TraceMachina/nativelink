@@ -54,50 +54,53 @@ pub enum StoreSpec {
     ///
     Memory(MemorySpec),
 
-    /// S3 store will use Amazon's S3 service as a backend to store
-    /// the files. This configuration can be used to share files
-    /// across multiple instances.
-    ///
-    /// This configuration will never delete files, so you are
+    /// A generic blob store that will store files on the cloud
+    /// provider. This configuration will never delete files, so you are
     /// responsible for purging old files in other ways.
+    /// It supports the following backends:
     ///
-    /// **Example JSON Config:**
-    /// ```json
-    /// "experimental_s3_store": {
-    ///   "region": "eu-north-1",
-    ///   "bucket": "crossplane-bucket-af79aeca9",
-    ///   "key_prefix": "test-prefix-index/",
-    ///   "retry": {
-    ///     "max_retries": 6,
-    ///     "delay": 0.3,
-    ///     "jitter": 0.5
-    ///   },
-    ///   "multipart_max_concurrent_uploads": 10
-    /// }
-    /// ```
+    /// 1. **Amazon S3:**
+    ///    S3 store will use Amazon's S3 service as a backend to store
+    ///    the files. This configuration can be used to share files
+    ///    across multiple instances.
     ///
-    ExperimentalS3Store(CloudSpec),
-
-    /// GCS store uses Google's GCS service as a backend to store
-    /// the files. This configuration can be used to share files
-    /// across multiple instances.
+    ///   **Example JSON Config:**
+    ///   ```json
+    ///   "experimental_blob_store": {
+    ///     "provider": "aws",
+    ///     "region": "eu-north-1",
+    ///     "bucket": "crossplane-bucket-af79aeca9",
+    ///     "key_prefix": "test-prefix-index/",
+    ///     "retry": {
+    ///       "max_retries": 6,
+    ///       "delay": 0.3,
+    ///       "jitter": 0.5
+    ///     },
+    ///     "multipart_max_concurrent_uploads": 10
+    ///   }
+    ///   ```
     ///
-    /// **Example JSON Config:**
-    /// ```json
-    /// "experimental_gcs_store": {
-    ///   "service_email": "email@domain.com",
-    ///   "bucket": "test-bucket",
-    ///   "key_prefix": "test-prefix-index/",
-    ///   "retry": {
-    ///     "max_retries": 6,
-    ///     "delay": 0.3,
-    ///     "jitter": 0.5
-    ///   },
-    ///   "max_concurrent_uploads": 10
-    /// }
-    /// ```
+    /// 2. **Google Cloud Storage:**
+    ///    GCS store uses Google's GCS service as a backend to store
+    ///    the files. This configuration can be used to share files
+    ///    across multiple instances.
     ///
-    ExperimentalGcsStore(CloudSpec),
+    ///   **Example JSON Config:**
+    ///   ```json
+    ///   "experimental_blob_store": {
+    ///     "provider": "gcs",
+    ///     "bucket": "test-bucket",
+    ///     "key_prefix": "test-prefix-index/",
+    ///     "retry": {
+    ///       "max_retries": 6,
+    ///       "delay": 0.3,
+    ///       "jitter": 0.5
+    ///     },
+    ///     "multipart_max_concurrent_uploads": 10
+    ///   }
+    ///   ```
+    ///
+    ExperimentalBlobStore(ExperimentalBlobSpec),
 
     /// Verify store is used to apply verifications to an underlying
     /// store implementation. It is strongly encouraged to validate
@@ -743,18 +746,59 @@ pub struct EvictionPolicy {
     pub max_count: u64,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "provider", rename_all = "snake_case")]
+pub enum ExperimentalBlobSpec {
+    Aws(ExperimentalAwsConfig),
+    Gcs(ExperimentalGcsConfig),
+}
+
+impl Default for ExperimentalBlobSpec {
+    fn default() -> Self {
+        Self::Aws(ExperimentalAwsConfig::default())
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct CloudSpec {
+pub struct ExperimentalAwsConfig {
     /// S3 region. Usually us-east-1, us-west-2, af-south-1, exc...
-    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
-    pub region: Option<String>,
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub region: String,
 
     /// Bucket name to use as the backend.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub bucket: String,
 
-    /// If you wish to prefix the location on s3. If None, no prefix will be used.
+    /// Common retry and upload configuration
+    #[serde(flatten)]
+    pub common: CommonBlobConfig,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalGcsConfig {
+    /// GCS Service account to use.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub service_email: Option<String>,
+
+    /// Bucket name to use as the backend.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+
+    /// Chunk size for resumable uploads.
+    ///
+    /// Default: 2MB
+    pub resumable_chunk_size: Option<usize>,
+
+    /// Common retry and upload configuration
+    #[serde(flatten)]
+    pub common: CommonBlobConfig,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+pub struct CommonBlobConfig {
+    /// If you wish to prefix the location in the bucket. If None, no prefix will be used.
     #[serde(default)]
     pub key_prefix: Option<String>,
 
@@ -788,11 +832,6 @@ pub struct CloudSpec {
     ///
     /// Default: 10.
     pub multipart_max_concurrent_uploads: Option<usize>,
-
-    /// Chunk size for resumable uploads.
-    ///
-    /// Default: 2MB
-    pub resumable_chunk_size: Option<usize>,
 
     /// Allow unencrypted HTTP connections. Only use this for local testing.
     ///
