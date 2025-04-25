@@ -52,7 +52,7 @@ use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::Client as LegacyClient;
 use hyper_util::client::legacy::connect::HttpConnector as LegacyHttpConnector;
 use hyper_util::rt::TokioExecutor;
-use nativelink_config::stores::S3Spec;
+use nativelink_config::stores::ExperimentalAwsSpec;
 // Note: S3 store should be very careful about the error codes it returns
 // when in a retryable wrapper. Always prefer Code::Aborted or another
 // retryable code over Code::InvalidArgument or make_input_err!().
@@ -102,16 +102,19 @@ pub struct TlsClient {
 
 impl TlsClient {
     #[must_use]
-    pub fn new(spec: &S3Spec, jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>) -> Self {
+    pub fn new(
+        spec: &ExperimentalAwsSpec,
+        jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
+    ) -> Self {
         let connector_with_roots = HttpsConnectorBuilder::new().with_webpki_roots();
 
-        let connector_with_schemes = if spec.insecure_allow_http {
+        let connector_with_schemes = if spec.common.insecure_allow_http {
             connector_with_roots.https_or_http()
         } else {
             connector_with_roots.https_only()
         };
 
-        let connector = if spec.disable_http2 {
+        let connector = if spec.common.disable_http2 {
             connector_with_schemes.enable_http1().build()
         } else {
             connector_with_schemes.enable_http1().enable_http2().build()
@@ -124,7 +127,7 @@ impl TlsClient {
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn,
-                spec.retry.clone(),
+                spec.common.retry.clone(),
             ),
         }
     }
@@ -435,8 +438,8 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
-    pub async fn new(spec: &S3Spec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
-        let jitter_amt = spec.retry.jitter;
+    pub async fn new(spec: &ExperimentalAwsSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
+        let jitter_amt = spec.common.retry.jitter;
         let jitter_fn = Arc::new(move |delay: Duration| {
             if jitter_amt == 0. {
                 return delay;
@@ -476,7 +479,7 @@ where
     }
 
     pub fn new_with_client_and_jitter(
-        spec: &S3Spec,
+        spec: &ExperimentalAwsSpec,
         s3_client: Client,
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
         now_fn: NowFn,
@@ -485,17 +488,24 @@ where
             s3_client: Arc::new(s3_client),
             now_fn,
             bucket: spec.bucket.to_string(),
-            key_prefix: spec.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
+            key_prefix: spec
+                .common
+                .key_prefix
+                .as_ref()
+                .unwrap_or(&String::new())
+                .clone(),
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn,
-                spec.retry.clone(),
+                spec.common.retry.clone(),
             ),
-            consider_expired_after_s: i64::from(spec.consider_expired_after_s),
+            consider_expired_after_s: i64::from(spec.common.consider_expired_after_s),
             max_retry_buffer_per_request: spec
+                .common
                 .max_retry_buffer_per_request
                 .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST),
             multipart_max_concurrent_uploads: spec
+                .common
                 .multipart_max_concurrent_uploads
                 .map_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS, |v| v),
         }))

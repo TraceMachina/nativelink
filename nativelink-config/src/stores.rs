@@ -54,29 +54,33 @@ pub enum StoreSpec {
     ///
     Memory(MemorySpec),
 
-    /// S3 store will use Amazon's S3 service as a backend to store
-    /// the files. This configuration can be used to share files
-    /// across multiple instances.
-    ///
-    /// This configuration will never delete files, so you are
+    /// A generic blob store that will store files on the cloud
+    /// provider. This configuration will never delete files, so you are
     /// responsible for purging old files in other ways.
+    /// It supports the following backends:
     ///
-    /// **Example JSON Config:**
-    /// ```json
-    /// "experimental_s3_store": {
-    ///   "region": "eu-north-1",
-    ///   "bucket": "crossplane-bucket-af79aeca9",
-    ///   "key_prefix": "test-prefix-index/",
-    ///   "retry": {
-    ///     "max_retries": 6,
-    ///     "delay": 0.3,
-    ///     "jitter": 0.5
-    ///   },
-    ///   "multipart_max_concurrent_uploads": 10
-    /// }
-    /// ```
+    /// 1. **Amazon S3:**
+    ///    S3 store will use Amazon's S3 service as a backend to store
+    ///    the files. This configuration can be used to share files
+    ///    across multiple instances.
     ///
-    ExperimentalS3Store(S3Spec),
+    ///   **Example JSON Config:**
+    ///   ```json
+    ///   "experimental_cloud_object_store": {
+    ///     "provider": "aws",
+    ///     "region": "eu-north-1",
+    ///     "bucket": "crossplane-bucket-af79aeca9",
+    ///     "key_prefix": "test-prefix-index/",
+    ///     "retry": {
+    ///       "max_retries": 6,
+    ///       "delay": 0.3,
+    ///       "jitter": 0.5
+    ///     },
+    ///     "multipart_max_concurrent_uploads": 10
+    ///   }
+    ///   ```
+    ///
+    ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
 
     /// Verify store is used to apply verifications to an underlying
     /// store implementation. It is strongly encouraged to validate
@@ -722,9 +726,21 @@ pub struct EvictionPolicy {
     pub max_count: u64,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "provider", rename_all = "snake_case")]
+pub enum ExperimentalCloudObjectSpec {
+    Aws(ExperimentalAwsSpec),
+}
+
+impl Default for ExperimentalCloudObjectSpec {
+    fn default() -> Self {
+        Self::Aws(ExperimentalAwsSpec::default())
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct S3Spec {
+pub struct ExperimentalAwsSpec {
     /// S3 region. Usually us-east-1, us-west-2, af-south-1, exc...
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub region: String,
@@ -733,7 +749,14 @@ pub struct S3Spec {
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub bucket: String,
 
-    /// If you wish to prefix the location on s3. If None, no prefix will be used.
+    /// Common retry and upload configuration
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+pub struct CommonObjectSpec {
+    /// If you wish to prefix the location in the bucket. If None, no prefix will be used.
     #[serde(default)]
     pub key_prefix: Option<String>,
 
