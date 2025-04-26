@@ -18,7 +18,7 @@ use std::time::SystemTime;
 
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
-use nativelink_config::stores::StoreSpec;
+use nativelink_config::stores::{ExperimentalCloudObjectSpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::store_trait::{Store, StoreDriver};
@@ -50,7 +50,11 @@ pub fn store_factory<'a>(
     Box::pin(async move {
         let store: Arc<dyn StoreDriver> = match backend {
             StoreSpec::Memory(spec) => MemoryStore::new(spec),
-            StoreSpec::ExperimentalS3Store(spec) => S3Store::new(spec, SystemTime::now).await?,
+            StoreSpec::ExperimentalCloudObjectStore(spec) => match spec {
+                ExperimentalCloudObjectSpec::Aws(aws_config) => {
+                    S3Store::new(aws_config, SystemTime::now).await?
+                }
+            },
             StoreSpec::RedisStore(spec) => RedisStore::new(spec.clone())?,
             StoreSpec::Verify(spec) => VerifyStore::new(
                 spec,
