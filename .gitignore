@@ -14,7 +14,6 @@ __pycache__
 .DS_Store
 .pre-commit-config.yaml
 result
-user.bazelrc
 MODULE.bazel.lock
 trivy-results.sarif
 Pulumi.dev.yaml

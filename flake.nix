@@ -55,6 +55,25 @@
           lre = import ./local-remote-execution/overlays/default.nix {inherit nix2container;};
           tools = import ./tools/public/default.nix {inherit nix2container;};
         };
+        # TODO(jaroeichler): Keep template inputs on upstream.
+        templates = {
+          bazel = {
+            path = ./templates/bazel;
+            description = "Local remote execution with Bazel";
+            welcomeText = ''
+              # Getting started
+
+              Enter the Nix environment with `nix develop`.
+              Get your credentials for the NativeLink cloud on
+              https://app.nativelink.com/ and paste them into `user.bazelrc`.
+              Run `bazel build hello-world` to build the example with local
+              remote execution.
+
+              See <https://www.nativelink.com/docs/explanations/lre> for further
+              details on local remote execution.
+            '';
+          };
+        };
       };
       perSystem = {
         config,
