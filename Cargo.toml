@@ -2,10 +2,10 @@
 resolver = "2"
 
 [package]
-name = "nativelink"
-version = "0.6.0"
 edition = "2024"
+name = "nativelink"
 rust-version = "1.86.0"
+version = "0.6.0"
 
 [profile.release]
 lto = true
@@ -13,10 +13,10 @@ lto = true
 # Prefer this profile in CI, for instance via `cargo test --all --profile=smol`.
 # It reduces the size of the `target` directory from ~12GB to ~1GB.
 [profile.smol]
+debug = false
 inherits = "dev"
 opt-level = "z"
 strip = true
-debug = false
 
 [[bin]]
 name = "nativelink"
@@ -25,15 +25,16 @@ name = "nativelink"
 nix = ["nativelink-worker/nix"]
 
 [dependencies]
-nativelink-error = { path = "nativelink-error" }
 nativelink-config = { path = "nativelink-config" }
+nativelink-error = { path = "nativelink-error" }
+nativelink-metric = { path = "nativelink-metric" }
+nativelink-metric-collector = { path = "nativelink-metric-collector" }
 nativelink-scheduler = { path = "nativelink-scheduler" }
 nativelink-service = { path = "nativelink-service" }
 nativelink-store = { path = "nativelink-store" }
 nativelink-util = { path = "nativelink-util" }
 nativelink-worker = { path = "nativelink-worker" }
-nativelink-metric = { path = "nativelink-metric" }
-nativelink-metric-collector = { path = "nativelink-metric-collector" }
+
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 axum = { version = "0.8.3", default-features = false }
 clap = { version = "4.5.35", features = ["derive"] }
@@ -41,6 +42,8 @@ futures = { version = "0.3.31", default-features = false }
 hyper = "1.6.0"
 hyper-util = "0.1.11"
 mimalloc = "0.1.44"
+opentelemetry = { version = "0.29.1", default-features = false }
+opentelemetry_sdk = { version = "0.29.0", default-features = false }
 parking_lot = "0.12.3"
 rustls-pemfile = { version = "2.2.0", features = [
   "std",
@@ -49,22 +52,20 @@ scopeguard = { version = "1.2.0", default-features = false }
 serde_json5 = "0.2.1"
 tokio = { version = "1.44.1", features = [
   "fs",
+  "io-util",
   "rt-multi-thread",
   "signal",
-  "io-util",
 ], default-features = false }
 tokio-rustls = { version = "0.26.2", default-features = false, features = [
   "ring",
 ] }
 tonic = { version = "0.13.0", features = [
-  "transport",
   "tls-ring",
+  "transport",
 ], default-features = false }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
-opentelemetry_sdk = { version = "0.29.0", default-features = false }
 tracing-subscriber = { version = "0.3.19", default-features = false }
-opentelemetry = { version = "0.29.1", default-features = false }
 
 [workspace.cargo-features-manager.keep]
 async-lock = ["std"]
@@ -75,11 +76,11 @@ blake3 = ["std"]
 pretty_assertions = ["std"]
 redis-test = ["aio"]
 serial_test = ["async"]
-tokio = ["fs", "rt-multi-thread", "signal", "io-util"]
+tokio = ["fs", "io-util", "rt-multi-thread", "signal"]
 tokio-stream = ["fs"]
+tonic = ["tls", "transport"]
 tonic-build = ["prost"]
-tonic = ["transport", "tls"]
-uuid = ["v4", "serde"]
+uuid = ["serde", "v4"]
 
 [workspace.lints.rust]
 ambiguous-glob-reexports = "deny"
