@@ -1025,3 +1025,46 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
 
     Ok(())
 }
+
+// This test validates that if we send a write request with a size larger than
+// the expected size, it will fail.
+// This is a regression test for a bug that was found in the past.
+// First, we define a constant for the expected size of the write request.
+// Then, we create a raw data string that is larger than the expected size.
+// We create a store manager and a bytestream server.
+// We kick off the write stream and create a write request with the oversized data.
+// Finally, we send the oversized payload and assert that the server errors out
+// with the expected error message.
+
+#[nativelink_test]
+async fn write_too_many_bytes_fails() -> Result<(), Box<dyn core::error::Error>> {
+    const EXPECTED_SIZE: usize = 3;
+    let raw_data = "abcd".as_bytes(); // length == 4
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(make_bytestream_server(store_manager.as_ref(), None).unwrap());
+
+    let (tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
+
+    let resource_name = make_resource_name(EXPECTED_SIZE);
+    let write_request = WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: raw_data.into(),
+    };
+
+    tx.send(Frame::data(encode_stream_proto(&write_request)?))
+        .await?;
+    drop(tx);
+
+    let err = join_handle
+        .await?
+        .expect_err("Expected an error for sending too many bytes");
+    assert!(
+        err.to_string().contains("Sent too much data"),
+        "Got wrong error: {err:?}"
+    );
+    Ok(())
+}
