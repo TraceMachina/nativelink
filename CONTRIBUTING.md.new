@@ -1,0 +1,57 @@
+# Contributing to NativeLink
+
+NativeLink welcomes contribution from everyone. Here are the guidelines if you
+are thinking of helping us:
+
+## Contributions
+
+Contributions to NativeLink or its dependencies should be made in the form of
+GitHub pull requests. Each pull request will be reviewed by a core contributor
+(someone with permission to land patches) and either landed in the main tree or
+given feedback for changes that would be required. All contributions should
+follow this format, even those from core contributors.
+
+Should you wish to work on an issue, please claim it first by commenting on
+the GitHub issue that you want to work on it. This is to prevent duplicated
+efforts from contributors on the same issue.
+
+## Performance Benchmarks
+
+NativeLink maintains an independent web application for tracking and visualizing performance benchmarks across commits. The benchmarking system focuses on two key scenarios:
+1. Build performance with remote cache only
+2. Build performance with remote cache and execution
+
+You can access the benchmark web application at [https://github.com/TraceMachina/nativelink-benchmark-webapp](https://github.com/TraceMachina/nativelink-benchmark-webapp).
+
+## Git setup
+
+NativeLink has a somewhat specific contribution process to ensure consistent
+quality across all commits. If anything in the following guide is unclear to you
+please raise an issue so that we can clarify this document.
+
+1. In your [GitHub settings](https://github.com/settings/keys), set up distinct
+   authentication and signing keys. For further information see:
+   - https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent
+   - https://docs.github.com/en/authentication/connecting-to-github-with-ssh/adding-a-new-ssh-key-to-your-github-account
+
+2. Fork the `TraceMachina/nativelink` repository by clicking on the `Fork`
+   button.
+
+3. Clone your fork:
+
+   ```bash
+   git clone git@github.com:yourusername/nativelink
+   ```
+
+> [!WARNING]
+> Don't use
+>
+> ```bash
+> git clone git@github.com:TraceMachina/nativelink
+> ```
+
+4. `cd` into the cloned repository:
+
+   ```bash
+   cd nativelink
+   ```
