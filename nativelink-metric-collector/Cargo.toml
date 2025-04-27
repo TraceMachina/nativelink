@@ -1,14 +1,17 @@
 lints.workspace = true
 
 [package]
-name = "nativelink-metric-collector"
-version = "0.6.0"
 edition = "2024"
+name = "nativelink-metric-collector"
 rust-version = "1.85.0"
+version = "0.6.0"
 
 [dependencies]
 nativelink-metric = { path = "../nativelink-metric" }
-opentelemetry = { version = "0.29.1", features = ["metrics", "trace"], default-features = false }
+opentelemetry = { version = "0.29.1", features = [
+  "metrics",
+  "trace",
+], default-features = false }
 parking_lot = "0.12.3"
 serde = { version = "1.0.219", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
