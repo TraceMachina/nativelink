@@ -34,7 +34,7 @@ use nativelink_util::store_trait::{
 };
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::Notify;
-use tracing::{Level, event};
+use tracing::{error, warn};
 
 use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
@@ -461,8 +461,7 @@ where
                         .await
                         .err_tip(|| "In RedisAwaitedActionDb::new");
                     if let Err(err) = changed_res {
-                        event!(
-                            Level::ERROR,
+                        error!(
                             "Error waiting for pull task change subscriber in RedisAwaitedActionDb::new  - {err:?}"
                         );
                         // Sleep for a second to avoid a busy loop, then trigger the notify
@@ -521,8 +520,7 @@ where
                     .await
                     .err_tip(|| "In OperationSubscriber::changed");
                 if let Err(err) = update_res {
-                    event!(
-                        Level::WARN,
+                    warn!(
                         "Error updating client keep alive in RedisAwaitedActionDb::try_subscribe - {err:?} - This is not a critical error, but we did decide to create a new action instead of joining an existing one."
                     );
                     return Ok(None);

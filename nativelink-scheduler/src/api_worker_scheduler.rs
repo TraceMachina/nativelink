@@ -31,7 +31,7 @@ use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tonic::async_trait;
-use tracing::{Level, event};
+use tracing::{error, warn};
 
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
@@ -126,8 +126,7 @@ impl ApiWorkerSchedulerImpl {
                 .send((operation_id.clone(), worker_id.clone()))
                 .is_err()
             {
-                event!(
-                    Level::ERROR,
+                error!(
                     ?operation_id,
                     ?worker_id,
                     "OperationKeepAliveTx stream closed"
@@ -151,8 +150,7 @@ impl ApiWorkerSchedulerImpl {
             .send_initial_connection_result()
             .err_tip(|| "Failed to send initial connection result to worker");
         if let Err(err) = &res {
-            event!(
-                Level::ERROR,
+            error!(
                 ?worker_id,
                 ?err,
                 "Worker connection appears to have been closed while adding to pool"
@@ -242,8 +240,7 @@ impl ApiWorkerSchedulerImpl {
                 .await
                 .err_tip(|| "in update_operation on SimpleScheduler::update_action");
             if let Err(err) = update_operation_res {
-                event!(
-                    Level::ERROR,
+                error!(
                     ?operation_id,
                     ?worker_id,
                     ?err,
@@ -290,8 +287,7 @@ impl ApiWorkerSchedulerImpl {
                 .await;
 
             if notify_worker_result.is_err() {
-                event!(
-                    Level::WARN,
+                warn!(
                     ?worker_id,
                     ?action_info,
                     ?notify_worker_result,
@@ -307,8 +303,7 @@ impl ApiWorkerSchedulerImpl {
                     .merge(self.immediate_evict_worker(&worker_id, err).await);
             }
         } else {
-            event!(
-                Level::WARN,
+            warn!(
                 ?worker_id,
                 ?operation_id,
                 ?action_info,
@@ -402,8 +397,7 @@ impl ApiWorkerScheduler {
                                 )
                                 .await;
                             if let Err(err) = update_operation_res {
-                                event!(
-                                    Level::WARN,
+                                warn!(
                                     ?err,
                                     "Error while running worker_keep_alive_received, maybe job is done?"
                                 );
@@ -528,11 +522,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
             })
             .collect();
         for worker_id in &worker_ids_to_remove {
-            event!(
-                Level::WARN,
-                ?worker_id,
-                "Worker timed out, removing from pool"
-            );
+            warn!(?worker_id, "Worker timed out, removing from pool");
             result = result.merge(
                 inner
                     .immediate_evict_worker(

@@ -39,7 +39,7 @@ use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::{Store, StoreLike};
 use tonic::{Request, Response, Status};
-use tracing::{Level, error_span, event, instrument};
+use tracing::{Level, debug, error_span, instrument};
 
 #[derive(Debug)]
 pub struct CasServer {
@@ -410,7 +410,7 @@ impl ContentAddressableStorage for CasServer {
             })
             .map_err(Into::into);
         if resp.is_ok() {
-            event!(Level::DEBUG, return = "Ok(<stream>)");
+            debug!(return = "Ok(<stream>)");
         }
         ctx.emit(|| &resp).await;
         resp

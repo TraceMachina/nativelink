@@ -34,7 +34,7 @@ use nativelink_util::operation_state_manager::{
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
-use tracing::{Level, event};
+use tracing::{info, warn};
 
 use super::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
@@ -202,8 +202,7 @@ where
                 .upgrade()
                 .err_tip(|| format!("Failed to upgrade weak reference to SimpleSchedulerStateManager in MatchingEngineActionStateResult::changed at attempt: {timeout_attempts}"))?;
 
-            event!(
-                Level::WARN,
+            warn!(
                 ?awaited_action,
                 "OperationId {} / {} timed out after {} seconds issuing a retry",
                 awaited_action.operation_id(),
@@ -340,8 +339,7 @@ where
                     .update_awaited_action(new_awaited_action)
                     .await
                 {
-                    event!(
-                        Level::WARN,
+                    warn!(
                         "Failed to update action to timed out state after client keepalive timeout. This is ok if multiple schedulers tried to set the state at the same time: {err}",
                     );
                 }
@@ -513,8 +511,7 @@ where
                     awaited_action.worker_id(),
                     awaited_action,
                 );
-                event!(
-                    Level::INFO,
+                info!(
                     "Worker ids do not match - {:?} != {:?} for {:?}. This is probably due to another worker picking up the action.",
                     maybe_worker_id,
                     awaited_action.worker_id(),

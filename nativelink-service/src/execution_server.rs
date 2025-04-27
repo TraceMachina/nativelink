@@ -44,7 +44,7 @@ use nativelink_util::operation_state_manager::{
 use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::Store;
 use tonic::{Request, Response, Status};
-use tracing::{Level, error_span, event, instrument};
+use tracing::{Level, debug, error, error_span, info, instrument};
 
 type InstanceInfoName = String;
 
@@ -217,7 +217,7 @@ impl ExecutionServer {
                 let mut action_listener = maybe_action_listener?;
                 match action_listener.changed().await {
                     Ok((action_update, _maybe_origin_metadata)) => {
-                        event!(Level::INFO, ?action_update, "Execute Resp Stream");
+                        info!(?action_update, "Execute Resp Stream");
                         // If the action is finished we won't be sending any more updates.
                         let maybe_action_listener = if action_update.stage.is_finished() {
                             None
@@ -230,7 +230,7 @@ impl ExecutionServer {
                         ))
                     }
                     Err(err) => {
-                        event!(Level::ERROR, ?err, "Error in action_listener stream");
+                        error!(?err, "Error in action_listener stream");
                         Some((Err(err.into()), None))
                     }
                 }
@@ -379,7 +379,7 @@ impl Execution for ExecutionServer {
             .map_err(Into::into);
 
         if resp.is_ok() {
-            event!(Level::DEBUG, return = "Ok(<stream>)");
+            debug!(return = "Ok(<stream>)");
         }
         resp
     }

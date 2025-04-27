@@ -31,7 +31,7 @@ use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
-use tracing::{Level, event};
+use tracing::warn;
 
 use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
 
@@ -309,8 +309,7 @@ impl CompletenessCheckingStore {
                             // Note: Don't return the errors. We just flag the result as
                             // missing but show a warning if it's not a NotFound.
                             if err.code != Code::NotFound {
-                                event!(
-                                    Level::WARN,
+                                warn!(
                                     ?err,
                                     "Error checking existence of digest"
                                 );

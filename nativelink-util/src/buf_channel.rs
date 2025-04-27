@@ -23,7 +23,7 @@ use futures::task::Context;
 use futures::{Future, Stream, TryFutureExt};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use tokio::sync::mpsc;
-use tracing::{Level, event};
+use tracing::warn;
 
 const ZERO_DATA: Bytes = Bytes::new();
 
@@ -158,8 +158,7 @@ impl DropCloserWriteHalf {
         // Flag that we have sent the EOF.
         let eof_was_sent = self.eof_sent.swap(true, Ordering::Release);
         if eof_was_sent {
-            event!(
-                Level::WARN,
+            warn!(
                 "Stream already closed when eof already was sent. This is often ok for retry was triggered, but should not happen on happy path."
             );
             return Ok(());

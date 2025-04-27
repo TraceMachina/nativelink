@@ -40,7 +40,7 @@ use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
 use tokio::sync::oneshot;
 use tonic::{Request, Response};
-use tracing::{Level, event};
+use tracing::error;
 
 /// Actions that are having their cache checked or failed cache lookup and are
 /// being forwarded upstream.  Missing the `skip_cache_check` actions which are
@@ -233,8 +233,7 @@ impl CacheLookupScheduler {
             let unique_key = match &action_info.unique_qualifier {
                 ActionUniqueQualifier::Cachable(unique_key) => unique_key,
                 ActionUniqueQualifier::Uncachable(unique_key) => {
-                    event!(
-                        Level::ERROR,
+                    error!(
                         ?action_info,
                         "ActionInfo::unique_qualifier should be ActionUniqueQualifier::Cachable()"
                     );

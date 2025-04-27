@@ -77,7 +77,7 @@ use tokio::process;
 use tokio::sync::{oneshot, watch};
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
-use tracing::{Level, enabled, event};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -524,27 +524,17 @@ async fn do_cleanup(
     operation_id: &OperationId,
     action_directory: &str,
 ) -> Result<(), Error> {
-    event!(Level::INFO, "Worker cleaning up");
+    info!("Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
     let remove_dir_result = fs::remove_dir_all(action_directory)
         .await
         .err_tip(|| format!("Could not remove working directory {action_directory}"));
     if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
-        event!(
-            Level::ERROR,
-            ?operation_id,
-            ?err,
-            "Error cleaning up action"
-        );
+        error!(?operation_id, ?err, "Error cleaning up action");
         return Result::<(), Error>::Err(err).merge(remove_dir_result);
     }
     if let Err(err) = remove_dir_result {
-        event!(
-            Level::ERROR,
-            ?operation_id,
-            ?err,
-            "Error removing working directory"
-        );
+        error!(?operation_id, ?err, "Error removing working directory");
         return Err(err);
     }
     Ok(())
@@ -733,7 +723,7 @@ impl RunningActionImpl {
                 ))
                 .await?;
         }
-        event!(Level::INFO, ?command, "Worker received command",);
+        info!(?command, "Worker received command",);
         {
             let mut state = self.state.lock();
             state.command_proto = Some(command);
@@ -775,7 +765,7 @@ impl RunningActionImpl {
         } else {
             command_proto.arguments.iter().map(AsRef::as_ref).collect()
         };
-        event!(Level::INFO, ?args, "Executing command",);
+        info!(?args, "Executing command",);
         let mut command_builder = process::Command::new(args[0]);
         command_builder
             .args(&args[1..])
@@ -868,8 +858,7 @@ impl RunningActionImpl {
             .err_tip(|| "Expected stderr to exist on command this should never happen")?;
 
         let mut child_process_guard = guard(child_process, |mut child_process| {
-            event!(
-                Level::ERROR,
+            error!(
                 "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
             );
             background_spawn!("running_actions_manager_kill_child_process", async move {
@@ -913,8 +902,7 @@ impl RunningActionImpl {
                     self.running_actions_manager.metrics.task_timeouts.inc();
                     killed_action = true;
                     if let Err(err) = child_process_guard.start_kill() {
-                        event!(
-                            Level::ERROR,
+                        error!(
                             ?err,
                             "Could not kill process in RunningActionsManager for action timeout",
                         );
@@ -984,8 +972,7 @@ impl RunningActionImpl {
                 _ = &mut kill_channel_rx => {
                     killed_action = true;
                     if let Err(err) = child_process_guard.start_kill() {
-                        event!(
-                            Level::ERROR,
+                        error!(
                             operation_id = ?self.operation_id,
                             ?err,
                             "Could not kill process",
@@ -1016,7 +1003,7 @@ impl RunningActionImpl {
             DirectorySymlink(SymlinkInfo),
         }
 
-        event!(Level::INFO, "Worker uploading results",);
+        info!("Worker uploading results",);
         let (mut command_proto, execution_result, mut execution_metadata) = {
             let mut state = self.state.lock();
             state.execution_metadata.output_upload_start_timestamp =
@@ -1147,18 +1134,14 @@ impl RunningActionImpl {
         let mut output_file_symlinks = vec![];
 
         if execution_result.exit_code != 0 {
-            // Don't convert our stdout/stderr to strings unless we are need too.
-            if enabled!(Level::ERROR) {
-                let stdout = core::str::from_utf8(&execution_result.stdout).unwrap_or("<no-utf8>");
-                let stderr = core::str::from_utf8(&execution_result.stderr).unwrap_or("<no-utf8>");
-                event!(
-                    Level::ERROR,
-                    exit_code = ?execution_result.exit_code,
-                    stdout = ?stdout[..min(stdout.len(), 1000)],
-                    stderr = ?stderr[..min(stderr.len(), 1000)],
-                    "Command returned non-zero exit code",
-                );
-            }
+            let stdout = core::str::from_utf8(&execution_result.stdout).unwrap_or("<no-utf8>");
+            let stderr = core::str::from_utf8(&execution_result.stderr).unwrap_or("<no-utf8>");
+            error!(
+                exit_code = ?execution_result.exit_code,
+                stdout = ?stdout[..min(stdout.len(), 1000)],
+                stderr = ?stderr[..min(stderr.len(), 1000)],
+                "Command returned non-zero exit code",
+            );
         }
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
@@ -1244,8 +1227,7 @@ impl Drop for RunningActionImpl {
             return;
         }
         let operation_id = self.operation_id.clone();
-        event!(
-            Level::ERROR,
+        error!(
             ?operation_id,
             "RunningActionImpl did not cleanup. This is a violation of the requirements, will attempt to do it in the background."
         );
@@ -1257,8 +1239,7 @@ impl Drop for RunningActionImpl {
             else {
                 return;
             };
-            event!(
-                Level::ERROR,
+            error!(
                 ?operation_id,
                 ?action_directory,
                 ?err,
@@ -1770,8 +1751,7 @@ impl RunningActionsManagerImpl {
     // Note: We do not capture metrics on this call, only `.kill_all()`.
     // Important: When the future returns the process may still be running.
     async fn kill_operation(action: Arc<RunningActionImpl>) {
-        event!(
-            Level::WARN,
+        warn!(
             operation_id = ?action.operation_id,
             "Sending kill to running operation",
         );
@@ -1781,8 +1761,7 @@ impl RunningActionsManagerImpl {
         };
         if let Some(kill_channel_tx) = kill_channel_tx {
             if kill_channel_tx.send(()).is_err() {
-                event!(
-                    Level::ERROR,
+                error!(
                     operation_id = ?action.operation_id,
                     "Error sending kill to running operation",
                 );
@@ -1809,8 +1788,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 let operation_id = start_execute
                     .operation_id.as_str().into();
                 let action_info = self.create_action_info(start_execute, queued_timestamp).await?;
-                event!(
-                    Level::INFO,
+                info!(
                     ?action_info,
                     "Worker received action",
                 );

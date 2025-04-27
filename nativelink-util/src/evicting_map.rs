@@ -26,7 +26,7 @@ use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_metric::MetricsComponent;
 use serde::{Deserialize, Serialize};
-use tracing::{Level, event};
+use tracing::info;
 
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics_utils::{Counter, CounterWithTime};
@@ -277,7 +277,7 @@ where
                 .lru
                 .pop_lru()
                 .expect("Tried to peek() then pop() but failed");
-            event!(Level::INFO, ?key, "Evicting",);
+            info!(?key, "Evicting",);
             state.remove(&key, &eviction_item, false).await;
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
@@ -337,7 +337,7 @@ where
                     if self.should_evict(lru_len, entry, 0, u64::MAX) {
                         *result = None;
                         if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
-                            event!(Level::INFO, ?key, "Item expired, evicting");
+                            info!(?key, "Item expired, evicting");
                             state.remove(key.borrow(), &eviction_item, false).await;
                         }
                     } else {
