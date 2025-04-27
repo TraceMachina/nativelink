@@ -45,6 +45,10 @@ NativeLink is trusted in production environments to reduce costs and developer i
    - Stores and reuses results of previous build steps for unchanged components
    - Significantly reduces build times, especially for incremental changes
 
+## Benchmarking
+
+For performance benchmarks and comparisons, see our [benchmarking repository](https://github.com/TraceMachina/nativelink-benchmarks).
+
 2. **Efficient Remote Execution**:
    - Distributes build and test tasks across a network of machines
    - Parallelizes workloads for faster completion

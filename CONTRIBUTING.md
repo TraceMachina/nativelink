@@ -360,6 +360,10 @@ And to configure rust-analyzer to use that project, set this in your `.vscode/se
 }
 ```
 
+## Performance Benchmarks
+
+NativeLink maintains independent benchmarks to track performance across commits. These benchmarks measure build performance with remote cache only and with remote cache and execution. You can access the benchmarks at [https://benchmarks.nativelink.dev](https://benchmarks.nativelink.dev).
+
 ## Generating documentation
 
 Automatically generated documentation is still under construction. To view the
