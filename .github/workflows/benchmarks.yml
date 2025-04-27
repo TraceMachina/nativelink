@@ -8,16 +8,16 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
     - name: Setup Bazel
       uses: bazelbuild/setup-bazelisk@v2
       with:
         bazelisk-version: "1.19.0"  # Correct parameter name and use quotes
-      
+
     - name: Install Python dependencies
       run: |
         python3 -m pip install -r tools/benchmark/requirements.txt
-        
+
     - name: Run Benchmarks
       env:
         NATIVELINK_API_KEY: ${{ secrets.NATIVELINK_API_KEY }}
@@ -25,7 +25,7 @@ jobs:
         echo "Benchmarking commit: $GITHUB_SHA"
         echo "Current directory: $(pwd)"
         ls -la ./tools/benchmark/
-        
+
         ./tools/benchmark/run_benchmarks.sh \
           --project=./integration_tests/test_project \
           --commit=$GITHUB_SHA \
@@ -35,21 +35,21 @@ jobs:
           --cold-cache \
           --warm-cache \
           --incremental-build
-        
+
     - name: Analyze Results
       run: |
         python3 tools/benchmark/analyze_results.py \
           --current ./benchmark_results \
           --baseline ./baseline_metrics \
           --output ./report.md
-        
+
     - name: Upload Benchmark Results
       uses: actions/upload-artifact@v4
       with:
         name: benchmark-results
         path: ./benchmark_results
         retention-days: 90
-    
+
     - name: Upload Benchmark Visualizations
       uses: actions/upload-artifact@v4
       with:

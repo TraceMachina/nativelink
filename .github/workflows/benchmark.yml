@@ -58,8 +58,8 @@ jobs:
         with:
           repository: 'rust-lang/rustlings'
           path: 'benchmark-projects/rustlings'
-              
-      # 新增Bazel初始化步骤        
+
+      # 新增Bazel初始化步骤
       - name: Initialize Bazel workspace
         run: |
           cd benchmark-projects/rustlings
@@ -98,6 +98,18 @@ jobs:
             --commit=${{ github.sha }} \
             --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
             --nativelink-url=https://app.nativelink.com \
+            --output-dir=./benchmark_results \
+            --runs=3
+
+      - name: Deploy Benchmark Results
+        if: github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./benchmark_results
+          publish_branch: gh-pages
+          destination_dir: benchmarks
+          cname: benchmarks.nativelink.dev
             --api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
             --output-dir=./benchmark_results \
             --runs=3

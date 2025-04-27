@@ -111,11 +111,11 @@
         <header>
             <h1>NativeLink Build Time Performance</h1>
         </header>
-        
+
         <div class="navigation-help">
             <strong>Chart Navigation:</strong> Click and drag to zoom; shift + click and drag to scroll after zooming; double-click to reset zoom; hover over data points to see details about each commit; click on annotation markers to see detailed information about significant changes.
         </div>
-        
+
         <div class="chart-container">
             <div class="chart-header">
                 <h2>Build Time Over Time</h2>
@@ -162,10 +162,10 @@
             try {
                 const response1 = await fetch('/benchmark_results/test_20230101_120000.json');
                 const data1 = await response1.json();
-                
+
                 const response2 = await fetch('/benchmark_results/test_20230102_120000.json');
                 const data2 = await response2.json();
-                
+
                 return [data1, data2];
             } catch (error) {
                 console.error('Error loading benchmark data:', error);
@@ -173,7 +173,7 @@
                 return getSampleData();
             }
         }
-        
+
         // Function to get sample data if loading fails
         function getSampleData() {
             return [
@@ -255,16 +255,16 @@
                 }
             ];
         }
-        
+
         // Function to process benchmark data and create the chart
         async function createChart() {
             const benchmarkData = await loadBenchmarkData();
-            
+
             // Sort data by timestamp
             benchmarkData.sort((a, b) => {
                 return a.timestamp.localeCompare(b.timestamp);
             });
-            
+
             // Extract data for plotting
             const commits = benchmarkData.map(data => data.commit);
             const timestamps = benchmarkData.map(data => {
@@ -275,7 +275,7 @@
                 const day = ts.substring(6, 8);
                 return `${year}-${month}-${day}`;
             });
-            
+
             // Create annotations for significant changes
             const annotations = [
                 {
@@ -313,24 +313,24 @@
                     clickinfo: "Commit mno7890: Implemented parallel compilation and caching improvements"
                 }
             ];
-            
+
             // Function to update the chart based on selected options
             function updateChart() {
                 const selectedProject = document.getElementById('projectSelector').value;
                 const selectedMetric = document.getElementById('metricSelector').value;
-                
+
                 // Filter data based on selected project
                 let filteredData;
                 let yAxisTitle;
-                
+
                 if (selectedProject === 'all') {
                     // Create traces for each project
                     const traces = [];
                     const projects = ['hello_world', 'simple_app'];
-                    
+
                     projects.forEach(project => {
                         const projectData = benchmarkData.map(data => data.metrics[project][selectedMetric]);
-                        
+
                         // Create hover text with more details
                         const hoverTexts = benchmarkData.map((data, i) => {
                             return `<b>Commit:</b> ${data.commit}<br>
@@ -338,7 +338,7 @@
                                    <b>Project:</b> ${project}<br>
                                    <b>${selectedMetric === 'build_time' ? 'Build Time' : 'Memory Usage'}:</b> ${data.metrics[project][selectedMetric]}${selectedMetric === 'build_time' ? 's' : ' MB'}`;
                         });
-                        
+
                         traces.push({
                             x: commits,
                             y: projectData,
@@ -355,13 +355,13 @@
                             }
                         });
                     });
-                    
+
                     filteredData = traces;
                     yAxisTitle = selectedMetric === 'build_time' ? 'Build Time (seconds)' : 'Memory Usage (MB)';
                 } else {
                     // Create a single trace for the selected project
                     const projectData = benchmarkData.map(data => data.metrics[selectedProject][selectedMetric]);
-                    
+
                     // Create hover text with more details
                     const hoverTexts = benchmarkData.map((data, i) => {
                         return `<b>Commit:</b> ${data.commit}<br>
@@ -369,7 +369,7 @@
                                <b>Project:</b> ${selectedProject}<br>
                                <b>${selectedMetric === 'build_time' ? 'Build Time' : 'Memory Usage'}:</b> ${data.metrics[selectedProject][selectedMetric]}${selectedMetric === 'build_time' ? 's' : ' MB'}`;
                     });
-                    
+
                     filteredData = [{
                         x: commits,
                         y: projectData,
@@ -387,10 +387,10 @@
                             color: '#4a6fa5'
                         }
                     }];
-                    
+
                     yAxisTitle = selectedMetric === 'build_time' ? 'Build Time (seconds)' : 'Memory Usage (MB)';
                 }
-                
+
                 // Update layout
                 const layout = {
                     title: {
@@ -434,7 +434,7 @@
                         x: 1
                     }
                 };
-                
+
                 const config = {
                     responsive: true,
                     scrollZoom: true,  // Enable scroll wheel zooming
@@ -450,13 +450,13 @@
                         scale: 2
                     }
                 };
-                
+
                 Plotly.react('buildTimeChart', filteredData, layout, config);
             }
-            
+
             // Initial chart creation
             updateChart();
-            
+
             // Add event listeners for controls
             document.getElementById('projectSelector').addEventListener('change', updateChart);
             document.getElementById('metricSelector').addEventListener('change', updateChart);
@@ -467,25 +467,25 @@
                     'yaxis.autorange': true
                 });
             });
-            
+
             // Add event listener for annotation clicks
             const tooltipElement = document.getElementById('annotationTooltip');
-            
+
             document.getElementById('buildTimeChart').on('plotly_click', function(data) {
                 // Check if an annotation was clicked
                 if (data.points && data.points[0]) {
                     const pointIndex = data.points[0].pointIndex;
                     const annotationIndex = annotations.findIndex(a => a.x === pointIndex);
-                    
+
                     if (annotationIndex >= 0) {
                         const annotation = annotations[annotationIndex];
-                        
+
                         // Show tooltip with detailed information
                         tooltipElement.innerHTML = annotation.clickinfo;
                         tooltipElement.style.display = 'block';
                         tooltipElement.style.left = (data.event.pageX + 10) + 'px';
                         tooltipElement.style.top = (data.event.pageY + 10) + 'px';
-                        
+
                         // Hide tooltip after 5 seconds
                         setTimeout(() => {
                             tooltipElement.style.display = 'none';
@@ -493,7 +493,7 @@
                     }
                 }
             });
-            
+
             // Hide tooltip when clicking elsewhere
             document.addEventListener('click', function(event) {
                 if (!event.target.closest('#buildTimeChart') && !event.target.closest('#annotationTooltip')) {
@@ -501,7 +501,7 @@
                 }
             });
         }
-        
+
         // Initialize the chart when the page loads
         document.addEventListener('DOMContentLoaded', createChart);
     </script>

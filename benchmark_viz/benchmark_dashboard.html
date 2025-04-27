@@ -424,36 +424,36 @@
         async function loadBenchmarkData() {
             try {
                 // Show loading state
-                document.getElementById('avgBuildTime').textContent = 'Loading...';  
-                document.getElementById('buildTimeChange').textContent = 'Loading...';  
-                document.getElementById('totalBenchmarks').textContent = 'Loading...';  
-                document.getElementById('latestCommit').textContent = 'Loading...';  
-                
+                document.getElementById('avgBuildTime').textContent = 'Loading...';
+                document.getElementById('buildTimeChange').textContent = 'Loading...';
+                document.getElementById('totalBenchmarks').textContent = 'Loading...';
+                document.getElementById('latestCommit').textContent = 'Loading...';
+
                 // Fetch the list of benchmark files
                 const response = await fetch('../benchmark_results/');
                 const text = await response.text();
-                
+
                 // Parse the directory listing to find JSON files
                 const parser = new DOMParser();
                 const htmlDoc = parser.parseFromString(text, 'text/html');
                 const links = htmlDoc.querySelectorAll('a');
-                
+
                 const jsonFiles = Array.from(links)
                     .map(link => link.getAttribute('href'))
                     .filter(href => href && href.endsWith('.json'));
-                
+
                 // Load each JSON file
                 const benchmarks = [];
                 for (const file of jsonFiles) {
                     try {
                         const fileResponse = await fetch(`../benchmark_results/${file}`);
                         const jsonData = await fileResponse.json();
-                        
+
                         // Process the benchmark data
                         // Convert the metrics object to individual benchmark entries
                         const timestamp = jsonData.timestamp;
                         const formattedTimestamp = formatTimestamp(timestamp);
-                        
+
                         Object.entries(jsonData.metrics).forEach(([testName, metrics]) => {
                             benchmarks.push({
                                 commit: jsonData.commit,
@@ -470,7 +470,7 @@
                         console.error(`Error loading benchmark file ${file}:`, error);
                     }
                 }
-                
+
                 benchmarkData.benchmarks = benchmarks;
                 return benchmarks;
             } catch (error) {
@@ -478,7 +478,7 @@
                 return [];
             }
         }
-        
+
         // Helper function to format timestamp
         function formatTimestamp(timestamp) {
             // Convert from format like "20230101_120000" to "2023-01-01T12:00:00Z"
@@ -487,11 +487,11 @@
                 const year = datePart.substring(0, 4);
                 const month = datePart.substring(4, 6);
                 const day = datePart.substring(6, 8);
-                
+
                 const hours = timePart.substring(0, 2);
                 const minutes = timePart.substring(2, 4);
                 const seconds = timePart.substring(4, 6);
-                
+
                 return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
             }
             return timestamp;
@@ -502,11 +502,11 @@
             // Set last updated date
             const now = new Date();
             document.getElementById('lastUpdated').textContent = now.toISOString().replace('T', ' ').substring(0, 19);
-            
+
             // Load benchmark data
             await loadBenchmarkData();
             const data = benchmarkData.benchmarks;
-            
+
             // Populate project filter
             const projects = [...new Set(data.map(b => b.project))];
             const projectFilter = document.getElementById('projectFilter');
@@ -541,10 +541,10 @@
                 const metricType = document.getElementById('metricType').value;
                 const projectFilter = document.getElementById('projectFilter').value;
                 const normalizeData = document.getElementById('normalizeData').value;
-                
+
                 // Filter data based on selections
                 let filteredData = filterData(benchmarkData.benchmarks, timeRange, projectFilter);
-                
+
                 // Update charts with filtered data
                 updateCharts(filteredData, metricType, normalizeData);
                 updateSummaryMetrics(filteredData);
@@ -553,24 +553,24 @@
             document.getElementById('refreshData').addEventListener('click', async function() {
                 this.textContent = 'Loading...';
                 this.disabled = true;
-                
+
                 // Reload benchmark data
                 await loadBenchmarkData();
                 const refreshedData = benchmarkData.benchmarks;
-                
+
                 // Update all visualizations with new data
                 const timeRange = document.getElementById('timeRange').value;
                 const metricType = document.getElementById('metricType').value;
                 const projectFilter = document.getElementById('projectFilter').value;
                 const normalizeData = document.getElementById('normalizeData').value;
-                
+
                 // Filter data based on selections
                 let filteredData = filterData(refreshedData, timeRange, projectFilter);
-                
+
                 // Update charts with filtered data
                 updateCharts(filteredData, metricType, normalizeData);
                 updateSummaryMetrics(filteredData);
-                
+
                 this.textContent = 'Refresh Data';
                 this.disabled = false;
             });
@@ -583,21 +583,21 @@
         // Filter data based on time range and project
         function filterData(data, timeRange, projectFilter) {
             let filteredData = [...data];
-            
+
             // Filter by time range
             if (timeRange !== 'all') {
                 const daysAgo = parseInt(timeRange);
                 const cutoffDate = new Date();
                 cutoffDate.setDate(cutoffDate.getDate() - daysAgo);
-                
+
                 filteredData = filteredData.filter(item => new Date(item.timestamp) >= cutoffDate);
             }
-            
+
             // Filter by project
             if (projectFilter !== 'all') {
                 filteredData = filteredData.filter(item => item.project === projectFilter);
             }
-            
+
             return filteredData;
         }
 
@@ -605,10 +605,10 @@
         function updateCharts(data, metricType, normalizeData) {
             // Update time series chart
             updateTimeSeriesChart(data, metricType, normalizeData);
-            
+
             // Update comparison chart
             updateComparisonChart(data, metricType, normalizeData);
-            
+
             // Update distribution chart
             updateDistributionChart(data, metricType);
         }
@@ -645,14 +645,14 @@
         // Initialize time series chart
         function initializeTimeSeriesChart(data) {
             const ctx = document.getElementById('timeSeriesChart').getContext('2d');
-            
+
             // Sort data by timestamp
             const sortedData = [...data].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-            
+
             // Prepare data for chart
             const labels = sortedData.map(item => new Date(item.timestamp));
             const buildTimeData = sortedData.map(item => item.build_time);
-            
+
             // Create annotations from significant changes
             const annotations = {};
             significantChanges.forEach((change, index) => {
@@ -670,7 +670,7 @@
                     }
                 };
             });
-            
+
             // Create chart
             window.timeSeriesChart = new Chart(ctx, {
                 type: 'line',
@@ -745,11 +745,11 @@
                                 afterTitle: function(tooltipItems) {
                                     // Check if this point is near a significant change
                                     const pointDate = new Date(tooltipItems[0].parsed.x);
-                                    
+
                                     for (const change of significantChanges) {
                                         const changeDate = new Date(change.date);
                                         const diffDays = Math.abs((pointDate - changeDate) / (1000 * 60 * 60 * 24));
-                                        
+
                                         if (diffDays < 3) { // Within 3 days of a change
                                             return `Change: ${change.label} - ${change.description}`;
                                         }
@@ -766,25 +766,25 @@
         // Initialize comparison chart
         function initializeComparisonChart(data) {
             const ctx = document.getElementById('comparisonChart').getContext('2d');
-            
+
             // Get the latest 5 commits for comparison
             const sortedData = [...data].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
             const latestCommits = [];
             const seenCommits = new Set();
-            
+
             for (const item of sortedData) {
                 if (!seenCommits.has(item.commit)) {
                     seenCommits.add(item.commit);
                     latestCommits.push(item);
-                    
+
                     if (latestCommits.length >= 5) break;
                 }
             }
-            
+
             // Prepare data for chart
             const labels = latestCommits.map(item => item.commit.substring(0, 7));
             const buildTimeData = latestCommits.map(item => item.build_time);
-            
+
             // Create chart
             window.comparisonChart = new Chart(ctx, {
                 type: 'bar',
@@ -831,7 +831,7 @@
         // Initialize distribution chart
         function initializeDistributionChart(data) {
             const ctx = document.getElementById('distributionChart').getContext('2d');
-            
+
             // Group data by project
             const projectGroups = {};
             data.forEach(item => {
@@ -840,7 +840,7 @@
                 }
                 projectGroups[item.project].push(item.build_time);
             });
-            
+
             // Calculate statistics for each project
             const projects = Object.keys(projectGroups);
             const datasets = projects.map((project, index) => {
@@ -848,7 +848,7 @@
                 const min = Math.min(...metricValues);
                 const max = Math.max(...metricValues);
                 const avg = metricValues.reduce((sum, value) => sum + value, 0) / metricValues.length;
-                
+
                 return {
                     label: project,
                     data: [{
@@ -860,7 +860,7 @@
                     backgroundColor: `hsla(${210 + index * 40}, 70%, 60%, 0.7)`
                 };
             });
-            
+
             // Create chart
             window.distributionChart = new Chart(ctx, {
                 type: 'bar',
@@ -910,42 +910,42 @@
                 document.getElementById('latestCommit').textContent = 'None';
                 return;
             }
-            
+
             // Extract all build times from all benchmarks
             const buildTimes = data.map(item => item.build_time).filter(time => time > 0);
-            
+
             // Calculate average build time
-            const avgBuildTime = buildTimes.length > 0 ? 
+            const avgBuildTime = buildTimes.length > 0 ?
                 buildTimes.reduce((sum, time) => sum + time, 0) / buildTimes.length : 0;
             document.getElementById('avgBuildTime').textContent = `${avgBuildTime.toFixed(2)}s`;
-            
+
             // Count total benchmarks
             const totalBenchmarks = data.length;
             document.getElementById('totalBenchmarks').textContent = totalBenchmarks;
-            
+
             // Sort benchmarks by timestamp (newest first)
             const sortedByDate = [...data].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-            
+
             // Get the latest commit
             if (sortedByDate.length > 0) {
                 const latestCommit = sortedByDate[0].commit;
                 document.getElementById('latestCommit').textContent = latestCommit.substring(0, 7);
             }
-            
+
             // Calculate build time change between the two most recent commits
             const commitData = {};
             const processedCommits = new Set();
-            
+
             // Group benchmarks by commit and calculate average build time for each commit
             sortedByDate.forEach(benchmark => {
                 const commit = benchmark.commit;
                 if (!processedCommits.has(commit)) {
                     processedCommits.add(commit);
-                    
+
                     // Get all benchmarks for this commit
                     const commitBenchmarks = data.filter(item => item.commit === commit);
                     const commitBuildTimes = commitBenchmarks.map(item => item.build_time).filter(time => time > 0);
-                    
+
                     if (commitBuildTimes.length > 0) {
                         const avgTime = commitBuildTimes.reduce((sum, time) => sum + time, 0) / commitBuildTimes.length;
                         commitData[commit] = {
@@ -956,8 +956,8 @@
                     }
                 }
             });
-            
-            
+
+
             // Get the two most recent commits
             const uniqueCommits = Object.values(commitData);
 
@@ -968,10 +968,10 @@
             if (sortedCommits.length >= 2) {
                 const latest = sortedCommits[0];
                 const previous = sortedCommits[1];
-                
+
                 const change = ((latest.build_time - previous.build_time) / previous.build_time) * 100;
                 const changeElement = document.getElementById('buildTimeChange');
-                
+
                 if (change < 0) {
                     // Improvement (negative change)
                     changeElement.textContent = `${Math.abs(change).toFixed(2)}% faster`;
@@ -990,10 +990,10 @@
             } else {
                 document.getElementById('buildTimeChange').textContent = 'Not enough data';
             }
-            
+
             // Set total benchmarks count (total number of test cases across all benchmarks)
             document.getElementById('totalBenchmarks').textContent = totalBenchmarks.toString();
-            
+
             // Set latest commit
             if (uniqueCommits.length > 0) {
                 const latestCommit = uniqueCommits[0].commit;
@@ -1009,13 +1009,13 @@
             const sortedData = [...data].sort((a, b) => {
                 return new Date(a.timestamp.replace(/_/g, ' ')) - new Date(b.timestamp.replace(/_/g, ' '));
             });
-            
+
             // Extract metric data from each benchmark
             const chartData = [];
-            
+
             sortedData.forEach(benchmark => {
                 const metrics = benchmark.metrics || {};
-                
+
                 // Calculate average for the specified metric across all tests
                 const metricValues = [];
                 Object.values(metrics).forEach(testMetrics => {
@@ -1023,7 +1023,7 @@
                         metricValues.push(testMetrics[metricType]);
                     }
                 });
-                
+
                 if (metricValues.length > 0) {
                     const avgValue = metricValues.reduce((sum, value) => sum + value, 0) / metricValues.length;
                     chartData.push({
@@ -1032,11 +1032,11 @@
                     });
                 }
             });
-            
+
             // Prepare data for chart
             const labels = chartData.map(item => new Date(item.timestamp.replace(/_/g, ' ')));
             let metricData = chartData.map(item => item.value);
-            
+
             // Apply normalization if needed
             if (normalizeData === 'percent' && metricData.length > 0) {
                 const baseline = metricData[0];
@@ -1045,11 +1045,11 @@
                 const baseline = metricData[0];
                 metricData = metricData.map(value => value / baseline);
             }
-            
+
             // Update chart data
             timeSeriesChart.data.labels = labels;
             timeSeriesChart.data.datasets[0].data = metricData;
-            
+
             // Update chart labels based on metric type
             let metricLabel = 'Value';
             switch(metricType) {
@@ -1066,11 +1066,11 @@
                     metricLabel = 'Cache Hits (%)';
                     break;
             }
-            
+
             // Update y-axis label
             timeSeriesChart.options.scales.y.title.text = metricLabel;
             timeSeriesChart.data.datasets[0].label = metricLabel;
-            
+
             // Update chart
             timeSeriesChart.update();
         }
@@ -1080,7 +1080,7 @@
             // Get selected commits for comparison
             const selectedCommits = Array.from(document.getElementById('compareCommits').selectedOptions)
                 .map(option => option.value);
-            
+
             // If no commits selected, use the latest 5
             let commitsToCompare = selectedCommits;
             if (commitsToCompare.length === 0) {
@@ -1089,22 +1089,22 @@
                 });
                 const latestCommits = [];
                 const seenCommits = new Set();
-                
+
                 for (const item of sortedData) {
                     if (!seenCommits.has(item.commit)) {
                         seenCommits.add(item.commit);
                         latestCommits.push(item);
-                        
+
                         if (latestCommits.length >= 5) break;
                     }
                 }
-                
+
                 commitsToCompare = latestCommits.map(item => item.commit);
             }
-            
+
             // Filter data for selected commits
             const filteredData = data.filter(item => commitsToCompare.includes(item.commit));
-            
+
             // Group by commit and calculate average for each metric
             const commitGroups = {};
             filteredData.forEach(benchmark => {
@@ -1112,7 +1112,7 @@
                 if (!commitGroups[commit]) {
                     commitGroups[commit] = [];
                 }
-                
+
                 // Extract metric values from each test in the benchmark
                 const metrics = benchmark.metrics || {};
                 Object.values(metrics).forEach(testMetrics => {
@@ -1121,14 +1121,14 @@
                     }
                 });
             });
-            
+
             // Calculate average for each commit
             const commits = Object.keys(commitGroups);
             const averages = commits.map(commit => {
                 const values = commitGroups[commit];
                 return values.reduce((sum, value) => sum + value, 0) / values.length;
             });
-            
+
             // Apply normalization if needed
             let normalizedAverages = [...averages];
             if (normalizeData === 'percent' && averages.length > 0) {
@@ -1138,11 +1138,11 @@
                 const baseline = averages[0];
                 normalizedAverages = averages.map(value => value / baseline);
             }
-            
+
             // Update chart data
             comparisonChart.data.labels = commits.map(commit => commit.substring(0, 7));
             comparisonChart.data.datasets[0].data = normalizedAverages;
-            
+
             // Update chart labels based on metric type
             let metricLabel = 'Value';
             switch(metricType) {
@@ -1159,11 +1159,11 @@
                     metricLabel = 'Cache Hits (%)';
                     break;
             }
-            
+
             // Update y-axis label
             comparisonChart.options.scales.y.title.text = metricLabel;
             comparisonChart.data.datasets[0].label = metricLabel;
-            
+
             // Update chart
             comparisonChart.update();
         }
@@ -1177,7 +1177,7 @@
                 if (!projectGroups[project]) {
                     projectGroups[project] = [];
                 }
-                
+
                 // Extract metric values from each test in the benchmark
                 const metrics = benchmark.metrics || {};
                 Object.values(metrics).forEach(testMetrics => {
@@ -1186,7 +1186,7 @@
                     }
                 });
             });
-            
+
             // Calculate statistics for each project
             const projects = Object.keys(projectGroups);
             const datasets = projects.map((project, index) => {
@@ -1194,7 +1194,7 @@
                 const min = Math.min(...metricValues);
                 const max = Math.max(...metricValues);
                 const avg = metricValues.reduce((sum, value) => sum + value, 0) / metricValues.length;
-                
+
                 return {
                     label: project,
                     data: [{
@@ -1206,10 +1206,10 @@
                     backgroundColor: `hsla(${210 + index * 40}, 70%, 60%, 0.7)`
                 };
             });
-            
+
             // Update chart data
             distributionChart.data.datasets = datasets;
-            
+
             // Update chart labels based on metric type
             let metricLabel = 'Value';
             switch(metricType) {
@@ -1226,10 +1226,10 @@
                     metricLabel = 'Cache Hits (%)';
                     break;
             }
-            
+
             // Update y-axis label
             distributionChart.options.scales.y.title.text = metricLabel;
-            
+
             // Update chart
             distributionChart.update();
         }
