@@ -87,16 +87,12 @@ class BenchmarkResult:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         # Save as JSON
-        json_path = os.path.join(
-            output_dir, f"{self.project}_{self.commit}_{self.timestamp}.json"
-        )
+        json_path = os.path.join(output_dir, f"{self.project}_{self.commit}_{self.timestamp}.json")
         with open(json_path, "w") as f:
             f.write(self.to_json())
 
         # Save as CSV
-        csv_path = os.path.join(
-            output_dir, f"{self.project}_{self.commit}_{self.timestamp}.csv"
-        )
+        csv_path = os.path.join(output_dir, f"{self.project}_{self.commit}_{self.timestamp}.csv")
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["Test", "Metric", "Value"])
@@ -132,39 +128,39 @@ def run_benchmark(
 ) -> Dict[str, float]:
     """Run a benchmark and return metrics."""
     print(f"Running benchmark: {test_name}")
-    
+
     build_times = []
     peak_memories = []
-    
+
     for i in range(runs):
         print(f"  Run {i+1}/{runs}")
         clean_bazel_workspace(project_dir)
-        
+
         # Measure time and memory usage
         start_time = time.time()
         cmd = ["bazel", "build", "//..."] + bazel_args
         stdout, stderr, return_code = run_command(cmd, cwd=project_dir)
         end_time = time.time()
-        
+
         if return_code != 0:
             print(f"Error running benchmark: {stderr}")
             continue
-        
+
         build_time = end_time - start_time
         build_times.append(build_time)
-        
+
         # Extract memory usage from Bazel output if available
         # This is a simplified approach - in practice, you might need to parse Bazel's output
         # or use a more sophisticated method to measure memory usage
         peak_memory = 0  # Placeholder
         peak_memories.append(peak_memory)
-        
+
         print(f"  Build time: {build_time:.2f}s")
-    
+
     # Calculate average metrics
     avg_build_time = sum(build_times) / len(build_times) if build_times else 0
     avg_peak_memory = sum(peak_memories) / len(peak_memories) if peak_memories else 0
-    
+
     return {
         "build_time": avg_build_time,
         "peak_memory": avg_peak_memory,
@@ -174,45 +170,45 @@ def run_benchmark(
 def compare_results(current: BenchmarkResult, previous: BenchmarkResult) -> Dict:
     """Compare current benchmark results with previous results."""
     comparison = {}
-    
+
     for test_name, current_metrics in current.metrics.items():
         comparison[test_name] = {}
-        
+
         if test_name in previous.metrics:
             prev_metrics = previous.metrics[test_name]
-            
+
             for metric_name, current_value in current_metrics.items():
                 if metric_name in prev_metrics:
                     prev_value = prev_metrics[metric_name]
                     diff = current_value - prev_value
                     percent_change = (diff / prev_value) * 100 if prev_value != 0 else 0
-                    
+
                     comparison[test_name][metric_name] = {
                         "current": current_value,
                         "previous": prev_value,
                         "diff": diff,
                         "percent_change": percent_change,
                     }
-    
+
     return comparison
 
 
 def load_previous_result(output_dir: str, project: str, commit: str) -> Optional[BenchmarkResult]:
     """Load previous benchmark results for comparison."""
     result_files = list(Path(output_dir).glob(f"{project}_{commit}_*.json"))
-    
+
     if not result_files:
         return None
-    
+
     # Use the most recent result if multiple exist
     latest_file = sorted(result_files)[-1]
-    
+
     with open(latest_file, "r") as f:
         data = json.load(f)
-        
+
     result = BenchmarkResult(data["commit"], data["timestamp"], data["project"])
     result.metrics = data["metrics"]
-    
+
     return result
 
 
@@ -220,34 +216,41 @@ def main():
     parser = argparse.ArgumentParser(description="NativeLink Benchmarking Tool")
     parser.add_argument("--project", required=True, help="Path to the test project")
     parser.add_argument("--commit", required=True, help="NativeLink commit hash being benchmarked")
-    parser.add_argument("--output-dir", default="./benchmark_results", help="Directory to store benchmark results")
-    parser.add_argument("--nativelink-url", default="https://app.nativelink.com", help="URL for NativeLink service")
+    parser.add_argument(
+        "--output-dir", default="./benchmark_results", help="Directory to store benchmark results"
+    )
+    parser.add_argument(
+        "--nativelink-url", default="https://app.nativelink.com", help="URL for NativeLink service"
+    )
     parser.add_argument("--api-key", help="API key for NativeLink service")
     parser.add_argument("--compare-to", help="Previous commit hash to compare against")
     parser.add_argument("--runs", type=int, default=3, help="Number of benchmark runs to average")
-    
+
     args = parser.parse_args()
-    
+
     # Validate project directory
     project_dir = os.path.abspath(args.project)
     if not os.path.isdir(project_dir):
         print(f"Error: Project directory '{project_dir}' does not exist")
         sys.exit(1)
-    
+
     # Check for Bazel workspace
-    if not any(os.path.exists(os.path.join(project_dir, f)) for f in ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"]):
+    if not any(
+        os.path.exists(os.path.join(project_dir, f))
+        for f in ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"]
+    ):
         print(f"Error: Project directory '{project_dir}' does not appear to be a Bazel workspace")
         sys.exit(1)
-    
+
     # Create timestamp for this benchmark run
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    
+
     # Extract project name from directory
     project_name = os.path.basename(project_dir)
-    
+
     # Initialize results
     results = BenchmarkResult(args.commit, timestamp, project_name)
-    
+
     # Define benchmark configurations
     benchmarks = [
         {
@@ -267,7 +270,7 @@ def main():
             ],
         },
     ]
-    
+
     # Run benchmarks
     for benchmark in benchmarks:
         # Filter out empty args
@@ -278,21 +281,21 @@ def main():
             args_list,
             runs=args.runs,
         )
-        
+
         for metric_name, value in metrics.items():
             results.add_metric(benchmark["name"], metric_name, value)
-    
+
     # Save results
     results.save_to_file(args.output_dir)
     print(f"Benchmark results saved to {args.output_dir}")
-    
+
     # Compare with previous results if requested
     if args.compare_to:
         previous_results = load_previous_result(args.output_dir, project_name, args.compare_to)
-        
+
         if previous_results:
             comparison = compare_results(results, previous_results)
-            
+
             print("\nComparison with previous results:")
             for test_name, metrics in comparison.items():
                 print(f"\n{test_name}:")
@@ -301,7 +304,7 @@ def main():
                     print(f"    Current: {values['current']:.2f}")
                     print(f"    Previous: {values['previous']:.2f}")
                     print(f"    Difference: {values['diff']:.2f} ({values['percent_change']:.2f}%)")
-                    
+
                     # Alert on significant regressions (e.g., >5% slowdown)
                     if metric_name == "build_time" and values["percent_change"] > 5:
                         print(f"    WARNING: Performance regression detected!")

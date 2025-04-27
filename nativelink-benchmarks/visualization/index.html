@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NativeLink Performance Benchmarks</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .chart-container {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        .header {
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            font-weight: 600;
+        }
+        .header p {
+            color: #6c757d;
+            font-size: 1.1rem;
+        }
+        .commit-info {
+            margin-top: 10px;
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+        .metric-card {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 600;
+            margin: 10px 0;
+        }
+        .metric-label {
+            color: #6c757d;
+            font-size: 1rem;
+        }
+        .regression {
+            color: #dc3545;
+        }
+        .improvement {
+            color: #28a745;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>NativeLink Performance Benchmarks</h1>
+            <p>Tracking build performance across commits</p>
+        </div>
+
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="metric-card">
+                    <div class="metric-label">Remote Cache Only</div>
+                    <div class="metric-value" id="cache-only-time">--</div>
+                    <div class="commit-info" id="cache-only-change"></div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="metric-card">
+                    <div class="metric-label">Remote Cache + Execution</div>
+                    <div class="metric-value" id="cache-exec-time">--</div>
+                    <div class="commit-info" id="cache-exec-change"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <h3>Build Time Trends</h3>
+            <canvas id="buildTimeChart"></canvas>
+        </div>
+
+        <div class="chart-container">
+            <h3>System Resource Usage</h3>
+            <canvas id="resourceChart"></canvas>
+        </div>
+
+        <div class="row">
+            <div class="col-md-12">
+                <div class="chart-container">
+                    <h3>Commit Performance Comparison</h3>
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Commit</th>
+                                    <th>Date</th>
+                                    <th>Remote Cache Only</th>
+                                    <th>Remote Cache + Execution</th>
+                                    <th>Change</th>
+                                </tr>
+                            </thead>
+                            <tbody id="commit-table-body">
+                                <!-- Data will be populated by JavaScript -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Sample data - in production, this would be loaded from benchmark results
+        const benchmarkData = {
+            commits: [
+                { hash: "abc1234", date: "2023-10-01", cacheOnly: 45.2, cacheExec: 22.8 },
+                { hash: "def5678", date: "2023-10-02", cacheOnly: 46.1, cacheExec: 23.5 },
+                { hash: "ghi9012", date: "2023-10-03", cacheOnly: 44.8, cacheExec: 21.9 },
+                { hash: "jkl3456", date: "2023-10-04", cacheOnly: 43.5, cacheExec: 20.7 },
+                { hash: "mno7890", date: "2023-10-05", cacheOnly: 42.9, cacheExec: 20.2 },
+            ]
+        };
+
+        // Update the latest metrics
+        const latestCommit = benchmarkData.commits[benchmarkData.commits.length - 1];
+        document.getElementById('cache-only-time').textContent = latestCommit.cacheOnly.toFixed(2) + 's';
+        document.getElementById('cache-exec-time').textContent = latestCommit.cacheExec.toFixed(2) + 's';
+
+        // Calculate changes from previous commit
+        if (benchmarkData.commits.length > 1) {
+            const previousCommit = benchmarkData.commits[benchmarkData.commits.length - 2];
+            
+            const cacheOnlyChange = ((latestCommit.cacheOnly - previousCommit.cacheOnly) / previousCommit.cacheOnly * 100).toFixed(1);
+            const cacheExecChange = ((latestCommit.cacheExec - previousCommit.cacheExec) / previousCommit.cacheExec * 100).toFixed(1);
+            
+            const cacheOnlyElement = document.getElementById('cache-only-change');
+            const cacheExecElement = document.getElementById('cache-exec-change');
+            
+            if (cacheOnlyChange > 0) {
+                cacheOnlyElement.textContent = `+${cacheOnlyChange}% from previous commit`;
+                cacheOnlyElement.classList.add('regression');
+            } else {
+                cacheOnlyElement.textContent = `${cacheOnlyChange}% from previous commit`;
+                cacheOnlyElement.classList.add('improvement');
+            }
+            
+            if (cacheExecChange > 0) {
+                cacheExecElement.textContent = `+${cacheExecChange}% from previous commit`;
+                cacheExecElement.classList.add('regression');
+            } else {
+                cacheExecElement.textContent = `${cacheExecChange}% from previous commit`;
+                cacheExecElement.classList.add('improvement');
+            }
+        }
+
+        // Build time trends chart
+        const buildTimeCtx = document.getElementById('buildTimeChart').getContext('2d');
+        const buildTimeChart = new Chart(buildTimeCtx, {
+            type: 'line',
+            data: {
+                labels: benchmarkData.commits.map(commit => commit.date),
+                datasets: [
+                    {
+                        label: 'Remote Cache Only',
+                        data: benchmarkData.commits.map(commit => commit.cacheOnly),
+                        borderColor: 'rgb(54, 162, 235)',
+                        backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                        tension: 0.1,
+                        fill: true
+                    },
+                    {
+                        label: 'Remote Cache + Execution',
+                        data: benchmarkData.commits.map(commit => commit.cacheExec),
+                        borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                        tension: 0.1,
+                        fill: true
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Build Time (seconds)'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return `${context.dataset.label}: ${context.raw.toFixed(2)}s`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Time (seconds)'
+                        }
+                    }
+                }
+            }
+        });
+
+        // Resource usage chart (sample data)
+        const resourceData = {
+            commits: benchmarkData.commits.map(commit => commit.hash),
+            cpu: [25, 28, 24, 22, 23],
+            memory: [45, 48, 46, 44, 45]
+        };
+
+        const resourceCtx = document.getElementById('resourceChart').getContext('2d');
+        const resourceChart = new Chart(resourceCtx, {
+            type: 'bar',
+            data: {
+                labels: resourceData.commits,
+                datasets: [
+                    {
+                        label: 'CPU Usage (%)',
+                        data: resourceData.cpu,
+                        backgroundColor: 'rgba(255, 99, 132, 0.5)',
+                        borderColor: 'rgb(255, 99, 132)',
+                        borderWidth: 1
+                    },
+                    {
+                        label: 'Memory Usage (%)',
+                        data: resourceData.memory,
+                        backgroundColor: 'rgba(153, 102, 255, 0.5)',
+                        borderColor: 'rgb(153, 102, 255)',
+                        borderWidth: 1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Usage (%)'
+                        }
+                    }
+                }
+            }
+        });
+
+        // Populate commit table
+        const tableBody = document.getElementById('commit-table-body');
+        benchmarkData.commits.reverse().forEach((commit, index) => {
+            const row = document.createElement('tr');
+            
+            // Calculate change if not the first commit
+            let changeHtml = '';
+            if (index < benchmarkData.commits.length - 1) {
+                const nextCommit = benchmarkData.commits[index + 1];
+                const cacheChange = ((commit.cacheOnly - nextCommit.cacheOnly) / nextCommit.cacheOnly * 100).toFixed(1);
+                const execChange = ((commit.cacheExec - nextCommit.cacheExec) / nextCommit.cacheExec * 100).toFixed(1);
+                
+                const changeClass = cacheChange > 0 || execChange > 0 ? 'regression' : 'improvement';
+                changeHtml = `<span class="${changeClass}">${cacheChange > 0 ? '+' : ''}${cacheChange}% / ${execChange > 0 ? '+' : ''}${execChange}%</span>`;
+            } else {
+                changeHtml = 'Baseline';
+            }
+            
+            row.innerHTML = `
+                <td>${commit.hash}</td>
+                <td>${commit.date}</td>
+                <td>${commit.cacheOnly.toFixed(2)}s</td>
+                <td>${commit.cacheExec.toFixed(2)}s</td>
+                <td>${changeHtml}</td>
+            `;
+            
+            tableBody.appendChild(row);
+        });
+    </script>
+</body>
+</html>

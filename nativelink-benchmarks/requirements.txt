@@ -1,0 +1,5 @@
+# Dependencies for NativeLink Benchmarking System
+psutil>=5.9.0
+requests>=2.28.0
+matplotlib>=3.5.0
+pandas>=1.4.0
