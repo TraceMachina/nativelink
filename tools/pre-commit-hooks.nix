@@ -132,6 +132,11 @@ in {
     packageOverrides.cargo = nightly-rust.cargo;
     packageOverrides.rustfmt = nightly-rust.rustfmt;
   };
+  taplo = {
+    enable = true;
+    excludes = ["nativelink-proto"];
+    types = ["toml"];
+  };
 
   # Starlark
   bazel-buildifier-format = {
