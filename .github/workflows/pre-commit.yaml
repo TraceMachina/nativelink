@@ -23,8 +23,18 @@ jobs:
         uses: >- # v4.2.2
           actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
+      - name: Cache Nix dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            /nix/store
+            ~/.cache/nix
+          key: ${{ runner.os }}-nix-${{ hashFiles('flake.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-nix-
+
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
 
       - name: Run pre-commit hooks
-        run: nix flake check
+        run: nix flake check --verbose
