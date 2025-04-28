@@ -24,3 +24,33 @@ rust-project.json
 darwin.bazelrc
 nativelink.bazelrc
 integration_tests/buildstream/buildstream.log
+
+# Python cache and build artifacts
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Node.js and npm
+node_modules/
+npm-debug.log*
+
+# Benchmark results
+benchmark_results/
+benchmark_viz/
+
+# Logs and databases
+*.log
+*.sqlite
+
+# OS generated files
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Editor directories and files
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

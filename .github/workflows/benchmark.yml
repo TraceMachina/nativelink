@@ -80,7 +80,7 @@ jobs:
             echo "prev_commit=$(git rev-parse HEAD~1)" >> $GITHUB_OUTPUT
           fi
 
-      - name: Run Benchmarks (Rust Project)
+      - name: Run Benchmarks - Remote Cache (Rust Project)
         run: |
           python3 tools/benchmark/benchmark.py \
             --project=benchmark-projects/rustlings \
@@ -89,9 +89,22 @@ jobs:
             --nativelink-url=https://app.nativelink.com \
             --api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
             --output-dir=./benchmark_results \
-            --runs=3
+            --runs=3 \
+            --bazel-args="--remote_cache=http://localhost:50051"
+            
+      - name: Run Benchmarks - Remote Execution (Rust Project)
+        run: |
+          python3 tools/benchmark/benchmark.py \
+            --project=benchmark-projects/rustlings \
+            --commit=${{ github.sha }} \
+            --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
+            --nativelink-url=https://app.nativelink.com \
+            --api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+            --output-dir=./benchmark_results \
+            --runs=3 \
+            --bazel-args="--remote_executor=http://localhost:50051 --remote_cache=http://localhost:50051"
 
-      - name: Run Benchmarks (C++ Project)
+      - name: Run Benchmarks - Remote Cache (C++ Project)
         run: |
           python3 tools/benchmark/benchmark.py \
             --project=benchmark-projects/googletest \
@@ -99,7 +112,19 @@ jobs:
             --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
             --nativelink-url=https://app.nativelink.com \
             --output-dir=./benchmark_results \
-            --runs=3
+            --runs=3 \
+            --bazel-args="--remote_cache=http://localhost:50051"
+            
+      - name: Run Benchmarks - Remote Execution (C++ Project)
+        run: |
+          python3 tools/benchmark/benchmark.py \
+            --project=benchmark-projects/googletest \
+            --commit=${{ github.sha }} \
+            --compare-to=${{ steps.get-prev-commit.outputs.prev_commit }} \
+            --nativelink-url=https://app.nativelink.com \
+            --output-dir=./benchmark_results \
+            --runs=3 \
+            --bazel-args="--remote_executor=http://localhost:50051 --remote_cache=http://localhost:50051"
 
       - name: Deploy Benchmark Results
         if: github.ref == 'refs/heads/main'

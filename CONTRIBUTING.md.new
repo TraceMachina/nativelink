@@ -23,6 +23,15 @@ NativeLink maintains an independent web application for tracking and visualizing
 
 You can access the benchmark web application at [https://github.com/TraceMachina/nativelink-benchmark-webapp](https://github.com/TraceMachina/nativelink-benchmark-webapp).
 
+## Benchmarks
+NativeLink maintains an independent web application for tracking and visualizing performance benchmarks across commits. The benchmarking system focuses on two key scenarios:
+1. Build performance with remote cache only
+2. Build performance with remote cache and execution
+
+You can access the benchmark web application at [https://github.com/TraceMachina/nativelink-benchmark-webapp](https://github.com/TraceMachina/nativelink-benchmark-webapp).
+
+You can find per-commit benchmark results here: [Nativelink Benchmarks](https://app.nativelink.com)
+
 ## Git setup
 
 NativeLink has a somewhat specific contribution process to ensure consistent

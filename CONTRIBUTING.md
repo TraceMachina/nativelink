@@ -362,7 +362,9 @@ And to configure rust-analyzer to use that project, set this in your `.vscode/se
 
 ## Performance Benchmarks
 
-NativeLink maintains independent benchmarks to track performance across commits. These benchmarks measure build performance with remote cache only and with remote cache and execution. You can access the benchmarks at [https://github.com/TraceMachina/nativelink-benchmarks](https://github.com/TraceMachina/nativelink-benchmarks).
+NativeLink maintient des benchmarks indépendants pour suivre les performances à travers les différents commits. Ces benchmarks mesurent les performances de build avec cache distant uniquement et avec cache distant + exécution distante. Vous pouvez accéder aux benchmarks à [https://github.com/TraceMachina/nativelink-benchmarks](https://github.com/TraceMachina/nativelink-benchmarks).
+
+Pour visualiser les résultats des benchmarks de manière interactive, vous pouvez utiliser notre application de visualisation dédiée disponible à l'adresse [http://localhost:3000](http://localhost:3000) lorsque vous exécutez le serveur de développement avec `yarn dev` dans le répertoire `benchmark-visualizer`.
 
 ## Generating documentation
 
