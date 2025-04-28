@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::cmp;
+use core::convert::TryInto;
 use core::pin::Pin;
 use core::time::Duration;
 use std::borrow::Cow;
@@ -51,7 +52,7 @@ use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use tokio::select;
 use tokio::time::sleep;
-use tracing::{Level, event};
+use tracing::{Level, event, info};
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
@@ -161,7 +162,7 @@ impl RedisStore {
                 "Connecting directly to multiple redis nodes in a cluster is currently unsupported. Please specify a single URL to a single node, and nativelink will use cluster discover to find the other nodes."
             ));
         };
-        let redis_config = match spec.mode {
+        let mut redis_config = match spec.mode {
             RedisMode::Cluster => RedisConfig::from_url_clustered(addr),
             RedisMode::Sentinel => RedisConfig::from_url_sentinel(addr),
             RedisMode::Standard => RedisConfig::from_url_centralized(addr),
@@ -172,7 +173,25 @@ impl RedisStore {
                 format!("while parsing redis node address: {e}"),
             )
         })?;
-
+        if spec.db != 0 {
+            match spec.db.try_into() {
+                Ok(db_u16) => {
+                    redis_config.database = Some(db_u16);
+                    info!(
+                        db = spec.db,
+                        "Configuring Redis client to use database {}", spec.db,
+                    );
+                }
+                Err(_) => {
+                    return Err(make_err!(
+                        Code::InvalidArgument,
+                        "Invalid Redis database number '{}'. Redis databases range from 0 to 15, and the value must fit within a u16 (0-{}).",
+                        spec.db,
+                        u16::MAX
+                    ));
+                }
+            }
+        }
         let reconnect_policy = {
             if spec.retry.delay == 0.0 {
                 spec.retry.delay = DEFAULT_RETRY_DELAY;
