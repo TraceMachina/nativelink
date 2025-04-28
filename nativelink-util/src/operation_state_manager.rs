@@ -20,7 +20,6 @@ use async_trait::async_trait;
 use bitflags::bitflags;
 use futures::Stream;
 use nativelink_error::Error;
-use nativelink_metric::MetricsComponent;
 
 use crate::action_messages::{
     ActionInfo, ActionStage, ActionState, ActionUniqueKey, OperationId, WorkerId,
@@ -99,7 +98,7 @@ pub type ActionStateResultStream<'a> =
     Pin<Box<dyn Stream<Item = Box<dyn ActionStateResult>> + Send + 'a>>;
 
 #[async_trait]
-pub trait ClientStateManager: Sync + Send + Unpin + MetricsComponent + 'static {
+pub trait ClientStateManager: Sync + Send + Unpin + 'static {
     /// Add a new action to the queue or joins an existing action.
     async fn add_action(
         &self,
@@ -140,7 +139,7 @@ pub enum UpdateOperationType {
 }
 
 #[async_trait]
-pub trait WorkerStateManager: Sync + Send + MetricsComponent {
+pub trait WorkerStateManager: Sync + Send {
     /// Update that state of an operation.
     /// The worker must also send periodic updates even if the state
     /// did not change with a modified timestamp in order to prevent
@@ -154,7 +153,7 @@ pub trait WorkerStateManager: Sync + Send + MetricsComponent {
 }
 
 #[async_trait]
-pub trait MatchingEngineStateManager: Sync + Send + MetricsComponent {
+pub trait MatchingEngineStateManager: Sync + Send {
     /// Returns a stream of operations that match the filter.
     async fn filter_operations<'a>(
         &'a self,

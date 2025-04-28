@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::{Code, Error, ResultExt, make_err};
-use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, GetActionResultRequest,
 };
@@ -33,14 +32,17 @@ use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProv
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
-use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::origin_event::{ORIGIN_EVENT_COLLECTOR, OriginMetadata};
+use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::store_trait::Store;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::Context;
+use opentelemetry::{InstrumentationScope, KeyValue, global, metrics};
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
 use tokio::sync::oneshot;
 use tonic::{Request, Response};
-use tracing::{Level, event};
+use tracing::{error, instrument};
 
 /// Actions that are having their cache checked or failed cache lookup and are
 /// being forwarded upstream.  Missing the `skip_cache_check` actions which are
@@ -53,18 +55,60 @@ type CheckActions = HashMap<
     )>,
 >;
 
-#[derive(MetricsComponent)]
+fn init_metrics() -> CacheLookupMetrics {
+    let meter =
+        global::meter_with_scope(InstrumentationScope::builder("cache_lookup_scheduler").build());
+
+    CacheLookupMetrics {
+        cache_lookups: meter
+            .u64_counter("cache_lookup_total")
+            .with_description("Total number of cache lookups performed")
+            .build(),
+        cache_hits: meter
+            .u64_counter("cache_hit_total")
+            .with_description("Number of successful cache hits")
+            .build(),
+        cache_misses: meter
+            .u64_counter("cache_miss_total")
+            .with_description("Number of cache misses resulting in upstream execution")
+            .build(),
+        cache_errors: meter
+            .u64_counter("cache_error_total")
+            .with_description("Number of errors encountered during cache lookups")
+            .build(),
+        operation_duration: meter
+            .f64_histogram("cache_lookup_duration")
+            .with_description("Duration of cache lookup operations")
+            .with_unit("ms")
+            .build(),
+        inflight_lookups: meter
+            .i64_up_down_counter("inflight_cache_lookups")
+            .with_description("Number of cache lookups currently in progress")
+            .build(),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CacheLookupMetrics {
+    cache_lookups: metrics::Counter<u64>,
+    cache_hits: metrics::Counter<u64>,
+    cache_misses: metrics::Counter<u64>,
+    cache_errors: metrics::Counter<u64>,
+    operation_duration: metrics::Histogram<f64>,
+    inflight_lookups: metrics::UpDownCounter<i64>,
+}
+
 pub struct CacheLookupScheduler {
     /// A reference to the AC to find existing actions in.
     /// To prevent unintended issues, this store should probably be a `CompletenessCheckingStore`.
-    #[metric(group = "ac_store")]
     ac_store: Store,
     /// The "real" scheduler to use to perform actions if they were not found
     /// in the action cache.
-    #[metric(group = "action_scheduler")]
     action_scheduler: Arc<dyn ClientStateManager>,
     /// Actions that are currently performing a `CacheCheck`.
     inflight_cache_checks: Arc<Mutex<CheckActions>>,
+
+    metrics: CacheLookupMetrics,
 }
 
 impl core::fmt::Debug for CacheLookupScheduler {
@@ -75,6 +119,14 @@ impl core::fmt::Debug for CacheLookupScheduler {
     }
 }
 
+#[instrument(
+    skip(ac_store, action_digest, instance_name, digest_function),
+    fields(
+        action_digest = ?action_digest,
+        instance_name = %instance_name
+    ),
+    level = "debug"
+)]
 async fn get_action_from_store(
     ac_store: &Store,
     action_digest: DigestInfo,
@@ -157,6 +209,7 @@ impl ActionStateResult for CacheLookupActionStateResult {
 }
 
 impl CacheLookupScheduler {
+    #[instrument(skip(ac_store, action_scheduler), fields(), level = "info")]
     pub fn new(
         ac_store: Store,
         action_scheduler: Arc<dyn ClientStateManager>,
@@ -165,18 +218,38 @@ impl CacheLookupScheduler {
             ac_store,
             action_scheduler,
             inflight_cache_checks: Arc::default(),
+            metrics: init_metrics(),
         })
     }
 
+    #[instrument(
+        skip(self, action_info),
+        fields(
+            client_op_id = ?client_operation_id,
+            action_digest = ?action_info.unique_qualifier.digest(),
+            instance_name = %action_info.unique_qualifier.instance_name(),
+        ),
+        level = "debug"
+    )]
     async fn inner_add_action(
         &self,
         client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
+        let start_time = std::time::Instant::now();
+
         let unique_key = match &action_info.unique_qualifier {
-            ActionUniqueQualifier::Cachable(unique_key) => unique_key.clone(),
+            ActionUniqueQualifier::Cachable(unique_key) => {
+                self.metrics.cache_lookups.add(1, &[]);
+                self.metrics.inflight_lookups.add(1, &[]);
+                unique_key.clone()
+            }
             ActionUniqueQualifier::Uncachable(_) => {
                 // Cache lookup skipped, forward to the upstream.
+                self.metrics.operation_duration.record(
+                    start_time.elapsed().as_millis() as f64,
+                    &[KeyValue::new("operation", "uncacheable_action_forward")],
+                );
                 return self
                     .action_scheduler
                     .add_action(client_operation_id, action_info)
@@ -225,6 +298,8 @@ impl CacheLookupScheduler {
         let ac_store = self.ac_store.clone();
         let action_scheduler = self.action_scheduler.clone();
         let inflight_cache_checks = self.inflight_cache_checks.clone();
+        let metrics = self.metrics.clone();
+
         // We need this spawn because we are returning a stream and this spawn will populate the stream's data.
         background_spawn!("cache_lookup_scheduler_add_action", async move {
             // If our spawn ever dies, we will remove the action from the inflight_cache_checks map.
@@ -233,8 +308,7 @@ impl CacheLookupScheduler {
             let unique_key = match &action_info.unique_qualifier {
                 ActionUniqueQualifier::Cachable(unique_key) => unique_key,
                 ActionUniqueQualifier::Uncachable(unique_key) => {
-                    event!(
-                        Level::ERROR,
+                    error!(
                         ?action_info,
                         "ActionInfo::unique_qualifier should be ActionUniqueQualifier::Cachable()"
                     );
@@ -253,6 +327,13 @@ impl CacheLookupScheduler {
             .await;
             match maybe_action_result {
                 Ok(action_result) => {
+                    metrics.cache_hits.add(1, &[]);
+                    metrics.inflight_lookups.add(-1, &[]);
+                    metrics.operation_duration.record(
+                        start_time.elapsed().as_millis() as f64,
+                        &[KeyValue::new("operation", "cache_hit")],
+                    );
+
                     let maybe_pending_txs = {
                         let mut inflight_cache_checks = inflight_cache_checks.lock();
                         // We are ready to resolve the in-flight actions. We remove the
@@ -268,11 +349,21 @@ impl CacheLookupScheduler {
                         action_digest: action_info.unique_qualifier.digest(),
                     };
 
-                    let maybe_origin_metadata =
-                        ActiveOriginContext::get_value(&ORIGIN_EVENT_COLLECTOR)
-                            .ok()
-                            .flatten()
-                            .map(|v| v.metadata.clone());
+                    let ctx = Context::current();
+                    let baggage = ctx.baggage();
+
+                    let maybe_origin_metadata = if baggage.is_empty() {
+                        None
+                    } else {
+                        Some(OriginMetadata {
+                            identity: baggage
+                                .get(ENDUSER_ID)
+                                .map(|v| v.as_str().to_string())
+                                .unwrap_or_default(),
+                            bazel_metadata: None, // TODO(aaronmondal): Implement conversion.
+                        })
+                    };
+
                     for (client_operation_id, pending_tx) in pending_txs {
                         action_state.client_operation_id = client_operation_id;
                         // Ignore errors here, as the other end may have hung up.
@@ -287,6 +378,13 @@ impl CacheLookupScheduler {
                 Err(err) => {
                     // NotFound errors just mean we need to execute our action.
                     if err.code != Code::NotFound {
+                        metrics.cache_errors.add(1, &[]);
+                        metrics.inflight_lookups.add(-1, &[]);
+                        metrics.operation_duration.record(
+                            start_time.elapsed().as_millis() as f64,
+                            &[KeyValue::new("operation", "cache_error")],
+                        );
+
                         let err = err.append("In CacheLookupScheduler::add_action");
                         let maybe_pending_txs = {
                             let mut inflight_cache_checks = inflight_cache_checks.lock();
@@ -303,6 +401,12 @@ impl CacheLookupScheduler {
                         }
                         return;
                     }
+                    metrics.cache_misses.add(1, &[]);
+                    metrics.inflight_lookups.add(-1, &[]);
+                    metrics.operation_duration.record(
+                        start_time.elapsed().as_millis() as f64,
+                        &[KeyValue::new("operation", "cache_miss")],
+                    );
                 }
             }
 
@@ -336,6 +440,11 @@ impl CacheLookupScheduler {
             .err_tip(|| "In CacheLookupScheduler::add_action")
     }
 
+    #[instrument(
+        skip(self),
+        fields(?filter),
+        level = "debug"
+    )]
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
@@ -349,6 +458,14 @@ impl CacheLookupScheduler {
 
 #[async_trait]
 impl ClientStateManager for CacheLookupScheduler {
+    #[instrument(
+        skip(self, action_info),
+        fields(
+            client_op_id = ?client_operation_id,
+            action_digest = ?action_info.unique_qualifier.digest()
+        ),
+        level = "debug"
+    )]
     async fn add_action(
         &self,
         client_operation_id: OperationId,
@@ -358,6 +475,11 @@ impl ClientStateManager for CacheLookupScheduler {
             .await
     }
 
+    #[instrument(
+        skip(self),
+        fields(?filter),
+        level = "debug"
+    )]
     async fn filter_operations(
         &self,
         filter: OperationFilter,
@@ -369,5 +491,3 @@ impl ClientStateManager for CacheLookupScheduler {
         self.action_scheduler.as_known_platform_property_provider()
     }
 }
-
-impl RootMetricsComponent for CacheLookupScheduler {}

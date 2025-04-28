@@ -14,7 +14,6 @@
 
 use async_trait::async_trait;
 use nativelink_error::Error;
-use nativelink_metric::RootMetricsComponent;
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::UpdateOperationType;
 
@@ -24,7 +23,7 @@ use crate::worker::{Worker, WorkerTimestamp};
 /// WorkerScheduler interface is responsible for interactions between the scheduler
 /// and worker related operations.
 #[async_trait]
-pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static {
+pub trait WorkerScheduler: Sync + Send + Unpin + 'static {
     /// Returns the platform property manager.
     fn get_platform_property_manager(&self) -> &PlatformPropertyManager;
 

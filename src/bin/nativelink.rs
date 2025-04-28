@@ -16,12 +16,10 @@ use core::net::SocketAddr;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_lock::Mutex as AsyncMutex;
+use async_lock::{Mutex as AsyncMutex, MutexGuard};
 use axum::Router;
 use clap::Parser;
-use futures::FutureExt;
 use futures::future::{BoxFuture, Either, OptionFuture, TryFutureExt, try_join_all};
 use hyper::StatusCode;
 use hyper_util::rt::tokio::TokioIo;
@@ -32,12 +30,11 @@ use nativelink_config::cas_server::{
     CasConfig, GlobalConfig, HttpCompressionAlgorithm, ListenerConfig, SchedulerConfig,
     ServerConfig, StoreConfig, WorkerConfig,
 };
-use nativelink_config::stores::ConfigDigestHashFunction;
+use nativelink_config::schedulers::SchedulerSpec;
+use nativelink_config::stores::{ConfigDigestHashFunction, StoreSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
-use nativelink_metric::{
-    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, RootMetricsComponent,
-};
 use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
+use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_service::ac_server::AcServer;
 use nativelink_service::bep_server::BepServer;
 use nativelink_service::bytestream_server::ByteStreamServer;
@@ -53,33 +50,28 @@ use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::fs::set_open_file_limit;
 use nativelink_util::digest_hasher::{DigestHasherFunc, set_default_digest_hasher_func};
 use nativelink_util::health_utils::HealthRegistryBuilder;
-use nativelink_util::metrics_utils::Counter;
 use nativelink_util::operation_state_manager::ClientStateManager;
-use nativelink_util::origin_context::OriginContext;
-use nativelink_util::origin_event_middleware::OriginEventMiddlewareLayer;
-use nativelink_util::origin_event_publisher::OriginEventPublisher;
 use nativelink_util::shutdown_guard::{Priority, ShutdownGuard};
 use nativelink_util::store_trait::{
     DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG, set_default_digest_size_health_check,
 };
 use nativelink_util::task::TaskExecutor;
-use nativelink_util::{background_spawn, fs, init_tracing, spawn};
+use nativelink_util::telemetry::init_tracing;
+use nativelink_util::{background_spawn, fs, spawn};
 use nativelink_worker::local_worker::new_local_worker;
-use parking_lot::{Mutex, RwLock};
 use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
-use scopeguard::guard;
 use tokio::net::TcpListener;
 use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
 use tonic::codec::CompressionEncoding;
 use tonic::service::Routes;
-use tracing::{Level, error_span, event, trace_span};
+use tracing::{Level, error, event, info, info_span, instrument};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -89,10 +81,6 @@ const DEFAULT_ADMIN_API_PATH: &str = "/admin";
 
 // Note: This must be kept in sync with the documentation in `HealthConfig::path`.
 const DEFAULT_HEALTH_STATUS_CHECK_PATH: &str = "/status";
-
-// Note: This must be kept in sync with the documentation in
-// `OriginEventsConfig::max_event_queue_size`.
-const DEFAULT_MAX_QUEUE_EVENTS: usize = 65536;
 
 /// Broadcast Channel Capacity
 /// Note: The actual capacity may be greater than the provided capacity.
@@ -111,57 +99,6 @@ struct Args {
     #[clap(value_parser)]
     config_file: String,
 }
-
-/// The root metrics collector struct. All metrics will be
-/// collected from this struct traversing down each child
-/// component.
-#[derive(MetricsComponent)]
-struct RootMetrics {
-    #[metric(group = "stores")]
-    stores: Arc<dyn RootMetricsComponent>,
-    #[metric(group = "servers")]
-    servers: HashMap<String, Arc<dyn RootMetricsComponent>>,
-    #[metric(group = "workers")]
-    workers: HashMap<String, Arc<dyn RootMetricsComponent>>,
-    // TODO(allada) We cannot upcast these to RootMetricsComponent because
-    // of https://github.com/rust-lang/rust/issues/65991.
-    // TODO(allada) To prevent output from being too verbose we only
-    // print the action_schedulers.
-    #[metric(group = "action_schedulers")]
-    schedulers: HashMap<String, Arc<dyn ClientStateManager>>,
-}
-
-impl RootMetricsComponent for RootMetrics {}
-
-/// Wrapper to allow us to hash `SocketAddr` for metrics.
-#[derive(Hash, PartialEq, Eq)]
-struct SocketAddrWrapper(SocketAddr);
-
-impl MetricsComponent for SocketAddrWrapper {
-    fn publish(
-        &self,
-        _kind: MetricKind,
-        _field_metadata: MetricFieldData,
-    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
-        Ok(MetricPublishKnownKindData::String(self.0.to_string()))
-    }
-}
-
-impl RootMetricsComponent for SocketAddrWrapper {}
-
-/// Simple wrapper to enable us to register the Hashmap so it can
-/// report metrics about what clients are connected.
-#[derive(MetricsComponent)]
-struct ConnectedClientsMetrics {
-    #[metric(group = "currently_connected_clients")]
-    inner: Mutex<HashSet<SocketAddrWrapper>>,
-    #[metric(help = "Total client connections since server started")]
-    counter: Counter,
-    #[metric(help = "Timestamp when the server started")]
-    server_start_ts: u64,
-}
-
-impl RootMetricsComponent for ConnectedClientsMetrics {}
 
 trait RoutesExt {
     fn add_optional_service<S>(self, svc: Option<S>) -> Self
@@ -199,9 +136,109 @@ impl RoutesExt for Routes {
     }
 }
 
+#[instrument(name = "create_health_registry")]
+async fn create_health_registry() -> Arc<AsyncMutex<HealthRegistryBuilder>> {
+    Arc::new(AsyncMutex::new(HealthRegistryBuilder::new("nativelink")))
+}
+
+#[instrument(
+    name = "initialize_stores",
+    skip(cfg, store_manager, health_registry_builder),
+    fields(stores_count = cfg.stores.len()),
+)]
+async fn initialize_stores(
+    cfg: &CasConfig,
+    store_manager: &Arc<StoreManager>,
+    health_registry_builder: &Arc<AsyncMutex<HealthRegistryBuilder>>,
+) -> Result<(), Error> {
+    let mut health_registry_lock = health_registry_builder.lock().await;
+
+    for StoreConfig { name, spec } in &cfg.stores {
+        create_store(name, spec, store_manager, &mut health_registry_lock).await?;
+    }
+    Ok(())
+}
+
+#[instrument(
+    name = "create_store",
+    skip(spec, store_manager, health_registry_lock),
+    fields(store_name = %name),
+)]
+async fn create_store(
+    name: &str,
+    spec: &StoreSpec,
+    store_manager: &Arc<StoreManager>,
+    health_registry_lock: &mut MutexGuard<'_, HealthRegistryBuilder>,
+) -> Result<(), Error> {
+    let health_component_name = format!("stores/{name}");
+    let mut health_register_store = health_registry_lock.sub_builder(&health_component_name);
+    let store = store_factory(spec, store_manager, Some(&mut health_register_store))
+        .await
+        .err_tip(|| format!("Failed to create store '{name}'"))?;
+    store_manager.add_store(name, store);
+    Ok(())
+}
+
+type InitializedSchedulers = (
+    HashMap<String, Arc<dyn ClientStateManager>>,
+    HashMap<String, Arc<dyn WorkerScheduler>>,
+);
+
+#[instrument(
+    name = "initialize_schedulers",
+    skip(cfg, store_manager),
+    fields(schedulers_count = cfg.schedulers.iter().flatten().count()),
+)]
+async fn initialize_schedulers(
+    cfg: &CasConfig,
+    store_manager: &Arc<StoreManager>,
+) -> Result<InitializedSchedulers, Error> {
+    let mut action_schedulers = HashMap::new();
+    let mut worker_schedulers = HashMap::new();
+
+    for SchedulerConfig { name, spec } in cfg.schedulers.iter().flatten() {
+        create_scheduler(
+            name,
+            spec,
+            store_manager,
+            &mut action_schedulers,
+            &mut worker_schedulers,
+        )
+        .await?;
+    }
+
+    Ok((action_schedulers, worker_schedulers))
+}
+
+#[instrument(
+    name = "create_scheduler",
+    skip(spec, store_manager, action_schedulers, worker_schedulers),
+    fields(scheduler_name = %name),
+)]
+async fn create_scheduler(
+    name: &str,
+    spec: &SchedulerSpec,
+    store_manager: &Arc<StoreManager>,
+    action_schedulers: &mut HashMap<String, Arc<dyn ClientStateManager>>,
+    worker_schedulers: &mut HashMap<String, Arc<dyn WorkerScheduler>>,
+) -> Result<(), Error> {
+    let (maybe_action_scheduler, maybe_worker_scheduler) =
+        scheduler_factory(spec, store_manager)
+            .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
+
+    if let Some(action_scheduler) = maybe_action_scheduler {
+        action_schedulers.insert(name.to_string(), action_scheduler.clone());
+    }
+
+    if let Some(worker_scheduler) = maybe_worker_scheduler {
+        worker_schedulers.insert(name.to_string(), worker_scheduler.clone());
+    }
+
+    Ok(())
+}
+
 async fn inner_main(
     cfg: CasConfig,
-    server_start_timestamp: u64,
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
 ) -> Result<(), Error> {
     const fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
@@ -211,97 +248,20 @@ async fn inner_main(
         }
     }
 
-    let health_registry_builder =
-        Arc::new(AsyncMutex::new(HealthRegistryBuilder::new("nativelink")));
+    let health_registry_builder = create_health_registry().await;
 
     let store_manager = Arc::new(StoreManager::new());
-    {
-        let mut health_registry_lock = health_registry_builder.lock().await;
 
-        for StoreConfig { name, spec } in cfg.stores {
-            let health_component_name = format!("stores/{name}");
-            let mut health_register_store =
-                health_registry_lock.sub_builder(&health_component_name);
-            let store = store_factory(&spec, &store_manager, Some(&mut health_register_store))
-                .await
-                .err_tip(|| format!("Failed to create store '{name}'"))?;
-            store_manager.add_store(&name, store);
-        }
-    }
+    initialize_stores(&cfg, &store_manager, &health_registry_builder).await?;
+
+    let (action_schedulers, worker_schedulers) =
+        initialize_schedulers(&cfg, &store_manager).await?;
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
 
-    let maybe_origin_event_tx = cfg
-        .experimental_origin_events
-        .as_ref()
-        .map(|origin_events_cfg| {
-            let mut max_queued_events = origin_events_cfg.max_event_queue_size;
-            if max_queued_events == 0 {
-                max_queued_events = DEFAULT_MAX_QUEUE_EVENTS;
-            }
-            let (tx, rx) = mpsc::channel(max_queued_events);
-            let store_name = origin_events_cfg.publisher.store.as_str();
-            let store = store_manager.get_store(store_name).err_tip(|| {
-                format!("Could not get store {store_name} for origin event publisher")
-            })?;
+    let server_configs: Vec<ServerConfig> = cfg.servers.into_iter().collect();
 
-            root_futures.push(Box::pin(
-                OriginEventPublisher::new(store, rx, shutdown_tx.clone())
-                    .run()
-                    .map(Ok),
-            ));
-
-            Ok::<_, Error>(tx)
-        })
-        .transpose()?;
-
-    let mut action_schedulers = HashMap::new();
-    let mut worker_schedulers = HashMap::new();
-    for SchedulerConfig { name, spec } in cfg.schedulers.iter().flatten() {
-        let (maybe_action_scheduler, maybe_worker_scheduler) =
-            scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref())
-                .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
-        if let Some(action_scheduler) = maybe_action_scheduler {
-            action_schedulers.insert(name.clone(), action_scheduler.clone());
-        }
-        if let Some(worker_scheduler) = maybe_worker_scheduler {
-            worker_schedulers.insert(name.clone(), worker_scheduler.clone());
-        }
-    }
-
-    let mut server_metrics: HashMap<String, Arc<dyn RootMetricsComponent>> = HashMap::new();
-    // Registers all the ConnectedClientsMetrics to the registries
-    // and zips them in. It is done this way to get around the need
-    // for `root_metrics_registry` to become immutable in the loop.
-    let servers_and_clients: Vec<(ServerConfig, _)> = cfg
-        .servers
-        .into_iter()
-        .enumerate()
-        .map(|(i, server_cfg)| {
-            let name = if server_cfg.name.is_empty() {
-                format!("{i}")
-            } else {
-                server_cfg.name.clone()
-            };
-            let connected_clients_mux = Arc::new(ConnectedClientsMetrics {
-                inner: Mutex::new(HashSet::new()),
-                counter: Counter::default(),
-                server_start_ts: server_start_timestamp,
-            });
-            server_metrics.insert(name.clone(), connected_clients_mux.clone());
-
-            (server_cfg, connected_clients_mux)
-        })
-        .collect();
-
-    let root_metrics = Arc::new(RwLock::new(RootMetrics {
-        stores: store_manager.clone(),
-        servers: server_metrics,
-        workers: HashMap::new(), // Will be filled in later.
-        schedulers: action_schedulers.clone(),
-    }));
-
-    for (server_cfg, connected_clients_mux) in servers_and_clients {
+    for server_cfg in server_configs {
         let services = server_cfg
             .services
             .err_tip(|| "'services' must be configured")?;
@@ -562,10 +522,7 @@ async fn inner_main(
 
         let mut svc = tonic_services
             .into_axum_router()
-            .layer(OriginEventMiddlewareLayer::new(
-                maybe_origin_event_tx.clone(),
-                server_cfg.experimental_identity_header.clone(),
-            ));
+            .layer(nativelink_util::telemetry::OtlpLayer::new(false));
 
         if let Some(health_cfg) = services.health {
             let path = if health_cfg.path.is_empty() {
@@ -762,7 +719,7 @@ async fn inner_main(
         if let Some(value) = http_config.experimental_http2_max_header_list_size {
             http.http2().max_header_list_size(value);
         }
-        event!(Level::WARN, "Ready, listening on {socket_addr}",);
+        info!("Ready, listening on {socket_addr}",);
         root_futures.push(Box::pin(async move {
             loop {
                 select! {
@@ -776,49 +733,17 @@ async fn inner_main(
                                     ?socket_addr,
                                     "Client connected"
                                 );
-                                connected_clients_mux
-                                    .inner
-                                    .lock()
-                                    .insert(SocketAddrWrapper(remote_addr));
-                                connected_clients_mux.counter.inc();
-
-                                // This is the safest way to guarantee that if our future
-                                // is ever dropped we will cleanup our data.
-                                let scope_guard = guard(
-                                    Arc::downgrade(&connected_clients_mux),
-                                    move |weak_connected_clients_mux| {
-                                        event!(
-                                            target: "nativelink::services",
-                                            Level::INFO,
-                                            ?remote_addr,
-                                            ?socket_addr,
-                                            "Client disconnected"
-                                        );
-                                        if let Some(connected_clients_mux) = weak_connected_clients_mux.upgrade() {
-                                            connected_clients_mux
-                                                .inner
-                                                .lock()
-                                                .remove(&SocketAddrWrapper(remote_addr));
-                                        }
-                                    },
-                                );
 
                                 let (http, svc, maybe_tls_acceptor) =
                                     (http.clone(), svc.clone(), maybe_tls_acceptor.clone());
-                                Arc::new(OriginContext::new()).background_spawn(
-                                    error_span!(
-                                        target: "nativelink::services",
-                                        "http_connection",
-                                        ?remote_addr,
-                                        ?socket_addr
-                                    ),
-                                    async move {},
-                                );
+
                                 background_spawn!(
                                     name: "http_connection",
-                                    fut: async move {
-                                        // Move it into our spawn, so if our spawn dies the cleanup happens.
-                                        let _guard = scope_guard;
+                                    fut: info_span!(
+                                        "http_connection",
+                                        remote_addr = %remote_addr,
+                                        socket_addr = %socket_addr,
+                                    ).in_scope(|| async move {
                                         let serve_connection = if let Some(tls_acceptor) = maybe_tls_acceptor {
                                             match tls_acceptor.accept(tcp_stream).await {
                                                 Ok(tls_stream) => Either::Left(http.serve_connection(
@@ -826,7 +751,7 @@ async fn inner_main(
                                                     TowerToHyperService::new(svc),
                                                 )),
                                                 Err(err) => {
-                                                    event!(Level::ERROR, ?err, "Failed to accept tls stream");
+                                                    error!(?err, "Failed to accept tls stream");
                                                     return;
                                                 }
                                             }
@@ -845,14 +770,14 @@ async fn inner_main(
                                                 "Failed running service"
                                             );
                                         }
-                                    },
+                                    }),
                                     target: "nativelink::services",
                                     ?remote_addr,
                                     ?socket_addr,
                                 );
                             },
                             Err(err) => {
-                                event!(Level::ERROR, ?err, "Failed to accept tcp connection");
+                                error!(?err, "Failed to accept tcp connection");
                             }
                         }
                     },
@@ -867,7 +792,6 @@ async fn inner_main(
         // of these services it will be able to connect.
         let worker_cfgs = cfg.workers.unwrap_or_default();
         let mut worker_names = HashSet::with_capacity(worker_cfgs.len());
-        let mut worker_metrics: HashMap<String, Arc<dyn RootMetricsComponent>> = HashMap::new();
         for (i, worker_cfg) in worker_cfgs.into_iter().enumerate() {
             let spawn_fut = match worker_cfg {
                 WorkerConfig::Local(local_worker_cfg) => {
@@ -903,7 +827,7 @@ async fn inner_main(
                     } else {
                         fast_slow_store.clone()
                     };
-                    let (local_worker, metrics) = new_local_worker(
+                    let local_worker = new_local_worker(
                         Arc::new(local_worker_cfg),
                         fast_slow_store,
                         maybe_ac_store,
@@ -925,16 +849,14 @@ async fn inner_main(
                         ))?;
                     }
                     worker_names.insert(name.clone());
-                    worker_metrics.insert(name.clone(), metrics);
                     let shutdown_rx = shutdown_tx.subscribe();
-                    let fut = Arc::new(OriginContext::new())
-                        .wrap_async(trace_span!("worker_ctx"), local_worker.run(shutdown_rx));
+                    let fut = info_span!("worker_ctx", worker_name = %name)
+                        .in_scope(|| local_worker.run(shutdown_rx));
                     spawn!("worker", fut, ?name)
                 }
             };
             root_futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));
         }
-        root_metrics.write().workers = worker_metrics;
     }
 
     if let Err(e) = try_join_all(root_futures).await {
@@ -954,8 +876,6 @@ fn get_config() -> Result<CasConfig, Box<dyn core::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
-    init_tracing()?;
-
     let mut cfg = get_config()?;
 
     let global_cfg = if let Some(global_cfg) = &mut cfg.global {
@@ -982,15 +902,14 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     ))?;
     set_default_digest_size_health_check(global_cfg.default_digest_size_health_check)?;
 
-    let server_start_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
     #[expect(clippy::disallowed_methods, reason = "starting main runtime")]
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+
+    // The OTLP exporters need to run in a Tokio context.
+    #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
+    runtime.block_on(async { tokio::spawn(async { init_tracing() }).await? })?;
 
     // Initiates the shutdown process by broadcasting the shutdown signal via the `oneshot::Sender` to all listeners.
     // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.
@@ -1015,19 +934,20 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             .expect("Failed to listen to SIGTERM")
             .recv()
             .await;
-        event!(Level::WARN, "Process terminated via SIGTERM",);
+        info!("Process terminated via SIGTERM",);
         drop(shutdown_tx_clone.send(shutdown_guard.clone()));
         let () = shutdown_guard.wait_for(Priority::P0).await;
-        event!(Level::WARN, "Successfully shut down nativelink.",);
+        info!("Successfully shut down nativelink.",);
         std::process::exit(143);
     });
 
     #[expect(clippy::disallowed_methods, reason = "waiting on everything to finish")]
     runtime
-        .block_on(Arc::new(OriginContext::new()).wrap_async(
-            trace_span!("main"),
-            inner_main(cfg, server_start_time, shutdown_tx),
-        ))
+        .block_on(async {
+            info_span!("main")
+                .in_scope(|| async { inner_main(cfg, shutdown_tx).await })
+                .await
+        })
         .err_tip(|| "main() function failed")?;
     Ok(())
 }

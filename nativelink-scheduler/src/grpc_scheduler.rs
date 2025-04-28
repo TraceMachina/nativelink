@@ -22,7 +22,6 @@ use futures::stream::unfold;
 use futures::{StreamExt, TryFutureExt};
 use nativelink_config::schedulers::GrpcSpec;
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
-use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_client::ExecutionClient;
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -40,13 +39,14 @@ use nativelink_util::operation_state_manager::{
 use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::{background_spawn, tls_utils};
+use opentelemetry::{InstrumentationScope, KeyValue, global, metrics};
 use parking_lot::Mutex;
 use rand::Rng;
 use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{Request, Streaming};
-use tracing::{Level, event};
+use tracing::{Level, debug, error, event, info, instrument};
 
 struct GrpcActionStateResult {
     client_operation_id: OperationId,
@@ -87,12 +87,49 @@ impl ActionStateResult for GrpcActionStateResult {
     }
 }
 
-#[derive(Debug, MetricsComponent)]
+fn init_metrics() -> GrpcSchedulerMetrics {
+    let meter = global::meter_with_scope(InstrumentationScope::builder("grpc_scheduler").build());
+
+    GrpcSchedulerMetrics {
+        actions_executed: meter
+            .u64_counter("grpc_actions_executed_total")
+            .with_description("Total number of actions executed via the GRPC scheduler")
+            .build(),
+        request_errors: meter
+            .u64_counter("grpc_request_errors_total")
+            .with_description("Number of errors when making requests to the upstream scheduler")
+            .build(),
+        request_duration: meter
+            .f64_histogram("grpc_request_duration")
+            .with_description("Duration of requests to the upstream scheduler")
+            .with_unit("ms")
+            .build(),
+        retried_requests: meter
+            .u64_counter("grpc_retried_requests_total")
+            .with_description("Number of requests that needed to be retried")
+            .build(),
+        active_operations: meter
+            .i64_up_down_counter("grpc_active_operations")
+            .with_description("Number of currently active operations")
+            .build(),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GrpcSchedulerMetrics {
+    actions_executed: metrics::Counter<u64>,
+    request_errors: metrics::Counter<u64>,
+    request_duration: metrics::Histogram<f64>,
+    retried_requests: metrics::Counter<u64>,
+    active_operations: metrics::UpDownCounter<i64>,
+}
+
+#[derive(Debug)]
 pub struct GrpcScheduler {
-    #[metric(group = "property_managers")]
     supported_props: Mutex<HashMap<String, Vec<String>>>,
     retrier: Retrier,
     connection_manager: ConnectionManager,
+    metrics: GrpcSchedulerMetrics,
 }
 
 impl GrpcScheduler {
@@ -111,6 +148,11 @@ impl GrpcScheduler {
         )
     }
 
+    #[instrument(
+        skip(jitter_fn, spec),
+        fields(endpoint = ?spec.endpoint),
+        level = "info"
+    )]
     pub fn new_with_jitter(
         spec: &GrpcSpec,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
@@ -131,9 +173,11 @@ impl GrpcScheduler {
                 spec.retry.clone(),
                 jitter_fn,
             ),
+            metrics: init_metrics(),
         })
     }
 
+    #[instrument(skip(self, input, request), level = "debug")]
     async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
     where
         F: FnMut(I) -> Fut + Send + Copy,
@@ -141,21 +185,38 @@ impl GrpcScheduler {
         R: Send,
         I: Send + Clone,
     {
-        self.retrier
+        let start_time = std::time::Instant::now();
+        let result = self
+            .retrier
             .retry(unfold(input, move |input| async move {
                 let input_clone = input.clone();
                 Some((
-                    request(input_clone)
-                        .await
-                        .map_or_else(RetryResult::Retry, RetryResult::Ok),
+                    request(input_clone).await.map_or_else(
+                        |err| {
+                            debug!(?err, "Request failed, will retry");
+                            self.metrics.request_errors.add(1, &[]);
+                            self.metrics.retried_requests.add(1, &[]);
+                            RetryResult::Retry(err)
+                        },
+                        RetryResult::Ok,
+                    ),
                     input,
                 ))
             }))
-            .await
+            .await;
+
+        self.metrics.request_duration.record(
+            start_time.elapsed().as_millis() as f64,
+            &[KeyValue::new("success", result.is_ok().to_string())],
+        );
+
+        result
     }
 
+    #[instrument(skip(result_stream), level = "debug")]
     async fn stream_state(
         mut result_stream: Streaming<Operation>,
+        metrics: Arc<GrpcSchedulerMetrics>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
         if let Some(initial_response) = result_stream
             .message()
@@ -171,28 +232,30 @@ impl GrpcScheduler {
                     .err_tip(|| "In GrpcScheduler::stream_state")?;
             let (tx, mut rx) = watch::channel(Arc::new(action_state));
             rx.mark_changed();
+
+            metrics.active_operations.add(1, &[]);
+            let metrics_clone = metrics.clone();
+
             background_spawn!("grpc_scheduler_stream_state", async move {
                 loop {
                     select!(
                         () = tx.closed() => {
-                            event!(
-                                Level::INFO,
-                                "Client disconnected in GrpcScheduler"
-                            );
+                            info!("Client disconnected in GrpcScheduler");
+                            metrics_clone.active_operations.add(-1, &[]);
                             return;
                         }
                         response = result_stream.message() => {
                             // When the upstream closes the channel, close the
                             // downstream too.
                             let Ok(Some(response)) = response else {
+                                metrics_clone.active_operations.add(-1, &[]);
                                 return;
                             };
                             let maybe_action_state = ActionState::try_from_operation(response, operation_id.clone());
                             match maybe_action_state {
                                 Ok(response) => {
                                     if let Err(err) = tx.send(Arc::new(response)) {
-                                        event!(
-                                            Level::INFO,
+                                        info!(
                                             ?err,
                                             "Client error in GrpcScheduler"
                                         );
@@ -200,8 +263,7 @@ impl GrpcScheduler {
                                     }
                                 }
                                 Err(err) => {
-                                    event!(
-                                        Level::ERROR,
+                                    error!(
                                         ?err,
                                         "Error converting response to ActionState in GrpcScheduler"
                                     );
@@ -223,6 +285,11 @@ impl GrpcScheduler {
         ))
     }
 
+    #[instrument(
+        skip(self),
+        fields(instance_name = %instance_name),
+        level = "debug"
+    )]
     async fn inner_get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error> {
         if let Some(supported_props) = self.supported_props.lock().get(instance_name) {
             return Ok(supported_props.clone());
@@ -257,11 +324,21 @@ impl GrpcScheduler {
         .await
     }
 
+    #[instrument(
+        skip(self, action_info),
+        fields(
+            client_op_id = ?client_operation_id,
+            action_digest = ?action_info.digest()
+        ),
+        level = "debug"
+    )]
     async fn inner_add_action(
         &self,
-        _client_operation_id: OperationId,
+        client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
+        let start_time = std::time::Instant::now();
+
         let execution_policy = if action_info.priority == DEFAULT_EXECUTION_PRIORITY {
             None
         } else {
@@ -286,7 +363,7 @@ impl GrpcScheduler {
                 .proto_digest_func()
                 .into(),
         };
-        let result_stream = self
+        let result = self
             .perform_request(request, |request| async move {
                 let channel = self
                     .connection_manager
@@ -298,11 +375,36 @@ impl GrpcScheduler {
                     .await
                     .err_tip(|| "Sending action to upstream scheduler")
             })
-            .await?
-            .into_inner();
-        Self::stream_state(result_stream).await
+            .await;
+
+        match &result {
+            Ok(_) => {
+                self.metrics.actions_executed.add(1, &[]);
+                self.metrics.request_duration.record(
+                    start_time.elapsed().as_millis() as f64,
+                    &[KeyValue::new("operation", "add_action")],
+                );
+            }
+            Err(err) => {
+                self.metrics.request_errors.add(
+                    1,
+                    &[
+                        KeyValue::new("operation", "add_action"),
+                        KeyValue::new("error_code", err.code.to_string()),
+                    ],
+                );
+            }
+        }
+
+        let result_stream = result?.into_inner();
+        Self::stream_state(result_stream, Arc::new(self.metrics.clone())).await
     }
 
+    #[instrument(
+        skip(self),
+        fields(?filter),
+        level = "debug"
+    )]
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
@@ -333,7 +435,9 @@ impl GrpcScheduler {
                     .await
                     .err_tip(|| "While getting wait_execution stream")
             })
-            .and_then(|result_stream| Self::stream_state(result_stream.into_inner()))
+            .and_then(|result_stream| {
+                Self::stream_state(result_stream.into_inner(), Arc::new(self.metrics.clone()))
+            })
             .await;
         match result_stream {
             Ok(result_stream) => Ok(unfold(
@@ -355,6 +459,14 @@ impl GrpcScheduler {
 
 #[async_trait]
 impl ClientStateManager for GrpcScheduler {
+    #[instrument(
+        skip(self, action_info),
+        fields(
+            client_op_id = ?client_operation_id,
+            action_digest = ?action_info.digest()
+        ),
+        level = "debug"
+    )]
     async fn add_action(
         &self,
         client_operation_id: OperationId,
@@ -364,6 +476,11 @@ impl ClientStateManager for GrpcScheduler {
             .await
     }
 
+    #[instrument(
+        skip(self),
+        fields(?filter),
+        level = "debug"
+    )]
     async fn filter_operations<'a>(
         &'a self,
         filter: OperationFilter,
@@ -378,9 +495,12 @@ impl ClientStateManager for GrpcScheduler {
 
 #[async_trait]
 impl KnownPlatformPropertyProvider for GrpcScheduler {
+    #[instrument(
+        skip(self),
+        fields(instance_name = %instance_name),
+        level = "debug"
+    )]
     async fn get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error> {
         self.inner_get_known_properties(instance_name).await
     }
 }
-
-impl RootMetricsComponent for GrpcScheduler {}

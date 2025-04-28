@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use blake3::Hasher as Blake3Hasher;
 use bytes::BytesMut;
@@ -23,23 +23,18 @@ use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Value as ProtoDigestFunction;
+use opentelemetry::context::Context;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 
 use crate::common::DigestInfo;
-use crate::origin_context::{ActiveOriginContext, OriginContext};
-use crate::{fs, spawn_blocking, unsafe_make_symbol};
-
-// The symbol can be used to retrieve the active hasher function.
-// from an `OriginContext`.
-// Safety: There is no other symbol named `ACTIVE_HASHER_FUNC`.
-unsafe_make_symbol!(ACTIVE_HASHER_FUNC, DigestHasherFunc);
+use crate::{fs, spawn_blocking};
 
 static DEFAULT_DIGEST_HASHER_FUNC: OnceLock<DigestHasherFunc> = OnceLock::new();
 
 /// Utility function to make a context with a specific hasher function set.
-pub fn make_ctx_for_hash_func<H>(hasher: H) -> Result<Arc<OriginContext>, Error>
+pub fn make_ctx_for_hash_func<H>(hasher: H) -> Result<Context, Error>
 where
     H: TryInto<DigestHasherFunc>,
     H::Error: Into<Error>,
@@ -48,9 +43,9 @@ where
         .try_into()
         .err_tip(|| "Could not convert into DigestHasherFunc")?;
 
-    let mut new_ctx = ActiveOriginContext::fork().err_tip(|| "In BytestreamServer::inner_write")?;
-    new_ctx.set_value(&ACTIVE_HASHER_FUNC, Arc::new(digest_hasher_func));
-    Ok(Arc::new(new_ctx))
+    let new_ctx = Context::current_with_value(digest_hasher_func);
+
+    Ok(new_ctx)
 }
 
 /// Get the default hasher.

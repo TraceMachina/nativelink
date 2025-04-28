@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub use otel_exporter::otel_export;
 pub use tracing_layers::MetricsCollectorLayer;
 
 mod metrics_collection;
 mod metrics_visitors;
-mod otel_exporter;
 mod tracing_layers;
