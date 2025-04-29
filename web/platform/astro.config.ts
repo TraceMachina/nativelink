@@ -17,7 +17,7 @@ import { starlightConfig } from "./starlight.conf";
 
 // https://astro.build/config
 export default defineConfig({
-  site: "https://nativelink.com",
+  site: "https://docs.nativelink.com",
   output: "server",
   image: {
     service: passthroughImageService(),
