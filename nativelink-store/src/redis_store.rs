@@ -373,6 +373,17 @@ impl StoreDriver for RedisStore {
     ) -> Result<(), Error> {
         let final_key = self.encode_key(&key);
 
+        let final_key_with_timestamp = if spec.experimental_pub_sub_timestamp.unwrap_or(false) {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(); // For timestamp in seconds
+        
+            format!("{}-{}", final_key, timestamp)
+        } else {
+            final_key
+        };
+
         // While the name generation function can be supplied by the user, we need to have the curly
         // braces in place in order to manage redis' hashing behavior and make sure that the temporary
         // key name and the final key name are directed to the same cluster node. See
@@ -384,7 +395,7 @@ impl StoreDriver for RedisStore {
         let temp_key = format!(
             "temp-{}-{{{}}}",
             (self.temp_name_generator_fn)(),
-            &final_key
+            &final_key_with_timestamp
         );
 
         if is_zero_digest(key.borrow()) {
@@ -462,13 +473,13 @@ impl StoreDriver for RedisStore {
 
         // Rename the temp key so that the data appears under the real key. Any data already present in the real key is lost.
         client
-            .rename::<(), _, _>(&temp_key, final_key.as_ref())
+            .rename::<(), _, _>(&temp_key, final_key_with_timestamp.as_ref())
             .await
             .err_tip(|| "While queueing key rename in RedisStore::update()")?;
 
         // If we have a publish channel configured, send a notice that the key has been set.
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
-            return Ok(client.publish(pub_sub_channel, final_key.as_ref()).await?);
+            return Ok(client.publish(pub_sub_channel, final_key_with_timestamp.as_ref()).await?);
         };
 
         Ok(())
