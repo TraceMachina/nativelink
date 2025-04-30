@@ -70,7 +70,7 @@ use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use rand::Rng;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
-use tracing::{Level, event};
+use tracing::{error, info};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -657,8 +657,7 @@ where
                         err.code = Code::Aborted;
                         let bytes_received = reader.get_bytes_received();
                         if let Err(try_reset_err) = reader.try_reset_stream() {
-                            event!(
-                                Level::ERROR,
+                            error!(
                                 ?bytes_received,
                                 err = ?try_reset_err,
                                 "Unable to reset stream after failed upload in S3Store::update"
@@ -668,8 +667,7 @@ where
                                 .append(format!("Failed to retry upload with {bytes_received} bytes received in S3Store::update")));
                         }
                         let err = err.append(format!("Retry on upload happened with {bytes_received} bytes received in S3Store::update"));
-                        event!(
-                            Level::INFO,
+                        info!(
                             ?err,
                             ?bytes_received,
                             "Retryable S3 error"
@@ -854,7 +852,7 @@ where
                                     Code::Aborted,
                                     "Failed to abort multipart upload in S3 store : {e:?}"
                                 );
-                                event!(Level::INFO, ?err, "Multipart upload error");
+                                info!(?err, "Multipart upload error");
                                 Err(err)
                             },
                             |_| Ok(()),

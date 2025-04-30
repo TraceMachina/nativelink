@@ -12,8 +12,9 @@ A very basic configuration that's a pure in-memory store is:
 
 ```js
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
       "memory": {
         "eviction_policy": {
           // 1gb.
@@ -21,7 +22,8 @@ A very basic configuration that's a pure in-memory store is:
         }
       }
     },
-    "AC_MAIN_STORE": {
+    {
+      "name": "AC_MAIN_STORE",
       "memory": {
         "eviction_policy": {
           // 100mb.
@@ -29,7 +31,7 @@ A very basic configuration that's a pure in-memory store is:
         }
       }
     }
-  },
+  ],
   "servers": [{
     "listener": {
       "http": {
@@ -73,8 +75,9 @@ the data is retrieved.
 
 ```js
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
       "compression": {
         "compression_algorithm": {
           "lz4": {}
@@ -91,7 +94,8 @@ the data is retrieved.
         }
       }
     },
-    "AC_MAIN_STORE": {
+    {
+      "name": "AC_MAIN_STORE",
       "filesystem": {
         "content_path": "/tmp/bazel_cache/ac",
         "temp_path": "/tmp/bazel_cache/tmp_data",
@@ -101,7 +105,7 @@ the data is retrieved.
         }
       }
     }
-  },
+  ],
   // Place rest of configuration here ...
 }
 ```
@@ -125,8 +129,9 @@ only transfer the bytes around where the changes occurred.
 
 ```js
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
       "dedup": {
         // Index store contains the references to the chunks of data and how to
         // reassemble them live. These will usually be <1% of the total size of
@@ -170,7 +175,8 @@ only transfer the bytes around where the changes occurred.
         "max_size": 262144
       }
     },
-    "AC_MAIN_STORE": {
+    {
+      "name": "AC_MAIN_STORE",
       // Don't apply anything special to our action cache, just store as normal files.
       "filesystem": {
         "content_path": "/tmp/bazel_cache/ac",
@@ -181,7 +187,7 @@ only transfer the bytes around where the changes occurred.
         }
       }
     }
-  },
+  ],
   // Place rest of configuration here ...
 }
 ```
@@ -194,8 +200,9 @@ stores, but in this example we'll store the raw files.
 
 ```js
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
       "experimental_s3_store": {
         // Region the bucket lives in.
         "region": "us-west-1",
@@ -211,7 +218,8 @@ stores, but in this example we'll store the raw files.
         }
       }
     },
-    "AC_MAIN_STORE": {
+    {
+      "name": "AC_MAIN_STORE",
       "experimental_s3_store": {
         "region": "us-west-1",
         "bucket": "some-bucket-name",
@@ -223,7 +231,7 @@ stores, but in this example we'll store the raw files.
         }
       }
     }
-  },
+  ],
   // Place rest of configuration here ...
 }
 ```
@@ -241,8 +249,9 @@ the rest will be stored in AWS's S3:
 
 ```js
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
       "fast_slow": {
         "fast": {
           "memory": {
@@ -261,7 +270,8 @@ the rest will be stored in AWS's S3:
         }
       }
     },
-    "AC_MAIN_STORE": {
+    {
+      "name": "AC_MAIN_STORE",
       "fast_slow": {
         "fast": {
           "memory": {
@@ -280,7 +290,7 @@ the rest will be stored in AWS's S3:
         }
       }
     }
-  },
+  ],
   // Place rest of configuration here ...
 }
 ```
@@ -298,8 +308,9 @@ and check it against the digest instead.
 
 ```js
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
       "verify": {
         "backend": {
           "memory": {
@@ -314,7 +325,8 @@ and check it against the digest instead.
         "hash_verification_function": "sha256",
       }
     },
-    "AC_MAIN_STORE": {
+    {
+      "name": "AC_MAIN_STORE",
       "memory": {
         "eviction_policy": {
           // 100mb.
@@ -322,7 +334,7 @@ and check it against the digest instead.
         }
       }
     }
-  },
+  ],
   // Place rest of configuration here ...
 }
 ```

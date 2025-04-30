@@ -35,7 +35,7 @@ use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
 use tokio_stream::StreamExt;
-use tracing::{Level, event, info_span};
+use tracing::{error, info_span};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
@@ -386,8 +386,7 @@ impl SimpleScheduler {
         // tasks are going to be dropped all over the place, this isn't a good
         // setting.
         if client_action_timeout_s <= CLIENT_KEEPALIVE_DURATION.as_secs() {
-            event!(
-                Level::ERROR,
+            error!(
                 client_action_timeout_s,
                 "Setting client_action_timeout_s to less than the client keep alive interval is going to cause issues, please set above {}.",
                 CLIENT_KEEPALIVE_DURATION.as_secs()
@@ -437,7 +436,7 @@ impl SimpleScheduler {
                             None => return,
                         };
                         if let Err(err) = result {
-                            event!(Level::ERROR, ?err, "Error while running do_try_match");
+                            error!(?err, "Error while running do_try_match");
                         }
 
                         on_matching_engine_run().await;

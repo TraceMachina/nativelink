@@ -54,7 +54,7 @@ use prost::Message;
 use rand::Rng;
 use tokio::time::sleep;
 use tonic::{IntoRequest, Request, Response, Status, Streaming};
-use tracing::{Level, event};
+use tracing::error;
 use uuid::Uuid;
 
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
@@ -618,10 +618,7 @@ impl StoreDriver for GrpcStore {
 
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
             if local_state.did_error {
-                event!(
-                    Level::ERROR,
-                    "GrpcStore::update() polled stream after error was returned"
-                );
+                error!("GrpcStore::update() polled stream after error was returned");
                 return None;
             }
             let data = match local_state

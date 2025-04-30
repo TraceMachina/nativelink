@@ -24,7 +24,7 @@ use nativelink_config::stores::Retry;
 use nativelink_error::{Code, Error, make_err};
 use tokio::sync::{mpsc, oneshot};
 use tonic::transport::{Channel, Endpoint, channel};
-use tracing::{Level, event};
+use tracing::{debug, error, info, warn};
 
 use crate::background_spawn;
 use crate::retry::{self, Retrier, RetryResult};
@@ -246,11 +246,7 @@ impl ConnectionManagerWorker {
         let Some((current_connection_index, endpoint)) = self.endpoints.get_mut(endpoint_index)
         else {
             // Unknown endpoint, this should never happen.
-            event!(
-                Level::ERROR,
-                ?endpoint_index,
-                "Connection to unknown endpoint requested"
-            );
+            error!(?endpoint_index, "Connection to unknown endpoint requested");
             return;
         };
         let is_backoff = connection_index.is_some();
@@ -259,15 +255,13 @@ impl ConnectionManagerWorker {
             *current_connection_index
         });
         if is_backoff {
-            event!(
-                Level::WARN,
+            warn!(
                 ?connection_index,
                 endpoint = ?endpoint.uri(),
                 "Connection failed, reconnecting"
             );
         } else {
-            event!(
-                Level::INFO,
+            info!(
                 ?connection_index,
                 endpoint = ?endpoint.uri(),
                 "Creating new connection"
@@ -458,11 +452,7 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> f
                     }
                 }
                 Err(err) => {
-                    event!(
-                        Level::DEBUG,
-                        ?err,
-                        "Error while creating connection on channel"
-                    );
+                    debug!(?err, "Error while creating connection on channel");
                     drop(self.tx.send(ConnectionRequest::Error((
                         self.channel.identifier,
                         self.pending_channel.take().is_some(),

@@ -29,7 +29,7 @@ use prost::Message;
 use serde::de::Visitor;
 use serde::ser::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tracing::{Level, event};
+use tracing::error;
 
 pub use crate::fs;
 
@@ -234,10 +234,7 @@ impl fmt::Display for DigestInfo {
                 .as_str()
                 .err_tip(|| "During serialization of DigestInfo")
                 .map_err(|e| {
-                    event!(
-                        Level::ERROR,
-                        "Could not convert DigestInfo to string - {e:?}"
-                    );
+                    error!("Could not convert DigestInfo to string - {e:?}");
                     fmt::Error
                 })?,
         )
@@ -250,10 +247,7 @@ impl fmt::Debug for DigestInfo {
         match stringifier.as_str() {
             Ok(s) => f.debug_tuple("DigestInfo").field(&s).finish(),
             Err(e) => {
-                event!(
-                    Level::ERROR,
-                    "Could not convert DigestInfo to string - {e:?}"
-                );
+                error!("Could not convert DigestInfo to string - {e:?}");
                 Err(fmt::Error)
             }
         }
@@ -313,11 +307,7 @@ impl From<DigestInfo> for Digest {
         Digest {
             hash: val.packed_hash.to_string(),
             size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
-                event!(
-                    Level::ERROR,
-                    "Could not convert {} into u64 - {e:?}",
-                    val.size_bytes
-                );
+                error!("Could not convert {} into u64 - {e:?}", val.size_bytes);
                 // This is a placeholder value that can help a user identify
                 // that the conversion failed.
                 -255
@@ -331,11 +321,7 @@ impl From<&DigestInfo> for Digest {
         Digest {
             hash: val.packed_hash.to_string(),
             size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
-                event!(
-                    Level::ERROR,
-                    "Could not convert {} into u64 - {e:?}",
-                    val.size_bytes
-                );
+                error!("Could not convert {} into u64 - {e:?}", val.size_bytes);
                 // This is a placeholder value that can help a user identify
                 // that the conversion failed.
                 -255
@@ -367,11 +353,7 @@ impl PackedHash {
     fn to_hex(self) -> Result<[u8; SIZE_OF_PACKED_HASH * 2], fmt::Error> {
         let mut hash = [0u8; SIZE_OF_PACKED_HASH * 2];
         hex::encode_to_slice(self.0, &mut hash).map_err(|e| {
-            event!(
-                Level::ERROR,
-                "Could not convert PackedHash to hex - {e:?} - {:?}",
-                self.0
-            );
+            error!("Could not convert PackedHash to hex - {e:?} - {:?}", self.0);
             fmt::Error
         })?;
         Ok(hash)

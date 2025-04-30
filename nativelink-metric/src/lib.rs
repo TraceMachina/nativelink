@@ -21,7 +21,9 @@ use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use nativelink_metric_macro_derive::MetricsComponent;
-pub use tracing::{error as __metric_error, info as __metric_event, info_span as __metric_span};
+pub use tracing::{
+    error as __metric_error, info as __metric_info, info_span as __metric_info_span,
+};
 
 /// Error type for the metrics library.
 // Note: We do not use the nativelink-error struct because
@@ -475,7 +477,7 @@ impl<T: MetricsComponent> MetricsComponent for parking_lot::RwLock<T> {
 #[macro_export]
 macro_rules! group {
     ($name:expr) => {
-        $crate::__metric_span!(target: "nativelink_metric", "", __name = $name.to_string())
+        $crate::__metric_info_span!(target: "nativelink_metric", "", __name = $name.to_string())
     };
 }
 
@@ -499,7 +501,7 @@ macro_rules! publish {
             };
             match $crate::MetricsComponent::publish($value, $metric_kind, field_metadata)? {
                 $crate::MetricPublishKnownKindData::Counter(value) => {
-                    $crate::__metric_event!(
+                    $crate::__metric_info!(
                         target: "nativelink_metric",
                         __value = value,
                         __type = $crate::MetricKind::Counter as u8,
@@ -508,7 +510,7 @@ macro_rules! publish {
                     );
                 }
                 $crate::MetricPublishKnownKindData::String(value) => {
-                    $crate::__metric_event!(
+                    $crate::__metric_info!(
                         target: "nativelink_metric",
                         __value = value,
                         __type = $crate::MetricKind::String as u8,

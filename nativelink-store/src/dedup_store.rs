@@ -31,7 +31,7 @@ use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, Uplo
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
-use tracing::{Level, event};
+use tracing::warn;
 
 use crate::cas_utils::is_zero_digest;
 
@@ -134,12 +134,7 @@ impl DedupStore {
 
             match self.bincode_options.deserialize::<DedupIndex>(&data) {
                 Err(err) => {
-                    event!(
-                        Level::WARN,
-                        ?key,
-                        ?err,
-                        "Failed to deserialize index in dedup store",
-                    );
+                    warn!(?key, ?err, "Failed to deserialize index in dedup store",);
                     // We return the equivalent of NotFound here so the client is happy.
                     return Ok(None);
                 }

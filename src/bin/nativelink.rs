@@ -79,7 +79,7 @@ use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
 use tonic::codec::CompressionEncoding;
 use tonic::service::Routes;
-use tracing::{Level, error_span, event, trace_span};
+use tracing::{error, error_span, info, trace_span, warn};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -762,16 +762,15 @@ async fn inner_main(
         if let Some(value) = http_config.experimental_http2_max_header_list_size {
             http.http2().max_header_list_size(value);
         }
-        event!(Level::WARN, "Ready, listening on {socket_addr}",);
+        warn!("Ready, listening on {socket_addr}",);
         root_futures.push(Box::pin(async move {
             loop {
                 select! {
                     accept_result = tcp_listener.accept() => {
                         match accept_result {
                             Ok((tcp_stream, remote_addr)) => {
-                                event!(
+                                info!(
                                     target: "nativelink::services",
-                                    Level::INFO,
                                     ?remote_addr,
                                     ?socket_addr,
                                     "Client connected"
@@ -787,9 +786,8 @@ async fn inner_main(
                                 let scope_guard = guard(
                                     Arc::downgrade(&connected_clients_mux),
                                     move |weak_connected_clients_mux| {
-                                        event!(
+                                        info!(
                                             target: "nativelink::services",
-                                            Level::INFO,
                                             ?remote_addr,
                                             ?socket_addr,
                                             "Client disconnected"
@@ -826,7 +824,7 @@ async fn inner_main(
                                                     TowerToHyperService::new(svc),
                                                 )),
                                                 Err(err) => {
-                                                    event!(Level::ERROR, ?err, "Failed to accept tls stream");
+                                                    error!(?err, "Failed to accept tls stream");
                                                     return;
                                                 }
                                             }
@@ -838,9 +836,8 @@ async fn inner_main(
                                         };
 
                                         if let Err(err) = serve_connection.await {
-                                            event!(
+                                            error!(
                                                 target: "nativelink::services",
-                                                Level::ERROR,
                                                 ?err,
                                                 "Failed running service"
                                             );
@@ -852,7 +849,7 @@ async fn inner_main(
                                 );
                             },
                             Err(err) => {
-                                event!(Level::ERROR, ?err, "Failed to accept tcp connection");
+                                error!(?err, "Failed to accept tcp connection");
                             }
                         }
                     },
@@ -1015,10 +1012,10 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             .expect("Failed to listen to SIGTERM")
             .recv()
             .await;
-        event!(Level::WARN, "Process terminated via SIGTERM",);
+        warn!("Process terminated via SIGTERM",);
         drop(shutdown_tx_clone.send(shutdown_guard.clone()));
         let () = shutdown_guard.wait_for(Priority::P0).await;
-        event!(Level::WARN, "Successfully shut down nativelink.",);
+        warn!("Successfully shut down nativelink.",);
         std::process::exit(143);
     });
 

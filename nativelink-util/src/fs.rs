@@ -27,7 +27,7 @@ use rlimit::increase_nofile_limit;
 pub use tokio::fs::DirEntry;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncWrite, ReadBuf, SeekFrom, Take};
 use tokio::sync::{Semaphore, SemaphorePermit};
-use tracing::{Level, event};
+use tracing::{error, info, warn};
 
 use crate::spawn_blocking;
 
@@ -153,16 +153,12 @@ pub fn set_open_file_limit(desired_open_file_limit: usize) {
                 .expect("desired_open_file_limit is too large to convert to u64."),
         ) {
             Ok(open_file_limit) => {
-                event!(
-                    Level::INFO,
-                    "set_open_file_limit() assigns new open file limit {open_file_limit}.",
-                );
+                info!("set_open_file_limit() assigns new open file limit {open_file_limit}.",);
                 usize::try_from(open_file_limit)
                     .expect("open_file_limit is too large to convert to usize.")
             }
             Err(e) => {
-                event!(
-                    Level::ERROR,
+                error!(
                     "set_open_file_limit() failed to assign open file limit. Maybe system does not have ulimits, continuing anyway. - {e:?}",
                 );
                 DEFAULT_OPEN_FILE_LIMIT
@@ -171,8 +167,7 @@ pub fn set_open_file_limit(desired_open_file_limit: usize) {
     };
     // TODO(jaroeichler): Can we give a better estimate?
     if new_open_file_limit < DEFAULT_OPEN_FILE_LIMIT {
-        event!(
-            Level::WARN,
+        warn!(
             "The new open file limit ({new_open_file_limit}) is below the recommended value of {DEFAULT_OPEN_FILE_LIMIT}. Consider raising max_open_files.",
         );
     }
@@ -186,8 +181,7 @@ pub fn set_open_file_limit(desired_open_file_limit: usize) {
     if (OPEN_FILE_SEMAPHORE.available_permits() + reduced_open_file_limit)
         < previous_open_file_limit
     {
-        event!(
-            Level::WARN,
+        warn!(
             "There are not enough available permits to remove {previous_open_file_limit} - {reduced_open_file_limit} permits.",
         );
     }

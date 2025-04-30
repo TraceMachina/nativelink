@@ -34,7 +34,7 @@ use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::{Store, StoreLike};
 use prost::Message;
 use tonic::{Request, Response, Status};
-use tracing::{Level, error_span, event, instrument};
+use tracing::{Level, error, error_span, instrument};
 
 #[derive(Debug, Clone)]
 pub struct AcStoreInfo {
@@ -191,7 +191,7 @@ impl ActionCache for AcServer {
             .await;
 
         if resp.is_err() && resp.as_ref().err().unwrap().code != Code::NotFound {
-            event!(Level::ERROR, return = ?resp);
+            error!(return = ?resp);
         }
         let resp = resp.map_err(Into::into);
         ctx.emit(|| &resp).await;

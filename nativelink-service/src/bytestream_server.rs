@@ -51,7 +51,7 @@ use nativelink_util::task::JoinHandleDropGuard;
 use parking_lot::Mutex;
 use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{Instrument, Level, enabled, error_span, event, instrument};
+use tracing::{Instrument, Level, debug, error, error_span, info, instrument};
 
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -109,8 +109,7 @@ impl Drop for ActiveStreamGuard<'_> {
         let mut active_uploads = self.bytestream_server.active_uploads.lock();
         let uuid = stream_state.uuid.clone();
         let Some(active_uploads_slot) = active_uploads.get_mut(&uuid) else {
-            event!(
-                Level::ERROR,
+            error!(
                 err = "Failed to find active upload. This should never happen.",
                 uuid = ?uuid,
             );
@@ -123,7 +122,7 @@ impl Drop for ActiveStreamGuard<'_> {
                 (*sleep_fn)().await;
                 if let Some(active_uploads) = weak_active_uploads.upgrade() {
                     let mut active_uploads = active_uploads.lock();
-                    event!(Level::INFO, msg = "Removing idle stream", uuid = ?uuid);
+                    info!(msg = "Removing idle stream", uuid = ?uuid);
                     active_uploads.remove(&uuid);
                 }
             }),
@@ -240,7 +239,7 @@ impl ByteStreamServer {
                     return Err(make_input_err!("Cannot upload same UUID simultaneously"));
                 };
                 let bytes_received = maybe_idle_stream.0.clone();
-                event!(Level::INFO, msg = "Joining existing stream", entry = ?entry.key());
+                info!(msg = "Joining existing stream", entry = ?entry.key());
                 return Ok(idle_stream.into_active_stream(bytes_received, self));
             }
             Entry::Vacant(entry) => {
@@ -341,11 +340,8 @@ impl ByteStreamServer {
                                         return Some((Err(err.into()), None));
                                     }
                                     response.data = bytes;
-                                    if enabled!(Level::DEBUG) {
-                                        event!(Level::INFO, response = ?response);
-                                    } else {
-                                        event!(Level::INFO, response.data = format!("<redacted len({})>", response.data.len()));
-                                    }
+                                    debug!(response = ?response);
+                                    info!(response.data = format!("<redacted len({})>", response.data.len()));
                                     break;
                                 }
                                 Err(mut e) => {
@@ -369,7 +365,7 @@ impl ByteStreamServer {
                                         // message as it will be the most relevant.
                                         e.messages.truncate(1);
                                     }
-                                    event!(Level::ERROR, response = ?e);
+                                    error!(response = ?e);
                                     return Some((Err(e.into()), None))
                                 }
                             }
@@ -641,7 +637,7 @@ impl ByteStream for ByteStreamServer {
             .map_err(Into::into);
 
         if resp.is_ok() {
-            event!(Level::DEBUG, return = "Ok(<stream>)");
+            debug!(return = "Ok(<stream>)");
         }
         ctx.emit(|| &resp).await;
         resp
