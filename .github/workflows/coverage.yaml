@@ -16,7 +16,7 @@ concurrency:
 jobs:
   coverage:
     name: Coverage
-    runs-on: ubuntu-24.04
+    runs-on: xlarge-ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout
