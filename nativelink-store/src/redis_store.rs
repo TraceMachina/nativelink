@@ -54,7 +54,7 @@ use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use tokio::select;
 use tokio::time::sleep;
-use tracing::{Level, error, event, info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
