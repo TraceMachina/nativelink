@@ -23,7 +23,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
-use tracing::{Level, event};
+use tracing::error;
 
 use crate::store_manager::StoreManager;
 
@@ -135,7 +135,7 @@ impl StoreDriver for RefStore {
         match self.get_store() {
             Ok(store) => store.inner_store(key),
             Err(err) => {
-                event!(Level::ERROR, ?key, ?err, "Failed to get store for key",);
+                error!(?key, ?err, "Failed to get store for key",);
                 self
             }
         }

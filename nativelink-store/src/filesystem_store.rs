@@ -40,7 +40,7 @@ use nativelink_util::store_trait::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{Level, event};
+use tracing::{error, info, warn};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -126,12 +126,12 @@ impl Drop for EncodedFilePath {
             .active_drop_spawns
             .fetch_add(1, Ordering::Relaxed);
         background_spawn!("filesystem_delete_file", async move {
-            event!(Level::INFO, ?file_path, "File deleted",);
+            info!(?file_path, "File deleted",);
             let result = fs::remove_file(&file_path)
                 .await
                 .err_tip(|| format!("Failed to remove file {file_path:?}"));
             if let Err(err) = result {
-                event!(Level::ERROR, ?file_path, ?err, "Failed to delete file",);
+                error!(?file_path, ?err, "Failed to delete file",);
             }
             shared_context
                 .active_drop_spawns
@@ -240,13 +240,7 @@ impl FileEntry for FileEntryImpl {
                 if let Err(remove_err) = remove_result {
                     err = err.merge(remove_err);
                 }
-                event!(
-                    Level::WARN,
-                    ?err,
-                    ?block_size,
-                    ?temp_full_path,
-                    "Failed to create file",
-                );
+                warn!(?err, ?block_size, ?temp_full_path, "Failed to create file",);
                 Err(err)
                     .err_tip(|| format!("Failed to create {temp_full_path:?} in filesystem store"))
             })
@@ -358,8 +352,7 @@ impl LenEntry for FileEntryImpl {
                 to_full_path_from_key(&encoded_file_path.shared_context.temp_path, &new_key);
 
             if let Err(err) = fs::rename(&from_path, &to_path).await {
-                event!(
-                    Level::WARN,
+                warn!(
                     key = ?encoded_file_path.key,
                     ?from_path,
                     ?to_path,
@@ -367,8 +360,7 @@ impl LenEntry for FileEntryImpl {
                     "Failed to rename file",
                 );
             } else {
-                event!(
-                    Level::INFO,
+                info!(
                     key = ?encoded_file_path.key,
                     ?from_path,
                     ?to_path,
@@ -510,15 +502,9 @@ async fn add_files_to_cache<Fe: FileEntry>(
             let to_file: OsString = format!("{to_path}/{file_name}").into();
 
             if let Err(err) = rename_fn(&from_file, &to_file) {
-                event!(
-                    Level::WARN,
-                    ?from_file,
-                    ?to_file,
-                    ?err,
-                    "Failed to rename file",
-                );
+                warn!(?from_file, ?to_file, ?err, "Failed to rename file",);
             } else {
-                event!(Level::INFO, ?from_file, ?to_file, "Renamed file",);
+                info!(?from_file, ?to_file, "Renamed file",);
             }
         }
         Ok(())
@@ -553,12 +539,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
             )
             .await;
             if let Err(err) = result {
-                event!(
-                    Level::WARN,
-                    ?file_name,
-                    ?err,
-                    "Failed to add file to eviction cache",
-                );
+                warn!(?file_name, ?err, "Failed to add file to eviction cache",);
                 // Ignore result.
                 drop(fs::remove_file(format!("{path_root}/{file_name}")).await);
             }
@@ -601,7 +582,7 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
         while let Some(dir_entry) = read_dir_stream.next().await {
             let path = dir_entry?.path();
             if let Err(err) = fs::remove_file(&path).await {
-                event!(Level::WARN, ?path, ?err, "Failed to delete file",);
+                warn!(?path, ?err, "Failed to delete file",);
             }
         }
         Ok(())
@@ -785,13 +766,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             // Remember: At this point it is possible for another thread to have a reference to
             // `entry`, so we can't delete the file, only drop() should ever delete files.
             if let Err(err) = result {
-                event!(
-                    Level::ERROR,
-                    ?err,
-                    ?from_path,
-                    ?final_path,
-                    "Failed to rename file",
-                );
+                error!(?err, ?from_path, ?final_path, "Failed to rename file",);
                 // Warning: To prevent deadlock we need to release our lock or during `remove_if()`
                 // it will call `unref()`, which triggers a write-lock on `encoded_file_path`.
                 drop(encoded_file_path);
@@ -935,8 +910,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         let mut temp_file = entry.read_file_part(offset, read_limit).or_else(|err| async move {
             // If the file is not found, we need to remove it from the eviction map.
             if err.code == Code::NotFound {
-                event!(
-                    Level::ERROR,
+                error!(
                     ?err,
                     ?key,
                     "Entry was in our map, but not found on disk. Removing from map as a precaution, but process probably need restarted."

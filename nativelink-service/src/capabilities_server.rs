@@ -32,7 +32,7 @@ use nativelink_util::digest_hasher::default_digest_hasher_func;
 use nativelink_util::operation_state_manager::ClientStateManager;
 use nativelink_util::origin_event::OriginEventContext;
 use tonic::{Request, Response, Status};
-use tracing::{Level, event, instrument};
+use tracing::{Level, instrument, warn};
 
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 
@@ -70,8 +70,7 @@ impl CapabilitiesServer {
                         properties.push(platform_key.clone());
                     }
                 } else {
-                    event!(
-                        Level::WARN,
+                    warn!(
                         "Scheduler '{}' does not implement KnownPlatformPropertyProvider",
                         remote_execution_cfg.scheduler
                     );

@@ -44,7 +44,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
-use tracing::{Level, event, info_span, instrument};
+use tracing::{Level, error, info, info_span, instrument, warn};
 
 use crate::running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
@@ -215,8 +215,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                         Update::KillOperationRequest(kill_operation_request) => {
                             let operation_id = OperationId::from(kill_operation_request.operation_id);
                             if let Err(err) = self.running_actions_manager.kill_operation(&operation_id).await {
-                                event!(
-                                    Level::ERROR,
+                                error!(
                                     ?operation_id,
                                     ?err,
                                     "Failed to send kill request for operation"
@@ -250,8 +249,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         r
                                     })
                                     .and_then(|action| {
-                                        event!(
-                                            Level::INFO,
+                                        info!(
                                             operation_id = ?action.get_operation_id(),
                                             "Received request to run action"
                                         );
@@ -285,8 +283,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                             // Save in the action cache before notifying the scheduler that we've completed.
                                             if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
                                                 if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
-                                                    event!(
-                                                        Level::ERROR,
+                                                    error!(
                                                         ?err,
                                                         ?action_digest,
                                                         "Error saving action in store",
@@ -329,8 +326,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                     spawn!("worker_start_action", start_action_fut).map(move |res| {
                                         let res = res.err_tip(|| "Failed to launch spawn")?;
                                         if let Err(err) = &res {
-                                            event!(
-                                                Level::ERROR,
+                                            error!(
                                                 ?err,
                                                 "Error executing action",
                                             );
@@ -352,14 +348,14 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                 },
                 res = futures.next() => res.err_tip(|| "Keep-alive should always pending. Likely unable to send data to scheduler")??,
                 complete_msg = shutdown_rx.recv().fuse() => {
-                    event!(Level::WARN, "Worker loop reveiced shutdown signal. Shutting down worker...",);
+                    warn!("Worker loop reveiced shutdown signal. Shutting down worker...",);
                     let mut grpc_client = self.grpc_client.clone();
                     let worker_id = self.worker_id.clone();
                     let running_actions_manager = self.running_actions_manager.clone();
                     let complete_msg_clone = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?.clone();
                     let shutdown_future = async move {
                         if let Err(e) = grpc_client.going_away(GoingAwayRequest { worker_id }).await {
-                            event!(Level::ERROR, "Failed to send GoingAwayRequest: {e}",);
+                            error!("Failed to send GoingAwayRequest: {e}",);
                             return Err(e.into());
                         }
                         running_actions_manager.complete_actions(complete_msg_clone).await;
@@ -554,7 +550,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             .err_tip(|| "Could not unwrap sleep_fn in LocalWorker::run")?;
         let sleep_fn_pin = Pin::new(&sleep_fn);
         let error_handler = Box::pin(move |err| async move {
-            event!(Level::ERROR, ?err, "Error");
+            error!(?err, "Error");
             (sleep_fn_pin)(Duration::from_secs_f32(CONNECTION_RETRY_DELAY_S)).await;
         });
 
@@ -586,8 +582,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                         update_for_worker_stream,
                     ),
                 };
-            event!(
-                Level::WARN,
+            warn!(
                 worker_id = %inner.worker_id,
                 "Worker registered with scheduler"
             );
@@ -608,10 +603,10 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                         }
                         (sleep_fn_pin)(Duration::from_secs_f32(sleep_duration)).await;
                     }
-                    event!(Level::ERROR, ERROR_MSG);
+                    error!(ERROR_MSG);
                     return Err(err.append(ERROR_MSG));
                 }
-                event!(Level::ERROR, ?err, "Worker disconnected from scheduler");
+                error!(?err, "Worker disconnected from scheduler");
                 // Kill off any existing actions because if we re-connect, we'll
                 // get some more and it might resource lock us.
                 self.running_actions_manager.kill_all().await;

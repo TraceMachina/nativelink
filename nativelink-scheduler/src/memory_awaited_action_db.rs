@@ -30,7 +30,7 @@ use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::{Notify, mpsc, watch};
-use tracing::{Level, event};
+use tracing::{debug, error};
 
 use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
@@ -366,13 +366,12 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         action_events: impl IntoIterator<Item = ActionEvent>,
     ) -> NoEarlyReturn {
         for action in action_events {
-            event!(Level::DEBUG, ?action, "Handling action");
+            debug!(?action, "Handling action");
             match action {
                 ActionEvent::ClientDroppedOperation(operation_id) => {
                     // Cleanup operation_id_to_awaited_action.
                     let Some(tx) = self.operation_id_to_awaited_action.remove(&operation_id) else {
-                        event!(
-                            Level::ERROR,
+                        error!(
                             ?operation_id,
                             "operation_id_to_awaited_action does not have operation_id"
                         );
@@ -384,8 +383,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     {
                         connected_clients - 1
                     } else {
-                        event!(
-                            Level::ERROR,
+                        error!(
                             ?operation_id,
                             "connected_clients_for_operation_id does not have operation_id"
                         );
@@ -403,11 +401,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             .insert(operation_id, connected_clients);
                         continue;
                     }
-                    event!(
-                        Level::DEBUG,
-                        ?operation_id,
-                        "Clearing operation from state manager"
-                    );
+                    debug!(?operation_id, "Clearing operation from state manager");
                     let awaited_action = tx.borrow().clone();
                     // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
                     match &awaited_action.action_info().unique_qualifier {
@@ -418,8 +412,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             if !awaited_action.state().stage.is_finished()
                                 && maybe_awaited_action.is_none()
                             {
-                                event!(
-                                    Level::ERROR,
+                                error!(
                                     ?operation_id,
                                     ?awaited_action,
                                     ?action_key,
@@ -444,8 +437,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             operation_id: operation_id.clone(),
                         });
                     if maybe_sorted_awaited_action.is_none() {
-                        event!(
-                            Level::ERROR,
+                        error!(
                             ?operation_id,
                             ?sort_key,
                             "Expected maybe_sorted_awaited_action to have {sort_key:?}",
@@ -468,8 +460,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             });
                         }
                     } else {
-                        event!(
-                            Level::ERROR,
+                        error!(
                             ?client_id,
                             "client_operation_to_awaited_action does not have client_id",
                         );
@@ -553,8 +544,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 match maybe_awaited_action {
                     Some(removed_operation_id) => {
                         if &removed_operation_id != new_awaited_action.operation_id() {
-                            event!(
-                                Level::ERROR,
+                            error!(
                                 ?removed_operation_id,
                                 ?new_awaited_action,
                                 ?action_key,
@@ -563,8 +553,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         }
                     }
                     None => {
-                        event!(
-                            Level::ERROR,
+                        error!(
                             ?new_awaited_action,
                             ?action_key,
                             "action_info_hash_key_to_awaited_action out of sync, it should have had the unique_key",
@@ -708,8 +697,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         let (client_awaited_action, rx) =
             self.make_client_awaited_action(&operation_id.clone(), awaited_action);
 
-        event!(
-            Level::DEBUG,
+        debug!(
             ?client_operation_id,
             ?operation_id,
             ?client_awaited_action,
@@ -726,8 +714,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 .action_info_hash_key_to_awaited_action
                 .insert(unique_key, operation_id.clone());
             if let Some(old_value) = old_value {
-                event!(
-                    Level::ERROR,
+                error!(
                     ?operation_id,
                     ?old_value,
                     "action_info_hash_key_to_awaited_action already has unique_key"

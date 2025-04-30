@@ -51,7 +51,7 @@ use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use tokio::select;
 use tokio::time::sleep;
-use tracing::{Level, event};
+use tracing::{error, warn};
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
@@ -751,10 +751,7 @@ impl SchedulerSubscription for RedisSubscription {
 impl Drop for RedisSubscription {
     fn drop(&mut self) {
         let Some(receiver) = self.receiver.take() else {
-            event!(
-                Level::WARN,
-                "RedisSubscription has already been dropped, nothing to do."
-            );
+            warn!("RedisSubscription has already been dropped, nothing to do.");
             return; // Already dropped, nothing to do.
         };
         let key = receiver.borrow().clone();
@@ -765,8 +762,7 @@ impl Drop for RedisSubscription {
         };
         let mut subscribed_keys = subscribed_keys.write();
         let Some(value) = subscribed_keys.get(&key) else {
-            event!(
-                Level::ERROR,
+            error!(
                 "Key {key} was not found in subscribed keys when checking if it should be removed."
             );
             return;
@@ -841,7 +837,7 @@ impl RedisSubscriptionManager {
                 let mut rx = subscribe_client.message_rx();
                 loop {
                     if let Err(e) = subscribe_client.subscribe(&pub_sub_channel).await {
-                        event!(Level::ERROR, "Error subscribing to pattern - {e}");
+                        error!("Error subscribing to pattern - {e}");
                         return;
                     }
                     let mut reconnect_rx = subscribe_client.reconnect_rx();
@@ -861,29 +857,28 @@ impl RedisSubscriptionManager {
                                         if let RedisValue::String(s) = msg.value {
                                             s
                                         } else {
-                                            event!(Level::ERROR, "Received non-string message in RedisSubscriptionManager");
+                                            error!("Received non-string message in RedisSubscriptionManager");
                                             continue;
                                         }
                                     },
                                     Err(e) => {
                                         // Check to see if our parent has been dropped and if so kill spawn.
                                         if subscribed_keys_weak.upgrade().is_none() {
-                                            event!(Level::WARN, "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
+                                            warn!("It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
                                             return;
                                         };
-                                        event!(Level::ERROR, "Error receiving message in RedisSubscriptionManager reconnecting and flagging everything changed - {e}");
+                                        error!("Error receiving message in RedisSubscriptionManager reconnecting and flagging everything changed - {e}");
                                         break;
                                     }
                                 }
                             },
                             _ = &mut reconnect_fut => {
-                                event!(Level::WARN, "Redis reconnected flagging all subscriptions as changed and resuming");
+                                warn!("Redis reconnected flagging all subscriptions as changed and resuming");
                                 break;
                             }
                         };
                         let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
-                            event!(
-                                Level::WARN,
+                            warn!(
                                 "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn"
                             );
                             return;
@@ -898,8 +893,7 @@ impl RedisSubscriptionManager {
                     // If we reconnect or lag behind we might have had dirty keys, so we need to
                     // flag all of them as changed.
                     let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
-                        event!(
-                            Level::WARN,
+                        warn!(
                             "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn"
                         );
                         return;

@@ -46,7 +46,7 @@ use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{Request, Streaming};
-use tracing::{Level, event};
+use tracing::{error, info, warn};
 
 struct GrpcActionStateResult {
     client_operation_id: OperationId,
@@ -175,8 +175,7 @@ impl GrpcScheduler {
                 loop {
                     select!(
                         () = tx.closed() => {
-                            event!(
-                                Level::INFO,
+                            info!(
                                 "Client disconnected in GrpcScheduler"
                             );
                             return;
@@ -191,8 +190,7 @@ impl GrpcScheduler {
                             match maybe_action_state {
                                 Ok(response) => {
                                     if let Err(err) = tx.send(Arc::new(response)) {
-                                        event!(
-                                            Level::INFO,
+                                        info!(
                                             ?err,
                                             "Client error in GrpcScheduler"
                                         );
@@ -200,8 +198,7 @@ impl GrpcScheduler {
                                     }
                                 }
                                 Err(err) => {
-                                    event!(
-                                        Level::ERROR,
+                                    error!(
                                         ?err,
                                         "Error converting response to ActionState in GrpcScheduler"
                                     );
@@ -342,11 +339,7 @@ impl GrpcScheduler {
             )
             .boxed()),
             Err(err) => {
-                event!(
-                    Level::WARN,
-                    ?err,
-                    "Error looking up action with upstream scheduler"
-                );
+                warn!(?err, "Error looking up action with upstream scheduler");
                 Ok(futures::stream::empty().boxed())
             }
         }
