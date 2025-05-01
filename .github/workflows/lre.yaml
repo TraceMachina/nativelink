@@ -49,7 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [large-ubuntu-22.04]
+        os: [xlarge-ubuntu-24.04]
         toolchain: [lre-cc, lre-rs]
     name: Remote / ${{ matrix.toolchain }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
