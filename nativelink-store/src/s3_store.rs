@@ -444,9 +444,7 @@ where
             if jitter_amt == 0. {
                 return delay;
             }
-            let min = 1. - (jitter_amt / 2.);
-            let max = 1. + (jitter_amt / 2.);
-            delay.mul_f32(rand::rng().random_range(min..max))
+            delay.mul_f32(1. + jitter_amt * (rand::rng().random::<f32>() - 0.5))
         });
         let s3_client = {
             let http_client = TlsClient::new(&spec.clone(), jitter_fn.clone());

@@ -80,6 +80,26 @@ pub enum StoreSpec {
     ///   }
     ///   ```
     ///
+    /// 2. **Google Cloud Storage:**
+    ///    GCS store uses Google's GCS service as a backend to store
+    ///    the files. This configuration can be used to share files
+    ///    across multiple instances.
+    ///
+    ///   **Example JSON Config:**
+    ///   ```json
+    ///   "experimental_cloud_object_store": {
+    ///     "provider": "gcs",
+    ///     "bucket": "test-bucket",
+    ///     "key_prefix": "test-prefix-index/",
+    ///     "retry": {
+    ///       "max_retries": 6,
+    ///       "delay": 0.3,
+    ///       "jitter": 0.5
+    ///     },
+    ///     "multipart_max_concurrent_uploads": 10
+    ///   }
+    ///   ```
+    ///
     ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
 
     /// Verify store is used to apply verifications to an underlying
@@ -730,6 +750,7 @@ pub struct EvictionPolicy {
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub enum ExperimentalCloudObjectSpec {
     Aws(ExperimentalAwsSpec),
+    Gcs(ExperimentalGcsSpec),
 }
 
 impl Default for ExperimentalCloudObjectSpec {
@@ -748,6 +769,23 @@ pub struct ExperimentalAwsSpec {
     /// Bucket name to use as the backend.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub bucket: String,
+
+    /// Common retry and upload configuration
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalGcsSpec {
+    /// Bucket name to use as the backend.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+
+    /// Chunk size for resumable uploads.
+    ///
+    /// Default: 2MB
+    pub resumable_chunk_size: Option<usize>,
 
     /// Common retry and upload configuration
     #[serde(flatten)]
@@ -801,7 +839,7 @@ pub struct CommonObjectSpec {
     /// configuration will have http/1.1 and http/2 enabled for connection
     /// schemes. Http/2 should be disabled if environments have poor support
     /// or performance related to http/2. Safe to keep default unless
-    /// underlying network environment or S3 API servers specify otherwise.
+    /// underlying network environment, S3, or GCS API servers specify otherwise.
     ///
     /// Default: false
     #[serde(default)]
