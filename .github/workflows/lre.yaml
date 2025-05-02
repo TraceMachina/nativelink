@@ -4,10 +4,12 @@ name: Local Remote Execution
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'web/**'
   pull_request:
     branches: [main]
     paths-ignore:
-      - 'docs/**'
+      - 'web/**'
 
 permissions: read-all
 
