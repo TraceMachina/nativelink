@@ -354,3 +354,89 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn core::erro
         Ok(())
     }
 }
+#[nativelink_test]
+async fn build_tool_event_stream_termination_test() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let bep_server = make_bep_server(&store_manager)?;
+    let bep_store = get_bep_store(&store_manager)?;
+
+    let (request_tx, mut response_stream) = async {
+        let (tx, body) = ChannelBody::new();
+        let mut codec = ProstCodec::<PublishBuildToolEventStreamRequest, _>::default();
+        let stream = Streaming::new_request(codec.decoder(), body, None, None);
+        let stream = bep_server
+            .publish_build_tool_event_stream(Request::new(stream))
+            .await
+            .err_tip(|| "While invoking publish_build_tool_event_stream")?
+            .into_inner();
+
+        Ok::<_, Box<dyn core::error::Error>>((tx, stream))
+    }
+    .await?;
+
+    let stream_id = StreamId {
+        build_id: "termination-test-build-id".to_string(),
+        invocation_id: "termination-test-invocation-id".to_string(),
+        component: BuildComponent::Controller as i32,
+    };
+
+    let initial_request = PublishBuildToolEventStreamRequest {
+        ordered_build_event: Some(OrderedBuildEvent {
+            stream_id: Some(stream_id.clone()),
+            sequence_number: 1,
+            event: Some(BuildEvent {
+                event_time: Some(Timestamp::date(2024, 5, 3)?),
+                event: Some(Event::BuildEnqueued(BuildEnqueued { details: None })),
+            }),
+        }),
+        notification_keywords: vec!["testing".to_string()],
+        project_id: "test-project-id".to_string(),
+        check_preceding_lifecycle_events_present: false,
+    };
+
+    let encoded_request = encode_stream_proto(&initial_request)?;
+    request_tx.send(Frame::data(encoded_request)).await?;
+
+    let response = response_stream
+        .next()
+        .await
+        .err_tip(|| "Response stream closed unexpectedly")?
+        .err_tip(|| "While awaiting first response")?;
+
+    assert_eq!(response.sequence_number, 1);
+    assert_eq!(
+        response.stream_id,
+        initial_request
+            .ordered_build_event
+            .as_ref()
+            .unwrap()
+            .stream_id
+            .clone()
+    );
+
+    drop(request_tx);
+
+    let next_item = response_stream.next().await;
+    assert!(
+        next_item.is_none(),
+        "Expected response stream to end, but got: {next_item:?}"
+    );
+
+    let store_key = StoreKey::Str(Cow::Owned(format!(
+        "BepEvent:be:{}:{}:{}",
+        stream_id.build_id, stream_id.invocation_id, 1
+    )));
+
+    let (mut writer, mut reader) = make_buf_channel_pair();
+    bep_store.get_part(store_key, &mut writer, 0, None).await?;
+
+    let bytes = reader.recv().await?;
+    let decoded_event = BepEvent::decode(bytes)?;
+
+    assert_eq!(
+        decoded_event.event.unwrap(),
+        bep_event::Event::BuildToolEvent(initial_request.clone())
+    );
+
+    Ok(())
+}
