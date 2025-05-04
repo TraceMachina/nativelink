@@ -481,6 +481,6 @@ The `result` symlink contains a webpage with the visualized report.
 
 ## Independent benchmarks
 
-The [nativelink-benchmarks](https://github.com/skyrpex/nativelink-benchmarks) repository gathers benchmarking data for every commit in the NativeLink repository.
+The third-party repository [skyrpex/nativelink-benchmarks](https://github.com/skyrpex/nativelink-benchmarks) is a project that gathers benchmarking data for every commit in NativeLink.
 
 You can view the benchmark data evolution over time at [https://nativelink-benchmarks.vercel.app/](https://nativelink-benchmarks.vercel.app/).
