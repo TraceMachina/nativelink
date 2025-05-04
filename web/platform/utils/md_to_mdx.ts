@@ -299,13 +299,18 @@ function closeList(inList: boolean, processedLines: string[]): boolean {
 
 function escapeHtml(line: string): string {
   const htmlTagPattern = /^[<\s][^>]*>/g;
-  return htmlTagPattern.test(line)
-    ? line
-    : line
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/{/g, "[")
-        .replace(/}/g, "]");
+
+  if (htmlTagPattern.test(line)) {
+    return line;
+  }
+
+  let escapedLine = line.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  if (escapedLine.includes("//") || escapedLine.includes("/*")) {
+    escapedLine = escapedLine.replace(/{/g, "[").replace(/}/g, "]");
+  }
+
+  return escapedLine;
 }
 
 export async function transformMarkdownToMdx(
