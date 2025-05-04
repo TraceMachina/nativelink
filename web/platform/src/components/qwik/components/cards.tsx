@@ -1,6 +1,7 @@
+/** @jsxImportSource @builder.io/qwik */
 import { type JSXOutput, component$ } from "@builder.io/qwik";
 
-import { LinearGradient } from "./text";
+import { LinearGradient } from "./text.tsx";
 
 interface BorderlessCard {
   icon: JSXOutput;

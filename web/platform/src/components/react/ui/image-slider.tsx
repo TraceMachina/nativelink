@@ -1,7 +1,7 @@
 /** @jsxImportSource react */
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useState } from "react";
-import { cn } from "../aceternity/index";
+import { cn } from "../aceternity/index.ts";
 
 export const ImagesSlider = ({
   images,

@@ -97,6 +97,8 @@ export function transformGitHubMarkdown(content: RootContent[]): RootContent[] {
   });
 }
 
+const BLOCK_TYPE_REGEX = /^\[\!(\w+)\]/;
+
 function transformBlockquote(blockquote: Blockquote): RootContent | null {
   const firstParagraph = blockquote.children[0] as Paragraph;
   const firstText = extractTextFromNode(firstParagraph).trim();
@@ -107,7 +109,7 @@ function transformBlockquote(blockquote: Blockquote): RootContent | null {
     const cleanedContentText = cleanBlockTypeFromContent(
       contentText,
       blockType,
-      firstText.match(/^\[\!(\w+)\]/)?.[1] || "",
+      firstText.match(BLOCK_TYPE_REGEX)?.[1] || "",
     );
 
     return {
@@ -119,7 +121,7 @@ function transformBlockquote(blockquote: Blockquote): RootContent | null {
 }
 
 function extractBlockType(firstText: string): string | null {
-  const match = firstText.match(/^\[\!(\w+)\]/);
+  const match = firstText.match(BLOCK_TYPE_REGEX);
   if (match?.[1]) {
     let blockType = match[1];
     if (blockType.toUpperCase() === "WARNING") {
@@ -191,7 +193,7 @@ function removeValeAndGitCliffComments(markdown: string): string {
 }
 
 function processLines(lines: string[]): string[] {
-  const processedLines = [];
+  const processedLines: string[] = [];
   const block = {
     code: false,
     list: false,
@@ -255,6 +257,9 @@ function isCodeBlock(line: string): boolean {
   return trimmedLine.startsWith("```");
 }
 
+const LIST_REGEX = /^\d+\.\s+\*\*(.+)\*\*:/;
+const LIST_ITEM_REGEX = /^\s*-\s+(.+)/;
+
 function processListBlock(
   line: string,
   listBlock: boolean,
@@ -262,26 +267,25 @@ function processListBlock(
 ): boolean {
   let isListBlock = listBlock;
 
-  if (/^\d+\.\s+\*\*(.+)\*\*:/.test(line)) {
+  if (LIST_REGEX.test(line)) {
     isListBlock = closeList(isListBlock, processedLines);
     processedLines.push(line);
     processedLines.push('<ul className="list-disc list-inside pl-4">');
     return true;
   }
 
-  if (isListBlock && /^\s*-\s+(.+)/.test(line)) {
-    processedLines.push(line.replace(/^\s*-\s+(.+)/, "<li>$1</li>"));
+  if (isListBlock && LIST_ITEM_REGEX.test(line)) {
+    processedLines.push(line.replace(LIST_ITEM_REGEX, "<li>$1</li>"));
     return true;
   }
 
   return closeList(isListBlock, processedLines);
 }
 
+const ASIDE_REGEX = /^\[!(TIP|NOTE|WARNING|IMPORTANT|CAUTION)\]/;
+
 function processSpecialLine(line: string, processedLines: string[]): boolean {
-  if (
-    line.trim().startsWith(">") ||
-    /^\[!(TIP|NOTE|WARNING|IMPORTANT|CAUTION)\]/.test(line)
-  ) {
+  if (line.trim().startsWith(">") || ASIDE_REGEX.test(line)) {
     processedLines.push(line);
     return true;
   }
@@ -377,6 +381,8 @@ export function generateAssetImports(assets: string[]): RootContent[] {
   });
 }
 
+const CHAR_REGEX = /[^a-zA-Z0-9]/;
+
 // Helper function to convert file paths to PascalCase
 function transformToPascalCase(filePath: string): string {
   const fileName = filePath.split("/").pop()?.split(".")[0];
@@ -385,20 +391,20 @@ function transformToPascalCase(filePath: string): string {
   }
 
   return fileName
-    .split(/[^a-zA-Z0-9]/)
+    .split(CHAR_REGEX)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
     .join("");
 }
+
+const ALIGN_REGEX = /align=["'](center|left|right)["']/i;
 
 export function processTarget(
   tree: RootContent[],
   targetId: string,
 ): RootContent[] {
-  const alignRegex = /align=["'](center|left|right)["']/i;
-
   const content = tree.map((node, index, children) => {
     if (isMatchingTargetNode(node, targetId)) {
-      replaceAlignAttributeInNode(node, alignRegex);
+      replaceAlignAttributeInNode(node, ALIGN_REGEX);
       if (targetId === "logo") {
         transformImgSrc(node);
       }
@@ -412,6 +418,8 @@ export function processTarget(
 
   return content;
 }
+
+const MULTI_SPACE_REGEX = /\s+/;
 
 function ensureBadgeClasses(node: RootContent): void {
   if (isHtmlNode(node)) {
@@ -427,7 +435,7 @@ function ensureBadgeClasses(node: RootContent): void {
       ];
 
       // Split the existing classes into an array
-      const existingClasses = classes.trim().split(/\s+/);
+      const existingClasses = classes.trim().split(MULTI_SPACE_REGEX);
 
       // Add any missing required classes
       for (const requiredClass of requiredClasses) {

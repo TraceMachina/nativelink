@@ -35,6 +35,9 @@ stats.html
 deno.json
 utils/deno.d.ts
 
+# Generated Lighthouse data
+.lighthouseci/
+
 # Generated files
 src/content/docs/docs/config/configuration-intro.mdx
 src/content/docs/docs/contribute/docs.mdx

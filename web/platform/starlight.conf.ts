@@ -13,11 +13,18 @@ export const starlightConfig = {
     dark: "/src/assets/logo-dark.svg",
     replacesTitle: true,
   },
-  social: {
-    github: "https://github.com/TraceMachina/nativelink",
-    slack:
-      "https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A",
-  },
+  social: [
+    {
+      icon: "github",
+      label: "GitHub",
+      href: "https://github.com/TraceMachina/nativelink",
+    },
+    {
+      icon: "slack",
+      label: "Slack",
+      href: "https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A",
+    },
+  ],
   customCss: [
     "/styles/tailwind.css",
     "/styles/landing.css",

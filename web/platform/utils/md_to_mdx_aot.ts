@@ -1,4 +1,4 @@
-import { transformMarkdownToMdx } from "./md_to_mdx";
+import { transformMarkdownToMdx } from "./md_to_mdx.ts";
 
 async function readMarkdownFile(filePath: string): Promise<string> {
   try {
