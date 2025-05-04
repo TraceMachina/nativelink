@@ -58,7 +58,9 @@ use nativelink_util::operation_state_manager::ClientStateManager;
 use nativelink_util::origin_context::OriginContext;
 use nativelink_util::origin_event_middleware::OriginEventMiddlewareLayer;
 use nativelink_util::origin_event_publisher::OriginEventPublisher;
-use nativelink_util::shutdown_guard::{Priority, ShutdownGuard};
+#[cfg(target_family = "unix")]
+use nativelink_util::shutdown_guard::Priority;
+use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::{
     DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG, set_default_digest_size_health_check,
 };
@@ -993,7 +995,9 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.
     // Once all `oneshot::Sender` instances are dropped, the worker knows it can safely terminate.
     let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
+    #[cfg(target_family = "unix")]
     let shutdown_tx_clone = shutdown_tx.clone();
+    #[cfg(target_family = "unix")]
     let mut shutdown_guard = ShutdownGuard::default();
 
     #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]

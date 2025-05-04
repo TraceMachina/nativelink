@@ -15,6 +15,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+env:
+  RUSTFLAGS: -Dwarnings
+
 jobs:
   cargo-native:
     strategy:

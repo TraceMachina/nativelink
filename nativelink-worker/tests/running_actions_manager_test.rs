@@ -14,6 +14,7 @@
 
 use core::str::from_utf8;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+#[cfg(target_family = "unix")]
 use core::task::Poll;
 use core::time::Duration;
 use std::collections::HashMap;
@@ -25,7 +26,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, poll};
+use futures::prelude::*;
 use nativelink_config::cas_server::EnvironmentSource;
 use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
 use nativelink_error::{Code, Error, ResultExt, make_input_err};
@@ -45,10 +46,12 @@ use nativelink_store::ac_utils::{get_and_decode_digest, serialize_and_upload_mes
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
+#[cfg(target_family = "unix")]
+use nativelink_util::action_messages::DirectoryInfo;
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
 use nativelink_util::action_messages::SymlinkInfo;
 use nativelink_util::action_messages::{
-    ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
+    ActionResult, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
 };
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
@@ -447,7 +450,7 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     {
@@ -569,7 +572,7 @@ async fn ensure_output_files_full_directories_are_created_test()
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     {
@@ -693,7 +696,7 @@ async fn blake3_upload_files() -> Result<(), Box<dyn core::error::Error>> {
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     let action_result = {
@@ -873,7 +876,7 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn core::error::E
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     let action_result = {
@@ -1054,7 +1057,7 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn core::error::Error>
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     let queued_timestamp = make_system_time(1000);
@@ -1261,7 +1264,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn core::error::Err
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     let queued_timestamp = make_system_time(1000);
@@ -1478,7 +1481,7 @@ async fn kill_ends_action() -> Result<(), Box<dyn core::error::Error>> {
 
     #[cfg(target_family = "unix")]
     loop {
-        assert_eq!(poll!(&mut run_action_fut), Poll::Pending);
+        assert_eq!(futures::poll!(&mut run_action_fut), Poll::Pending);
         tokio::task::yield_now().await;
         match fs::metadata(&process_started_file).await {
             Ok(_) => break,
@@ -2499,7 +2502,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn co
                 now_fn: test_monotonic_clock,
                 sleep_fn: |duration| {
                     SENT_TIMEOUT.store(duration.as_millis() as i64, Ordering::Relaxed);
-                    Box::pin(futures::future::pending())
+                    Box::pin(future::pending())
                 },
             },
         )?);
@@ -2581,7 +2584,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn co
                 now_fn: test_monotonic_clock,
                 sleep_fn: |duration| {
                     SENT_TIMEOUT.store(duration.as_millis() as i64, Ordering::Relaxed);
-                    Box::pin(futures::future::pending())
+                    Box::pin(future::pending())
                 },
             },
         )?);
@@ -2663,7 +2666,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn co
                 now_fn: test_monotonic_clock,
                 sleep_fn: |duration| {
                     SENT_TIMEOUT.store(duration.as_millis() as i64, Ordering::Relaxed);
-                    Box::pin(futures::future::pending())
+                    Box::pin(future::pending())
                 },
             },
         )?);
@@ -2871,7 +2874,7 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn core::er
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
 
@@ -3039,7 +3042,7 @@ async fn unix_executable_file_test() -> Result<(), Box<dyn core::error::Error>> 
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     // Create and run an action which
@@ -3228,7 +3231,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn core::error::Error>> 
     fs::create_dir_all(&root_action_directory).await?;
 
     // Take all but one FD permit away.
-    let _permits = futures::stream::iter(1..fs::OPEN_FILE_SEMAPHORE.available_permits())
+    let _permits = stream::iter(1..fs::OPEN_FILE_SEMAPHORE.available_permits())
         .then(|_| fs::OPEN_FILE_SEMAPHORE.acquire())
         .try_collect::<Vec<_>>()
         .await?;
@@ -3251,7 +3254,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn core::error::Error>> 
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     let action_result = {
@@ -3435,7 +3438,7 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
             // otherwise return pending and fail the test.
             sleep_fn: |duration| {
                 assert_eq!(duration.as_secs(), ACTION_TIMEOUT as u64);
-                Box::pin(futures::future::ready(()))
+                Box::pin(future::ready(()))
             },
         },
     )?);
