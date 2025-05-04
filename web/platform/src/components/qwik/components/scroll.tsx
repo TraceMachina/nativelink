@@ -5,19 +5,24 @@ export const ScrollTracker = component$((props: { scrolled: boolean }) => {
   const scrolled = useSignal<boolean>(props.scrolled);
 
   useVisibleTask$(() => {
-    scroll(({ y }) => {
-      const wasScrolled = scrolled.value;
-      const isScrolled = y.current > 0;
+    const cleanup = scroll((progress) => {
+      // Progress is a value between 0 and 1
+      // Consider scrolled if we're even slightly scrolled down
+      const isScrolled = progress > 0;
 
-      if (wasScrolled !== isScrolled) {
+      if (scrolled.value !== isScrolled) {
         scrolled.value = isScrolled;
-
-        // Dispatch custom event with the boolean value
         document.dispatchEvent(
           new CustomEvent("scrolled", { detail: scrolled.value }),
         );
       }
     });
+
+    return () => {
+      if (typeof cleanup === "function") {
+        cleanup();
+      }
+    };
   });
 
   return <></>;

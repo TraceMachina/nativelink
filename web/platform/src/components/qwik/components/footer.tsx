@@ -140,6 +140,7 @@ export const Footer = component$(() => {
                   placeholder="Enter email address"
                   bind:value={email}
                   required={true}
+                  autocomplete="email"
                 />
                 {message.value && (
                   <div

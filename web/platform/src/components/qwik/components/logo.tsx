@@ -1,5 +1,5 @@
 import { component$ } from "@builder.io/qwik";
-import logoDark from "src/assets/logo-dark.svg";
+import logoDark from "./src/assets/logo-dark.svg";
 
 export const Logo = component$(() => {
   return (

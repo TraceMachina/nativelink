@@ -1,5 +1,5 @@
-import { generateAstroContent } from "./metaphase";
-import type { Crate } from "./rustdoc_types";
+import { generateAstroContent } from "./metaphase.ts";
+import type { Crate } from "./rustdoc_types.ts";
 
 export async function generateDocs(config: {
   crateDataPath: string;

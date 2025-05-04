@@ -1,8 +1,8 @@
 import { component$, useVisibleTask$ } from "@builder.io/qwik";
 
-import { Label, LinearGradient } from "../components/text";
+import { Label, LinearGradient } from "../components/text.tsx";
 
-import { BackgroundVideo } from "../components/video";
+import { BackgroundVideo } from "../components/video.tsx";
 
 const team = [
   {
