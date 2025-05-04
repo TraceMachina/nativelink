@@ -50,6 +50,7 @@ use tonic::{Request, Streaming};
 const BEP_STORE_NAME: &str = "main_bep";
 
 /// Utility function to construct a [`StoreManager`]
+#[expect(clippy::future_not_send, reason = "not an issue for tests")]
 async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     let store_manager = Arc::new(StoreManager::new());
     store_manager.add_store(
@@ -276,7 +277,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn core::erro
                     }),
                 }),
                 notification_keywords: vec!["testing".to_string()],
-                project_id: project_id.clone(),
+                project_id,
                 check_preceding_lifecycle_events_present: false,
             },
         ];

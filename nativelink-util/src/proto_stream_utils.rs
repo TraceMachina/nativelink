@@ -50,7 +50,7 @@ where
     T: Stream<Item = Result<WriteRequest, E>> + Unpin,
     E: Into<Error>,
 {
-    pub async fn from(mut stream: T) -> Result<WriteRequestStreamWrapper<T>, Error> {
+    pub async fn from(mut stream: T) -> Result<Self, Error> {
         let first_msg = stream
             .next()
             .await
@@ -66,7 +66,7 @@ where
             })?
             .to_owned();
 
-        Ok(WriteRequestStreamWrapper {
+        Ok(Self {
             resource_info,
             bytes_received: 0,
             stream,

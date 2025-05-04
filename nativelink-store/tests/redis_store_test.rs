@@ -1022,7 +1022,7 @@ async fn test_redis_fingerprint_metric() -> Result<(), Error> {
     };
 
     let root_metrics = Arc::new(RwLock::new(RootMetricsTest {
-        stores: store_manager.clone(),
+        stores: store_manager,
     }));
 
     let (layer, output_metrics) = MetricsCollectorLayer::new();

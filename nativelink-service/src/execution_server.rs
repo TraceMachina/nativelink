@@ -65,7 +65,7 @@ impl NativelinkOperationId {
         let (instance_name, name) = name
             .rsplit_once('/')
             .err_tip(|| "Expected instance_name and name to be separated by '/'")?;
-        Ok(NativelinkOperationId::new(
+        Ok(Self::new(
             instance_name.to_string(),
             OperationId::from(name),
         ))
@@ -202,7 +202,7 @@ impl ExecutionServer {
         Ok(Self { instance_infos })
     }
 
-    pub fn into_service(self) -> Server<ExecutionServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 

@@ -72,14 +72,14 @@ fn make_temp_path(data: &str) -> String {
     #[cfg(target_family = "unix")]
     return format!(
         "{}/{}/{}",
-        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
         rand::rng().random::<u64>(),
         data
     );
     #[cfg(target_family = "windows")]
     return format!(
         "{}\\{}\\{}",
-        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
         rand::rng().random::<u64>(),
         data
     );
@@ -3052,7 +3052,7 @@ async fn unix_executable_file_test() -> Result<(), Box<dyn core::error::Error>> 
             arguments: vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                format!("touch {FILE_1_NAME} && chmod 700 {FILE_1_NAME}").to_string(),
+                format!("touch {FILE_1_NAME} && chmod 700 {FILE_1_NAME}"),
             ],
             output_paths: vec![FILE_1_NAME.to_string()],
             working_directory: ".".to_string(),

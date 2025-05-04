@@ -70,12 +70,12 @@ impl AcServer {
                 },
             );
         }
-        Ok(AcServer {
+        Ok(Self {
             stores: stores.clone(),
         })
     }
 
-    pub fn into_service(self) -> Server<AcServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 

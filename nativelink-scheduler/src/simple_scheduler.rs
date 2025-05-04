@@ -443,7 +443,7 @@ impl SimpleScheduler {
                     }
                     // Unreachable.
                 });
-            SimpleScheduler {
+            Self {
                 matching_engine_state_manager: state_manager.clone(),
                 client_state_manager: state_manager.clone(),
                 worker_scheduler,

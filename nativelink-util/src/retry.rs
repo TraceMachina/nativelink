@@ -28,7 +28,7 @@ struct ExponentialBackoff {
 
 impl ExponentialBackoff {
     const fn new(base: Duration) -> Self {
-        ExponentialBackoff { current: base }
+        Self { current: base }
     }
 }
 
@@ -90,7 +90,7 @@ const fn to_error_code(code: Code) -> ErrorCode {
 
 impl Retrier {
     pub fn new(sleep_fn: SleepFn, jitter_fn: JitterFn, config: Retry) -> Self {
-        Retrier {
+        Self {
             sleep_fn,
             jitter_fn,
             config,
@@ -168,7 +168,7 @@ impl Retrier {
                         }
                         (self.sleep_fn)(
                             iter.next()
-                                .ok_or(err.append(format!("On attempt {attempt}")))?,
+                                .ok_or_else(|| err.append(format!("On attempt {attempt}")))?,
                         )
                         .await;
                     }

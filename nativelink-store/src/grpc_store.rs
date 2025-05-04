@@ -102,7 +102,7 @@ impl GrpcStore {
         }
 
         let jitter_fn = Arc::new(jitter_fn);
-        Ok(Arc::new(GrpcStore {
+        Ok(Arc::new(Self {
             instance_name: spec.instance_name.clone(),
             store_type: spec.store_type,
             retrier: Retrier::new(

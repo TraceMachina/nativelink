@@ -254,6 +254,7 @@ fn is_executable(metadata: &std::fs::Metadata, _full_path: &impl AsRef<Path>) ->
     (metadata.mode() & 0o111) != 0
 }
 
+#[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
 async fn upload_file(
     cas_store: Pin<&impl StoreLike>,
     full_path: impl AsRef<Path> + Debug,
@@ -1431,10 +1432,8 @@ impl UploadActionResults {
         action_result: &ActionResult,
         treat_infra_error_as_failure: bool,
     ) -> bool {
-        let mut did_fail = action_result.exit_code != 0;
-        if treat_infra_error_as_failure && action_result.error.is_some() {
-            did_fail = true;
-        }
+        let did_fail = action_result.exit_code != 0
+            || (treat_infra_error_as_failure && action_result.error.is_some());
         match strategy {
             UploadCacheResultsStrategy::SuccessOnly => !did_fail,
             UploadCacheResultsStrategy::Never => false,

@@ -45,6 +45,7 @@ const HASH2: &str = "9993456789abcdef000000000000000000000000000000000123456789a
 const HASH3: &str = "7773456789abcdef000000000000000000000000000000000123456789abc777";
 const BAD_HASH: &str = "BAD_HASH";
 
+#[expect(clippy::future_not_send, reason = "not an issue for tests")]
 async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     let store_manager = Arc::new(StoreManager::new());
     store_manager.add_store(

@@ -33,10 +33,10 @@ pub struct FetchServer {}
 
 impl FetchServer {
     pub const fn new(_config: &FetchConfig, _store_manager: &StoreManager) -> Result<Self, Error> {
-        Ok(FetchServer {})
+        Ok(Self {})
     }
 
-    pub fn into_service(self) -> Server<FetchServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 

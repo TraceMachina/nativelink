@@ -333,13 +333,13 @@ trait CodeExt {
 impl CodeExt for Code {
     fn into_error_kind(self) -> std::io::ErrorKind {
         match self {
-            Code::Aborted => std::io::ErrorKind::Interrupted,
-            Code::AlreadyExists => std::io::ErrorKind::AlreadyExists,
-            Code::DeadlineExceeded => std::io::ErrorKind::TimedOut,
-            Code::InvalidArgument => std::io::ErrorKind::InvalidInput,
-            Code::NotFound => std::io::ErrorKind::NotFound,
-            Code::PermissionDenied => std::io::ErrorKind::PermissionDenied,
-            Code::Unavailable => std::io::ErrorKind::ConnectionRefused,
+            Self::Aborted => std::io::ErrorKind::Interrupted,
+            Self::AlreadyExists => std::io::ErrorKind::AlreadyExists,
+            Self::DeadlineExceeded => std::io::ErrorKind::TimedOut,
+            Self::InvalidArgument => std::io::ErrorKind::InvalidInput,
+            Self::NotFound => std::io::ErrorKind::NotFound,
+            Self::PermissionDenied => std::io::ErrorKind::PermissionDenied,
+            Self::Unavailable => std::io::ErrorKind::ConnectionRefused,
             _ => std::io::ErrorKind::Other,
         }
     }

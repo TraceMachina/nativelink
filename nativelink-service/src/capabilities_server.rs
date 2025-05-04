@@ -78,12 +78,12 @@ impl CapabilitiesServer {
             }
             supported_node_properties_for_instance.insert(instance_name.clone(), properties);
         }
-        Ok(CapabilitiesServer {
+        Ok(Self {
             supported_node_properties_for_instance,
         })
     }
 
-    pub fn into_service(self) -> Server<CapabilitiesServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 }

@@ -167,7 +167,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
     }
 
     async fn run(
-        &mut self,
+        &self,
         update_for_worker_stream: Streaming<UpdateForWorker>,
         shutdown_rx: &mut broadcast::Receiver<ShutdownGuard>,
     ) -> Result<(), Error> {
@@ -230,7 +230,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let maybe_instance_name = execute_request.map(|v| v.instance_name.clone());
                             let action_digest = execute_request.and_then(|v| v.action_digest.clone());
                             let digest_hasher = execute_request
-                                .ok_or(make_input_err!("Expected execute_request to be set"))
+                                .ok_or_else(|| make_input_err!("Expected execute_request to be set"))
                                 .and_then(|v| DigestHasherFunc::try_from(v.digest_function))
                                 .err_tip(|| "In LocalWorkerImpl::new()")?;
 
@@ -565,23 +565,22 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             };
 
             // Next register our worker with the scheduler.
-            let (mut inner, update_for_worker_stream) =
-                match self.register_worker(&mut client).await {
-                    Err(e) => {
-                        (error_handler)(e).await;
-                        continue; // Try to connect again.
-                    }
-                    Ok((worker_id, update_for_worker_stream)) => (
-                        LocalWorkerImpl::new(
-                            &self.config,
-                            client,
-                            worker_id,
-                            self.running_actions_manager.clone(),
-                            self.metrics.clone(),
-                        ),
-                        update_for_worker_stream,
+            let (inner, update_for_worker_stream) = match self.register_worker(&mut client).await {
+                Err(e) => {
+                    (error_handler)(e).await;
+                    continue; // Try to connect again.
+                }
+                Ok((worker_id, update_for_worker_stream)) => (
+                    LocalWorkerImpl::new(
+                        &self.config,
+                        client,
+                        worker_id,
+                        self.running_actions_manager.clone(),
+                        self.metrics.clone(),
                     ),
-                };
+                    update_for_worker_stream,
+                ),
+            };
             warn!(
                 worker_id = %inner.worker_id,
                 "Worker registered with scheduler"

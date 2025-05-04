@@ -26,7 +26,7 @@ use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use pretty_assertions::assert_eq;
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BytesWrapper(Bytes);
 
 impl LenEntry for BytesWrapper {
@@ -43,8 +43,8 @@ impl LenEntry for BytesWrapper {
 
 impl From<Bytes> for BytesWrapper {
     #[inline]
-    fn from(bytes: Bytes) -> BytesWrapper {
-        BytesWrapper(bytes)
+    fn from(bytes: Bytes) -> Self {
+        Self(bytes)
     }
 }
 

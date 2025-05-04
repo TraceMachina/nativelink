@@ -127,6 +127,7 @@ variant-size-differences = "warn"
 
 [workspace.lints.clippy]
 alloc-instead-of-core = "deny"
+as-underscore = "deny"
 cast-lossless = "deny"
 default-trait-access = "deny"
 doc-markdown = "deny"
@@ -166,3 +167,26 @@ unreadable-literal = "deny"
 wildcard-imports = "deny"
 
 all = { level = "warn", priority = -1 }
+dbg-macro = "warn"
+decimal-literal-representation = "warn"
+explicit-auto-deref = "warn"
+# get-unwrap = "warn" # TODO(jhpratt) uncomment this
+# missing-docs-in-private-items = "warn" # TODO(jhpratt) uncomment this
+missing-enforced-import-renames = "warn"
+nursery = { level = "warn", priority = -1 }
+obfuscated-if-else = "warn"
+print-stdout = "warn"
+todo = "warn"
+unimplemented = "warn"
+unnested-or-patterns = "warn"
+# unwrap-in-result = "warn" # TODO(jhpratt) uncomment this
+# unwrap-used = "warn" # TODO(jhpratt) uncomment this
+use-debug = "warn"
+
+fallible-impl-from = { level = "allow", priority = 1 }          # TODO(jhpratt) remove this
+iter-with-drain = { level = "allow", priority = 1 }             # TODO(jhpratt) remove this
+option-if-let-else = { level = "allow", priority = 1 }          # suggests terrible code, overrides #![warn(clippy::nursery)]
+redundant-pub-crate = { level = "allow", priority = 1 }         # rust-lang/rust-clippy#5369, overrides #![warn(clippy::nursery)]
+significant-drop-tightening = { level = "allow", priority = 1 } # TODO(jhpratt) remove this
+too-long-first-doc-paragraph = { level = "allow" }              # TODO(jhpratt) remove this
+uninhabited-references = { level = "allow", priority = 1 }      # rust-lang/rust-clippy#11984

@@ -93,7 +93,7 @@ pub struct ResourceInfo<'a> {
 }
 
 impl<'a> ResourceInfo<'a> {
-    pub fn new(resource_name: &'a str, is_upload: bool) -> Result<ResourceInfo<'a>, Error> {
+    pub fn new(resource_name: &'a str, is_upload: bool) -> Result<Self, Error> {
         // The most amount of slashes there can be to get to "(compressed-)blobs" section is 7.
         let mut rparts = resource_name.rsplitn(7, '/');
         let mut output = ResourceInfo::default();

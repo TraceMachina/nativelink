@@ -214,6 +214,10 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         2000.into(),
     ];
     let mocks = Arc::new(MockRedisBackend::new());
+    #[expect(
+        clippy::string_lit_as_bytes,
+        reason = r#"avoids `b"foo".as_slice()`, which is hardly better"#
+    )]
     mocks
         .expect(
             MockCommand {

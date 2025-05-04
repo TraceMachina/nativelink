@@ -31,7 +31,7 @@ use tracing::info;
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics_utils::{Counter, CounterWithTime};
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 pub struct SerializedLRU<K> {
     pub data: Vec<(K, i32)>,
     pub anchor_time: u64,
@@ -168,7 +168,7 @@ where
     I: InstantWrapper,
 {
     pub fn new(config: &EvictionPolicy, anchor_time: I) -> Self {
-        EvictingMap {
+        Self {
             // We use unbounded because if we use the bounded version we can't call the delete
             // function on the LenEntry properly.
             state: Mutex::new(State {

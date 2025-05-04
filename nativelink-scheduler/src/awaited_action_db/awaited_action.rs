@@ -237,7 +237,7 @@ impl AwaitedActionSortKey {
         // This makes timestamp descending order instead of ascending.
         let timestamp = (insert_timestamp ^ u32::MAX).to_be_bytes();
 
-        AwaitedActionSortKey(u64::from_be_bytes([
+        Self(u64::from_be_bytes([
             priority[0], priority[1], priority[2], priority[3],
             timestamp[0], timestamp[1], timestamp[2], timestamp[3],
         ]))

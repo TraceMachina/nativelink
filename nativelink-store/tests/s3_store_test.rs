@@ -271,12 +271,15 @@ async fn simple_update_ac() -> Result<(), Error> {
             }
             tx.send_eof()
         })
-        .or_else(|e| {
-            // Printing error to make it easier to debug, since ordering
-            // of futures is not guaranteed.
-            eprintln!("Error updating or sending in spawn: {e:?}");
-            Err(e)
-        })
+        .or_else(
+            #[expect(clippy::use_debug)]
+            |e| {
+                // Printing error to make it easier to debug, since ordering
+                // of futures is not guaranteed.
+                eprintln!("Error updating or sending in spawn: {e:?}");
+                Err(e)
+            },
+        )
     });
 
     // Wait for all the data to be received by the s3 backend server.
@@ -634,8 +637,8 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
     }
 
     assert_eq!(
-        get_part_result.err_tip(|| "Expected get_part_result to pass")?,
-        "helloworld".as_bytes()
+        *get_part_result.err_tip(|| "Expected get_part_result to pass")?,
+        *b"helloworld"
     );
 
     mock_client.assert_requests_match(&[]);
@@ -706,7 +709,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
     )?;
 
     store.has_with_results(&keys, &mut results).await.unwrap();
-    assert_eq!(results, vec!(Some(0)));
+    assert_eq!(results, vec![Some(0)]);
 
     Ok(())
 }

@@ -132,6 +132,10 @@ pub struct AsyncCounterWrapper {
 // is now a group with the name of the group as the field so we
 // can attach multiple values on the same group, so we need to
 // manually implement the `MetricsComponent` trait to do so.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "complexity arises from macro expansion"
+)]
 impl MetricsComponent for AsyncCounterWrapper {
     fn publish(
         &self,

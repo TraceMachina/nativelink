@@ -186,7 +186,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
 fn make_temp_path(data: &str) -> String {
     format!(
         "{}/{}/{}",
-        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
         rand::rng().random::<u64>(),
         data
     )
@@ -937,7 +937,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
             .await
             .err_tip(|| "Failed to get_part"),
     );
-    assert_eq!(results, vec!(Some(0)));
+    assert_eq!(results, vec![Some(0)]);
 
     wait_for_empty_content_file(&content_path, digest, || async move {
         tokio::task::yield_now().await;
@@ -1121,6 +1121,7 @@ async fn get_file_size_uses_block_size() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn update_with_whole_file_closes_file() -> Result<(), Error> {
+    #[expect(clippy::collection_is_never_read)] // TODO(jhpratt) investigate
     let mut permits = vec![];
     // Grab all permits to ensure only 1 permit is available.
     {

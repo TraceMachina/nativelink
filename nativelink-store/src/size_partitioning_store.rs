@@ -36,7 +36,7 @@ pub struct SizePartitioningStore {
 
 impl SizePartitioningStore {
     pub fn new(spec: &SizePartitioningSpec, lower_store: Store, upper_store: Store) -> Arc<Self> {
-        Arc::new(SizePartitioningStore {
+        Arc::new(Self {
             partition_size: spec.size,
             lower_store,
             upper_store,

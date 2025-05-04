@@ -63,7 +63,7 @@ impl BepServer {
         Ok(Self { store })
     }
 
-    pub fn into_service(self) -> PublishBuildEventServer<BepServer> {
+    pub fn into_service(self) -> PublishBuildEventServer<Self> {
         PublishBuildEventServer::new(self)
     }
 

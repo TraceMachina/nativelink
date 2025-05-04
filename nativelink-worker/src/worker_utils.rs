@@ -26,6 +26,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use tokio::process;
 use tracing::info;
 
+#[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
 pub async fn make_connect_worker_request<S: BuildHasher>(
     worker_id_prefix: String,
     worker_properties: &HashMap<String, WorkerProperty, S>,

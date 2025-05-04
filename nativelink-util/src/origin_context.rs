@@ -352,9 +352,9 @@ impl<T> ContextAwareFuture<T> {
     /// active context.
     #[must_use = "futures do nothing unless you `.await` or poll them"]
     #[inline]
-    pub fn new_from_active(inner: Instrumented<T>) -> ContextAwareFuture<T> {
+    pub fn new_from_active(inner: Instrumented<T>) -> Self {
         if let Some(ctx) = ActiveOriginContext::get() {
-            ContextAwareFuture::new(Some(ctx), inner)
+            Self::new(Some(ctx), inner)
         } else {
             // Useful to get tracing stack trace.
             tracing::error!("OriginContext must be set");

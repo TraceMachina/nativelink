@@ -29,15 +29,15 @@ pub enum Priority {
 impl From<usize> for Priority {
     fn from(value: usize) -> Self {
         match value {
-            0 => Priority::P0,
-            1 => Priority::P1,
-            _ => Priority::LeastImportant,
+            0 => Self::P0,
+            1 => Self::P1,
+            _ => Self::LeastImportant,
         }
     }
 }
 
 impl From<Priority> for usize {
-    fn from(priority: Priority) -> usize {
+    fn from(priority: Priority) -> Self {
         match priority {
             Priority::P0 => 0,
             Priority::P1 => 1,

@@ -283,7 +283,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
             .await
             .err_tip(|| "Failed to get_part"),
     );
-    assert_eq!(results, vec!(Some(0)));
+    assert_eq!(results, vec![Some(0)]);
 
     Ok(())
 }

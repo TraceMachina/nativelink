@@ -94,7 +94,7 @@ impl Default for MockWorkerApiClient {
 
 impl MockWorkerApiClient {
     pub(crate) async fn expect_connect_worker(
-        &mut self,
+        &self,
         result: Result<Response<Streaming<UpdateForWorker>>, Status>,
     ) -> ConnectWorkerRequest {
         let mut rx_call_lock = self.rx_call.lock().await;
@@ -115,7 +115,7 @@ impl MockWorkerApiClient {
     }
 
     pub(crate) async fn expect_execution_response(
-        &mut self,
+        &self,
         result: Result<Response<()>, Status>,
     ) -> ExecuteResult {
         let mut rx_call_lock = self.rx_call.lock().await;
