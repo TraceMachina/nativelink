@@ -177,7 +177,7 @@ impl CasServer {
             .into_iter()
             .map(|digest| async move {
                 let digest_copy = DigestInfo::try_from(digest.clone())?;
-                // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
+                // TODO(aaronmondal) There is a security risk here of someone taking all the memory on the instance.
                 let result = store_ref
                     .get_part_unchunked(digest_copy, 0, None)
                     .await

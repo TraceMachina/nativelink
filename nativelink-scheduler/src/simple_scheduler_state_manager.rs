@@ -257,7 +257,7 @@ where
     action_db: T,
 
     /// Maximum number of times a job can be retried.
-    // TODO(allada) This should be a scheduler decorator instead
+    // TODO(aaronmondal) This should be a scheduler decorator instead
     // of always having it on every SimpleScheduler.
     #[metric(help = "Maximum number of times a job can be retried")]
     max_job_retries: usize,

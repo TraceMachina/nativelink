@@ -61,7 +61,7 @@ pub enum FileType {
 #[derive(Debug, MetricsComponent)]
 pub struct SharedContext {
     // Used in testing to know how many active drop() spawns are running.
-    // TODO(allada) It is probably a good idea to use a spin lock during
+    // TODO(aaronmondal) It is probably a good idea to use a spin lock during
     // destruction of the store to ensure that all files are actually
     // deleted (similar to how it is done in tests).
     #[metric(help = "Number of active drop spawns")]

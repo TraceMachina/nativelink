@@ -205,7 +205,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 "Got ConnectionResult in LocalWorker::run which should never happen"
                             ));
                         }
-                        // TODO(allada) We should possibly do something with this notification.
+                        // TODO(aaronmondal) We should possibly do something with this notification.
                         Update::Disconnect(()) => {
                             self.metrics.disconnects_received.inc();
                         }

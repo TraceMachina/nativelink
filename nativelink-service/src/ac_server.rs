@@ -89,7 +89,7 @@ impl AcServer {
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
 
-        // TODO(blaise.bruer) We should write a test for these errors.
+        // TODO(aaronmondal) We should write a test for these errors.
         let digest: DigestInfo = request
             .action_digest
             .clone()

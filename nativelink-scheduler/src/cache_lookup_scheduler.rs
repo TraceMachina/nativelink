@@ -147,7 +147,7 @@ impl ActionStateResult for CacheLookupActionStateResult {
     }
 
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
-        // TODO(allada) We should probably remove as_action_info()
+        // TODO(aaronmondal) We should probably remove as_action_info()
         // or implement it properly.
         return Err(make_err!(
             Code::Unimplemented,

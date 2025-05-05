@@ -153,7 +153,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
+        // TODO(aaronmondal) This is a bit of a hack to get around the lifetime issues with the
         // existence_cache. We need to convert the digests to owned values to be able to
         // insert them into the cache. In theory it should be able to elide this conversion
         // but it seems to be a bit tricky to get right.

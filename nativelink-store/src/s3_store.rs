@@ -603,13 +603,13 @@ where
             UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
         };
 
-        // Note(allada) It might be more optimal to use a different
+        // Note(aaronmondal) It might be more optimal to use a different
         // heuristic here, but for simplicity we use a hard coded value.
         // Anything going down this if-statement will have the advantage of only
         // 1 network request for the upload instead of minimum of 3 required for
         // multipart upload requests.
         //
-        // Note(allada) If the upload size is not known, we go down the multipart upload path.
+        // Note(aaronmondal) If the upload size is not known, we go down the multipart upload path.
         // This is not very efficient, but it greatly reduces the complexity of the code.
         if max_size < MIN_MULTIPART_SIZE && matches!(upload_size, UploadSizeInfo::ExactSize(_)) {
             let UploadSizeInfo::ExactSize(sz) = upload_size else {

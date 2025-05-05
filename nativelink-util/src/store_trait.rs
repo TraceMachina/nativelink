@@ -604,7 +604,7 @@ pub trait StoreDriver:
         _range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
         _handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
     ) -> Result<u64, Error> {
-        // TODO(allada) We should force all stores to implement this function instead of
+        // TODO(aaronmondal) We should force all stores to implement this function instead of
         // providing a default implementation.
         Err(make_err!(
             Code::Unimplemented,
@@ -649,7 +649,7 @@ pub trait StoreDriver:
 
     /// See: [`StoreLike::update_oneshot`] for details.
     async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
-        // TODO(blaise.bruer) This is extremely inefficient, since we have exactly
+        // TODO(aaronmondal) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
         let (mut tx, rx) = make_buf_channel_pair();
@@ -704,7 +704,7 @@ pub trait StoreDriver:
             .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
             .transpose()?;
 
-        // TODO(blaise.bruer) This is extremely inefficient, since we have exactly
+        // TODO(aaronmondal) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
         let (mut tx, mut rx) = make_buf_channel_pair();

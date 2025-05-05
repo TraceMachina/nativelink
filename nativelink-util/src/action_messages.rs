@@ -749,7 +749,7 @@ pub enum ActionStage {
     CacheCheck,
     /// Action has been accepted and waiting for worker to take it.
     Queued,
-    // TODO(allada) We need a way to know if the job was sent to a worker, but hasn't begun
+    // TODO(aaronmondal) We need a way to know if the job was sent to a worker, but hasn't begun
     // execution yet.
     /// Worker is executing the action.
     Executing,
@@ -1159,7 +1159,7 @@ impl ActionState {
         let metadata = ExecuteOperationMetadata {
             stage,
             action_digest: digest,
-            // TODO(blaise.bruer) We should support stderr/stdout streaming.
+            // TODO(aaronmondal) We should support stderr/stdout streaming.
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
             partial_execution_metadata: None,
