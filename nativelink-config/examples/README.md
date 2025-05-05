@@ -272,29 +272,25 @@ The `public` server consists of a `listener` object and a `services` object. The
       }
     },
     "services": {
-      "cas": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE"
-        }
-      },
-      "ac": {
-        "main": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "execution": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE",
+      "cas": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE"
+      }],
+      "ac": [{
+        "instance_name": "main",
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "execution": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+        "scheduler": "MAIN_SCHEDULER",
+      }],
+      "capabilities": [{
+        "instance_name": "main",
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER",
         }
-      },
-      "capabilities": {
-        "main": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
-          }
-        }
-      },
+      }],
       "bytestream": {
         "cas_stores": {
           "main": "WORKER_FAST_SLOW_STORE",
@@ -327,29 +323,25 @@ The `private` server consists of a `listener` object and a `services` object. Th
       }
     },
     "services": {
-      "cas": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE"
-        }
-      },
-      "ac": {
-        "main": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "execution": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE",
+      "cas": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE"
+      }],
+      "ac": [{
+        "instance_name": "main",
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "execution": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+        "scheduler": "MAIN_SCHEDULER",
+      }],
+      "capabilities": [{
+        "instance_name": "main",
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER",
         }
-      },
-      "capabilities": {
-        "main": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
-          }
-        }
-      },
+      }],
       "bytestream": {
         "cas_stores": {
           "main": "WORKER_FAST_SLOW_STORE",
@@ -508,29 +500,25 @@ Below, you will find a fully tested example that you can also find in [basic_cas
       }
     },
     "services": {
-      "cas": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE"
-        }
-      },
-      "ac": {
-        "main": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "execution": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE",
+      "cas": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE"
+      }],
+      "ac": [{
+        "instance_name": "main",
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "execution": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+        "scheduler": "MAIN_SCHEDULER",
+      }],
+      "capabilities": [{
+        "instance_name": "main",
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER",
         }
-      },
-      "capabilities": {
-        "main": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
-          }
-        }
-      },
+      }],
       "bytestream": {
         "cas_stores": {
           "main": "WORKER_FAST_SLOW_STORE",

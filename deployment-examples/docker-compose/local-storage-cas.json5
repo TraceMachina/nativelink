@@ -41,17 +41,13 @@
       }
     },
     "services": {
-      "cas": {
-        "": {
-          "cas_store": "CAS_MAIN_STORE"
-        }
-      },
-      "ac": {
-        "": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "capabilities": {},
+      "cas": [{
+        "cas_store": "CAS_MAIN_STORE"
+      }],
+      "ac": [{
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "capabilities": [],
       "bytestream": {
         "cas_stores": {
           "": "CAS_MAIN_STORE"
@@ -76,17 +72,13 @@
     // specified by the invoking tool (e.g. using
     // `--remote_instance_name=` for Bazel)
     "services": {
-      "cas": {
-        "": {
-          "cas_store": "CAS_MAIN_STORE"
-        }
-      },
-      "ac": {
-        "": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "capabilities": {},
+      "cas": [{
+        "cas_store": "CAS_MAIN_STORE"
+      }],
+      "ac": [{
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "capabilities": [],
       "bytestream": {
         "cas_stores": {
           "": "CAS_MAIN_STORE"
