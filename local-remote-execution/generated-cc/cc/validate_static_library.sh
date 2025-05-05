@@ -30,15 +30,16 @@ set -euo pipefail
 #    of nm because it is not in POSIX and demangled names may not be unique
 #    (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=35201).
 DUPLICATE_SYMBOLS=$(
-  "/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/nm" -A -g -P  "$1" |
-  sed -E -e 's/.*\[([^][]+)\]: (.+) ([A-TX-Z]) [a-f0-9]+ [a-f0-9]+/\1: \3 \2/g' -e t -e d |
-  LC_ALL=C sort -k 3 |
-  LC_ALL=C uniq -D -f 2 |
-  "/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/c++filt")
-if [[ -n "$DUPLICATE_SYMBOLS" ]]; then
-  >&2 echo "Duplicate symbols found in $1:"
-  >&2 echo "$DUPLICATE_SYMBOLS"
-  exit 1
+    "/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/nm" -A -g -P "$1" |
+        sed -E -e 's/.*\[([^][]+)\]: (.+) ([A-TX-Z]) [a-f0-9]+ [a-f0-9]+/\1: \3 \2/g' -e t -e d |
+        LC_ALL=C sort -k 3 |
+        LC_ALL=C uniq -D -f 2 |
+        "/nix/store/llp39hihpfs5xn8sqvhvlxy21hn9f5js-llvm-binutils-wrapper-20.1.1/bin/c++filt"
+)
+if [[ -n $DUPLICATE_SYMBOLS ]]; then
+    >&2 echo "Duplicate symbols found in $1:"
+    >&2 echo "$DUPLICATE_SYMBOLS"
+    exit 1
 else
-  touch "$2"
+    touch "$2"
 fi

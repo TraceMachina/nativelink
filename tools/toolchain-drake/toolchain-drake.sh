@@ -71,8 +71,8 @@ fi
 set +o pipefail
 SHA256_HASH=$(
     nix run .#nativelink-worker-toolchain-drake.copyTo docker://localhost:5001/nativelink-toolchain-drake:latest -- --dest-tls-verify=false 2>&1 |
-    grep "got:" |
-    grep -o 'sha256-[^[:space:]]*'
+        grep "got:" |
+        grep -o 'sha256-[^[:space:]]*'
 )
 set -o pipefail
 

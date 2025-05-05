@@ -22,9 +22,9 @@ OUTPUT=
 
 function parse_option() {
     local -r opt="$1"
-    if [[ "${OUTPUT}" = "1" ]]; then
+    if [[ ${OUTPUT} == "1" ]]; then
         OUTPUT=$opt
-    elif [[ "$opt" = "-o" ]]; then
+    elif [[ $opt == "-o" ]]; then
         # output is coming
         OUTPUT=1
     fi
@@ -32,9 +32,8 @@ function parse_option() {
 
 # let parse the option list
 for i in "$@"; do
-    if [[ "$i" = @* && -r "${i:1}" ]]; then
-        while IFS= read -r opt
-        do
+    if [[ $i == @* && -r ${i:1} ]]; then
+        while IFS= read -r opt; do
             parse_option "$opt"
         done < "${i:1}" || exit 1
     else
@@ -44,11 +43,10 @@ done
 
 # Set-up the environment
 
-
 # Call the C++ compiler
 /nix/store/6hch3rx1g4xqhpjc6p5chjpx53pwr5ii-customClang/bin/customClang "$@"
 
 # Generate an empty file if header processing succeeded.
-if [[ "${OUTPUT}" == *.h.processed ]]; then
-  echo -n > "${OUTPUT}"
+if [[ ${OUTPUT} == *.h.processed ]]; then
+    echo -n > "${OUTPUT}"
 fi
