@@ -129,29 +129,25 @@ memory and filesystem stores instead of S3 and Redis.
       }
     },
     "services": {
-      "cas": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE"
-        }
-      },
-      "ac": {
-        "main": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "execution": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE",
+      "cas": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE"
+      }],
+      "ac": [{
+        "instance_name": "main",
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "execution": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+        "scheduler": "MAIN_SCHEDULER",
+      }],
+      "capabilities": [{
+        "instance_name": "main",
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER",
         }
-      },
-      "capabilities": {
-        "main": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
-          }
-        }
-      },
+      }],
       "bytestream": {
         "cas_stores": {
           "main": "WORKER_FAST_SLOW_STORE",
@@ -305,29 +301,25 @@ memory and filesystem stores instead of S3 and Redis.
       }
     },
     "services": {
-      "cas": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE"
-        }
-      },
-      "ac": {
-        "main": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "execution": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE",
+      "cas": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE"
+      }],
+      "ac": [{
+        "instance_name": "main",
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "execution": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+        "scheduler": "MAIN_SCHEDULER",
+      }],
+      "capabilities": [{
+        "instance_name": "main",
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER",
         }
-      },
-      "capabilities": {
-        "main": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
-          }
-        }
-      },
+      }],
       "bytestream": {
         "cas_stores": {
           "main": "WORKER_FAST_SLOW_STORE",
