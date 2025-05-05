@@ -138,6 +138,13 @@ in {
     types = ["toml"];
   };
 
+  # Shell
+  shfmt = {
+    args = ["--indent" "4" "--space-redirects"];
+    enable = true;
+    inherit excludes;
+  };
+
   # Starlark
   bazel-buildifier-format = {
     description = "Format Starlark";

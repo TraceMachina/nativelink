@@ -21,7 +21,7 @@ export TMPDIR="${TEST_TMPDIR:-${TMPDIR:-/tmp}}"
 tsan_suppresions_file=$(mktemp -t tsan_suppressions.XXXXXX)
 trap "rm -f $tsan_suppresions_file" EXIT
 
-cat <<EOF > "$tsan_suppresions_file"
+cat << EOF > "$tsan_suppresions_file"
 race:std::rt::lang_start_internal
 EOF
 

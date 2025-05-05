@@ -36,14 +36,14 @@ else
     echo "Do you want to continue? (yes/no)"
     read answer
     answer=$(echo "$answer" | tr '[:upper:]' '[:lower:]')
-    if [[ "$answer" != "yes" ]]; then
+    if [[ $answer != "yes" ]]; then
         echo "Exiting."
         # Exit or handle "no" logic here
         exit 0
     fi
 
     # Add depot_tools to path
-    if [[ "$PATH" != *"/depot_tools"* ]]; then
+    if [[ $PATH != *"/depot_tools"* ]]; then
         cd ${HOME}
         git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
         echo 'export PATH="${HOME}/depot_tools:$PATH"' >> ${HOME}/.bashrc
@@ -65,4 +65,4 @@ gn gen --args="use_remoteexec=true reclient_cfg_dir=\"../../buildtools/reclient_
 NATIVELINK=$(kubectl get gtw nativelink-gateway -o=jsonpath='{.status.addresses[0].value}')
 
 echo "Starting autoninja build"
-RBE_service=${NATIVELINK}:80 RBE_cas_service=${NATIVELINK}:80 RBE_instance=""  RBE_reclient_timeout=60m RBE_exec_timeout=4m RBE_alsologtostderr=true RBE_service_no_security=true RBE_service_no_auth=true RBE_local_resource_fraction=0.00001 RBE_automatic_auth=false RBE_gcert_refresh_timeout=20 RBE_compression_threshold=-1 RBE_metrics_namespace="" RBE_platform= RBE_experimental_credentials_helper= RBE_experimental_credentials_helper_args= RBE_log_http_calls=true RBE_use_rpc_credentials=false RBE_exec_strategy=remote_local_fallback autoninja -v -j 50 -C out/Default cc_unittests
+RBE_service=${NATIVELINK}:80 RBE_cas_service=${NATIVELINK}:80 RBE_instance="" RBE_reclient_timeout=60m RBE_exec_timeout=4m RBE_alsologtostderr=true RBE_service_no_security=true RBE_service_no_auth=true RBE_local_resource_fraction=0.00001 RBE_automatic_auth=false RBE_gcert_refresh_timeout=20 RBE_compression_threshold=-1 RBE_metrics_namespace="" RBE_platform= RBE_experimental_credentials_helper= RBE_experimental_credentials_helper_args= RBE_log_http_calls=true RBE_use_rpc_credentials=false RBE_exec_strategy=remote_local_fallback autoninja -v -j 50 -C out/Default cc_unittests

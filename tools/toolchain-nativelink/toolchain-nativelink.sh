@@ -13,9 +13,9 @@ function ecr_login() {
 }
 
 # Check OS and calculate the SHA256 hash of the Dockerfile
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+if [[ $OSTYPE == "linux-gnu"* ]]; then
     IMAGE_TAG=$(sha256sum 'Dockerfile' | awk '{print $1}')
-elif [[ "$OSTYPE" == "darwin"* ]]; then
+elif [[ $OSTYPE == "darwin"* ]]; then
     IMAGE_TAG=$(shasum -a 256 'Dockerfile' | awk '{print $1}')
 else
     echo "Unsupported OS"

@@ -31,8 +31,8 @@ echo "WARNING: This script will modify and revert the flake.nix"
 sleep 3
 
 function ecr_login() {
-    aws ecr get-login-password --profile ${ECR_PROFILE} --region ${ECR_REGION} | \
-    docker login --username ${ECR_USER} --password-stdin ${ECR}
+    aws ecr get-login-password --profile ${ECR_PROFILE} --region ${ECR_REGION} |
+        docker login --username ${ECR_USER} --password-stdin ${ECR}
 }
 
 # Build a base image for buck2 actions.
@@ -75,10 +75,10 @@ fi
 set +o pipefail
 SHA256_HASH=$(
     nix run .#nativelink-worker-toolchain-buck2.copyTo \
-    docker://localhost:5001/nativelink-toolchain-buck2:latest \
-    -- --dest-tls-verify=false 2>&1 | \
-    grep "got:" | \
-    grep -o 'sha256-[^[:space:]]*'
+        docker://localhost:5001/nativelink-toolchain-buck2:latest \
+        -- --dest-tls-verify=false 2>&1 |
+        grep "got:" |
+        grep -o 'sha256-[^[:space:]]*'
 )
 set -o pipefail
 
