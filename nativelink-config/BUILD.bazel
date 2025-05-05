@@ -10,6 +10,7 @@ load(
 rust_library(
     name = "nativelink-config",
     srcs = [
+        "src/backcompat.rs",
         "src/cas_server.rs",
         "src/lib.rs",
         "src/schedulers.rs",

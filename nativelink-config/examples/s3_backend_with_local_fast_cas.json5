@@ -146,29 +146,25 @@
       }
     },
     "services": {
-      "cas": {
-        "main": {
-          "cas_store": "CAS_MAIN_STORE"
-        }
-      },
-      "ac": {
-        "main": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "execution": {
-        "main": {
-          "cas_store": "CAS_MAIN_STORE",
+      "cas": [{
+        "instance_name": "main",
+        "cas_store": "CAS_MAIN_STORE"
+      }],
+      "ac": [{
+        "instance_name": "main",
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "execution": [{
+        "instance_name": "main",
+        "cas_store": "CAS_MAIN_STORE",
+        "scheduler": "MAIN_SCHEDULER"
+      }],
+      "capabilities": [{
+        "instance_name": "main",
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER"
         }
-      },
-      "capabilities": {
-        "main": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER"
-          }
-        }
-      },
+      }],
       "bytestream": {
         "cas_stores": {
           "main": "CAS_MAIN_STORE"

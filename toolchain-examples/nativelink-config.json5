@@ -88,36 +88,28 @@
         "socket_address": "0.0.0.0:50051"
       }
     },
-    "services": {
-      "cas": {
-        "": {
+    "services": [
+     "cas": [{
           "cas_store": "WORKER_FAST_SLOW_STORE"
-        }
-      },
-      "ac": {
-        "": {
+      }],
+      "ac": [{
           "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "execution": {
-        "": {
+      }],
+      "execution": [{
           "cas_store": "WORKER_FAST_SLOW_STORE",
-          "scheduler": "MAIN_SCHEDULER",
-        }
-      },
-      "capabilities": {
-        "": {
+          "scheduler": "MAIN_SCHEDULER"
+      }],
+      "capabilities": [{
           "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
+            "scheduler": "MAIN_SCHEDULER"
           }
-        }
-      },
+      }],
       "bytestream": {
         "cas_stores": {
           "": "WORKER_FAST_SLOW_STORE",
         }
       }
-    }
+    ]
   }, {
     "name": "private_workers_servers",
     "listener": {

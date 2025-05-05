@@ -42,19 +42,17 @@ A very basic configuration that's a pure in-memory store is:
       }
     },
     "services": {
-      "cas": {
-        "main": {
-          "cas_store": "CAS_MAIN_STORE"
-        }
-      },
-      "ac": {
-        "main": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "capabilities": {
-        "main": {}
-      },
+      "cas": [{
+        "instance_name": "main",
+        "cas_store": "CAS_MAIN_STORE"
+      }],
+      "ac": [{
+        "instance_name": "main",
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "capabilities": [{
+        "instance_name": "main"
+      }],
       "bytestream": {
         "cas_stores": {
           "main": "CAS_MAIN_STORE",

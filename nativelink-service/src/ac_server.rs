@@ -17,7 +17,7 @@ use core::fmt::Debug;
 use std::collections::HashMap;
 
 use bytes::BytesMut;
-use nativelink_config::cas_server::{AcStoreConfig, InstanceName};
+use nativelink_config::cas_server::{AcStoreConfig, WithInstanceName};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::{
     ActionCache, ActionCacheServer as Server,
@@ -54,19 +54,19 @@ impl Debug for AcServer {
 
 impl AcServer {
     pub fn new(
-        config: &HashMap<InstanceName, AcStoreConfig>,
+        configs: &[WithInstanceName<AcStoreConfig>],
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
-        let mut stores = HashMap::with_capacity(config.len());
-        for (instance_name, ac_cfg) in config {
-            let store = store_manager.get_store(&ac_cfg.ac_store).ok_or_else(|| {
-                make_input_err!("'ac_store': '{}' does not exist", ac_cfg.ac_store)
+        let mut stores = HashMap::with_capacity(configs.len());
+        for config in configs {
+            let store = store_manager.get_store(&config.ac_store).ok_or_else(|| {
+                make_input_err!("'ac_store': '{}' does not exist", config.ac_store)
             })?;
             stores.insert(
-                instance_name.to_string(),
+                config.instance_name.to_string(),
                 AcStoreInfo {
                     store,
-                    read_only: ac_cfg.read_only,
+                    read_only: config.read_only,
                 },
             );
         }

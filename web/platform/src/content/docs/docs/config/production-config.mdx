@@ -25,64 +25,57 @@ At the top level of the CAS Config, we've stores and servers. Each server define
 Specifically, under servers, we've two separate servers defined:
 
 ```json
-"servers": [
- {
-   "listener": {
-     "http": {
-       "socket_address": "0.0.0.0:50051"
-     }
-   },
-   "services": {
-     "cas": {
-       "main": {
-         "cas_store": "cas_STORE"
-       }
-     },
-     "ac": {
-       "main": {
-         "ac_store": "AC_STORE"
-       }
-     },
-     "capabilities": {},
-     "bytestream": {
-       "cas_stores": {
-         "main": "cas_STORE",
-         "": "cas_STORE"
-       }
-     }
-   }
- }
-]
-
+"servers": [{
+  "listener": {
+    "http": {
+      "socket_address": "0.0.0.0:50051"
+    }
+  },
+  "services": {
+    "cas": [{
+        "instance_name": "main",
+        "cas_store": "cas_STORE"
+    }],
+    "ac": [{
+        "instance_name": "main",
+        "ac_store": "AC_STORE"
+    }],
+    "capabilities": [],
+    "bytestream": {
+      "cas_stores": {
+        "main": "cas_STORE",
+        "": "cas_STORE"
+      }
+    }
+  }
+}]
 ```
 
 Let’s focus on the main server that exposes the CAS and ActionCache services.
 ```json
- {
-   "listener": {
-     "http": {
-       "socket_address": "0.0.0.0:50051"
-     }
-   },
-   "services": {
-     "cas": {
-       "main": {
-         "cas_store": "cas_STORE"
-       }
-     },
-     "ac": {
-       "main": {
-         "ac_store": "AC_STORE"
-       }
-     },
-     "capabilities": {},
+{
+  "listener": {
+    "http": {
+      "socket_address": "0.0.0.0:50051"
+    }
+  },
+  "services": {
+    "cas": [{
+      "instance_name": "main",
+      "cas_store": "cas_STORE"
+    }],
+    "ac": [{
+      "instance_name": "main",
+      "ac_store": "AC_STORE"
+    }],
+    "capabilities": [],
      "bytestream": {
        "cas_stores": {
          "main": "cas_STORE"
        }
      }
-   }
- }
+  }
+}
 ```
 
 From this definition, we see that an HTTP listener binds to port 50051 on all network interfaces on the server. You can also Configure advanced HTTP settings on the listener, such as TLS, compression, and timeouts. In our cloud, we terminate TLS in our ingress controller, so we don't define a TLS listener, but NativeLink can be Configured to terminate TLS if so desired.
@@ -91,16 +84,12 @@ This server hosts four services: CAS, ac, capabilities, and bytestream. The capa
 
 You might be wondering what the “main” object under "CAS" and “AC” services means. In this case, it indicates the instance name, which means you need to pass --remote_instance_name=main. Alternatively, you can use the following Configuration so your Bazel clients don’t have to pass the --remote_instance_name parameter:
 ```json
-     "cas": {
-       "": {
-         "cas_store": "cas_STORE"
-       }
-     },
-     "ac": {
-       "": {
-         "ac_store": "AC_STORE"
-       }
-     }
+"cas": [{
+  "cas_store": "cas_STORE"
+}],
+"ac": [{
+  "ac_store": "AC_STORE"
+}]
 ```
 
 Now let’s turn our attention to the stores section of the CAS Configuration, starting with the ActionCache.
@@ -118,20 +107,19 @@ There exist a number of interesting hints about how the ActionCache should behav
 If we look at the ac service, we see it references a store named ac_STORE. The AC_STORE is defined as:
 
 ```json5
-"AC_STORE": {
- "completeness_checking": {
-   "backend": {
-     "ref_store": {
-       "name": "AC_FAST_SLOW_STORE"
-     }
-   },
-   "cas_store": {
-     "ref_store": {
-       "name": "cas_STORE"
-     }
-   }
- }
-}
+"AC_STORE": [{
+  "instance_name": "completeness_checking",
+  "backend": {
+    "ref_store": {
+      "name": "AC_FAST_SLOW_STORE"
+    }
+  },
+  "cas_store": {
+    "ref_store": {
+      "name": "cas_STORE"
+    }
+  }
+}]
 ```
 
 From this definition, we can tell that AC_STORE is a `completeness_checking` store. This is our first example of a wrapper store that performs some operation and then forwards on to other stores. From the reference documentation (https://docs.NativeLink.com/Configuration/Reference):
@@ -297,172 +285,170 @@ Here is the final CAS Config JSON without the 99 extra shards for writing to S3.
 ## Production CAS JSON
 ```json
 {
- "stores": {
-   "AC_FAST_SLOW_STORE": {
-     "fast_slow": {
-       "fast": {
-         "size_partitioning": {
-           "size": 1000,
-           "lower_store": {
-             "memory": {
-               "eviction_policy": {
-                 "max_bytes": 100000000,
-                 "max_count": 150000
-               }
-             }
-           },
-           "upper_store": {
-             "noop": {}
-           }
-         }
-       },
-       "slow": {
-         "redis_store": {
-           "addresses": [
-             "${REDIS_STORE_URL:-redis://redis-headless:6379}"
-           ]
-         }
-       }
-     }
-   },
-   "AC_STORE": {
-     "completeness_checking": {
-       "backend": {
-         "ref_store": {
-           "name": "AC_FAST_SLOW_STORE"
-         }
-       },
-       "cas_store": {
-         "ref_store": {
-           "name": "cas_STORE"
-         }
-       }
-     }
-   },
-   "cas_FAST_SLOW_STORE": {
-     "verify": {
-       "backend": {
-         "fast_slow": {
-           "fast": {
-             "size_partitioning": {
-               "size": 64000,
-               "upper_store": {
-                 "noop": {}
-               },
-               "lower_store": {
-                 "memory": {
-                   "eviction_policy": {
-                     "max_bytes": 1000000000,
-                     "max_count": 100000
-                   }
-                 }
-               }
-             }
-           },
-           "slow": {
-             "size_partitioning": {
-               "size": 1500000,
-               "lower_store": {
-                 "redis_store": {
-                   "addresses": [
-                     "${SHARED_REDIS_URL}"
-                   ]
-                 }
-               },
-               "upper_store": {
-                 "shard": {
-                   "stores": [
-                     {
-                       "store": {
-                         "experimental_s3_store": {
-                           "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
-                           "bucket": "${SHARED_cas_BUCKET:-not_set}",
-                           "key_prefix": "cas/0/",
-                           "retry": {
-                             "max_retries": 10,
-                             "delay": 0.3,
-                             "jitter": 0.5
-                           }
-                         }
-                       }
-                     }
-                   ]
-                 }
-               }
-             }
-           }
-         }
-       }
-     },
-     "verify_size": true,
-     "hash_verification_function": "sha256"
-   },
-   "cas_STORE": {
-     "existence_cache": {
-       "backend": {
-         "ref_store": {
-           "name": "cas_FAST_SLOW_STORE"
-         }
-       },
-       "eviction_policy": {
-         "max_count": 10000000,
-         "max_seconds": 1800
-       }
-     }
-   },
-   "BEP_STORE": {
-     "redis_store": {
-       "addresses": [
-         "${BEP_REDIS_STORE_URL:-redis://redis-headless:6379/2}"
-       ]
-     }
-   }
- },
- "servers": [
-   {
-     "listener": {
-       "http": {
-         "socket_address": "0.0.0.0:50051",
-         "compression": {
-           "send_compression_algorithm": "gzip",
-           "accepted_compression_algorithms": [
-             "gzip"
-           ]
-         },
-         "advanced_http": {
-           "experimental_http2_keep_alive_timeout": 1200
-         }
-       }
-     },
-     "services": {
-       "cas": {
-         "main": {
-           "cas_store": "cas_STORE"
-         }
-       },
-       "ac": {
-         "main": {
-           "ac_store": "AC_STORE"
-         }
-       },
-       "capabilities": {},
-       "bytestream": {
-         "cas_stores": {
-           "main": "cas_STORE"
-         }
-       }
-     }
-   },
-   {
-     "listener": {
-       "http": {
-         "socket_address": "0.0.0.0:50061"
-       }
-     },
-     "services": {
-       "health": {}
-     }
-   }
- ]
+  "stores": {
+    "AC_FAST_SLOW_STORE": {
+      "fast_slow": {
+        "fast": {
+          "size_partitioning": {
+            "size": 1000,
+            "lower_store": {
+              "memory": {
+                "eviction_policy": {
+                  "max_bytes": 100000000,
+                  "max_count": 150000
+                }
+              }
+            },
+            "upper_store": {
+              "noop": {}
+            }
+          }
+        },
+        "slow": {
+          "redis_store": {
+            "addresses": [
+              "${REDIS_STORE_URL:-redis://redis-headless:6379}"
+            ]
+          }
+        }
+      }
+    },
+    "AC_STORE": {
+      "completeness_checking": {
+        "backend": {
+          "ref_store": {
+            "name": "AC_FAST_SLOW_STORE"
+          }
+        },
+        "cas_store": {
+          "ref_store": {
+            "name": "cas_STORE"
+          }
+        }
+      }
+    },
+    "cas_FAST_SLOW_STORE": {
+      "verify": {
+        "backend": {
+          "fast_slow": {
+            "fast": {
+              "size_partitioning": {
+                "size": 64000,
+                "upper_store": {
+                  "noop": {}
+                },
+                "lower_store": {
+                  "memory": {
+                    "eviction_policy": {
+                      "max_bytes": 1000000000,
+                      "max_count": 100000
+                    }
+                  }
+                }
+              }
+            },
+            "slow": {
+              "size_partitioning": {
+                "size": 1500000,
+                "lower_store": {
+                  "redis_store": {
+                    "addresses": [
+                      "${SHARED_REDIS_URL}"
+                    ]
+                  }
+                },
+                "upper_store": {
+                  "shard": {
+                    "stores": [
+                      {
+                        "store": {
+                          "experimental_s3_store": {
+                            "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
+                            "bucket": "${SHARED_cas_BUCKET:-not_set}",
+                            "key_prefix": "cas/0/",
+                            "retry": {
+                              "max_retries": 10,
+                              "delay": 0.3,
+                              "jitter": 0.5
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "verify_size": true,
+      "hash_verification_function": "sha256"
+    },
+    "cas_STORE": {
+      "existence_cache": {
+        "backend": {
+          "ref_store": {
+            "name": "cas_FAST_SLOW_STORE"
+          }
+        },
+        "eviction_policy": {
+          "max_count": 10000000,
+          "max_seconds": 1800
+        }
+      }
+    },
+    "BEP_STORE": {
+      "redis_store": {
+        "addresses": [
+          "${BEP_REDIS_STORE_URL:-redis://redis-headless:6379/2}"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "listener": {
+        "http": {
+          "socket_address": "0.0.0.0:50051",
+          "compression": {
+            "send_compression_algorithm": "gzip",
+            "accepted_compression_algorithms": [
+              "gzip"
+            ]
+          },
+          "advanced_http": {
+            "experimental_http2_keep_alive_timeout": 1200
+          }
+        }
+      },
+      "services": [
+        "cas": [{
+          "instance_name": "main",
+          "cas_store": "cas_STORE"
+        }],
+        "ac": [{
+          "instance_name": "main",
+          "ac_store": "AC_STORE"
+        }],
+        "capabilities": [],
+        "bytestream": {
+          "cas_stores": {
+            "main": "cas_STORE"
+          }
+        }
+      ]
+    },
+    {
+      "listener": {
+        "http": {
+          "socket_address": "0.0.0.0:50061"
+        }
+      },
+      "services": {
+        "health": {}
+      }
+    }
+  ]
 }
 ```

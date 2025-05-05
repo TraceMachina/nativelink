@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nativelink_config::cas_server::{CapabilitiesConfig, InstanceName};
+use nativelink_config::cas_server::{CapabilitiesConfig, InstanceName, WithInstanceName};
 use nativelink_error::{Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::{
     Capabilities, CapabilitiesServer as Server,
@@ -43,13 +43,13 @@ pub struct CapabilitiesServer {
 
 impl CapabilitiesServer {
     pub async fn new(
-        config: &HashMap<InstanceName, CapabilitiesConfig>,
+        configs: &[WithInstanceName<CapabilitiesConfig>],
         scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
     ) -> Result<Self, Error> {
         let mut supported_node_properties_for_instance = HashMap::new();
-        for (instance_name, cfg) in config {
+        for config in configs {
             let mut properties = Vec::new();
-            if let Some(remote_execution_cfg) = &cfg.remote_execution {
+            if let Some(remote_execution_cfg) = &config.remote_execution {
                 let scheduler =
                     scheduler_map
                         .get(&remote_execution_cfg.scheduler)
@@ -61,10 +61,13 @@ impl CapabilitiesServer {
                         })?;
                 if let Some(props_provider) = scheduler.as_known_platform_property_provider() {
                     for platform_key in props_provider
-                        .get_known_properties(instance_name)
+                        .get_known_properties(&config.instance_name)
                         .await
                         .err_tip(|| {
-                            format!("Failed to get platform properties for {instance_name}")
+                            format!(
+                                "Failed to get platform properties for {}",
+                                config.instance_name
+                            )
                         })?
                     {
                         properties.push(platform_key.clone());
@@ -76,7 +79,7 @@ impl CapabilitiesServer {
                     );
                 }
             }
-            supported_node_properties_for_instance.insert(instance_name.clone(), properties);
+            supported_node_properties_for_instance.insert(config.instance_name.clone(), properties);
         }
         Ok(CapabilitiesServer {
             supported_node_properties_for_instance,

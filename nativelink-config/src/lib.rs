@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod backcompat;
 pub mod cas_server;
 pub mod schedulers;
 pub mod serde_utils;

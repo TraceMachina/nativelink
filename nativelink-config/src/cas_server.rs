@@ -32,6 +32,29 @@ pub type SchedulerRefName = String;
 /// Used when the config references `instance_name` in the protocol.
 pub type InstanceName = String;
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+pub struct WithInstanceName<T> {
+    #[serde(default)]
+    pub instance_name: InstanceName,
+    #[serde(flatten)]
+    pub config: T,
+}
+
+impl<T> core::ops::Deref for WithInstanceName<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.config
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct NamedConfig<Spec> {
+    pub name: String,
+    #[serde(flatten)]
+    pub spec: Spec,
+}
+
 #[derive(Deserialize, Debug, Default, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum HttpCompressionAlgorithm {
@@ -247,22 +270,26 @@ pub struct ServicesConfig {
     /// The Content Addressable Storage (CAS) backend config.
     /// The key is the `instance_name` used in the protocol and the
     /// value is the underlying CAS store config.
-    pub cas: Option<HashMap<InstanceName, CasStoreConfig>>,
+    #[serde(deserialize_with = "super::backcompat::opt_vec_with_instance_name")]
+    pub cas: Option<Vec<WithInstanceName<CasStoreConfig>>>,
 
     /// The Action Cache (AC) backend config.
     /// The key is the `instance_name` used in the protocol and the
     /// value is the underlying AC store config.
-    pub ac: Option<HashMap<InstanceName, AcStoreConfig>>,
+    #[serde(deserialize_with = "super::backcompat::opt_vec_with_instance_name")]
+    pub ac: Option<Vec<WithInstanceName<AcStoreConfig>>>,
 
     /// Capabilities service is required in order to use most of the
     /// bazel protocol. This service is used to provide the supported
     /// features and versions of this bazel GRPC service.
-    pub capabilities: Option<HashMap<InstanceName, CapabilitiesConfig>>,
+    #[serde(deserialize_with = "super::backcompat::opt_vec_with_instance_name")]
+    pub capabilities: Option<Vec<WithInstanceName<CapabilitiesConfig>>>,
 
     /// The remote execution service configuration.
     /// NOTE: This service is under development and is currently just a
     /// place holder.
-    pub execution: Option<HashMap<InstanceName, ExecutionConfig>>,
+    #[serde(deserialize_with = "super::backcompat::opt_vec_with_instance_name")]
+    pub execution: Option<Vec<WithInstanceName<ExecutionConfig>>>,
 
     /// This is the service used to stream data to and from the CAS.
     /// Bazel's protocol strongly encourages users to use this streaming
@@ -727,13 +754,6 @@ pub struct GlobalConfig {
     /// Default: 1024*1024 (1MiB)
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub default_digest_size_health_check: usize,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct NamedConfig<Spec> {
-    pub name: String,
-    #[serde(flatten)]
-    pub spec: Spec,
 }
 
 pub type StoreConfig = NamedConfig<StoreSpec>;
