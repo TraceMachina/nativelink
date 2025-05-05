@@ -111,7 +111,7 @@ impl Capabilities for CapabilitiesServer {
         let execution_capabilities =
             maybe_supported_node_properties.map(|props_for_instance| ExecutionCapabilities {
                 digest_function: default_digest_hasher_func().proto_digest_func().into(),
-                exec_enabled: true, // TODO(blaise.bruer) Make this configurable.
+                exec_enabled: true, // TODO(aaronmondal) Make this configurable.
                 execution_priority_capabilities: Some(PriorityCapabilities {
                     priorities: vec![PriorityRange {
                         min_priority: 0,

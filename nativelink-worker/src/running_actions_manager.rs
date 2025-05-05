@@ -577,7 +577,7 @@ struct RunningActionImplExecutionResult {
 #[derive(Debug)]
 struct RunningActionImplState {
     command_proto: Option<ProtoCommand>,
-    // TODO(allada) Kill is not implemented yet, but is instrumented.
+    // TODO(aaronmondal) Kill is not implemented yet, but is instrumented.
     // However, it is used if the worker disconnects to destroy current jobs.
     kill_channel_tx: Option<oneshot::Sender<()>>,
     kill_channel_rx: Option<oneshot::Receiver<()>>,
@@ -923,9 +923,9 @@ impl RunningActionImpl {
                     // Defuse our guard so it does not try to cleanup and make nessless logs.
                     drop(ScopeGuard::<_, _>::into_inner(child_process_guard));
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
-                    // TODO(allada) We should implement stderr/stdout streaming to client here.
+                    // TODO(aaronmondal) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
-                    // TODO(allada) There is a significant bug here. If we kill the action and the action creates
+                    // TODO(aaronmondal) There is a significant bug here. If we kill the action and the action creates
                     // child processes, it can create zombies. See: https://github.com/tracemachina/nativelink/issues/225
                     let (stdout, stderr) = if killed_action {
                         drop(timer);
@@ -1204,7 +1204,7 @@ impl RunningActionImpl {
                 stdout_digest,
                 stderr_digest,
                 execution_metadata,
-                server_logs: HashMap::default(), // TODO(allada) Not implemented.
+                server_logs: HashMap::default(), // TODO(aaronmondal) Not implemented.
                 error: state.error.clone(),
                 message: String::new(), // Will be filled in on cache_action_result if needed.
             });

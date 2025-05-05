@@ -35,10 +35,10 @@ use nativelink_util::store_trait::{
     slow_update_store_with_file,
 };
 
-// TODO(blaise.bruer) This store needs to be evaluated for more efficient memory usage,
+// TODO(aaronmondal) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
 
-// TODO(blaise.bruer) We should consider copying the data in the background to allow the
+// TODO(aaronmondal) We should consider copying the data in the background to allow the
 // client to hang up while the data is buffered. An alternative is to possibly make a
 // "BufferedStore" that could be placed on the "slow" store that would hang up early
 // if data is in the buffer.
@@ -88,7 +88,7 @@ impl FastSlowStore {
         if maybe_size_info.is_some() {
             return Ok(());
         }
-        // TODO(blaise.bruer) This is extremely inefficient, since we are just trying
+        // TODO(aaronmondal) This is extremely inefficient, since we are just trying
         // to send the stream to /dev/null. Maybe we could instead make a version of
         // the stream that can send to the drain more efficiently?
         let (tx, mut rx) = make_buf_channel_pair();
@@ -102,7 +102,7 @@ impl FastSlowStore {
 
     /// Returns the range of bytes that should be sent given a slice bounds
     /// offset so the output range maps the `received_range.start` to 0.
-    // TODO(allada) This should be put into utils, as this logic is used
+    // TODO(aaronmondal) This should be put into utils, as this logic is used
     // elsewhere in the code.
     pub fn calculate_range(
         received_range: &Range<u64>,
@@ -288,7 +288,7 @@ impl StoreDriver for FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        // TODO(blaise.bruer) Investigate if we should maybe ignore errors here instead of
+        // TODO(aaronmondal) Investigate if we should maybe ignore errors here instead of
         // forwarding the up.
         if self.fast_store.has(key.borrow()).await?.is_some() {
             self.metrics

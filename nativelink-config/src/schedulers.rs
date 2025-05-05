@@ -46,7 +46,7 @@ pub enum PropertyType {
 
     /// Does not restrict on this value and instead will be passed to the worker
     /// as an informational piece.
-    /// TODO(allada) In the future this will be used by the scheduler and worker
+    /// TODO(aaronmondal) In the future this will be used by the scheduler and worker
     /// to cause the scheduler to prefer certain workers over others, but not
     /// restrict them based on these values.
     Priority,

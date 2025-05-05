@@ -66,7 +66,7 @@ pub enum OrderDirection {
 /// The filters used to query operations from the state manager.
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OperationFilter {
-    // TODO(adams): create rust builder pattern?
+    // TODO(aaronmondal): create rust builder pattern?
     /// The stage(s) that the operation must be in.
     pub stages: OperationStageFlags,
 

@@ -40,7 +40,7 @@ use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
 fn get_digests_and_output_dirs(
     action_result: ProtoActionResult,
 ) -> Result<(Vec<StoreKey<'static>>, Vec<ProtoOutputDirectory>), Error> {
-    // TODO(allada) When `try_collect()` is stable we can use it instead.
+    // TODO(aaronmondal) When `try_collect()` is stable we can use it instead.
     let mut digest_iter = action_result
         .output_files
         .into_iter()
@@ -75,7 +75,7 @@ async fn check_output_directories<'a>(
             .err_tip(|| "Could not decode tree digest CompletenessCheckingStore::has")?;
         futures.push(async move {
             let tree = get_and_decode_digest::<ProtoTree>(cas_store, tree_digest.into()).await?;
-            // TODO(allada) When `try_collect()` is stable we can use it instead.
+            // TODO(aaronmondal) When `try_collect()` is stable we can use it instead.
             // https://github.com/rust-lang/rust/issues/94047
             let mut digest_iter = tree.children.into_iter().chain(tree.root).flat_map(|dir| {
                 dir.files

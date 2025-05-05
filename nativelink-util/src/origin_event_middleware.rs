@@ -33,7 +33,7 @@ use crate::origin_event::{ORIGIN_EVENT_COLLECTOR, OriginEventCollector, OriginMe
 
 /// Default identity header name.
 /// Note: If this is changed, the default value in the [`IdentityHeaderSpec`]
-// TODO(allada) This has a mirror in bep_server.rs.
+// TODO(aaronmondal) This has a mirror in bep_server.rs.
 // We should consolidate these.
 const DEFAULT_IDENTITY_HEADER: &str = "x-identity";
 

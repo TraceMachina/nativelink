@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "nativelink_proto"
 path = "genproto/lib.rs"
-# TODO(allada) We should support doctests.
+# TODO(aaronmondal) We should support doctests.
 doctest = false
 
 [dependencies]
