@@ -51,7 +51,6 @@ async fn insert_into_store<T: Message>(
     Ok(data_len.try_into().unwrap())
 }
 
-#[expect(clippy::future_not_send, reason = "not an issue for tests")]
 async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     let store_manager = Arc::new(StoreManager::new());
     store_manager.add_store(

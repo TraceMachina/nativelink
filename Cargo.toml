@@ -126,6 +126,13 @@ unused-qualifications = "warn"
 variant-size-differences = "warn"
 
 [workspace.lints.clippy]
+
+# Global configuration
+all = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Denies with default priority
 alloc-instead-of-core = "deny"
 as-underscore = "deny"
 cast-lossless = "deny"
@@ -165,15 +172,15 @@ uninlined-format-args = "deny"
 unnecessary-wraps = "deny"
 unreadable-literal = "deny"
 wildcard-imports = "deny"
+option-if-let-else = "deny"
 
-all = { level = "warn", priority = -1 }
+# Warnings with default priority
 dbg-macro = "warn"
 decimal-literal-representation = "warn"
 explicit-auto-deref = "warn"
 # get-unwrap = "warn" # TODO(jhpratt) uncomment this
 # missing-docs-in-private-items = "warn" # TODO(jhpratt) uncomment this
 missing-enforced-import-renames = "warn"
-nursery = { level = "warn", priority = -1 }
 obfuscated-if-else = "warn"
 print-stdout = "warn"
 todo = "warn"
@@ -183,10 +190,32 @@ unnested-or-patterns = "warn"
 # unwrap-used = "warn" # TODO(jhpratt) uncomment this
 use-debug = "warn"
 
+# Overrides
 fallible-impl-from = { level = "allow", priority = 1 }          # TODO(jhpratt) remove this
 iter-with-drain = { level = "allow", priority = 1 }             # TODO(jhpratt) remove this
-option-if-let-else = { level = "allow", priority = 1 }          # suggests terrible code, overrides #![warn(clippy::nursery)]
 redundant-pub-crate = { level = "allow", priority = 1 }         # rust-lang/rust-clippy#5369, overrides #![warn(clippy::nursery)]
 significant-drop-tightening = { level = "allow", priority = 1 } # TODO(jhpratt) remove this
 too-long-first-doc-paragraph = { level = "allow" }              # TODO(jhpratt) remove this
 uninhabited-references = { level = "allow", priority = 1 }      # rust-lang/rust-clippy#11984
+
+# TODO(aaronmondal): Remove these to get to pedantic.
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_possible_wrap = { level = "allow", priority = 1 }
+cast_precision_loss = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
+doc_link_with_quotes = { level = "allow", priority = 1 }
+from_iter_instead_of_collect = { level = "allow", priority = 1 }
+if_not_else = { level = "allow", priority = 1 }
+large_futures = { level = "allow", priority = 1 }
+missing_errors_doc = { level = "allow", priority = 1 }
+missing_fields_in_debug = { level = "allow", priority = 1 }
+missing_panics_doc = { level = "allow", priority = 1 }
+must_use_candidate = { level = "allow", priority = 1 }
+option_option = { level = "allow", priority = 1 }
+ref_option = { level = "allow", priority = 1 }
+similar_names = { level = "allow", priority = 1 }
+too_many_lines = { level = "allow", priority = 1 }
+unnecessary_semicolon = { level = "allow", priority = 1 }
+unused_async = { level = "allow", priority = 1 }
+unused_self = { level = "allow", priority = 1 }
+used_underscore_binding = { level = "allow", priority = 1 }

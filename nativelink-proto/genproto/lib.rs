@@ -21,6 +21,7 @@
     unused_qualifications,
     clippy::alloc_instead_of_core,
     clippy::default_trait_access,
+    clippy::derive_partial_eq_without_eq,
     clippy::doc_lazy_continuation,
     clippy::doc_markdown,
     clippy::doc_overindented_list_items,

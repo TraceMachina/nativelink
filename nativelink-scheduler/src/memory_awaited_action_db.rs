@@ -377,18 +377,21 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         );
                         continue;
                     };
-                    let connected_clients = if let Some(connected_clients) = self
+
+                    let connected_clients = self
                         .connected_clients_for_operation_id
                         .remove(&operation_id)
-                    {
-                        connected_clients - 1
-                    } else {
-                        error!(
-                            ?operation_id,
-                            "connected_clients_for_operation_id does not have operation_id"
+                        .map_or_else(
+                            || {
+                                error!(
+                                    ?operation_id,
+                                    "connected_clients_for_operation_id does not have operation_id"
+                                );
+                                0
+                            },
+                            |connected_clients| connected_clients - 1,
                         );
-                        0
-                    };
+
                     // Note: It is rare to have more than one client listening
                     // to the same action, so we assume that we are the last
                     // client and insert it back into the map if we detect that
