@@ -37,7 +37,7 @@
     "@beoe/rehype-mermaid": "^0.4.2",
     "@biomejs/biome": "1.9.4",
     "@builder.io/qwik": "^1.13.0",
-    "@deno/astro-adapter": "^0.2.1",
+    "@deno/astro-adapter": "^0.3.0",
     "@lhci/cli": "^0.14.0",
     "@lorenzo_lewis/starlight-utils": "^0.3.2",
     "@qwikdev/astro": "^0.7.12",
