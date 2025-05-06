@@ -100,7 +100,7 @@ pub struct Worker {
 }
 
 fn send_msg_to_worker(
-    tx: &mut UnboundedSender<UpdateForWorker>,
+    tx: &UnboundedSender<UpdateForWorker>,
     msg: update_for_worker::Update,
 ) -> Result<(), Error> {
     tx.send(UpdateForWorker { update: Some(msg) })
@@ -159,7 +159,7 @@ impl Worker {
     /// This should only be sent once and should always be the first item in the stream.
     pub fn send_initial_connection_result(&mut self) -> Result<(), Error> {
         send_msg_to_worker(
-            &mut self.tx,
+            &self.tx,
             update_for_worker::Update::ConnectionResult(ConnectionResult {
                 worker_id: self.id.clone().into(),
             }),
@@ -175,7 +175,7 @@ impl Worker {
             }
             WorkerUpdate::Disconnect => {
                 self.metrics.notify_disconnect.inc();
-                send_msg_to_worker(&mut self.tx, update_for_worker::Update::Disconnect(()))
+                send_msg_to_worker(&self.tx, update_for_worker::Update::Disconnect(()))
             }
         }
     }

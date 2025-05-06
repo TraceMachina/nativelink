@@ -47,7 +47,7 @@ impl<S> MetricsCollectorLayer<S> {
     pub fn new() -> (Self, Arc<Mutex<RootMetricCollectedMetrics>>) {
         let root_collected_metrics = Arc::new(Mutex::new(RootMetricCollectedMetrics::default()));
         (
-            MetricsCollectorLayer {
+            Self {
                 spans: Mutex::new(HashMap::new()),
                 root_collected_metrics: root_collected_metrics.clone(),
                 _subscriber: PhantomData,

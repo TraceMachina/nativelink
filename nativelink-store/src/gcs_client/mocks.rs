@@ -59,7 +59,7 @@ pub struct CallCounts {
 
 impl Clone for CallCounts {
     fn clone(&self) -> Self {
-        CallCounts {
+        Self {
             metadata_calls: AtomicUsize::new(self.metadata_calls.load(Ordering::Relaxed)),
             read_calls: AtomicUsize::new(self.read_calls.load(Ordering::Relaxed)),
             write_calls: AtomicUsize::new(self.write_calls.load(Ordering::Relaxed)),
@@ -110,7 +110,7 @@ pub enum MockRequest {
     },
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureMode {
     #[default]
     None,
@@ -216,7 +216,8 @@ impl MockGcsOperations {
     /// Helper method to handle failures based on current settings
     async fn handle_failure(&self) -> Result<(), Error> {
         if self.should_fail.load(Ordering::Relaxed) {
-            match *self.failure_mode.read().await {
+            let value = *self.failure_mode.read().await;
+            match value {
                 FailureMode::None => Err(make_err!(Code::Internal, "Simulated generic failure")),
                 FailureMode::NotFound => {
                     Err(make_err!(Code::NotFound, "Simulated not found error"))

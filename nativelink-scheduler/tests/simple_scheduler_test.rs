@@ -854,7 +854,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         let mut client3_action_listener =
             setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp3).await?;
         let (action_state, _maybe_origin_metadata) =
-            client3_action_listener.changed().await.unwrap().clone();
+            client3_action_listener.changed().await.unwrap();
         expected_action_state.client_operation_id = action_state.client_operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }

@@ -31,7 +31,7 @@ pin_project! {
 
 impl<T: AsyncWrite> WriteCounter<T> {
     pub const fn new(inner: T) -> Self {
-        WriteCounter {
+        Self {
             inner,
             bytes_written: 0,
             failed: false,

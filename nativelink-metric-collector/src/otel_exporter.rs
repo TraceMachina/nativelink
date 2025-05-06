@@ -54,7 +54,7 @@ fn process_children(prefix: &mut String, meter: &Meter, children: &CollectedMetr
     }
 }
 
-fn process_primitive(prefix: &mut String, meter: &Meter, primitive: &CollectedMetricPrimitive) {
+fn process_primitive(prefix: &str, meter: &Meter, primitive: &CollectedMetricPrimitive) {
     match &primitive.value {
         Some(CollectedMetricPrimitiveValue::Counter(value)) => {
             if prefix.len() > MAX_METRIC_NAME_LENGTH {
@@ -62,7 +62,7 @@ fn process_primitive(prefix: &mut String, meter: &Meter, primitive: &CollectedMe
                 return;
             }
             let counter = meter
-                .u64_counter(prefix.clone())
+                .u64_counter(prefix.to_owned())
                 .with_description(primitive.help.clone())
                 .build();
             counter.add(*value, &[]);

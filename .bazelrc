@@ -54,6 +54,11 @@ build --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
 build --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 
 # Keep this in sync with the top-level Cargo.toml
+
+# rustc lints with negative (low) priority
+build --@rules_rust//:extra_rustc_flag=-Wunused
+
+# rustc denies with default priority
 build --@rules_rust//:extra_rustc_flag=-Dambiguous_glob_reexports
 build --@rules_rust//:extra_rustc_flag=-Dclashing_extern_declarations
 build --@rules_rust//:extra_rustc_flag=-Dconst_item_mutation
@@ -77,6 +82,8 @@ build --@rules_rust//:extra_rustc_flag=-Dunexpected_cfgs
 build --@rules_rust//:extra_rustc_flag=-Dunnameable_test_items
 build --@rules_rust//:extra_rustc_flag=-Dunsafe_op_in_unsafe_fn
 build --@rules_rust//:extra_rustc_flag=-Dunstable_syntax_pre_expansion
+
+# rustc warnings with default priority
 build --@rules_rust//:extra_rustc_flag=-Wkeyword_idents
 build --@rules_rust//:extra_rustc_flag=-Wlet_underscore
 build --@rules_rust//:extra_rustc_flag=-Wmacro_use_extern_crate
@@ -89,14 +96,20 @@ build --@rules_rust//:extra_rustc_flag=-Wsingle_use_lifetimes
 build --@rules_rust//:extra_rustc_flag=-Wtrivial_casts
 build --@rules_rust//:extra_rustc_flag=-Wtrivial_numeric_casts
 build --@rules_rust//:extra_rustc_flag=-Wunreachable_pub
-build --@rules_rust//:extra_rustc_flag=-Wunused
 build --@rules_rust//:extra_rustc_flag=-Wunused_import_braces
 build --@rules_rust//:extra_rustc_flag=-Wunused_lifetimes
 build --@rules_rust//:extra_rustc_flag=-Wunused_qualifications
 build --@rules_rust//:extra_rustc_flag=-Wvariant_size_differences
 
 # TODO(aaronmondal): Extend these flags until we can run with clippy::pedantic.
+
+# clippy lints with negative (low) priority
+build --@rules_rust//:clippy_flag=-Wall
+build --@rules_rust//:clippy_flag=-Wnursery
+
+# clippy denies with default priority
 build --@rules_rust//:clippy_flag=-Dclippy::alloc_instead_of_core
+build --@rules_rust//:clippy_flag=-Das_underscore
 build --@rules_rust//:clippy_flag=-Dclippy::cast_lossless
 build --@rules_rust//:clippy_flag=-Dclippy::default_trait_access
 build --@rules_rust//:clippy_flag=-Dclippy::doc_markdown
@@ -135,8 +148,28 @@ build --@rules_rust//:clippy_flag=-Dclippy::unnecessary_wraps
 build --@rules_rust//:clippy_flag=-Dclippy::unreadable_literal
 build --@rules_rust//:clippy_flag=-Dclippy::wildcard_imports
 
-build --@rules_rust//:clippy.toml=//:clippy.toml
+# clippy warnings with default priority
+build --@rules_rust//:clippy_flag=-Wdbg_macro
+build --@rules_rust//:clippy_flag=-Wdecimal_literal_representation
+build --@rules_rust//:clippy_flag=-Wexplicit_auto_deref
+build --@rules_rust//:clippy_flag=-Wmissing_enforced_import_renames
+build --@rules_rust//:clippy_flag=-Wobfuscated_if_else
+build --@rules_rust//:clippy_flag=-Wprint_stdout
+build --@rules_rust//:clippy_flag=-Wtodo
+build --@rules_rust//:clippy_flag=-Wunimplemented
+build --@rules_rust//:clippy_flag=-Wunnested_or_patterns
+build --@rules_rust//:clippy_flag=-Wuse_debug
 
+# clippy lints with positive (high) priority
+build --@rules_rust//:clippy_flag=-Wclippy::fallible_impl_from
+build --@rules_rust//:clippy_flag=-Wclippy::iter_with_drain
+build --@rules_rust//:clippy_flag=-Wclippy::option_if_let_else
+build --@rules_rust//:clippy_flag=-Wclippy::redundant_pub_crate
+build --@rules_rust//:clippy_flag=-Wclippy::significant_drop_tightening
+build --@rules_rust//:clippy_flag=-Wclippy::too_long_first_doc_paragraph
+build --@rules_rust//:clippy_flag=-Wclippy::uninhabited_references
+
+build --@rules_rust//:clippy.toml=//:clippy.toml
 test --@rules_rust//:rustfmt.toml=//:.rustfmt.toml
 
 # This will make rustfmt and clippy only run on `bazel test`.

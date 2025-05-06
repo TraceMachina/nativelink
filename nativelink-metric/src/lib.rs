@@ -72,25 +72,26 @@ pub enum MetricKind {
 impl From<u64> for MetricKind {
     fn from(value: u64) -> Self {
         match value {
-            0 | 4_u64..=u64::MAX => MetricKind::Default,
-            1 => MetricKind::Counter,
-            2 => MetricKind::String,
-            3 => MetricKind::Component,
+            0 | 4_u64..=u64::MAX => Self::Default,
+            1 => Self::Counter,
+            2 => Self::String,
+            3 => Self::Component,
         }
     }
 }
 
 impl MetricKind {
-    pub fn into_known_kind(&self, default_kind: MetricKind) -> MetricPublishKnownKindData {
-        let mut this = *self;
-        if matches!(self, MetricKind::Default) {
-            this = default_kind;
-        }
+    pub fn into_known_kind(&self, default_kind: Self) -> MetricPublishKnownKindData {
+        let this = if matches!(self, Self::Default) {
+            default_kind
+        } else {
+            *self
+        };
         match this {
-            MetricKind::Counter => MetricPublishKnownKindData::Counter(0),
-            MetricKind::String => MetricPublishKnownKindData::String(String::new()),
-            MetricKind::Component => MetricPublishKnownKindData::Component,
-            MetricKind::Default => unreachable!("Default should have been handled"),
+            Self::Counter => MetricPublishKnownKindData::Counter(0),
+            Self::String => MetricPublishKnownKindData::String(String::new()),
+            Self::Component => MetricPublishKnownKindData::Component,
+            Self::Default => unreachable!("Default should have been handled"),
         }
     }
 }
@@ -300,7 +301,7 @@ impl MetricsComponent for SystemTime {
         kind: MetricKind,
         field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, Error> {
-        match SystemTime::now().duration_since(UNIX_EPOCH) {
+        match Self::now().duration_since(UNIX_EPOCH) {
             Ok(n) => n.as_secs().publish(kind, field_metadata),
             Err(_) => Err(Error("SystemTime before UNIX EPOCH!".to_string())),
         }

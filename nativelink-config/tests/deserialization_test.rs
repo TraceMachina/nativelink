@@ -63,8 +63,7 @@ mod duration_tests {
             // Large numbers
             (r#"{"duration": 0}"#, 0),
             (r#"{"duration": 1000}"#, 1000),
-            // u32::MAX
-            (r#"{"duration": 4294967295}"#, 4_294_967_295),
+            (r#"{"duration": 4294967295}"#, u32::MAX as usize),
         ];
 
         for (input, expected) in examples {
@@ -118,8 +117,7 @@ mod duration_tests {
     #[test]
     fn test_large_duration_numbers() {
         let examples = [
-            // u32::MAX
-            (r#"{"duration": 4294967295}"#, 4_294_967_295),
+            (r#"{"duration": 4294967295}"#, u32::MAX as usize),
             // u64::MAX - this will fail to parse as usize on 64-bit systems
             // (r#"{"duration": 18446744073709551615}"#, 18_446_744_073_709_551_615),
         ];
@@ -139,10 +137,10 @@ mod data_size_tests {
         let examples = [
             // Basic size tests
             (r#"{"data_size": "1KiB"}"#, 1024),
-            (r#"{"data_size": "1MiB"}"#, 1_048_576),
+            (r#"{"data_size": "1MiB"}"#, 0x10_0000),
             (r#"{"data_size": "1MB"}"#, 1_000_000),
             (r#"{"data_size": "1M"}"#, 1_000_000),
-            (r#"{"data_size": "1Mi"}"#, 1_048_576),
+            (r#"{"data_size": "1Mi"}"#, 0x10_0000),
             // Large sizes
             (r#"{"data_size": "9EiB"}"#, 10_376_293_541_461_622_784),
             (r#"{"data_size": 10}"#, 10),
@@ -237,7 +235,7 @@ mod optional_values_tests {
         // Test i64::MAX for optional numeric
         let input = r#"{"value": "9223372036854775807"}"#;
         let result: OptionalNumericEntity = serde_json5::from_str(input).unwrap();
-        assert_eq!(result.value, Some(9_223_372_036_854_775_807));
+        assert_eq!(result.value, Some(i64::MAX as usize));
     }
 
     #[test]

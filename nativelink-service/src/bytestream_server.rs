@@ -178,11 +178,12 @@ impl Debug for ByteStreamServer {
 
 impl ByteStreamServer {
     pub fn new(config: &ByteStreamConfig, store_manager: &StoreManager) -> Result<Self, Error> {
-        let mut persist_stream_on_disconnect_timeout =
-            Duration::from_secs(config.persist_stream_on_disconnect_timeout as u64);
-        if config.persist_stream_on_disconnect_timeout == 0 {
-            persist_stream_on_disconnect_timeout = DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT;
-        }
+        let persist_stream_on_disconnect_timeout =
+            if config.persist_stream_on_disconnect_timeout == 0 {
+                DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT
+            } else {
+                Duration::from_secs(config.persist_stream_on_disconnect_timeout as u64)
+            };
         Self::new_with_sleep_fn(
             config,
             store_manager,
@@ -212,7 +213,7 @@ impl ByteStreamServer {
         } else {
             config.max_decoding_message_size
         };
-        Ok(ByteStreamServer {
+        Ok(Self {
             stores,
             max_bytes_per_stream,
             max_decoding_message_size,

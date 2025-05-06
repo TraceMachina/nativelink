@@ -77,9 +77,7 @@ async fn simple_smoke_test() -> Result<(), Error> {
         &CompressionSpec {
             backend: StoreSpec::Memory(MemorySpec::default()),
             compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
-                nativelink_config::stores::Lz4Config {
-                    ..Default::default()
-                },
+                nativelink_config::stores::Lz4Config::default(),
             ),
         },
         Store::new(MemoryStore::new(&MemorySpec::default())),
@@ -163,9 +161,7 @@ async fn rand_5mb_smoke_test() -> Result<(), Error> {
         &CompressionSpec {
             backend: StoreSpec::Memory(MemorySpec::default()),
             compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
-                nativelink_config::stores::Lz4Config {
-                    ..Default::default()
-                },
+                nativelink_config::stores::Lz4Config::default(),
             ),
         },
         Store::new(MemoryStore::new(&MemorySpec::default())),
@@ -196,9 +192,7 @@ async fn sanity_check_zero_bytes_test() -> Result<(), Error> {
         &CompressionSpec {
             backend: StoreSpec::Memory(MemorySpec::default()),
             compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
-                nativelink_config::stores::Lz4Config {
-                    ..Default::default()
-                },
+                nativelink_config::stores::Lz4Config::default(),
             ),
         },
         Store::new(inner_store.clone()),

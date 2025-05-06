@@ -60,10 +60,10 @@ impl CasServer {
             })?;
             stores.insert(instance_name.to_string(), store);
         }
-        Ok(CasServer { stores })
+        Ok(Self { stores })
     }
 
-    pub fn into_service(self) -> Server<CasServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 

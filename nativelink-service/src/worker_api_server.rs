@@ -134,7 +134,7 @@ impl WorkerApiServer {
         })
     }
 
-    pub fn into_service(self) -> Server<WorkerApiServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 

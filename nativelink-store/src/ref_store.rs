@@ -49,7 +49,7 @@ pub struct RefStore {
 
 impl RefStore {
     pub fn new(spec: &RefSpec, store_manager: Weak<StoreManager>) -> Arc<Self> {
-        Arc::new(RefStore {
+        Arc::new(Self {
             name: spec.name.clone(),
             store_manager,
             inner: StoreReference {

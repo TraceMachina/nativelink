@@ -42,7 +42,7 @@ const DEFAULT_NORM_SIZE: u64 = 256 * 1024;
 const DEFAULT_MAX_SIZE: u64 = 512 * 1024;
 const DEFAULT_MAX_CONCURRENT_FETCH_PER_GET: usize = 10;
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default, Clone)]
 pub struct DedupIndex {
     pub entries: Vec<DigestInfo>,
 }

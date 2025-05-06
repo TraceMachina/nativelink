@@ -39,7 +39,7 @@ impl MetricsComponent for NoopStore {
 
 impl NoopStore {
     pub fn new() -> Arc<Self> {
-        Arc::new(NoopStore {})
+        Arc::new(Self {})
     }
 }
 

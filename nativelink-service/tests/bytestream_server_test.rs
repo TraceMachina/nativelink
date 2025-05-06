@@ -56,6 +56,7 @@ use tower::service_fn;
 const INSTANCE_NAME: &str = "foo_instance_name";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
 
+#[expect(clippy::future_not_send, reason = "not an issue for tests")]
 async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     let store_manager = Arc::new(StoreManager::new());
     store_manager.add_store(
@@ -74,7 +75,7 @@ fn make_bytestream_server(
     store_manager: &StoreManager,
     config: Option<ByteStreamConfig>,
 ) -> Result<ByteStreamServer, Error> {
-    let config = config.unwrap_or(ByteStreamConfig {
+    let config = config.unwrap_or_else(|| ByteStreamConfig {
         cas_stores: hashmap! {
             "foo_instance_name".to_string() => "main_cas".to_string(),
         },
@@ -201,7 +202,7 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn core::erro
         // might do.
         const BYTE_SPLIT_OFFSET: usize = 8;
 
-        let raw_data = "12456789abcdefghijk".as_bytes();
+        let raw_data = b"12456789abcdefghijk";
 
         let resource_name = format!(
             "{}/uploads/{}/blobs/{}/{}",
@@ -870,7 +871,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn core::er
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
     );
 
-    let raw_data = "12456789abcdefghijk".as_bytes();
+    let raw_data = b"12456789abcdefghijk";
     let resource_name = make_resource_name(raw_data.len());
 
     {

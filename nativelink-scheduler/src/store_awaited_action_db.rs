@@ -130,6 +130,7 @@ where
         Ok(awaited_action)
     }
 
+    #[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
     async fn get_awaited_action(&self) -> Result<AwaitedAction, Error> {
         let store = self
             .weak_store
@@ -481,6 +482,7 @@ where
         })
     }
 
+    #[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
     async fn try_subscribe(
         &self,
         client_operation_id: &ClientOperationId,
@@ -537,6 +539,7 @@ where
         }
     }
 
+    #[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
     async fn inner_get_awaited_action_by_id(
         &self,
         client_operation_id: &ClientOperationId,

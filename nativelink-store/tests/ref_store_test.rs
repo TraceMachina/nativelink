@@ -148,7 +148,7 @@ async fn inner_store_test() -> Result<(), Error> {
         },
         Arc::downgrade(&store_manager),
     ));
-    store_manager.add_store("ref_store_inner", ref_store_inner.clone());
+    store_manager.add_store("ref_store_inner", ref_store_inner);
 
     let ref_store_outer = Store::new(RefStore::new(
         &RefSpec {

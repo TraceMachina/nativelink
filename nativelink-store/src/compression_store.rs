@@ -117,24 +117,24 @@ pub const FOOTER_FRAME_TYPE: u8 = 1;
 /// This is a partial mirror of `nativelink_config::stores::Lz4Config`.
 /// We cannot use that natively here because it could cause our
 /// serialized format to change if we added more configs.
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Copy, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default, Copy, Clone)]
 pub struct Lz4Config {
     pub block_size: u32,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone, Copy)]
 pub struct Header {
     pub version: u8,
     pub config: Lz4Config,
     pub upload_size: UploadSizeInfo,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone, Copy)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default, Clone, Copy)]
 pub struct SliceIndex {
     pub position_from_prev_index: u32,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default)]
 pub struct Footer {
     pub indexes: Vec<SliceIndex>,
     pub index_count: u32,
@@ -177,9 +177,7 @@ impl UploadState {
         };
         let footer = Footer {
             indexes: vec![
-                SliceIndex {
-                    ..Default::default()
-                };
+                SliceIndex::default();
                 usize::try_from(max_index_count)
                     .err_tip(|| "Could not convert max_index_count to usize")?
             ],
@@ -243,7 +241,7 @@ impl CompressionStore {
                 lz4_config
             }
         };
-        Ok(Arc::new(CompressionStore {
+        Ok(Arc::new(Self {
             inner_store,
             config: lz4_config,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
@@ -364,12 +362,10 @@ impl StoreDriver for CompressionStore {
             // Note: We need to be careful that if we don't have any data (zero bytes) it
             // doesn't go to -1.
             index_count = index_count.saturating_sub(1);
-            output_state.footer.indexes.resize(
-                index_count as usize,
-                SliceIndex {
-                    ..Default::default()
-                },
-            );
+            output_state
+                .footer
+                .indexes
+                .resize(index_count as usize, SliceIndex::default());
             output_state.footer.index_count = output_state.footer.indexes.len() as u32;
             output_state.footer.uncompressed_data_size = received_amt;
             {

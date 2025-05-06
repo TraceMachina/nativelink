@@ -60,6 +60,7 @@ fn get_digests_and_output_dirs(
 /// Given a list of output directories recursively get all digests
 /// that need to be checked and pass them into `handle_digest_infos_fn`
 /// as they are found.
+#[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
 async fn check_output_directories<'a>(
     cas_store: &Store,
     output_directories: Vec<ProtoOutputDirectory>,
@@ -117,7 +118,7 @@ pub struct CompletenessCheckingStore {
 
 impl CompletenessCheckingStore {
     pub fn new(ac_store: Store, cas_store: Store) -> Arc<Self> {
-        Arc::new(CompletenessCheckingStore {
+        Arc::new(Self {
             cas_store,
             ac_store,
             incomplete_entries_counter: CounterWithTime::default(),

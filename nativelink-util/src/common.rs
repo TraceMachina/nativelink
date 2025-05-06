@@ -55,7 +55,7 @@ impl MetricsComponent for DigestInfo {
 
 impl DigestInfo {
     pub const fn new(packed_hash: [u8; 32], size_bytes: u64) -> Self {
-        DigestInfo {
+        Self {
             size_bytes,
             packed_hash: PackedHash(packed_hash),
         }
@@ -79,14 +79,14 @@ impl DigestInfo {
                 i64::MAX
             ));
         }
-        Ok(DigestInfo {
+        Ok(Self {
             packed_hash,
             size_bytes,
         })
     }
 
-    pub const fn zero_digest() -> DigestInfo {
-        DigestInfo {
+    pub const fn zero_digest() -> Self {
+        Self {
             size_bytes: 0,
             packed_hash: PackedHash::new(),
         }
@@ -278,7 +278,7 @@ impl TryFrom<Digest> for DigestInfo {
             .size_bytes
             .try_into()
             .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
-        Ok(DigestInfo {
+        Ok(Self {
             packed_hash,
             size_bytes,
         })
@@ -295,7 +295,7 @@ impl TryFrom<&Digest> for DigestInfo {
             .size_bytes
             .try_into()
             .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
-        Ok(DigestInfo {
+        Ok(Self {
             packed_hash,
             size_bytes,
         })
@@ -304,7 +304,7 @@ impl TryFrom<&Digest> for DigestInfo {
 
 impl From<DigestInfo> for Digest {
     fn from(val: DigestInfo) -> Self {
-        Digest {
+        Self {
             hash: val.packed_hash.to_string(),
             size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
                 error!("Could not convert {} into u64 - {e:?}", val.size_bytes);
@@ -318,7 +318,7 @@ impl From<DigestInfo> for Digest {
 
 impl From<&DigestInfo> for Digest {
     fn from(val: &DigestInfo) -> Self {
-        Digest {
+        Self {
             hash: val.packed_hash.to_string(),
             size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
                 error!("Could not convert {} into u64 - {e:?}", val.size_bytes);
@@ -338,14 +338,14 @@ pub struct PackedHash([u8; 32]);
 const SIZE_OF_PACKED_HASH: usize = 32;
 impl PackedHash {
     const fn new() -> Self {
-        PackedHash([0; SIZE_OF_PACKED_HASH])
+        Self([0; SIZE_OF_PACKED_HASH])
     }
 
     fn from_hex(hash: &str) -> Result<Self, Error> {
         let mut packed_hash = [0u8; 32];
         hex::decode_to_slice(hash, &mut packed_hash)
             .map_err(|e| make_input_err!("Invalid sha256 hash: {hash} - {e:?}"))?;
-        Ok(PackedHash(packed_hash))
+        Ok(Self(packed_hash))
     }
 
     /// Converts the packed hash into a hex string.

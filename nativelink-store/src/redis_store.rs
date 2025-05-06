@@ -853,7 +853,7 @@ struct RedisSubscriptionPublisher {
 impl RedisSubscriptionPublisher {
     fn new(
         key: String,
-        weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
+        weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<Self>>>,
     ) -> (Self, RedisSubscription) {
         let (sender, receiver) = tokio::sync::watch::channel(key);
         let publisher = Self {
@@ -868,7 +868,7 @@ impl RedisSubscriptionPublisher {
 
     fn subscribe(
         &self,
-        weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
+        weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<Self>>>,
     ) -> RedisSubscription {
         let receiver = self.sender.lock().subscribe();
         RedisSubscription {

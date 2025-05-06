@@ -60,7 +60,7 @@ pub fn set_default_digest_size_health_check(size: usize) -> Result<(), Error> {
     })
 }
 
-#[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize)]
 pub enum UploadSizeInfo {
     /// When the data transfer amount is known to be exact size, this enum should be used.
     /// The receiver store can use this to better optimize the way the data is sent or stored.
@@ -190,7 +190,7 @@ impl<'a> StoreKey<'a> {
         clippy::missing_const_for_fn,
         reason = "False positive on stable, but not on nightly"
     )]
-    pub fn borrow(&'a self) -> StoreKey<'a> {
+    pub fn borrow(&'a self) -> Self {
         match self {
             StoreKey::Str(Cow::Owned(s)) => StoreKey::Str(Cow::Borrowed(s)),
             StoreKey::Str(Cow::Borrowed(s)) => StoreKey::Str(Cow::Borrowed(s)),

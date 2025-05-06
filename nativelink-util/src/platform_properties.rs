@@ -72,7 +72,7 @@ impl From<ProtoPlatform> for PlatformProperties {
 
 impl From<&PlatformProperties> for ProtoPlatform {
     fn from(val: &PlatformProperties) -> Self {
-        ProtoPlatform {
+        Self {
             properties: val
                 .properties
                 .iter()

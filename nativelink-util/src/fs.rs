@@ -32,7 +32,7 @@ use tracing::{error, info, warn};
 use crate::spawn_blocking;
 
 /// Default read buffer size when reading to/from disk.
-pub const DEFAULT_READ_BUFF_SIZE: usize = 16384;
+pub const DEFAULT_READ_BUFF_SIZE: usize = 0x4000;
 
 #[derive(Debug)]
 pub struct FileSlot {

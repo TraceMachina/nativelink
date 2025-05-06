@@ -230,7 +230,7 @@ impl FileEntry for FileEntryImpl {
     async fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(FileEntryImpl, fs::FileSlot, OsString), Error> {
+    ) -> Result<(Self, fs::FileSlot, OsString), Error> {
         let temp_full_path = encoded_file_path.get_file_path().to_os_string();
         let temp_file_result = fs::create_file(temp_full_path.clone())
             .or_else(|mut err| async {
@@ -247,7 +247,7 @@ impl FileEntry for FileEntryImpl {
             .await?;
 
         Ok((
-            <FileEntryImpl as FileEntry>::create(
+            <Self as FileEntry>::create(
                 0, /* Unknown yet, we will fill it in later */
                 block_size,
                 RwLock::new(encoded_file_path),

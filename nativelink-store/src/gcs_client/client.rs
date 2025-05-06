@@ -563,7 +563,7 @@ impl GcsOperations for GcsClient {
                     retry_delay = core::cmp::min(retry_delay * 2, MAX_UPLOAD_RETRY_DELAY_MS);
 
                     let mut rng = rand::rng();
-                    let jitter_factor = 0.8 + (rng.random::<f64>() * 0.4);
+                    let jitter_factor = rng.random::<f64>().mul_add(0.4, 0.8);
                     retry_delay = (retry_delay as f64 * jitter_factor) as u64;
 
                     retry_count += 1;

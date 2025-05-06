@@ -30,7 +30,7 @@ use tokio::io::AsyncWriteExt;
 async fn make_temp_path(data: &str) -> OsString {
     let dir = format!(
         "{}/{}",
-        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
         rand::rng().random::<u64>(),
     );
     fs::create_dir_all(&dir).await.unwrap();

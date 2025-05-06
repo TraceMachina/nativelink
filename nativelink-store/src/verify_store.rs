@@ -49,7 +49,7 @@ pub struct VerifyStore {
 
 impl VerifyStore {
     pub fn new(spec: &VerifySpec, inner_store: Store) -> Arc<Self> {
-        Arc::new(VerifyStore {
+        Arc::new(Self {
             inner_store,
             verify_size: spec.verify_size,
             verify_hash: spec.verify_hash,

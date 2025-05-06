@@ -444,7 +444,7 @@ where
             if jitter_amt == 0. {
                 return delay;
             }
-            delay.mul_f32(1. + jitter_amt * (rand::rng().random::<f32>() - 0.5))
+            delay.mul_f32(jitter_amt.mul_add(rand::rng().random::<f32>() - 0.5, 1.))
         });
         let s3_client = {
             let http_client = TlsClient::new(&spec.clone(), jitter_fn.clone());

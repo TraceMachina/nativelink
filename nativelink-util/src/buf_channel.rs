@@ -363,7 +363,7 @@ impl DropCloserReadHalf {
                     }
                 }
                 Err(e) => {
-                    return Err(e.clone()).err_tip(|| "Failed to check if next chunk is EOF")?;
+                    return Err(e).err_tip(|| "Failed to check if next chunk is EOF")?;
                 }
             }
             chunk

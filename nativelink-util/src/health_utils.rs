@@ -63,7 +63,7 @@ impl HealthStatus {
     pub fn new_initializing(
         component: &(impl HealthStatusIndicator + ?Sized),
         message: Cow<'static, str>,
-    ) -> HealthStatus {
+    ) -> Self {
         Self::Initializing {
             struct_name: component.struct_name(),
             message,
@@ -73,7 +73,7 @@ impl HealthStatus {
     pub fn new_warning(
         component: &(impl HealthStatusIndicator + ?Sized),
         message: Cow<'static, str>,
-    ) -> HealthStatus {
+    ) -> Self {
         Self::Warning {
             struct_name: component.struct_name(),
             message,
@@ -83,7 +83,7 @@ impl HealthStatus {
     pub fn new_failed(
         component: &(impl HealthStatusIndicator + ?Sized),
         message: Cow<'static, str>,
-    ) -> HealthStatus {
+    ) -> Self {
         Self::Failed {
             struct_name: component.struct_name(),
             message,
@@ -151,8 +151,8 @@ impl HealthRegistryBuilder {
 
     /// Create a sub builder for a namespace.
     #[must_use]
-    pub fn sub_builder(&mut self, namespace: &str) -> HealthRegistryBuilder {
-        HealthRegistryBuilder {
+    pub fn sub_builder(&mut self, namespace: &str) -> Self {
+        Self {
             namespace: format!("{}/{}", self.namespace, namespace).into(),
             state: self.state.clone(),
         }

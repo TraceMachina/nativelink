@@ -170,7 +170,7 @@ impl From<WorkerId> for String {
 
 impl From<String> for WorkerId {
     fn from(s: String) -> Self {
-        WorkerId(s)
+        Self(s)
     }
 }
 
@@ -709,7 +709,7 @@ pub struct ActionResult {
 
 impl Default for ActionResult {
     fn default() -> Self {
-        ActionResult {
+        Self {
             output_files: Vec::default(),
             output_folders: Vec::default(),
             output_directory_symlinks: Vec::default(),
@@ -809,12 +809,12 @@ impl MetricsComponent for ActionStage {
         _field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
         let value = match self {
-            ActionStage::Unknown => "Unknown".to_string(),
-            ActionStage::CacheCheck => "CacheCheck".to_string(),
-            ActionStage::Queued => "Queued".to_string(),
-            ActionStage::Executing => "Executing".to_string(),
-            ActionStage::Completed(_) => "Completed".to_string(),
-            ActionStage::CompletedFromCache(_) => "CompletedFromCache".to_string(),
+            Self::Unknown => "Unknown".to_string(),
+            Self::CacheCheck => "CacheCheck".to_string(),
+            Self::Queued => "Queued".to_string(),
+            Self::Executing => "Executing".to_string(),
+            Self::Completed(_) => "Completed".to_string(),
+            Self::CompletedFromCache(_) => "CompletedFromCache".to_string(),
         };
         Ok(MetricPublishKnownKindData::String(value))
     }

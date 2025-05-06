@@ -31,10 +31,10 @@ pub struct PushServer {}
 
 impl PushServer {
     pub const fn new(_config: &PushConfig, _store_manager: &StoreManager) -> Result<Self, Error> {
-        Ok(PushServer {})
+        Ok(Self {})
     }
 
-    pub fn into_service(self) -> Server<PushServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 

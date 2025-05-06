@@ -68,7 +68,7 @@ const INSTANCE_NAME: &str = "foo";
 fn make_temp_path(data: &str) -> String {
     format!(
         "{}/{}/{}",
-        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
         rand::rng().random::<u64>(),
         data
     )

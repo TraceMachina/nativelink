@@ -29,8 +29,8 @@ pub trait InstantWrapper: Send + Sync + Unpin + 'static {
 }
 
 impl InstantWrapper for SystemTime {
-    fn from_secs(secs: u64) -> SystemTime {
-        SystemTime::UNIX_EPOCH
+    fn from_secs(secs: u64) -> Self {
+        Self::UNIX_EPOCH
             .checked_add(Duration::from_secs(secs))
             .unwrap()
     }
@@ -40,11 +40,11 @@ impl InstantWrapper for SystemTime {
     }
 
     fn now(&self) -> SystemTime {
-        SystemTime::now()
+        Self::now()
     }
 
     fn elapsed(&self) -> Duration {
-        <SystemTime>::elapsed(self).unwrap()
+        <Self>::elapsed(self).unwrap()
     }
 
     async fn sleep(self, duration: Duration) {
@@ -68,7 +68,7 @@ impl Default for MockInstantWrapped {
 
 impl InstantWrapper for MockInstantWrapped {
     fn from_secs(_secs: u64) -> Self {
-        MockInstantWrapped(MockInstant::now())
+        Self(MockInstant::now())
     }
 
     fn unix_timestamp(&self) -> u64 {
