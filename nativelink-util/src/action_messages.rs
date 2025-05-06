@@ -90,19 +90,13 @@ impl MetricsComponent for OperationId {
 
 impl From<&str> for OperationId {
     fn from(value: &str) -> Self {
-        match Uuid::parse_str(value) {
-            Ok(uuid) => Self::Uuid(uuid),
-            Err(_) => Self::String(value.to_string()),
-        }
+        Uuid::parse_str(value).map_or_else(|_| Self::String(value.to_string()), Self::Uuid)
     }
 }
 
 impl From<String> for OperationId {
     fn from(value: String) -> Self {
-        match Uuid::parse_str(&value) {
-            Ok(uuid) => Self::Uuid(uuid),
-            Err(_) => Self::String(value),
-        }
+        Uuid::parse_str(&value).map_or(Self::String(value), Self::Uuid)
     }
 }
 

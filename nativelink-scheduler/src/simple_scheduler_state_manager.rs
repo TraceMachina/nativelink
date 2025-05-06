@@ -604,14 +604,16 @@ where
             }
             return Ok(());
         }
-        match last_err {
-            Some(err) => Err(err),
-            None => Err(make_err!(
-                Code::Internal,
-                "Failed to update action after {} retries with no error set",
-                MAX_UPDATE_RETRIES,
-            )),
-        }
+        last_err.map_or_else(
+            || {
+                Err(make_err!(
+                    Code::Internal,
+                    "Failed to update action after {} retries with no error set",
+                    MAX_UPDATE_RETRIES,
+                ))
+            },
+            Err,
+        )
     }
 
     async fn inner_add_operation(

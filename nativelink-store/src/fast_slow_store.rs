@@ -344,14 +344,15 @@ impl StoreDriver for FastSlowStore {
                     .slow_store_downloaded_bytes
                     .fetch_add(output_buf_len, Ordering::Acquire);
 
-                let writer_fut = if let Some(range) = Self::calculate_range(
+                let writer_fut = (Self::calculate_range(
                     &(bytes_received..bytes_received + output_buf_len),
                     &send_range,
-                )? {
-                    writer_pin.send(output_buf.slice(range)).right_future()
-                } else {
-                    futures::future::ready(Ok(())).left_future()
-                };
+                )?)
+                .map_or_else(
+                    || futures::future::ready(Ok(())).left_future(),
+                    |range| writer_pin.send(output_buf.slice(range)).right_future(),
+                );
+
                 bytes_received += output_buf_len;
 
                 let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf), writer_fut);

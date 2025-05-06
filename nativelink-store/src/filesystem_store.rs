@@ -442,11 +442,11 @@ async fn add_files_to_cache<Fe: FileEntry>(
         // folder regardless of the StoreKey type. This allows old versions of
         // nativelink file layout to be upgraded at startup time.
         // This logic can be removed once more time has passed.
-        let read_dir = if let Some(folder) = folder {
-            format!("{}/{folder}/", shared_context.content_path)
-        } else {
-            format!("{}/", shared_context.content_path)
-        };
+        let read_dir = folder.map_or_else(
+            || format!("{}/", shared_context.content_path),
+            |folder| format!("{}/{folder}/", shared_context.content_path),
+        );
+
         let (_permit, dir_handle) = fs::read_dir(read_dir)
             .await
             .err_tip(|| "Failed opening content directory for iterating in filesystem store")?
