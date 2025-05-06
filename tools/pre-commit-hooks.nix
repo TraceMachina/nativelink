@@ -139,6 +139,10 @@ in {
   };
 
   # Shell
+  shellcheck = {
+    enable = true;
+    excludes = [".envrc"] ++ excludes;
+  };
   shfmt = {
     args = ["--indent" "4" "--space-redirects"];
     enable = true;
