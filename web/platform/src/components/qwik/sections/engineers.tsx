@@ -1,6 +1,6 @@
 import { component$ } from "@builder.io/qwik";
 
-import { Label } from "../components/text";
+import { Label } from "../components/text.tsx";
 
 import {
   Apple,
@@ -10,7 +10,7 @@ import {
   Roblox,
   Tesla,
   Toyota,
-} from "../../media/icons/engineers";
+} from "../../media/icons/engineers.tsx";
 
 const companies = [
   {

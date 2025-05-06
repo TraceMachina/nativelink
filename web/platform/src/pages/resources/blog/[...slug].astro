@@ -1,5 +1,5 @@
 ---
-import { getCollection } from "astro:content";
+import { getCollection, render } from "astro:content";
 
 import Layout from "../../../layouts/Layout.astro";
 import MarkdownLayout from "../../../layouts/MarkdownLayout.astro";
@@ -18,26 +18,26 @@ export async function getStaticPaths() {
     const nextEntry = sortedEntries[index + 1] || null;
 
     return {
-      params: { slug: entry.slug },
+      params: { slug: entry.id },
       props: {
         entry,
         prevEntry,
         nextEntry,
-        slug: entry.slug,
+        slug: entry.id,
       },
     };
   });
 }
 
 const { entry, prevEntry, nextEntry } = Astro.props;
-const { Content } = await entry.render();
-const pageTitle = `NativeLink News | ${entry.slug}`;
+const { Content } = await render(entry);
+const pageTitle = `NativeLink News | ${entry.id}`;
 
 export const prerender = true;
 ---
 
 <Layout title={pageTitle}>
-    <MarkdownLayout frontmatter={entry.data} prevEntry={prevEntry} nextEntry={nextEntry} slug={entry.slug}>
+    <MarkdownLayout frontmatter={entry.data} prevEntry={prevEntry} nextEntry={nextEntry} slug={entry.id}>
         <Content />
     </MarkdownLayout>
 </Layout>

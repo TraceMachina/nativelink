@@ -1,0 +1,31 @@
+ci:
+  collect:
+    startServerCommand: bun serve
+    url:
+      - http://localhost:8881/
+      - http://localhost:8881/product
+      - http://localhost:8881/community
+      - http://localhost:8881/company
+      - http://localhost:8881/resources
+      - http://localhost:8881/pricing
+
+  assert:
+    preset: "lighthouse:all"
+    assertions:
+      "categories:performance":
+        - "off"
+      "categories:accessibility":
+        - "error"
+      "categories:best-practices":
+        - "error"
+      "categories:seo":
+        - "error"
+
+  upload:
+    # TODO(aaronmondal): upload options here
+
+  server:
+    # TODO(aaronmondal): server options here
+
+  wizard:
+    # TODO(aaronmondal): wizard options here

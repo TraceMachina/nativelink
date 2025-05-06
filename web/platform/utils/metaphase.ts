@@ -10,7 +10,7 @@ import type {
   Type,
   TypeBinding,
   Variant,
-} from "./rustdoc_types";
+} from "./rustdoc_types.ts";
 
 type JsonExample =
   | string
@@ -73,10 +73,13 @@ const isEnumItem = (
   return "enum" in item.inner;
 };
 
+const CRATE_STORES_REGEX = /^(crate::)?stores::/;
+const STD_COLLECTIONS_REGEX = /^std::collections::/;
+
 const removePrefix = (path: string): string => {
   return path
-    .replace(/^(crate::)?stores::/, "")
-    .replace(/^std::collections::/, "");
+    .replace(CRATE_STORES_REGEX, "")
+    .replace(STD_COLLECTIONS_REGEX, "");
 };
 
 const generatePrimitiveJsonExample = (type: {
@@ -282,8 +285,10 @@ const escapeMarkdown = (text: string): string =>
 const transformUrls = (text: string): string =>
   text.replace(/<(https?:\/\/[^>]+)>/g, (_, url) => `[${url}](${url})`);
 
+const CODE_BLOCK_REGEX = /(```[\s\S]*?```)/;
+
 const processDocText = (text: string): string => {
-  const blocks = text.split(/(```[\s\S]*?```)/);
+  const blocks = text.split(CODE_BLOCK_REGEX);
 
   return blocks
     .map((block) => {
