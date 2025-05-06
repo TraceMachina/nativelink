@@ -56,7 +56,6 @@ use tower::service_fn;
 const INSTANCE_NAME: &str = "foo_instance_name";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
 
-#[expect(clippy::future_not_send, reason = "not an issue for tests")]
 async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     let store_manager = Arc::new(StoreManager::new());
     store_manager.add_store(

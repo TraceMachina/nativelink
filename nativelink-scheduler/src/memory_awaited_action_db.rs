@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::ops::{Bound, RangeBounds};
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -377,18 +378,25 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         );
                         continue;
                     };
-                    let connected_clients = if let Some(connected_clients) = self
+
+                    let connected_clients = match self
                         .connected_clients_for_operation_id
-                        .remove(&operation_id)
+                        .entry(operation_id.clone())
                     {
-                        connected_clients - 1
-                    } else {
-                        error!(
-                            ?operation_id,
-                            "connected_clients_for_operation_id does not have operation_id"
-                        );
-                        0
+                        Entry::Occupied(entry) => {
+                            let value = *entry.get();
+                            entry.remove();
+                            value - 1
+                        }
+                        Entry::Vacant(_) => {
+                            error!(
+                                ?operation_id,
+                                "connected_clients_for_operation_id does not have operation_id"
+                            );
+                            0
+                        }
                     };
+
                     // Note: It is rare to have more than one client listening
                     // to the same action, so we assume that we are the last
                     // client and insert it back into the map if we detect that
