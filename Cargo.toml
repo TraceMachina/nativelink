@@ -132,70 +132,33 @@ all = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 
-# Denies with default priority
+# Restriction Denies with default priority
 alloc-instead-of-core = "deny"
 as-underscore = "deny"
-cast-lossless = "deny"
-default-trait-access = "deny"
-doc-markdown = "deny"
-explicit-deref-methods = "deny"
-explicit-into-iter-loop = "deny"
-explicit-iter-loop = "deny"
-ignored-unit-patterns = "deny"
-implicit-clone = "deny"
-implicit-hasher = "deny"
-inconsistent-struct-constructor = "deny"
-inline-always = "deny"
-items-after-statements = "deny"
-manual-let-else = "deny"
-manual-string-new = "deny"
-map-unwrap-or = "deny"
-match-same-arms = "deny"
-match-wildcard-for-single-variants = "deny"
-missing-const-for-fn = "deny"
-needless-continue = "deny"
-needless-pass-by-value = "deny"
-needless-raw-string-hashes = "deny"
-ptr-as-ptr = "deny"
-range-plus-one = "deny"
-redundant-closure-for-method-calls = "deny"
-redundant-else = "deny"
-ref-as-ptr = "deny"
-return-self-not-must-use = "deny"
-semicolon-if-nothing-returned = "deny"
-single-match-else = "deny"
-stable-sort-primitive = "deny"
 std-instead-of-core = "deny"
-struct-field-names = "deny"
-trivially-copy-pass-by-ref = "deny"
-uninlined-format-args = "deny"
-unnecessary-wraps = "deny"
-unreadable-literal = "deny"
-wildcard-imports = "deny"
 
-# Warnings with default priority
+# Restriction Warnings with default priority
 dbg-macro = "warn"
 decimal-literal-representation = "warn"
-explicit-auto-deref = "warn"
-# get-unwrap = "warn" # TODO(jhpratt) uncomment this
-# missing-docs-in-private-items = "warn" # TODO(jhpratt) uncomment this
-missing-enforced-import-renames = "warn"
-obfuscated-if-else = "warn"
+get-unwrap = "allow"                    # TODO(jhpratt) Flip
+missing-docs-in-private-items = "allow" # TODO(jhpratt) Flip
 print-stdout = "warn"
 todo = "warn"
 unimplemented = "warn"
-unnested-or-patterns = "warn"
-# unwrap-in-result = "warn" # TODO(jhpratt) uncomment this
-# unwrap-used = "warn" # TODO(jhpratt) uncomment this
+unwrap-in-result = "allow"              # TODO(jhpratt) Flip
+unwrap-used = "allow"                   # TODO(jhpratt) Flip
 use-debug = "warn"
 
-# Overrides
-fallible-impl-from = { level = "allow", priority = 1 }          # TODO(jhpratt) remove this
-iter-with-drain = { level = "allow", priority = 1 }             # TODO(jhpratt) remove this
-option-if-let-else = { level = "allow", priority = 1 }          # rust-lang/rust-clippy#8829, overrides ![warn(clippy::nursery)]
-redundant-pub-crate = { level = "allow", priority = 1 }         # rust-lang/rust-clippy#5369, overrides #![warn(clippy::nursery)]
-significant-drop-tightening = { level = "allow", priority = 1 } # TODO(jhpratt) remove this
-too-long-first-doc-paragraph = { level = "allow" }              # TODO(jhpratt) remove this
+# Nursery denies we want once they get out of Nursery
+missing-const-for-fn = "deny"
+
+# Nursery overrides that are either buggy or we want to fix
+fallible-impl-from = { level = "allow", priority = 1 }          # TODO(jhpratt) Flip
+iter-with-drain = { level = "allow", priority = 1 }             # TODO(jhpratt) Flip
+option-if-let-else = { level = "allow", priority = 1 }          # rust-lang/rust-clippy#8829
+redundant-pub-crate = { level = "allow", priority = 1 }         # rust-lang/rust-clippy#5369
+significant-drop-tightening = { level = "allow", priority = 1 } # TODO(jhpratt) Flip
+too-long-first-doc-paragraph = { level = "allow" }              # TODO(jhpratt) Flip
 uninhabited-references = { level = "allow", priority = 1 }      # rust-lang/rust-clippy#11984
 
 # TODO(aaronmondal): Remove these to get to pedantic.
