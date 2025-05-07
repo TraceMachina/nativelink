@@ -13,8 +13,8 @@
             },
             "backend": {
               "filesystem": {
-                "content_path": "~/.cache/nativelink/content_path-cas",
-                "temp_path": "~/.cache/nativelink/tmp_path-cas",
+                "content_path": "/tmp/nativelink/data/content_path-cas",
+                "temp_path": "/tmp/nativelink/data/tmp_path-cas",
                 "eviction_policy": {
                   "max_bytes": "10Gb"
                 }
@@ -28,8 +28,8 @@
       "completeness_checking": {
         "backend": {
           "filesystem": {
-            "content_path": "~/.cache/nativelink/content_path-ac",
-            "temp_path": "~/.cache/nativelink/tmp_path-ac",
+            "content_path": "/tmp/nativelink/data/content_path-ac",
+            "temp_path": "/tmp/nativelink/data/tmp_path-ac",
             "eviction_policy": {
               "max_bytes": "500Mb"
             }
