@@ -9,7 +9,7 @@ ECR_REGION=${ECR_REGION:?Error: ECR_REGION is not set}
 BUILDX_NO_CACHE=${BUILDX_NO_CACHE:-true}
 
 function ecr_login() {
-    aws ecr get-login-password --profile ${ECR_PROFILE} --region ${ECR_REGION} | docker login --username ${ECR_USER} --password-stdin ${ECR}.dkr.ecr.${ECR_REGION}.amazonaws.com
+    aws ecr get-login-password --profile "${ECR_PROFILE}" --region "${ECR_REGION}" | docker login --username "${ECR_USER}" --password-stdin "${ECR}.dkr.ecr.${ECR_REGION}.amazonaws.com"
 }
 
 # Check OS and calculate the SHA256 hash of the Dockerfile
@@ -23,10 +23,10 @@ else
 fi
 
 # Build the Docker image and tag it with the hash
-docker buildx build --no-cache=${BUILDX_NO_CACHE} --platform linux/amd64 -t "${ECR}.dkr.ecr.${ECR_REGION}.amazonaws.com/nativelink-rbe:$IMAGE_TAG" -f 'Dockerfile' .
+docker buildx build --no-cache="${BUILDX_NO_CACHE}" --platform linux/amd64 -t "${ECR}.dkr.ecr.${ECR_REGION}.amazonaws.com/nativelink-rbe:$IMAGE_TAG" -f 'Dockerfile' .
 
 ecr_login
-docker push ${ECR}.dkr.ecr.${ECR_REGION}.amazonaws.com/nativelink-rbe:$IMAGE_TAG
+docker push "${ECR}.dkr.ecr.${ECR_REGION}.amazonaws.com/nativelink-rbe:$IMAGE_TAG"
 
 # Output the tag of the built image
 echo "Docker image tagged as ${ECR}.dkr.ecr.${ECR_REGION}.amazonaws.com/nativelink-rbe:$IMAGE_TAG"

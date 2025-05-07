@@ -30,19 +30,19 @@ echo "WARNING: This script will modify and revert the flake.nix"
 sleep 3
 
 function ecr_login() {
-    aws ecr get-login-password --profile ${ECR_PROFILE} --region ${ECR_REGION} | docker login --username ${ECR_USER} --password-stdin ${ECR}
+    aws ecr get-login-password --profile "${ECR_PROFILE}" --region "${ECR_REGION}" | docker login --username "${ECR_USER}" --password-stdin "${ECR}"
 }
 
 # Build a base image for drake actions.
-docker buildx build --no-cache=${BUILDX_NO_CACHE} \
+docker buildx build --no-cache="${BUILDX_NO_CACHE}" \
     --platform linux/amd64 \
     -t localhost:5001/toolchain-drake:latest \
     --push \
-    ${SRC_ROOT}/tools/toolchain-drake
+    "${SRC_ROOT}/tools/toolchain-drake"
 
 # Parse out the repo digests sha hash to be used as image digest.
 FULL_IMAGE_PATH=$(docker inspect localhost:5001/toolchain-drake:latest | jq '.[].RepoDigests[0]')
-IMAGE_DIGEST=$(echo $FULL_IMAGE_PATH | awk -F'[@"]' '{print $3}')
+IMAGE_DIGEST=$(echo "$FULL_IMAGE_PATH" | awk -F'[@"]' '{print $3}')
 if [ -z "$IMAGE_DIGEST" ]; then
     echo "Unable to parse RepoDigests"
     exit 1
@@ -61,7 +61,7 @@ if [ "$ORIGINAL_FLAKE_CONTENT" == "$PATCHED_FLAKE_CONTENT" ]; then
     exit 1
 else
     echo "Changes made"
-    pushd $SRC_ROOT
+    pushd "$SRC_ROOT"
     git --no-pager diff "${FLAKE_NIX_FILE}"
     sleep 3
     popd
@@ -89,7 +89,7 @@ if [ "$ORIGINAL_FLAKE_CONTENT" == "$PATCHED_FLAKE_CONTENT" ]; then
     exit 1
 else
     echo "Changes made"
-    pushd $SRC_ROOT
+    pushd "$SRC_ROOT"
     git --no-pager diff "${FLAKE_NIX_FILE}"
     sleep 3
     popd
@@ -103,11 +103,11 @@ nix run .#nativelink-worker-toolchain-drake.copyTo \
 
 # Pull in to local docker and tag.
 docker pull localhost:5001/nativelink-toolchain-drake:latest
-docker tag localhost:5001/nativelink-toolchain-drake:latest ${ECR}
+docker tag localhost:5001/nativelink-toolchain-drake:latest "${ECR}"
 
 # Push to ECR.
 ecr_login
-docker push ${ECR}
+docker push "${ECR}"
 
 # Restore changes.
 git restore "${FLAKE_NIX_FILE}"

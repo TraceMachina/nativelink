@@ -33,7 +33,7 @@ TEST_PATTERNS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
     --help)
-        echo << 'EOT'
+        cat << 'EOT'
 Runner for integration tests
 
 Usage:
@@ -43,7 +43,7 @@ TEST_PATTERNS: Name of test you wish to execute. Wildcard (*) supported.
                Default: '*'
 EOT
         ;;
-    -* | --*)
+    -*)
         echo "Unknown option $1"
         exit 1
         ;;
@@ -63,7 +63,7 @@ if [[ ${#TEST_PATTERNS[@]} -eq 0 ]]; then
     TEST_PATTERNS=("*")
 fi
 
-SELF_DIR=$(realpath $(dirname $0))
+SELF_DIR=$(realpath "$(dirname "$0")")
 cd "$SELF_DIR/deployment-examples/docker-compose"
 
 export UNDER_TEST_RUNNER=1
@@ -79,18 +79,18 @@ export TMPDIR=$HOME/.cache/nativelink/
 mkdir -p "$TMPDIR"
 
 if [[ $OSTYPE == "darwin"* ]]; then
-    export CACHE_DIR=$(mktemp -d "${TMPDIR}nativelink-integration-test")
+    CACHE_DIR=$(mktemp -d "${TMPDIR}nativelink-integration-test")
+    export CACHE_DIR
 else
     echo "Assumes Linux/WSL"
-    export CACHE_DIR=$(mktemp -d --tmpdir="$TMPDIR" --suffix="-nativelink-integration-test")
+    CACHE_DIR=$(mktemp -d --tmpdir="$TMPDIR" --suffix="-nativelink-integration-test")
+    export CACHE_DIR
 fi
 
 export BAZEL_CACHE_DIR="$CACHE_DIR/bazel"
-trap "sudo rm -rf $CACHE_DIR; sudo docker compose rm --stop -f" EXIT
+trap 'sudo rm -rf $CACHE_DIR; sudo docker compose rm --stop -f' EXIT
 
 echo "" # New line.
-
-DID_FAIL=0
 
 export NATIVELINK_DIR="$CACHE_DIR/nativelink"
 mkdir -p "$NATIVELINK_DIR"
@@ -107,7 +107,7 @@ for pattern in "${TEST_PATTERNS[@]}"; do
         fi
 
         bazel --output_base="$BAZEL_CACHE_DIR" clean
-        FILENAME=$(basename $fullpath)
+        FILENAME=$(basename "$fullpath")
         echo "Running test $FILENAME"
         sudo docker compose up -d
         if perl -e 'alarm shift; exec @ARGV' 30 bash -c 'until sudo docker compose logs | grep -q "Ready, listening on"; do sleep 1; done'; then
