@@ -94,7 +94,7 @@ const DEFAULT_HEALTH_STATUS_CHECK_PATH: &str = "/status";
 
 // Note: This must be kept in sync with the documentation in
 // `OriginEventsConfig::max_event_queue_size`.
-const DEFAULT_MAX_QUEUE_EVENTS: usize = 65536;
+const DEFAULT_MAX_QUEUE_EVENTS: usize = 0x0001_0000;
 
 /// Broadcast Channel Capacity
 /// Note: The actual capacity may be greater than the provided capacity.
@@ -290,7 +290,7 @@ async fn inner_main(
                 counter: Counter::default(),
                 server_start_ts: server_start_timestamp,
             });
-            server_metrics.insert(name.clone(), connected_clients_mux.clone());
+            server_metrics.insert(name, connected_clients_mux.clone());
 
             (server_cfg, connected_clients_mux)
         })
@@ -758,7 +758,7 @@ async fn inner_main(
                 usize::try_from(value).err_tip(|| "Could not convert http2_max_send_buf_size")?,
             );
         }
-        if let Some(true) = http_config.experimental_http2_enable_connect_protocol {
+        if http_config.experimental_http2_enable_connect_protocol == Some(true) {
             http.http2().enable_connect_protocol();
         }
         if let Some(value) = http_config.experimental_http2_max_header_list_size {

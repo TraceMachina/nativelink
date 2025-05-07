@@ -939,16 +939,15 @@ impl RunningActionImpl {
                             maybe_all_stderr.err_tip(|| "Internal error reading from stderr of worker task")??
                         )
                     };
-                    let exit_code = if let Some(exit_code) = exit_status.code() {
+
+                    let exit_code = exit_status.code().map_or(EXIT_CODE_FOR_SIGNAL, |exit_code| {
                         if exit_code == 0 {
                             self.metrics().child_process_success_error_code.inc();
                         } else {
                             self.metrics().child_process_failure_error_code.inc();
                         }
                         exit_code
-                    } else {
-                        EXIT_CODE_FOR_SIGNAL
-                    };
+                    });
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await

@@ -331,23 +331,23 @@ impl GrpcStore {
                 // uncontended since write has returned.
                 let mut local_state_locked = local_state.lock();
 
-                let result = if let Some(err) = local_state_locked.take_read_stream_error() {
-                    // If there was an error with the stream, then don't retry.
-                    RetryResult::Err(err.append("Where read_stream_error was set"))
-                } else {
-                    // On error determine whether it is possible to retry.
-                    match result {
-                        Err(err) => {
-                            if local_state_locked.can_resume() {
-                                local_state_locked.resume();
-                                RetryResult::Retry(err)
-                            } else {
-                                RetryResult::Err(err.append("Retry is not possible"))
+                let result = local_state_locked
+                    .take_read_stream_error()
+                    .map(|err| RetryResult::Err(err.append("Where read_stream_error was set")))
+                    .unwrap_or_else(|| {
+                        // No stream error, handle the original result
+                        match result {
+                            Ok(response) => RetryResult::Ok(response),
+                            Err(err) => {
+                                if local_state_locked.can_resume() {
+                                    local_state_locked.resume();
+                                    RetryResult::Retry(err)
+                                } else {
+                                    RetryResult::Err(err.append("Retry is not possible"))
+                                }
                             }
                         }
-                        Ok(response) => RetryResult::Ok(response),
-                    }
-                };
+                    });
 
                 drop(local_state_locked);
                 Some((result, local_state))

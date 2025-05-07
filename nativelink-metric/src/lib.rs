@@ -121,10 +121,10 @@ impl<T: MetricsComponent> MetricsComponent for Option<T> {
         kind: MetricKind,
         field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, Error> {
-        match self {
-            Some(value) => value.publish(kind, field_metadata),
-            None => Ok(MetricPublishKnownKindData::Component),
-        }
+        self.as_ref()
+            .map_or(Ok(MetricPublishKnownKindData::Component), |value| {
+                value.publish(kind, field_metadata)
+            })
     }
 }
 
@@ -301,10 +301,10 @@ impl MetricsComponent for SystemTime {
         kind: MetricKind,
         field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, Error> {
-        match Self::now().duration_since(UNIX_EPOCH) {
-            Ok(n) => n.as_secs().publish(kind, field_metadata),
-            Err(_) => Err(Error("SystemTime before UNIX EPOCH!".to_string())),
-        }
+        Self::now().duration_since(UNIX_EPOCH).map_or_else(
+            |_| Err(Error("SystemTime before UNIX EPOCH!".to_string())),
+            |n| n.as_secs().publish(kind, field_metadata),
+        )
     }
 }
 

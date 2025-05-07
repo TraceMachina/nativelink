@@ -287,11 +287,9 @@ impl CasServer {
         }
         // `next_page_token` will return the `{hash_str}:{size_bytes}` of the next request's first directory digest.
         // It will be an empty string when it reached the end of the directory tree.
-        let next_page_token: String = if let Some(value) = deque.front() {
-            format!("{value}")
-        } else {
-            String::new()
-        };
+        let next_page_token: String = deque
+            .front()
+            .map_or_else(String::new, |value| format!("{value}"));
 
         Ok(futures::stream::once(async {
             Ok(GetTreeResponse {

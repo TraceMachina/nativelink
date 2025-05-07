@@ -35,21 +35,21 @@ enum GroupType {
 impl Parse for GroupType {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         if input.is_empty() {
-            return Ok(GroupType::None);
+            return Ok(Self::None);
         }
         let group_str: LitStr = input.parse()?;
         let group = format_ident!("{}", group_str.value());
-        Ok(GroupType::StaticGroupName(group))
+        Ok(Self::StaticGroupName(group))
     }
 }
 
 impl ToTokens for GroupType {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-            GroupType::None => {
+            Self::None => {
                 quote! { "" }
             }
-            GroupType::StaticGroupName(group) => quote! { stringify!(#group) },
+            Self::StaticGroupName(group) => quote! { stringify!(#group) },
         }
         .to_tokens(tokens);
     }
@@ -71,10 +71,10 @@ impl Parse for MetricKind {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let kind_str: LitStr = input.parse()?;
         match kind_str.value().as_str() {
-            "counter" => Ok(MetricKind::Counter),
-            "string" => Ok(MetricKind::String),
-            "component" => Ok(MetricKind::Component),
-            "default" => Ok(MetricKind::Default),
+            "counter" => Ok(Self::Counter),
+            "string" => Ok(Self::String),
+            "component" => Ok(Self::Component),
+            "default" => Ok(Self::Default),
             _ => Err(syn::Error::new(kind_str.span(), "Invalid metric type")),
         }
     }
@@ -83,10 +83,10 @@ impl Parse for MetricKind {
 impl ToTokens for MetricKind {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-            MetricKind::Counter => quote! { ::nativelink_metric::MetricKind::Counter },
-            MetricKind::String => quote! { ::nativelink_metric::MetricKind::String },
-            MetricKind::Component => quote! { ::nativelink_metric::MetricKind::Component },
-            MetricKind::Default => quote! { ::nativelink_metric::MetricKind::Default },
+            Self::Counter => quote! { ::nativelink_metric::MetricKind::Counter },
+            Self::String => quote! { ::nativelink_metric::MetricKind::String },
+            Self::Component => quote! { ::nativelink_metric::MetricKind::Component },
+            Self::Default => quote! { ::nativelink_metric::MetricKind::Default },
         }
         .to_tokens(tokens);
     }
@@ -160,16 +160,16 @@ impl ToTokens for MetricStruct<'_> {
             let field_name = &field.field_name;
             let group = &field.group;
 
-            let help = if let Some(help) = field.help.as_ref() {
-                quote! { #help }
-            } else {
-                quote! { "" }
-            };
-            let value = if let Some(handler) = &field.handler {
-                quote! { &#handler(&self.#field_name) }
-            } else {
-                quote! { &self.#field_name }
-            };
+            let help = field
+                .help
+                .as_ref()
+                .map_or_else(|| quote! { "" }, |help| quote! { #help });
+
+            let value = field.handler.as_ref().map_or_else(
+                || quote! { &self.#field_name },
+                |handler| quote! { &#handler(&self.#field_name) },
+            );
+
             let metric_kind = &field.metric_kind;
             quote! {
                 ::nativelink_metric::publish!(

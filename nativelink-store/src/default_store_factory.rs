@@ -41,7 +41,7 @@ use crate::size_partitioning_store::SizePartitioningStore;
 use crate::store_manager::StoreManager;
 use crate::verify_store::VerifyStore;
 
-type FutureMaybeStore<'a> = Box<dyn Future<Output = Result<Store, Error>> + 'a>;
+type FutureMaybeStore<'a> = Box<dyn Future<Output = Result<Store, Error>> + Send + 'a>;
 
 pub fn store_factory<'a>(
     backend: &'a StoreSpec,

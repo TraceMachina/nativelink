@@ -406,10 +406,9 @@ impl GcsOperations for MockGcsOperations {
         let mut objects = self.objects.write().await;
 
         // Get or create the object
-        let mock_object = if let Some(obj) = objects.get_mut(&object_key) {
-            obj
-        } else {
-            let new_obj = MockObject {
+        let mock_object = objects
+            .entry(object_key.clone())
+            .or_insert_with(|| MockObject {
                 metadata: GcsObject {
                     name: object_path.path.clone(),
                     bucket: object_path.bucket.clone(),
@@ -421,10 +420,7 @@ impl GcsOperations for MockGcsOperations {
                     }),
                 },
                 content: Vec::new(),
-            };
-            objects.insert(object_key.clone(), new_obj);
-            objects.get_mut(&object_key).unwrap()
-        };
+            });
 
         // Handle the chunk data
         let offset_usize = offset as usize;
