@@ -413,10 +413,30 @@
         nixos.path = with pkgs; [
           "/run/current-system/sw/bin"
           "${binutils.bintools}/bin"
-          "${uutils-coreutils-noprefix}/bin"
           "${pkgs.lre.clang}/bin"
           "${git}/bin"
           "${python3}/bin"
+
+          # In the lre-rs image these are copied to `/bin` by the create-worker
+          # function,
+          #
+          # Since we set `--incompatible_strict_action_env` in our .bazelrc we
+          # default to `PATH=/bin:/usr/bin:/usr/local/bin` on non-NixOS systems.
+          #
+          # On NixOS we override that path with what we have in this list. We
+          # could add `/bin` here, but using the explicit store paths adds
+          # another layer of safety so that we don't mix local and remote tools
+          # in cases where platform resolution doesn't behave as intended.
+          #
+          # Ideally, these shouldn't be in create-worker at all, and instead
+          # should be their own lre-shell toolchain "below" lre-cc, rather than
+          # a bolted-on-top layer in the final output.
+          #
+          # Note that these packages must be the same as the ones used in
+          # `create-worker.nix`.
+          "${bash}/bin"
+          "${coreutils}/bin"
+          "${gnused}/bin"
         ];
         devShells.default = pkgs.mkShell {
           packages = let
