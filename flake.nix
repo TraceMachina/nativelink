@@ -415,7 +415,6 @@
           "${binutils.bintools}/bin"
           "${pkgs.lre.clang}/bin"
           "${git}/bin"
-          "${python3}/bin"
 
           # In the lre-rs image these are copied to `/bin` by the create-worker
           # function,
