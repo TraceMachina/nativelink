@@ -101,12 +101,39 @@ build --@rules_rust//:extra_rustc_flag=-Wunused_lifetimes
 build --@rules_rust//:extra_rustc_flag=-Wunused_qualifications
 build --@rules_rust//:extra_rustc_flag=-Wvariant_size_differences
 
-# TODO(aaronmondal): Extend these flags until we can run with clippy::pedantic.
-
-# clippy lints with negative (low) priority
+# Globbal clippy configuration
 build --@rules_rust//:clippy_flag=-Wclippy::all
 build --@rules_rust//:clippy_flag=-Wclippy::nursery
 build --@rules_rust//:clippy_flag=-Wclippy::pedantic
+
+# Restriction denies with default priority
+build --@rules_rust//:clippy_flag=-Dclippy::alloc_instead_of_core
+build --@rules_rust//:clippy_flag=-Dclippy::as_underscore
+build --@rules_rust//:clippy_flag=-Dclippy::std_instead_of_core
+
+# Restriction warnings with default priority
+build --@rules_rust//:clippy_flag=-Wclippy::dbg_macro
+build --@rules_rust//:clippy_flag=-Wclippy::decimal_literal_representation
+build --@rules_rust//:clippy_flag=-Aclippy::get_unwrap # TODO(jhpratt): Flip
+build --@rules_rust//:clippy_flag=-Aclippy::missing_docs_in_private_items # TODO(jhpratt): Flip
+build --@rules_rust//:clippy_flag=-Wclippy::print_stdout
+build --@rules_rust//:clippy_flag=-Wclippy::todo
+build --@rules_rust//:clippy_flag=-Wclippy::unimplemented
+build --@rules_rust//:clippy_flag=-Aclippy::unwrap_in_result # TODO(jhpratt): Flip
+build --@rules_rust//:clippy_flag=-Aclippy::unwrap_used # TODO(jhpratt): Flip
+build --@rules_rust//:clippy_flag=-Wclippy::use_debug
+
+# Nursery denies we want once they get out of Nursery
+build --@rules_rust//:clippy_flag=-Dclippy::missing_const_for_fn
+
+# Nursery overrides that are either buggy or we want to fix
+build --@rules_rust//:clippy_flag=-Aclippy::fallible_impl_from # TODO(jhpratt) Flip
+build --@rules_rust//:clippy_flag=-Aclippy::iter_with_drain # TODO(jhpratt): Flip
+build --@rules_rust//:clippy_flag=-Aclippy::option_if_let_else # rust-lang/rust-clippy#8829, overrides ![warn(clippy::nursery)]
+build --@rules_rust//:clippy_flag=-Aclippy::redundant_pub_crate # rust-lang/rust-clippy#5369, overrides #![warn(clippy::nursery)]
+build --@rules_rust//:clippy_flag=-Aclippy::significant_drop_tightening # TODO(jhcpratt): Flip
+build --@rules_rust//:clippy_flag=-Aclippy::too_long_first_doc_paragraph # TODO(jhcprat): Flip
+build --@rules_rust//:clippy_flag=-Aclippy::uninhabited_references # rust-lang/rust-clippy#11984
 
 # TODO(aaronmondal): Remove these to get to pedantic.
 build --@rules_rust//:clippy_flag=-Aclippy::cast_possible_truncation
@@ -129,68 +156,6 @@ build --@rules_rust//:clippy_flag=-Aclippy::unnecessary_semicolon
 build --@rules_rust//:clippy_flag=-Aclippy::unused_async
 build --@rules_rust//:clippy_flag=-Aclippy::unused_self
 build --@rules_rust//:clippy_flag=-Aclippy::used_underscore_binding
-
-# clippy denies with default priority
-build --@rules_rust//:clippy_flag=-Dclippy::alloc_instead_of_core
-build --@rules_rust//:clippy_flag=-Dclippy::as_underscore
-build --@rules_rust//:clippy_flag=-Dclippy::cast_lossless
-build --@rules_rust//:clippy_flag=-Dclippy::default_trait_access
-build --@rules_rust//:clippy_flag=-Dclippy::doc_markdown
-build --@rules_rust//:clippy_flag=-Dclippy::explicit_deref_methods
-build --@rules_rust//:clippy_flag=-Dclippy::explicit_into_iter_loop
-build --@rules_rust//:clippy_flag=-Dclippy::explicit_iter_loop
-build --@rules_rust//:clippy_flag=-Dclippy::ignored_unit_patterns
-build --@rules_rust//:clippy_flag=-Dclippy::implicit_clone
-build --@rules_rust//:clippy_flag=-Dclippy::implicit_hasher
-build --@rules_rust//:clippy_flag=-Dclippy::inconsistent_struct_constructor
-build --@rules_rust//:clippy_flag=-Dclippy::inline_always
-build --@rules_rust//:clippy_flag=-Dclippy::items_after_statements
-build --@rules_rust//:clippy_flag=-Dclippy::manual_let_else
-build --@rules_rust//:clippy_flag=-Dclippy::manual_string_new
-build --@rules_rust//:clippy_flag=-Dclippy::map_unwrap_or
-build --@rules_rust//:clippy_flag=-Dclippy::match_same_arms
-build --@rules_rust//:clippy_flag=-Dclippy::match_wildcard_for_single_variants
-build --@rules_rust//:clippy_flag=-Dclippy::missing_const_for_fn
-build --@rules_rust//:clippy_flag=-Dclippy::needless_continue
-build --@rules_rust//:clippy_flag=-Dclippy::needless_pass_by_value
-build --@rules_rust//:clippy_flag=-Dclippy::needless_raw_string_hashes
-build --@rules_rust//:clippy_flag=-Dclippy::ptr_as_ptr
-build --@rules_rust//:clippy_flag=-Dclippy::range_plus_one
-build --@rules_rust//:clippy_flag=-Dclippy::redundant_closure_for_method_calls
-build --@rules_rust//:clippy_flag=-Dclippy::redundant_else
-build --@rules_rust//:clippy_flag=-Dclippy::ref_as_ptr
-build --@rules_rust//:clippy_flag=-Dclippy::return_self_not_must_use
-build --@rules_rust//:clippy_flag=-Dclippy::semicolon_if_nothing_returned
-build --@rules_rust//:clippy_flag=-Dclippy::single_match_else
-build --@rules_rust//:clippy_flag=-Dclippy::stable_sort_primitive
-build --@rules_rust//:clippy_flag=-Dclippy::std_instead_of_core
-build --@rules_rust//:clippy_flag=-Dclippy::struct_field_names
-build --@rules_rust//:clippy_flag=-Dclippy::trivially_copy_pass_by_ref
-build --@rules_rust//:clippy_flag=-Dclippy::uninlined_format_args
-build --@rules_rust//:clippy_flag=-Dclippy::unnecessary_wraps
-build --@rules_rust//:clippy_flag=-Dclippy::unreadable_literal
-build --@rules_rust//:clippy_flag=-Dclippy::wildcard_imports
-
-# clippy warnings with default priority
-build --@rules_rust//:clippy_flag=-Wclippy::dbg_macro
-build --@rules_rust//:clippy_flag=-Wclippy::decimal_literal_representation
-build --@rules_rust//:clippy_flag=-Wclippy::explicit_auto_deref
-build --@rules_rust//:clippy_flag=-Wclippy::missing_enforced_import_renames
-build --@rules_rust//:clippy_flag=-Wclippy::obfuscated_if_else
-build --@rules_rust//:clippy_flag=-Wclippy::print_stdout
-build --@rules_rust//:clippy_flag=-Wclippy::todo
-build --@rules_rust//:clippy_flag=-Wclippy::unimplemented
-build --@rules_rust//:clippy_flag=-Wclippy::unnested_or_patterns
-build --@rules_rust//:clippy_flag=-Wclippy::use_debug
-
-# clippy lints with positive (high) priority
-build --@rules_rust//:clippy_flag=-Aclippy::fallible_impl_from # TODO(jhpratt) Flip.
-build --@rules_rust//:clippy_flag=-Aclippy::iter_with_drain # TODO(jhpratt): Flip.
-build --@rules_rust//:clippy_flag=-Aclippy::option_if_let_else # rust-lang/rust-clippy#8829, overrides ![warn(clippy::nursery)]
-build --@rules_rust//:clippy_flag=-Aclippy::redundant_pub_crate # rust-lang/rust-clippy#5369, overrides #![warn(clippy::nursery)]
-build --@rules_rust//:clippy_flag=-Aclippy::significant_drop_tightening # TODO(jhcpratt): Flip.
-build --@rules_rust//:clippy_flag=-Aclippy::too_long_first_doc_paragraph # TODO(jhcprat): Flip.
-build --@rules_rust//:clippy_flag=-Aclippy::uninhabited_references # rust-lang/rust-clippy#11984
 
 build --@rules_rust//:clippy.toml=//:clippy.toml
 test --@rules_rust//:rustfmt.toml=//:.rustfmt.toml
