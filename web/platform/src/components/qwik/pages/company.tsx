@@ -23,7 +23,7 @@ const team = [
   {
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/marcus_eagan.webp",
     name: "Marcus Eagan",
-    title: "Co-Founder",
+    title: "Founder",
   },
 ];
 
