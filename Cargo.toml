@@ -166,7 +166,6 @@ cast_possible_truncation = { level = "allow", priority = 1 }
 cast_possible_wrap = { level = "allow", priority = 1 }
 cast_precision_loss = { level = "allow", priority = 1 }
 cast_sign_loss = { level = "allow", priority = 1 }
-doc_link_with_quotes = { level = "allow", priority = 1 }
 from_iter_instead_of_collect = { level = "allow", priority = 1 }
 large_futures = { level = "allow", priority = 1 }
 missing_errors_doc = { level = "allow", priority = 1 }

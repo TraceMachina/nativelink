@@ -43,6 +43,7 @@ _HEADER = """\
     clippy::default_trait_access,
     clippy::derive_partial_eq_without_eq,
     clippy::doc_lazy_continuation,
+    clippy::doc_link_with_quotes,
     clippy::doc_markdown,
     clippy::doc_overindented_list_items,
     clippy::large_enum_variant,
