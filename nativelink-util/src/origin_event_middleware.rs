@@ -108,13 +108,13 @@ where
                 .header_name
                 .as_deref()
                 .unwrap_or(DEFAULT_IDENTITY_HEADER);
-            let identity = if !identity_header.is_empty() {
+            let identity = if identity_header.is_empty() {
+                String::new()
+            } else {
                 req.headers()
                     .get(identity_header)
                     .and_then(|header| header.to_str().ok().map(str::to_string))
                     .unwrap_or_default()
-            } else {
-                String::new()
             };
 
             if identity.is_empty() && self.idenity_header_config.required {
