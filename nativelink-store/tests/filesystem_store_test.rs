@@ -26,7 +26,9 @@ use bytes::Bytes;
 use futures::executor::block_on;
 use futures::task::Poll;
 use futures::{Future, FutureExt, poll};
-use nativelink_config::stores::FilesystemSpec;
+use nativelink_config::stores::{
+    FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
@@ -1153,8 +1155,73 @@ async fn update_with_whole_file_closes_file() -> Result<(), Error> {
     );
     store.update_oneshot(digest, value.clone().into()).await?;
 
-    let file_path = OsString::from(format!("{temp_path}/dummy_file"));
-    let mut file = fs::create_file(&file_path).await?;
+    let mut file = fs::create_file(OsString::from(format!("{temp_path}/dummy_file"))).await?;
+    {
+        let writer = file.as_writer().await?;
+        writer.write_all(value.as_bytes()).await?;
+        writer.as_mut().sync_all().await?;
+        writer.seek(tokio::io::SeekFrom::Start(0)).await?;
+    }
+
+    store
+        .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len() as u64))
+        .await?;
+    Ok(())
+}
+
+#[serial]
+#[nativelink_test]
+async fn update_with_whole_file_slow_path_when_low_file_descriptors() -> Result<(), Error> {
+    let mut permits = vec![];
+    // Grab all permits to ensure only 1 permit is available.
+    {
+        wait_for_no_open_files().await?;
+        while fs::OPEN_FILE_SEMAPHORE.available_permits() > 1 {
+            permits.push(fs::get_permit().await);
+        }
+        assert_eq!(
+            fs::OPEN_FILE_SEMAPHORE.available_permits(),
+            1,
+            "Expected 1 permit to be available"
+        );
+    }
+
+    let value = "x".repeat(1024);
+
+    let digest = DigestInfo::try_new(HASH1, value.len())?;
+
+    let store = FastSlowStore::new(
+        // Note: The config is not needed for this test, so use dummy data.
+        &FastSlowSpec {
+            fast: StoreSpec::memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow: StoreSpec::memory(MemorySpec::default()),
+            slow_direction: StoreDirection::default(),
+        },
+        Store::new(
+            FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+                content_path: make_temp_path("content_path"),
+                temp_path: make_temp_path("temp_path"),
+                read_buffer_size: 1,
+                ..Default::default()
+            })
+            .await?,
+        ),
+        Store::new(
+            FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+                content_path: make_temp_path("content_path1"),
+                temp_path: make_temp_path("temp_path1"),
+                read_buffer_size: 1,
+                ..Default::default()
+            })
+            .await?,
+        ),
+    );
+    store.update_oneshot(digest, value.clone().into()).await?;
+
+    let temp_path = make_temp_path("temp_path2");
+    fs::create_dir_all(&temp_path).await?;
+    let mut file = fs::create_file(OsString::from(format!("{temp_path}/dummy_file"))).await?;
     {
         file.write_all(value.as_bytes()).await?;
         file.as_mut().sync_all().await?;
