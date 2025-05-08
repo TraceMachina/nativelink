@@ -146,7 +146,6 @@ build --@rules_rust//:clippy_flag=-Aclippy::missing_errors_doc
 build --@rules_rust//:clippy_flag=-Aclippy::missing_fields_in_debug
 build --@rules_rust//:clippy_flag=-Aclippy::missing_panics_doc
 build --@rules_rust//:clippy_flag=-Aclippy::must_use_candidate
-build --@rules_rust//:clippy_flag=-Aclippy::option_option
 build --@rules_rust//:clippy_flag=-Aclippy::ref_option
 build --@rules_rust//:clippy_flag=-Aclippy::similar_names
 build --@rules_rust//:clippy_flag=-Aclippy::too_many_lines

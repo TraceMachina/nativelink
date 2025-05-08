@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::fmt::Debug;
+use core::mem;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::borrow::Cow;
@@ -137,28 +138,40 @@ where
     }
 }
 
+/// Represents the state of the first response in a `FirstStream`.
+#[derive(Debug)]
+pub enum FirstResponseState {
+    /// Contains an optional first response that hasn't been consumed yet.
+    /// A `None` value indicates the first response was EOF.
+    Unused(Option<ReadResponse>),
+    /// Indicates the first response has been consumed and future reads should
+    /// come from the underlying stream.
+    Used,
+}
+
 /// This provides a buffer for the first response from GrpcStore.read in order
 /// to allow the first read to occur within the retry loop.  That means that if
 /// the connection establishes fine, but reading the first byte of the file
 /// fails we have the ability to retry before returning to the caller.
 #[derive(Debug)]
 pub struct FirstStream {
-    /// Contains the first response from the stream (which could be an EOF,
-    /// hence the nested Option).  This should be populated on creation and
-    /// returned as the first result from the stream.  Subsequent reads from the
-    /// stream will use the encapsulated stream.
-    first_response: Option<Option<ReadResponse>>,
-    /// The stream to get responses from when `first_response` is None.
+    /// The current state of the first response. When in the `Unused` state,
+    /// contains an optional response which could be `None` or an EOF.
+    /// Once consumed, transitions to the `Used` state.
+    state: FirstResponseState,
+    /// The stream to get responses from after the first response is consumed.
     stream: Streaming<ReadResponse>,
 }
 
 impl FirstStream {
+    /// Creates a new `FirstStream` with the given first response and underlying
+    /// stream.
     pub const fn new(
         first_response: Option<ReadResponse>,
         stream: Streaming<ReadResponse>,
     ) -> Self {
         Self {
-            first_response: Some(first_response),
+            state: FirstResponseState::Unused(first_response),
             stream,
         }
     }
@@ -168,10 +181,10 @@ impl Stream for FirstStream {
     type Item = Result<ReadResponse, Status>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if let Some(first_response) = self.first_response.take() {
-            return Poll::Ready(first_response.map(Ok));
+        match mem::replace(&mut self.state, FirstResponseState::Used) {
+            FirstResponseState::Unused(first_response) => Poll::Ready(first_response.map(Ok)),
+            FirstResponseState::Used => Pin::new(&mut self.stream).poll_next(cx),
         }
-        Pin::new(&mut self.stream).poll_next(cx)
     }
 }
 
