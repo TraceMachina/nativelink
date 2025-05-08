@@ -165,7 +165,7 @@ impl RedisStore {
                 Code::InvalidArgument,
                 "No addresses were specified in redis store configuration."
             ));
-        };
+        }
         let [addr] = spec.addresses.as_slice() else {
             return Err(make_err!(
                 Code::Unimplemented,
@@ -539,7 +539,7 @@ impl StoreDriver for RedisStore {
         // If we have a publish channel configured, send a notice that the key has been set.
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
             return Ok(client.publish(pub_sub_channel, final_key.as_ref()).await?);
-        };
+        }
 
         Ok(())
     }
@@ -936,7 +936,7 @@ impl RedisSubscriptionManager {
                                         if subscribed_keys_weak.upgrade().is_none() {
                                             warn!("It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
                                             return;
-                                        };
+                                        }
                                         error!("Error receiving message in RedisSubscriptionManager reconnecting and flagging everything changed - {e}");
                                         break;
                                     }
@@ -1079,7 +1079,7 @@ impl SchedulerStore for RedisStore {
             // If we have a publish channel configured, send a notice that the key has been set.
             if let Some(pub_sub_channel) = &self.pub_sub_channel {
                 return Ok(client.publish(pub_sub_channel, key.as_ref()).await?);
-            };
+            }
             Ok(Some(new_version))
         } else {
             let data = data.try_into_bytes().err_tip(|| {
@@ -1098,7 +1098,7 @@ impl SchedulerStore for RedisStore {
             // If we have a publish channel configured, send a notice that the key has been set.
             if let Some(pub_sub_channel) = &self.pub_sub_channel {
                 return Ok(client.publish(pub_sub_channel, key.as_ref()).await?);
-            };
+            }
             Ok(Some(0)) // Always use "0" version since this is not a versioned request.
         }
     }

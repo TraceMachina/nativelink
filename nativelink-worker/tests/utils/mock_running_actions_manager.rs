@@ -261,7 +261,7 @@ impl MockRunningAction {
         {
             RunningActionCalls::PrepareAction => (),
             req => panic!("expect_prepare_action expected PrepareAction, got : {req:?}"),
-        };
+        }
         let result = match result {
             Ok(()) => Ok(self.clone()),
             Err(e) => Err(e),
@@ -284,7 +284,7 @@ impl MockRunningAction {
         {
             RunningActionCalls::Execute => (),
             req => panic!("expect_execute expected Execute, got : {req:?}"),
-        };
+        }
         let result = match result {
             Ok(()) => Ok(self.clone()),
             Err(e) => Err(e),
@@ -307,7 +307,7 @@ impl MockRunningAction {
         {
             RunningActionCalls::UploadResults => (),
             req => panic!("expect_upload_results expected UploadResults, got : {req:?}"),
-        };
+        }
         let result = match result {
             Ok(()) => Ok(self.clone()),
             Err(e) => Err(e),
@@ -327,7 +327,7 @@ impl MockRunningAction {
         {
             RunningActionCalls::Cleanup => (),
             req => panic!("expect_cleanup expected Cleanup, got : {req:?}"),
-        };
+        }
         let result = match result {
             Ok(()) => Ok(self.clone()),
             Err(e) => Err(e),
@@ -350,7 +350,7 @@ impl MockRunningAction {
         {
             RunningActionCalls::GetFinishedResult => (),
             req => panic!("expect_get_finished_result expected GetFinishedResult, got : {req:?}"),
-        };
+        }
         self.tx_resp
             .send(RunningActionReturns::GetFinishedResult(Box::new(result)))
             .expect("Could not send request to mpsc");

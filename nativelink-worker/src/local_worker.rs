@@ -220,7 +220,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                     ?err,
                                     "Failed to send kill request for operation"
                                 );
-                            };
+                            }
                         }
                         Update::StartAction(start_execute) => {
                             self.metrics.start_actions_received.inc();
@@ -340,7 +340,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 );
                             });
                         }
-                    };
+                    }
                 },
                 res = add_future_rx.next() => {
                     let fut = res.err_tip(|| "New future stream receives should never be closed")?;

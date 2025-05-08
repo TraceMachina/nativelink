@@ -938,7 +938,7 @@ async fn inner_main(
 
     if let Err(e) = try_join_all(root_futures).await {
         panic!("{e:?}");
-    };
+    }
 
     Ok(())
 }

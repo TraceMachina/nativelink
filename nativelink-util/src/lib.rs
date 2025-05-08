@@ -91,7 +91,7 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
                 .with_filter(env_filter)
                 .boxed(),
         ),
-    };
+    }
 
     tracing_subscriber::registry().with(layers).init();
     Ok(())
