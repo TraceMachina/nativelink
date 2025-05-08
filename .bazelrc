@@ -141,7 +141,6 @@ build --@rules_rust//:clippy_flag=-Aclippy::cast_possible_wrap
 build --@rules_rust//:clippy_flag=-Aclippy::cast_precision_loss
 build --@rules_rust//:clippy_flag=-Aclippy::cast_sign_loss
 build --@rules_rust//:clippy_flag=-Aclippy::doc_link_with_quotes
-build --@rules_rust//:clippy_flag=-Aclippy::from_iter_instead_of_collect
 build --@rules_rust//:clippy_flag=-Aclippy::large_futures
 build --@rules_rust//:clippy_flag=-Aclippy::missing_errors_doc
 build --@rules_rust//:clippy_flag=-Aclippy::missing_fields_in_debug
