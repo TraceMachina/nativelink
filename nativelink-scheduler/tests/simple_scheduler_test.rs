@@ -2100,7 +2100,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
             }
         } else {
             panic!("Expected Completed, got : {:?}", action_state.stage);
-        };
+        }
         assert_eq!(received_state, expected_action_state);
     }
 

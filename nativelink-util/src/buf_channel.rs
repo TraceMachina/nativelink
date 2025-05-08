@@ -225,11 +225,11 @@ impl DropCloserReadHalf {
                 self.bytes_received = 0;
                 self.last_err = Some(err.clone());
                 return Err(err);
-            };
+            }
 
             self.maybe_populate_recent_data(&ZERO_DATA);
             return Ok(ZERO_DATA);
-        };
+        }
 
         self.bytes_received += chunk.len() as u64;
         self.maybe_populate_recent_data(&chunk);

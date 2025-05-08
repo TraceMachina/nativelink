@@ -150,7 +150,6 @@ build --@rules_rust//:clippy_flag=-Aclippy::option_option
 build --@rules_rust//:clippy_flag=-Aclippy::ref_option
 build --@rules_rust//:clippy_flag=-Aclippy::similar_names
 build --@rules_rust//:clippy_flag=-Aclippy::too_many_lines
-build --@rules_rust//:clippy_flag=-Aclippy::unnecessary_semicolon
 build --@rules_rust//:clippy_flag=-Aclippy::unused_async
 build --@rules_rust//:clippy_flag=-Aclippy::unused_self
 build --@rules_rust//:clippy_flag=-Aclippy::used_underscore_binding

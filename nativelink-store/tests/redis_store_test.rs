@@ -122,7 +122,7 @@ impl Mocks for MockRedisBackend {
                 actual, expected,
                 "mismatched command, received (left) but expected (right)"
             );
-        };
+        }
 
         result
     }
