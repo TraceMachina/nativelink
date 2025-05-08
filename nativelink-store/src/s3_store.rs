@@ -923,7 +923,7 @@ where
                     match maybe_bytes {
                         Ok(bytes) => {
                             if bytes.is_empty() {
-                                // Ignore possible EOF. Different implimentations of S3 may or may not
+                                // Ignore possible EOF. Different implementations of S3 may or may not
                                 // send EOF this way.
                                 continue;
                             }
