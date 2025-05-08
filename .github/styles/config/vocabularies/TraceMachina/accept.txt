@@ -1,9 +1,14 @@
+[Aa]gentic
 Ansys
+Anthropic
 AMI
 Astro
 Bazel
 Bazelisk
+[Bb]oolean
 Cloudflare
+Colab
+CPUs
 ELB
 FFI
 FFIs
@@ -11,6 +16,8 @@ GPUs
 Goma
 [Hh]ermeticity
 JDK
+json
+JSON
 Kustomization
 Kustomizations
 LLD

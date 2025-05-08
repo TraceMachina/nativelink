@@ -13,9 +13,11 @@ which both provide helpful reference for customers looking to deploy NativeLink 
 ## Production CAS Overview
 At NativeLink we offer CAS-as-a-Service running on all the major cloud providers (AWS, GCP, Azure, etc). This allows our customers to get started with NativeLink to improve build & test performance with minimal effort. Behind the scenes, each CAS service runs in a Kubernetes namespace with a dedicated ActionCache store and a shared CAS store. In this article, we take a deep dive into how we Configure the CAS service in our cloud. Even if you’re not using our hosted CAS service, the insights covered here will help you Configure your own CAS to achieve high performance and scalability.
 
-To run NativeLink, you just pass the path to a single JSON Configuration file, such as:
+To run NativeLink, you just pass the path to a single JSON5 Configuration file, such as:
 
-/bin/NativeLink /etc/Config/cas.json
+```bash
+/bin/NativeLink /etc/Config/cas.json5
+```
 
 The entire JSON file we use for the cloud service is included at the end of this document.
 NativeLink Servers
