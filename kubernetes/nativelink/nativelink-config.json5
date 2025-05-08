@@ -79,29 +79,21 @@
       }
     },
     "services": {
-      "cas": {
-        "": {
-          "cas_store": "CAS_MAIN_STORE"
-        }
-      },
-      "ac": {
-        "": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "capabilities": {
-        "": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER"
-          }
-        }
-      },
-      "execution": {
-        "": {
-          "cas_store": "CAS_MAIN_STORE",
+      "cas": [{
+        "cas_store": "CAS_MAIN_STORE"
+      }],
+      "ac": [{
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "capabilities": [{
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER"
         }
-      },
+      }],
+      "execution": [{
+        "cas_store": "CAS_MAIN_STORE",
+        "scheduler": "MAIN_SCHEDULER"
+      }],
       "bytestream": {
         "cas_stores": {
           "": "CAS_MAIN_STORE"
@@ -120,29 +112,21 @@
       }
     },
     "services": {
-      "cas": {
-        "": {
-          "cas_store": "CAS_MAIN_STORE"
-        }
-      },
-      "ac": {
-        "": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "capabilities": {
-        "": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER"
-          }
-        }
-      },
-      "execution": {
-        "": {
-          "cas_store": "CAS_MAIN_STORE",
+      "cas": [{
+        "cas_store": "CAS_MAIN_STORE"
+      }],
+      "ac": [{
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "capabilities": [{
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER"
         }
-      },
+      }],
+      "execution": [{
+        "cas_store": "CAS_MAIN_STORE",
+        "scheduler": "MAIN_SCHEDULER"
+      }],
       "bytestream": {
         "cas_stores": {
           "": "CAS_MAIN_STORE"

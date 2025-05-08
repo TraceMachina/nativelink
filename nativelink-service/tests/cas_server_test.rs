@@ -16,7 +16,7 @@ use core::pin::Pin;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use maplit::hashmap;
+use nativelink_config::cas_server::WithInstanceName;
 use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
@@ -61,11 +61,12 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
 
 fn make_cas_server(store_manager: &StoreManager) -> Result<CasServer, Error> {
     CasServer::new(
-        &hashmap! {
-            "foo_instance_name".to_string() => nativelink_config::cas_server::CasStoreConfig{
+        &[WithInstanceName {
+            instance_name: "foo_instance_name".to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
                 cas_store: "main_cas".to_string(),
-            }
-        },
+            },
+        }],
         store_manager,
     )
 }
