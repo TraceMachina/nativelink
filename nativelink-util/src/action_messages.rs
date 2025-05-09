@@ -424,19 +424,20 @@ pub struct FileInfo {
     pub is_executable: bool,
 }
 
-//TODO: Make this TryFrom.
-impl From<FileInfo> for FileNode {
-    fn from(val: FileInfo) -> Self {
-        let NameOrPath::Name(name) = val.name_or_path else {
-            panic!(
+impl TryFrom<FileInfo> for FileNode {
+    type Error = Error;
+
+    fn try_from(val: FileInfo) -> Result<Self, Error> {
+        match val.name_or_path {
+            NameOrPath::Path(_) => Err(make_input_err!(
                 "Cannot return a FileInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()"
-            );
-        };
-        Self {
-            name,
-            digest: Some((&val.digest).into()),
-            is_executable: val.is_executable,
-            node_properties: Option::default(), // Not supported.
+            )),
+            NameOrPath::Name(name) => Ok(Self {
+                name,
+                digest: Some((&val.digest).into()),
+                is_executable: val.is_executable,
+                node_properties: None, // Not supported.
+            }),
         }
     }
 }
@@ -456,20 +457,21 @@ impl TryFrom<OutputFile> for FileInfo {
     }
 }
 
-//TODO: Make this TryFrom.
-impl From<FileInfo> for OutputFile {
-    fn from(val: FileInfo) -> Self {
-        let NameOrPath::Path(path) = val.name_or_path else {
-            panic!(
+impl TryFrom<FileInfo> for OutputFile {
+    type Error = Error;
+
+    fn try_from(val: FileInfo) -> Result<Self, Error> {
+        match val.name_or_path {
+            NameOrPath::Name(_) => Err(make_input_err!(
                 "Cannot return a FileInfo that uses a NameOrPath::Name(), it must be a NameOrPath::Path()"
-            );
-        };
-        Self {
-            path,
-            digest: Some((&val.digest).into()),
-            is_executable: val.is_executable,
-            contents: Bytes::default(),
-            node_properties: Option::default(), // Not supported.
+            )),
+            NameOrPath::Path(path) => Ok(Self {
+                path,
+                digest: Some((&val.digest).into()),
+                is_executable: val.is_executable,
+                contents: Bytes::default(),
+                node_properties: None, // Not supported.
+            }),
         }
     }
 }
@@ -493,18 +495,19 @@ impl TryFrom<SymlinkNode> for SymlinkInfo {
     }
 }
 
-// TODO: Make this TryFrom.
-impl From<SymlinkInfo> for SymlinkNode {
-    fn from(val: SymlinkInfo) -> Self {
-        let NameOrPath::Name(name) = val.name_or_path else {
-            panic!(
+impl TryFrom<SymlinkInfo> for SymlinkNode {
+    type Error = Error;
+
+    fn try_from(val: SymlinkInfo) -> Result<Self, Error> {
+        match val.name_or_path {
+            NameOrPath::Path(_) => Err(make_input_err!(
                 "Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()"
-            );
-        };
-        Self {
-            name,
-            target: val.target,
-            node_properties: Option::default(), // Not supported.
+            )),
+            NameOrPath::Name(name) => Ok(Self {
+                name,
+                target: val.target,
+                node_properties: None, // Not supported.
+            }),
         }
     }
 }
@@ -520,18 +523,21 @@ impl TryFrom<OutputSymlink> for SymlinkInfo {
     }
 }
 
-// TODO: Make this TryFrom.
-impl From<SymlinkInfo> for OutputSymlink {
-    fn from(val: SymlinkInfo) -> Self {
-        let NameOrPath::Path(path) = val.name_or_path else {
-            panic!(
-                "Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()"
-            );
-        };
-        Self {
-            path,
-            target: val.target,
-            node_properties: Option::default(), // Not supported.
+impl TryFrom<SymlinkInfo> for OutputSymlink {
+    type Error = Error;
+
+    fn try_from(val: SymlinkInfo) -> Result<Self, Error> {
+        match val.name_or_path {
+            NameOrPath::Path(path) => {
+                Ok(Self {
+                    path,
+                    target: val.target,
+                    node_properties: None, // Not supported.
+                })
+            }
+            NameOrPath::Name(_) => Err(make_input_err!(
+                "Cannot return a SymlinkInfo that uses a NameOrPath::Name(), it must be a NameOrPath::Path()"
+            )),
         }
     }
 }
@@ -850,7 +856,7 @@ pub fn to_execute_response(action_result: ActionResult) -> ExecuteResponse {
     let message = action_result.message.clone();
     ExecuteResponse {
         server_logs: logs_from(action_result.server_logs.clone()),
-        result: Some(action_result.into()),
+        result: action_result.try_into().ok(),
         cached_result: false,
         status,
         message,
@@ -880,35 +886,48 @@ impl From<ActionStage> for ExecuteResponse {
     }
 }
 
-impl From<ActionResult> for ProtoActionResult {
-    fn from(val: ActionResult) -> Self {
+impl TryFrom<ActionResult> for ProtoActionResult {
+    type Error = Error;
+
+    fn try_from(val: ActionResult) -> Result<Self, Error> {
         let mut output_symlinks = Vec::with_capacity(
             val.output_file_symlinks.len() + val.output_directory_symlinks.len(),
         );
         output_symlinks.extend_from_slice(val.output_file_symlinks.as_slice());
         output_symlinks.extend_from_slice(val.output_directory_symlinks.as_slice());
 
-        Self {
-            output_files: val.output_files.into_iter().map(Into::into).collect(),
+        Ok(Self {
+            output_files: val
+                .output_files
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
             output_file_symlinks: val
                 .output_file_symlinks
                 .into_iter()
-                .map(Into::into)
-                .collect(),
-            output_symlinks: output_symlinks.into_iter().map(Into::into).collect(),
-            output_directories: val.output_folders.into_iter().map(Into::into).collect(),
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            output_symlinks: output_symlinks
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            output_directories: val
+                .output_folders
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
             output_directory_symlinks: val
                 .output_directory_symlinks
                 .into_iter()
-                .map(Into::into)
-                .collect(),
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
             exit_code: val.exit_code,
             stdout_raw: Bytes::default(),
             stdout_digest: Some(val.stdout_digest.into()),
             stderr_raw: Bytes::default(),
             stderr_digest: Some(val.stderr_digest.into()),
             execution_metadata: Some(val.execution_metadata.into()),
-        }
+        })
     }
 }
 
@@ -1026,7 +1045,7 @@ impl TryFrom<ExecuteResponse> for ActionStage {
         };
 
         if execute_response.cached_result {
-            return Ok(Self::CompletedFromCache(action_result.into()));
+            return Ok(Self::CompletedFromCache(action_result.try_into()?));
         }
         Ok(Self::Completed(action_result))
     }

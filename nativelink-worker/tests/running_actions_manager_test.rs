@@ -2066,7 +2066,7 @@ async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn core::erro
     let retrieved_result =
         get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), action_digest.into()).await?;
 
-    let proto_result: ProtoActionResult = action_result.into();
+    let proto_result: ProtoActionResult = action_result.try_into()?;
     assert_eq!(proto_result, retrieved_result);
 
     Ok(())
@@ -2138,7 +2138,7 @@ async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn co
     let retrieved_result =
         get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), action_digest.into()).await?;
 
-    let proto_result: ProtoActionResult = action_result.into();
+    let proto_result: ProtoActionResult = action_result.try_into()?;
     assert_eq!(proto_result, retrieved_result);
 
     Ok(())
@@ -2237,7 +2237,7 @@ async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn core::
         HistoricalExecuteResponse {
             action_digest: Some(action_digest.into()),
             execute_response: Some(ExecuteResponse {
-                result: Some(action_result.into()),
+                result: Some(action_result.try_into()?),
                 status: Some(Status::default()),
                 ..Default::default()
             }),
@@ -2351,7 +2351,7 @@ async fn infra_failure_does_cache_in_historical_results() -> Result<(), Box<dyn 
         HistoricalExecuteResponse {
             action_digest: Some(action_digest.into()),
             execute_response: Some(ExecuteResponse {
-                result: Some(action_result.into()),
+                result: Some(action_result.try_into()?),
                 status: Some(make_input_err!("test error").into()),
                 ..Default::default()
             }),
@@ -2407,7 +2407,7 @@ async fn action_result_has_used_in_message() -> Result<(), Box<dyn core::error::
         get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), action_result_digest.into())
             .await?;
 
-    let proto_result: ProtoActionResult = action_result.into();
+    let proto_result: ProtoActionResult = action_result.try_into()?;
     assert_eq!(proto_result, retrieved_result);
     Ok(())
 }
