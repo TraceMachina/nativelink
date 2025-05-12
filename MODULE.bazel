@@ -42,7 +42,6 @@ crate.from_cargo(
         "//nativelink-macro:Cargo.toml",
         "//nativelink-metric:Cargo.toml",
         "//nativelink-metric/nativelink-metric-macro-derive:Cargo.toml",
-        "//nativelink-metric-collector:Cargo.toml",
         "//nativelink-proto:Cargo.toml",
         "//nativelink-scheduler:Cargo.toml",
         "//nativelink-service:Cargo.toml",

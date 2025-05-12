@@ -36,9 +36,9 @@ use nativelink_store::filesystem_store::{
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::LenEntry;
-use nativelink_util::origin_context::ContextAwareFuture;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
+use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
 use rand::Rng;
@@ -151,21 +151,23 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
     fn drop(&mut self) {
         let mut inner = self.inner.take().unwrap();
         let shared_context = inner.get_shared_context_for_test();
+        let current_context = Context::current();
+
         // We do this complicated bit here because tokio does not give a way to run a
         // command that will wait for all tasks and sub spawns to complete.
         // Sadly we need to rely on `active_drop_spawns` to hit zero to ensure that
         // all tasks have completed.
-        let fut = ContextAwareFuture::new_from_active(
-            async move {
-                // Drop the FileEntryImpl in a controlled setting then wait for the
-                // `active_drop_spawns` to hit zero.
-                drop(inner);
-                while shared_context.active_drop_spawns.load(Ordering::Acquire) > 0 {
-                    tokio::task::yield_now().await;
-                }
+        let fut = async move {
+            // Drop the FileEntryImpl in a controlled setting then wait for the
+            // `active_drop_spawns` to hit zero.
+            drop(inner);
+            while shared_context.active_drop_spawns.load(Ordering::Acquire) > 0 {
+                tokio::task::yield_now().await;
             }
-            .instrument(tracing::error_span!("test_file_entry_drop")),
-        );
+        }
+        .instrument(tracing::error_span!("test_file_entry_drop"))
+        .with_context(current_context);
+
         #[expect(clippy::disallowed_methods, reason = "testing implementation")]
         let thread_handle = {
             std::thread::spawn(move || {

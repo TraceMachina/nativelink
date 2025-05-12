@@ -31,6 +31,7 @@ rust_library(
         "@crates//:filetime",
         "@crates//:formatx",
         "@crates//:futures",
+        "@crates//:opentelemetry",
         "@crates//:parking_lot",
         "@crates//:prost",
         "@crates//:relative-path",
