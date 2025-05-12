@@ -26,8 +26,9 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{DigestHasherFunc, make_ctx_for_hash_func};
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use opentelemetry::context::FutureExt;
 use pretty_assertions::assert_eq;
-use tracing::info_span;
+use tracing::{Instrument, info_span};
 
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
@@ -239,11 +240,11 @@ async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
     );
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
-    let result = make_ctx_for_hash_func(DigestHasherFunc::Blake3)?
-        .wrap_async(
-            info_span!("update_oneshot"),
-            store.update_oneshot(digest, VALUE.into()),
-        )
+
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Blake3)?)
         .await;
 
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
@@ -274,11 +275,10 @@ async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
 
-    let result = make_ctx_for_hash_func(DigestHasherFunc::Blake3)?
-        .wrap_async(
-            info_span!("update_oneshot"),
-            store.update_oneshot(digest, VALUE.into()),
-        )
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Blake3)?)
         .await;
 
     // let result = store.update_oneshot(digest, VALUE.into()).await;
