@@ -53,7 +53,7 @@ use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use tokio::select;
 use tokio::time::sleep;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
@@ -94,14 +94,6 @@ const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_SCAN_COUNT: u32 = 10_000;
 
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "must match method signature expected"
-)]
-fn to_hex(value: &u32) -> String {
-    format!("{value:08x}")
-}
-
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 #[derive(Debug, MetricsComponent)]
 pub struct RedisStore {
@@ -117,13 +109,6 @@ pub struct RedisStore {
     /// A redis client for managing subscriptions.
     /// TODO: This should be moved into the store in followups once a standard use pattern has been determined.
     subscriber_client: SubscriberClient,
-
-    /// For metrics only.
-    #[metric(
-        help = "A unique identifier for the FT.CREATE command used to create the index template",
-        handler = to_hex
-    )]
-    fingerprint_create_index: u32,
 
     /// A function used to generate names for temporary keys.
     temp_name_generator_fn: fn() -> String,
@@ -292,11 +277,12 @@ impl RedisStore {
         client_pool.connect();
         subscriber_client.connect();
 
+        info!("Redis index fingerprint: {FINGERPRINT_CREATE_INDEX_HEX}");
+
         Ok(Self {
             client_pool,
             pub_sub_channel,
             subscriber_client,
-            fingerprint_create_index: fingerprint_create_index_template(),
             temp_name_generator_fn,
             key_prefix,
             read_chunk_size,
@@ -683,16 +669,6 @@ const VERSION_FIELD_NAME: &str = "version";
 /// The time to live of indexes in seconds. After this time redis may delete the index.
 const INDEX_TTL_S: u64 = 60 * 60 * 24; // 24 hours.
 
-/// String of the `FT.CREATE` command used to create the index template. It is done this
-/// way so we can use it in both const (compile time) functions and runtime functions.
-/// This is a macro because we need to use it in multiple places that sometimes require the
-/// data as different data types (specifically for rust's `format_args!` macro).
-macro_rules! get_create_index_template {
-    () => {
-        "FT.CREATE {} ON HASH PREFIX 1 {} NOOFFSETS NOHL NOFIELDS NOFREQS SCHEMA {} TAG CASESENSITIVE SORTABLE"
-    }
-}
-
 /// Lua script to set a key if the version matches.
 /// Args:
 ///   KEYS[1]: The key where the version is stored.
@@ -731,31 +707,51 @@ return new_version
 "
 );
 
-/// Compile-time fingerprint of the `FT.CREATE` command used to create the index template.
-/// This is a simple CRC32 checksum of the command string. We don't care about it actually
-/// being a valid CRC32 checksum, just that it's a unique identifier with a low chance of
-/// collision.
-const fn fingerprint_create_index_template() -> u32 {
-    const POLY: u32 = 0xEDB8_8320;
-    const DATA: &[u8] = get_create_index_template!().as_bytes();
-    let mut crc = 0xFFFF_FFFF;
-    let mut i = 0;
-    while i < DATA.len() {
-        let byte = DATA[i];
-        crc ^= byte as u32;
+/// This is the output of the calculations below hardcoded into the executable.
+const FINGERPRINT_CREATE_INDEX_HEX: &str = "3e762c15";
 
-        let mut j = 0;
-        while j < 8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ POLY
-            } else {
-                crc >> 1
-            };
-            j += 1;
+#[cfg(test)]
+mod test {
+    use super::FINGERPRINT_CREATE_INDEX_HEX;
+
+    /// String of the `FT.CREATE` command used to create the index template.
+    const CREATE_INDEX_TEMPLATE: &str = "FT.CREATE {} ON HASH PREFIX 1 {} NOOFFSETS NOHL NOFIELDS NOFREQS SCHEMA {} TAG CASESENSITIVE SORTABLE";
+
+    /// Compile-time fingerprint of the `FT.CREATE` command used to create the
+    /// index template. This is a simple CRC32 checksum of the command string.
+    /// We don't care about it actually being a valid CRC32 checksum, just that
+    /// it's a unique identifier with a low chance of collision.
+    const fn fingerprint_create_index_template() -> u32 {
+        const POLY: u32 = 0xEDB8_8320;
+        const DATA: &[u8] = CREATE_INDEX_TEMPLATE.as_bytes();
+        let mut crc = 0xFFFF_FFFF;
+        let mut i = 0;
+        while i < DATA.len() {
+            let byte = DATA[i];
+            crc ^= byte as u32;
+
+            let mut j = 0;
+            while j < 8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ POLY
+                } else {
+                    crc >> 1
+                };
+                j += 1;
+            }
+            i += 1;
         }
-        i += 1;
+        crc
     }
-    crc
+
+    /// Verify that our calculation always evaluates to this fixed value.
+    #[test]
+    fn test_fingerprint_value() {
+        assert_eq!(
+            format!("{:08x}", &fingerprint_create_index_template()),
+            FINGERPRINT_CREATE_INDEX_HEX,
+        );
+    }
 }
 
 /// Get the name of the index to create for the given field.
@@ -764,11 +760,11 @@ const fn fingerprint_create_index_template() -> u32 {
 macro_rules! get_index_name {
     ($prefix:expr, $field:expr, $maybe_sort:expr) => {
         format_args!(
-            "{}_{}_{}_{:08x}",
+            "{}_{}_{}_{}",
             $prefix,
             $field,
             $maybe_sort.unwrap_or(""),
-            fingerprint_create_index_template(),
+            FINGERPRINT_CREATE_INDEX_HEX
         )
     };
 }
