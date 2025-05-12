@@ -33,12 +33,12 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
 use nativelink_util::common::fs;
-use nativelink_util::digest_hasher::{ACTIVE_HASHER_FUNC, DigestHasherFunc};
+use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
-use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
+use opentelemetry::context::Context;
 use tokio::process;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
@@ -319,17 +319,19 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let futures_ref = &futures;
 
                             let add_future_channel = add_future_channel.clone();
-                            let mut ctx = ActiveOriginContext::fork().err_tip(|| "Expected ActiveOriginContext to be set in local_worker::run")?;
-                            ctx.set_value(&ACTIVE_HASHER_FUNC, Arc::new(digest_hasher));
-                            ctx.run(info_span!("worker_start_action_ctx"), move || {
+
+                            info_span!(
+                                "worker_start_action_ctx",
+                                digest_function = %digest_hasher.to_string(),
+                            ).in_scope(|| {
+                                let _guard = Context::current_with_value(digest_hasher)
+                                    .attach();
+
                                 futures_ref.push(
                                     spawn!("worker_start_action", start_action_fut).map(move |res| {
                                         let res = res.err_tip(|| "Failed to launch spawn")?;
                                         if let Err(err) = &res {
-                                            error!(
-                                                ?err,
-                                                "Error executing action",
-                                            );
+                                            error!(?err, "Error executing action");
                                         }
                                         add_future_channel
                                             .send(make_publish_future(res).boxed())
@@ -398,13 +400,7 @@ pub async fn new_local_worker(
     cas_store: Store,
     ac_store: Option<Store>,
     historical_store: Store,
-) -> Result<
-    (
-        LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>,
-        Arc<Metrics>,
-    ),
-    Error,
-> {
+) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
     let fast_slow_store = cas_store
         .downcast_ref::<FastSlowStore>(None)
         .err_tip(|| "Expected store for LocalWorker's store to be a FastSlowStore")?
@@ -476,8 +472,7 @@ pub async fn new_local_worker(
         }),
         Box::new(move |d| Box::pin(sleep(d))),
     );
-    let metrics = local_worker.metrics.clone();
-    Ok((local_worker, metrics))
+    Ok(local_worker)
 }
 
 impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
@@ -581,7 +576,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                     update_for_worker_stream,
                 ),
             };
-            warn!(
+            info!(
                 worker_id = %inner.worker_id,
                 "Worker registered with scheduler"
             );

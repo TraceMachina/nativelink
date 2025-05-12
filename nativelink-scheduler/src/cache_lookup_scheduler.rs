@@ -33,9 +33,11 @@ use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProv
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
-use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::origin_event::{ORIGIN_EVENT_COLLECTOR, OriginMetadata};
+use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::store_trait::Store;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::Context;
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
 use tokio::sync::oneshot;
@@ -267,11 +269,21 @@ impl CacheLookupScheduler {
                         action_digest: action_info.unique_qualifier.digest(),
                     };
 
-                    let maybe_origin_metadata =
-                        ActiveOriginContext::get_value(&ORIGIN_EVENT_COLLECTOR)
-                            .ok()
-                            .flatten()
-                            .map(|v| v.metadata.clone());
+                    let ctx = Context::current();
+                    let baggage = ctx.baggage();
+
+                    let maybe_origin_metadata = if baggage.is_empty() {
+                        None
+                    } else {
+                        Some(OriginMetadata {
+                            identity: baggage
+                                .get(ENDUSER_ID)
+                                .map(|v| v.as_str().to_string())
+                                .unwrap_or_default(),
+                            bazel_metadata: None, // TODO(aaronmondal): Implement conversion.
+                        })
+                    };
+
                     for (client_operation_id, pending_tx) in pending_txs {
                         action_state.client_operation_id = client_operation_id;
                         // Ignore errors here, as the other end may have hung up.
