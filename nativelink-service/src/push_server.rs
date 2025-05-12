@@ -22,9 +22,9 @@ use nativelink_proto::build::bazel::remote::asset::v1::{
 };
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
-use nativelink_util::origin_event::OriginEventContext;
+use opentelemetry::context::FutureExt;
 use tonic::{Request, Response, Status};
-use tracing::{Level, error_span, instrument};
+use tracing::{Instrument, Level, error_span, instrument};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PushServer {}
@@ -61,16 +61,15 @@ impl Push for PushServer {
         grpc_request: Request<PushBlobRequest>,
     ) -> Result<Response<PushBlobResponse>, Status> {
         let request = grpc_request.into_inner();
-        let ctx = OriginEventContext::new(|| &request).await;
-        let resp: Result<Response<PushBlobResponse>, Status> =
-            make_ctx_for_hash_func(request.digest_function)
-                .err_tip(|| "In PushServer::push_blob")?
-                .wrap_async(error_span!("push_push_blob"), self.inner_push_blob(request))
-                .await
-                .err_tip(|| "Failed on push_blob() command")
-                .map_err(Into::into);
-        ctx.emit(|| &resp).await;
-        resp
+        let digest_function = request.digest_function;
+        self.inner_push_blob(request)
+            .instrument(error_span!("push_push_blob"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function).err_tip(|| "In PushServer::push_blob")?,
+            )
+            .await
+            .err_tip(|| "Failed on push_blob() command")
+            .map_err(Into::into)
     }
 
     #[allow(clippy::blocks_in_conditions)]

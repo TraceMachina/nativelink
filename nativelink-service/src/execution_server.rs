@@ -41,10 +41,10 @@ use nativelink_util::digest_hasher::{DigestHasherFunc, make_ctx_for_hash_func};
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, OperationFilter,
 };
-use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::Store;
+use opentelemetry::context::FutureExt;
 use tonic::{Request, Response, Status};
-use tracing::{Level, debug, error, error_span, info, instrument};
+use tracing::{Instrument, Level, debug, error, error_span, info, instrument};
 
 type InstanceInfoName = String;
 
@@ -340,20 +340,19 @@ impl Execution for ExecutionServer {
         grpc_request: Request<ExecuteRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
         let request = grpc_request.into_inner();
-        let ctx = OriginEventContext::new(|| &request).await;
-        let resp = make_ctx_for_hash_func(request.digest_function)
-            .err_tip(|| "In ExecutionServer::execute")?
-            .wrap_async(
-                error_span!("execution_server_execute"),
-                self.inner_execute(request),
+
+        let digest_function = request.digest_function;
+        let result = self
+            .inner_execute(request)
+            .instrument(error_span!("execution_server_execute"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function)
+                    .err_tip(|| "In ExecutionServer::execute")?,
             )
             .await
-            .map(|stream| ctx.wrap_stream(stream))
-            .map(Response::new)
-            .err_tip(|| "Failed on execute() command")
-            .map_err(Into::into);
-        ctx.emit(|| &resp).await;
-        resp
+            .err_tip(|| "Failed on execute() command")?;
+
+        Ok(Response::new(Box::pin(result)))
     }
 
     #[instrument(
@@ -367,19 +366,18 @@ impl Execution for ExecutionServer {
         grpc_request: Request<WaitExecutionRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
         let request = grpc_request.into_inner();
-        let ctx = OriginEventContext::new(|| &request).await;
-        let resp = self
+
+        let stream_result = self
             .inner_wait_execution(request)
             .await
             .err_tip(|| "Failed on wait_execution() command")
-            .map(|stream| ctx.wrap_stream(stream))
-            .map(Response::new)
             .map_err(Into::into);
-
-        if resp.is_ok() {
-            debug!(return = "Ok(<stream>)");
-        }
-        resp
+        let stream = match stream_result {
+            Ok(stream) => stream,
+            Err(e) => return Err(e),
+        };
+        debug!(return = "Ok(<stream>)");
+        Ok(Response::new(Box::pin(stream)))
     }
 }
 

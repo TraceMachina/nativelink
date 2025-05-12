@@ -24,7 +24,6 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
-use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -58,7 +57,6 @@ pub enum WorkerUpdate {
 pub struct PendingActionInfoData {
     #[metric]
     pub action_info: ActionInfoWithProps,
-    ctx: OriginEventContext<StartExecute>,
 }
 
 /// Represents a connection to a worker and used as the medium to
@@ -214,10 +212,7 @@ impl Worker {
                     worker_platform_properties,
                     &action_info.platform_properties,
                 );
-
-                let ctx = OriginEventContext::new(|| &start_execute).await;
-                running_action_infos
-                    .insert(operation_id, PendingActionInfoData { action_info, ctx });
+                running_action_infos.insert(operation_id, PendingActionInfoData { action_info });
 
                 send_msg_to_worker(tx, update_for_worker::Update::StartAction(start_execute))
             })
@@ -234,7 +229,6 @@ impl Worker {
                 self.id, operation_id
             )
         })?;
-        pending_action_info.ctx.emit(|| &()).await;
         self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
         self.is_paused = false;
         self.metrics.actions_completed.inc();

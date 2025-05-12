@@ -19,6 +19,11 @@ futures = { version = "0.3.31", default-features = false }
 http-body = "1.0.1"
 http-body-util = "0.1.3"
 hyper = { version = "1.6.0" }
+opentelemetry = { version = "0.29.1", default-features = false }
+opentelemetry-semantic-conventions = { version = "0.29.0", default-features = false, features = [
+  "default",
+  "semconv_experimental",
+] }
 parking_lot = "0.12.3"
 prost = { version = "0.13.5", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [

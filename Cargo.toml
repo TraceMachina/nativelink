@@ -28,7 +28,6 @@ nix = ["nativelink-worker/nix"]
 nativelink-config = { path = "nativelink-config" }
 nativelink-error = { path = "nativelink-error" }
 nativelink-metric = { path = "nativelink-metric" }
-nativelink-metric-collector = { path = "nativelink-metric-collector" }
 nativelink-scheduler = { path = "nativelink-scheduler" }
 nativelink-service = { path = "nativelink-service" }
 nativelink-store = { path = "nativelink-store" }
