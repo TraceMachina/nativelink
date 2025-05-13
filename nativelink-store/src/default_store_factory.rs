@@ -23,6 +23,7 @@ use nativelink_error::Error;
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::store_trait::{Store, StoreDriver};
 
+use crate::azure_blob_store::AzureBlobStore;
 use crate::completeness_checking_store::CompletenessCheckingStore;
 use crate::compression_store::CompressionStore;
 use crate::dedup_store::DedupStore;
@@ -52,11 +53,14 @@ pub fn store_factory<'a>(
         let store: Arc<dyn StoreDriver> = match backend {
             StoreSpec::Memory(spec) => MemoryStore::new(spec),
             StoreSpec::ExperimentalCloudObjectStore(spec) => match spec {
-                ExperimentalCloudObjectSpec::Aws(aws_config) => {
-                    S3Store::new(aws_config, SystemTime::now).await?
+                ExperimentalCloudObjectSpec::Aws(aws_spec) => {
+                    S3Store::new(aws_spec, SystemTime::now).await?
                 }
-                ExperimentalCloudObjectSpec::Gcs(gcs_config) => {
-                    GcsStore::new(gcs_config, SystemTime::now).await?
+                ExperimentalCloudObjectSpec::Gcs(gcs_spec) => {
+                    GcsStore::new(gcs_spec, SystemTime::now).await?
+                }
+                ExperimentalCloudObjectSpec::Azure(azure_spec) => {
+                    AzureBlobStore::new(azure_spec, SystemTime::now).await?
                 }
             },
             StoreSpec::RedisStore(spec) => RedisStore::new(spec.clone())?,
