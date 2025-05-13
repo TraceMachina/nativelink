@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ops::Bound;
+use core::ops::Bound;
+use core::time::Duration;
 use std::string::ToString;
 use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use async_lock::Mutex;
 use async_trait::async_trait;
-use futures::{stream, StreamExt, TryStreamExt};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use futures::{StreamExt, TryStreamExt, stream};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
@@ -33,7 +34,7 @@ use nativelink_util::operation_state_manager::{
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
-use tracing::{event, Level};
+use tracing::{info, warn};
 
 use super::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
@@ -78,7 +79,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
-    fn new(
+    const fn new(
         sub: U,
         simple_scheduler_state_manager: Weak<SimpleSchedulerStateManager<T, I, NowFn>>,
         no_event_action_timeout: Duration,
@@ -135,7 +136,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
-    fn new(
+    const fn new(
         awaited_action_sub: U,
         simple_scheduler_state_manager: Weak<SimpleSchedulerStateManager<T, I, NowFn>>,
         no_event_action_timeout: Duration,
@@ -201,8 +202,7 @@ where
                 .upgrade()
                 .err_tip(|| format!("Failed to upgrade weak reference to SimpleSchedulerStateManager in MatchingEngineActionStateResult::changed at attempt: {timeout_attempts}"))?;
 
-            event!(
-                Level::WARN,
+            warn!(
                 ?awaited_action,
                 "OperationId {} / {} timed out after {} seconds issuing a retry",
                 awaited_action.operation_id(),
@@ -246,7 +246,7 @@ where
 /// It also includes the workers that are available to execute actions based on allocation
 /// strategy.
 #[derive(MetricsComponent)]
-pub struct SimpleSchedulerStateManager<T, I, NowFn>
+pub(crate) struct SimpleSchedulerStateManager<T, I, NowFn>
 where
     T: AwaitedActionDb,
     I: InstantWrapper,
@@ -257,7 +257,7 @@ where
     action_db: T,
 
     /// Maximum number of times a job can be retried.
-    // TODO(allada) This should be a scheduler decorator instead
+    // TODO(aaronmondal) This should be a scheduler decorator instead
     // of always having it on every SimpleScheduler.
     #[metric(help = "Maximum number of times a job can be retried")]
     max_job_retries: usize,
@@ -294,7 +294,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
-    pub fn new(
+    pub(crate) fn new(
         max_job_retries: usize,
         no_event_action_timeout: Duration,
         client_action_timeout: Duration,
@@ -339,8 +339,7 @@ where
                     .update_awaited_action(new_awaited_action)
                     .await
                 {
-                    event!(
-                        Level::WARN,
+                    warn!(
                         "Failed to update action to timed out state after client keepalive timeout. This is ok if multiple schedulers tried to set the state at the same time: {err}",
                     );
                 }
@@ -512,8 +511,7 @@ where
                     awaited_action.worker_id(),
                     awaited_action,
                 );
-                event!(
-                    Level::INFO,
+                info!(
                     "Worker ids do not match - {:?} != {:?} for {:?}. This is probably due to another worker picking up the action.",
                     maybe_worker_id,
                     awaited_action.worker_id(),
@@ -606,14 +604,13 @@ where
             }
             return Ok(());
         }
-        match last_err {
-            Some(err) => Err(err),
-            None => Err(make_err!(
+        Err(last_err.unwrap_or_else(|| {
+            make_err!(
                 Code::Internal,
                 "Failed to update action after {} retries with no error set",
                 MAX_UPDATE_RETRIES,
-            )),
-        }
+            )
+        }))
     }
 
     async fn inner_add_operation(
@@ -635,7 +632,7 @@ where
     where
         F: Fn(T::Subscriber) -> Box<dyn ActionStateResult> + Send + Sync + 'a,
     {
-        fn sorted_awaited_action_state_for_flags(
+        const fn sorted_awaited_action_state_for_flags(
             stage: OperationStageFlags,
         ) -> Option<SortedAwaitedActionState> {
             match stage {

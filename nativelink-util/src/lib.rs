@@ -91,12 +91,6 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
                 .with_filter(env_filter)
                 .boxed(),
         ),
-    };
-
-    // Add a console subscriber if the feature is enabled, see tokio-console for a client console.
-    // https://crates.io/crates/tokio-console
-    if cfg!(feature = "enable_tokio_console") {
-        layers.push(console_subscriber::spawn().boxed());
     }
 
     tracing_subscriber::registry().with(layers).init();

@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::AsRef;
 use std::borrow::Cow;
-use std::convert::AsRef;
 
-use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 
 const ERROR_MSG: &str = concat!(
     "Expected resource_name to be of pattern ",
@@ -93,7 +93,7 @@ pub struct ResourceInfo<'a> {
 }
 
 impl<'a> ResourceInfo<'a> {
-    pub fn new(resource_name: &'a str, is_upload: bool) -> Result<ResourceInfo<'a>, Error> {
+    pub fn new(resource_name: &'a str, is_upload: bool) -> Result<Self, Error> {
         // The most amount of slashes there can be to get to "(compressed-)blobs" section is 7.
         let mut rparts = resource_name.rsplitn(7, '/');
         let mut output = ResourceInfo::default();
@@ -234,7 +234,7 @@ fn recursive_parse<'a>(
             State::Unknown => {
                 return Err(make_input_err!(
                     "Unknown state should never be reached in ResourceInfo::new"
-                ))
+                ));
             }
             State::Compressor => {
                 state = State::DigestFunction;
@@ -256,7 +256,7 @@ fn recursive_parse<'a>(
             State::Hash => {
                 output.hash = Cow::Borrowed(part);
                 *bytes_processed += part.len() + SLASH_SIZE;
-                // TODO(allada) Set the digest_function if it is not set based on the hash size.
+                // TODO(aaronmondal) Set the digest_function if it is not set based on the hash size.
                 return Ok(State::Size);
             }
             State::Size => {

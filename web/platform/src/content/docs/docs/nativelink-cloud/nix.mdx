@@ -64,7 +64,7 @@ import { Steps } from "@astrojs/starlight/components";
 
     ```nix
     # flake.nix
-    nativelink.settings = {
+    nativelink = {
       endpoint = "grpcs://my-custom-endpoint.com";
       api-key = "my-custom-readonly-api-key";
       prefix = "nativelink";
@@ -74,7 +74,7 @@ import { Steps } from "@astrojs/starlight/components";
 </Steps>
 
 :::tip
-When using custom `nativelink.settings` you can use arbitrary logic in Nix to
+When using custom `nativelink` settings, you can use arbitrary logic in Nix to
 set the fields dynamically.
 :::
 
@@ -96,7 +96,7 @@ build --remote_instance_name=main
 build --remote_header=x-nativelink-project=nativelink-ci
 build --nogenerate_json_trace_profile
 build --remote_upload_local_results=false
-build --experimental_remote_cache_async
+build --remote_cache_async
 ```
 
 :::tip
@@ -118,5 +118,5 @@ build:nativelink --remote_header=x-nativelink-api-key=my-custom-readonly-api-key
 build:nativelink --remote_header=x-nativelink-project=nativelink-ci
 build:nativelink --nogenerate_json_trace_profile
 build:nativelink --remote_upload_local_results=false
-build:nativelink --experimental_remote_cache_async
+build:nativelink --remote_cache_async
 ```

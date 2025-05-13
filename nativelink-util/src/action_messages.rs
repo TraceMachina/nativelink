@@ -12,26 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::Ordering;
+use core::cmp::Ordering;
+use core::convert::Into;
+use core::hash::Hash;
+use core::time::Duration;
 use std::collections::HashMap;
-use std::convert::Into;
-use std::hash::Hash;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
-use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 use nativelink_metric::{
-    publish, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, publish,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata,
-    ExecuteRequest, ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory,
-    OutputFile, OutputSymlink, SymlinkNode,
+    Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata, ExecuteRequest,
+    ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory, OutputFile,
+    OutputSymlink, SymlinkNode, execution_stage,
 };
-use nativelink_proto::google::longrunning::operation::Result as LongRunningResult;
 use nativelink_proto::google::longrunning::Operation;
+use nativelink_proto::google::longrunning::operation::Result as LongRunningResult;
 use nativelink_proto::google::rpc::Status;
-use prost::bytes::Bytes;
 use prost::Message;
+use prost::bytes::Bytes;
 use prost_types::Any;
 use serde::ser::Error as SerdeError;
 use serde::{Deserialize, Serialize};
@@ -68,8 +69,8 @@ impl Default for OperationId {
     }
 }
 
-impl std::fmt::Display for OperationId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for OperationId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Uuid(uuid) => uuid.fmt(f),
             Self::String(name) => f.write_str(name),
@@ -89,19 +90,13 @@ impl MetricsComponent for OperationId {
 
 impl From<&str> for OperationId {
     fn from(value: &str) -> Self {
-        match Uuid::parse_str(value) {
-            Ok(uuid) => Self::Uuid(uuid),
-            Err(_) => Self::String(value.to_string()),
-        }
+        Uuid::parse_str(value).map_or_else(|_| Self::String(value.to_string()), Self::Uuid)
     }
 }
 
 impl From<String> for OperationId {
     fn from(value: String) -> Self {
-        match Uuid::parse_str(&value) {
-            Ok(uuid) => Self::Uuid(uuid),
-            Err(_) => Self::String(value),
-        }
+        Uuid::parse_str(&value).map_or(Self::String(value), Self::Uuid)
     }
 }
 
@@ -124,7 +119,7 @@ impl TryFrom<Bytes> for OperationId {
             }
             // We could not take ownership of the Bytes, so we may need to copy our data.
             Err(value) => {
-                let value = std::str::from_utf8(&value).map_err(|e| {
+                let value = core::str::from_utf8(&value).map_err(|e| {
                     make_input_err!(
                         "Failed to convert bytes to string in try_from<Bytes> for OperationId : {e:?}"
                     )
@@ -149,15 +144,15 @@ impl MetricsComponent for WorkerId {
     }
 }
 
-impl std::fmt::Display for WorkerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for WorkerId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("{}", self.0))
     }
 }
 
-impl std::fmt::Debug for WorkerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self, f)
+impl core::fmt::Debug for WorkerId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self, f)
     }
 }
 
@@ -169,7 +164,7 @@ impl From<WorkerId> for String {
 
 impl From<String> for WorkerId {
     fn from(s: String) -> Self {
-        WorkerId(s)
+        Self(s)
     }
 }
 
@@ -228,8 +223,8 @@ impl ActionUniqueQualifier {
     }
 }
 
-impl std::fmt::Display for ActionUniqueQualifier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ActionUniqueQualifier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let (cachable, unique_key) = match self {
             Self::Cachable(action) => (true, action),
             Self::Uncachable(action) => (false, action),
@@ -262,8 +257,8 @@ pub struct ActionUniqueKey {
     pub digest: DigestInfo,
 }
 
-impl std::fmt::Display for ActionUniqueKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ActionUniqueKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!(
             "{}/{}/{}",
             self.instance_name, self.digest_function, self.digest,
@@ -433,7 +428,9 @@ pub struct FileInfo {
 impl From<FileInfo> for FileNode {
     fn from(val: FileInfo) -> Self {
         let NameOrPath::Name(name) = val.name_or_path else {
-            panic!("Cannot return a FileInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
+            panic!(
+                "Cannot return a FileInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()"
+            );
         };
         Self {
             name,
@@ -463,7 +460,9 @@ impl TryFrom<OutputFile> for FileInfo {
 impl From<FileInfo> for OutputFile {
     fn from(val: FileInfo) -> Self {
         let NameOrPath::Path(path) = val.name_or_path else {
-            panic!("Cannot return a FileInfo that uses a NameOrPath::Name(), it must be a NameOrPath::Path()");
+            panic!(
+                "Cannot return a FileInfo that uses a NameOrPath::Name(), it must be a NameOrPath::Path()"
+            );
         };
         Self {
             path,
@@ -498,7 +497,9 @@ impl TryFrom<SymlinkNode> for SymlinkInfo {
 impl From<SymlinkInfo> for SymlinkNode {
     fn from(val: SymlinkInfo) -> Self {
         let NameOrPath::Name(name) = val.name_or_path else {
-            panic!("Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
+            panic!(
+                "Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()"
+            );
         };
         Self {
             name,
@@ -523,7 +524,9 @@ impl TryFrom<OutputSymlink> for SymlinkInfo {
 impl From<SymlinkInfo> for OutputSymlink {
     fn from(val: SymlinkInfo) -> Self {
         let NameOrPath::Path(path) = val.name_or_path else {
-            panic!("Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
+            panic!(
+                "Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()"
+            );
         };
         Self {
             path,
@@ -700,7 +703,7 @@ pub struct ActionResult {
 
 impl Default for ActionResult {
     fn default() -> Self {
-        ActionResult {
+        Self {
             output_files: Vec::default(),
             output_folders: Vec::default(),
             output_directory_symlinks: Vec::default(),
@@ -727,11 +730,12 @@ impl Default for ActionResult {
     }
 }
 
-// TODO(allada) Remove the need for clippy argument by making the ActionResult and ProtoActionResult
-// a Box.
 /// The execution status/stage. This should match `ExecutionStage::Value` in `remote_execution.proto`.
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "TODO box the two relevant variants in a breaking release. Unfulfilled on nightly"
+)]
 pub enum ActionStage {
     /// Stage is unknown.
     Unknown,
@@ -739,7 +743,7 @@ pub enum ActionStage {
     CacheCheck,
     /// Action has been accepted and waiting for worker to take it.
     Queued,
-    // TODO(allada) We need a way to know if the job was sent to a worker, but hasn't begun
+    // TODO(aaronmondal) We need a way to know if the job was sent to a worker, but hasn't begun
     // execution yet.
     /// Worker is executing the action.
     Executing,
@@ -799,12 +803,12 @@ impl MetricsComponent for ActionStage {
         _field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
         let value = match self {
-            ActionStage::Unknown => "Unknown".to_string(),
-            ActionStage::CacheCheck => "CacheCheck".to_string(),
-            ActionStage::Queued => "Queued".to_string(),
-            ActionStage::Executing => "Executing".to_string(),
-            ActionStage::Completed(_) => "Completed".to_string(),
-            ActionStage::CompletedFromCache(_) => "CompletedFromCache".to_string(),
+            Self::Unknown => "Unknown".to_string(),
+            Self::CacheCheck => "CacheCheck".to_string(),
+            Self::Queued => "Queued".to_string(),
+            Self::Executing => "Executing".to_string(),
+            Self::Completed(_) => "Completed".to_string(),
+            Self::CompletedFromCache(_) => "CompletedFromCache".to_string(),
         };
         Ok(MetricPublishKnownKindData::String(value))
     }
@@ -1014,13 +1018,10 @@ impl TryFrom<ExecuteResponse> for ActionStage {
                     .err_tip(|| "Expected digest to be set on LogFile msg")?
                     .try_into()
             })?,
-            error: execute_response.status.clone().and_then(|v| {
-                if v.code == 0 {
-                    None
-                } else {
-                    Some(v.into())
-                }
-            }),
+            error: execute_response
+                .status
+                .clone()
+                .and_then(|v| if v.code == 0 { None } else { Some(v.into()) }),
             message: execute_response.message,
         };
 
@@ -1152,7 +1153,7 @@ impl ActionState {
         let metadata = ExecuteOperationMetadata {
             stage,
             action_digest: digest,
-            // TODO(blaise.bruer) We should support stderr/stdout streaming.
+            // TODO(aaronmondal) We should support stderr/stdout streaming.
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
             partial_execution_metadata: None,

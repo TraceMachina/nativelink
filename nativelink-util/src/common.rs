@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::{Eq, Ordering};
+use core::cmp::{Eq, Ordering};
+use core::hash::{BuildHasher, Hash};
+use core::ops::{Deref, DerefMut};
 use std::collections::HashMap;
 use std::fmt;
-use std::hash::{BuildHasher, Hash};
 use std::io::{Cursor, Write};
-use std::ops::{Deref, DerefMut};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
@@ -29,7 +29,7 @@ use prost::Message;
 use serde::de::Visitor;
 use serde::ser::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tracing::{event, Level};
+use tracing::error;
 
 pub use crate::fs;
 
@@ -55,7 +55,7 @@ impl MetricsComponent for DigestInfo {
 
 impl DigestInfo {
     pub const fn new(packed_hash: [u8; 32], size_bytes: u64) -> Self {
-        DigestInfo {
+        Self {
             size_bytes,
             packed_hash: PackedHash(packed_hash),
         }
@@ -63,7 +63,7 @@ impl DigestInfo {
 
     pub fn try_new<T>(hash: &str, size_bytes: T) -> Result<Self, Error>
     where
-        T: TryInto<u64> + std::fmt::Display + Copy,
+        T: TryInto<u64> + fmt::Display + Copy,
     {
         let packed_hash =
             PackedHash::from_hex(hash).err_tip(|| format!("Invalid sha256 hash: {hash}"))?;
@@ -79,14 +79,14 @@ impl DigestInfo {
                 i64::MAX
             ));
         }
-        Ok(DigestInfo {
+        Ok(Self {
             packed_hash,
             size_bytes,
         })
     }
 
-    pub const fn zero_digest() -> DigestInfo {
-        DigestInfo {
+    pub const fn zero_digest() -> Self {
+        Self {
             size_bytes: 0,
             packed_hash: PackedHash::new(),
         }
@@ -96,7 +96,7 @@ impl DigestInfo {
         &self.packed_hash
     }
 
-    pub fn set_packed_hash(&mut self, packed_hash: [u8; 32]) {
+    pub const fn set_packed_hash(&mut self, packed_hash: [u8; 32]) {
         self.packed_hash = PackedHash(packed_hash);
     }
 
@@ -129,14 +129,14 @@ struct DigestStackStringifier<'a> {
     /// - Hex is '2 * sizeof(PackedHash)'.
     /// - Digits can be at most `count_digits(u64::MAX)`.
     /// - We also have a hyphen separator.
-    buf: [u8; std::mem::size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
+    buf: [u8; size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
 }
 
 impl<'a> DigestStackStringifier<'a> {
     const fn new(digest: &'a DigestInfo) -> Self {
         DigestStackStringifier {
             digest,
-            buf: [b'-'; std::mem::size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
+            buf: [b'-'; size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
         }
     }
 
@@ -163,7 +163,7 @@ impl<'a> DigestStackStringifier<'a> {
             cursor.position() as usize
         };
         // Convert the buffer into utf8 string.
-        std::str::from_utf8(&self.buf[..len]).map_err(|e| {
+        core::str::from_utf8(&self.buf[..len]).map_err(|e| {
             make_input_err!(
                 "Could not convert [u8] to string - {} - {:?} - {:?}",
                 self.digest,
@@ -234,10 +234,7 @@ impl fmt::Display for DigestInfo {
                 .as_str()
                 .err_tip(|| "During serialization of DigestInfo")
                 .map_err(|e| {
-                    event!(
-                        Level::ERROR,
-                        "Could not convert DigestInfo to string - {e:?}"
-                    );
+                    error!("Could not convert DigestInfo to string - {e:?}");
                     fmt::Error
                 })?,
         )
@@ -250,10 +247,7 @@ impl fmt::Debug for DigestInfo {
         match stringifier.as_str() {
             Ok(s) => f.debug_tuple("DigestInfo").field(&s).finish(),
             Err(e) => {
-                event!(
-                    Level::ERROR,
-                    "Could not convert DigestInfo to string - {e:?}"
-                );
+                error!("Could not convert DigestInfo to string - {e:?}");
                 Err(fmt::Error)
             }
         }
@@ -284,7 +278,7 @@ impl TryFrom<Digest> for DigestInfo {
             .size_bytes
             .try_into()
             .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
-        Ok(DigestInfo {
+        Ok(Self {
             packed_hash,
             size_bytes,
         })
@@ -301,7 +295,7 @@ impl TryFrom<&Digest> for DigestInfo {
             .size_bytes
             .try_into()
             .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
-        Ok(DigestInfo {
+        Ok(Self {
             packed_hash,
             size_bytes,
         })
@@ -310,14 +304,10 @@ impl TryFrom<&Digest> for DigestInfo {
 
 impl From<DigestInfo> for Digest {
     fn from(val: DigestInfo) -> Self {
-        Digest {
+        Self {
             hash: val.packed_hash.to_string(),
             size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
-                event!(
-                    Level::ERROR,
-                    "Could not convert {} into u64 - {e:?}",
-                    val.size_bytes
-                );
+                error!("Could not convert {} into u64 - {e:?}", val.size_bytes);
                 // This is a placeholder value that can help a user identify
                 // that the conversion failed.
                 -255
@@ -328,14 +318,10 @@ impl From<DigestInfo> for Digest {
 
 impl From<&DigestInfo> for Digest {
     fn from(val: &DigestInfo) -> Self {
-        Digest {
+        Self {
             hash: val.packed_hash.to_string(),
             size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
-                event!(
-                    Level::ERROR,
-                    "Could not convert {} into u64 - {e:?}",
-                    val.size_bytes
-                );
+                error!("Could not convert {} into u64 - {e:?}", val.size_bytes);
                 // This is a placeholder value that can help a user identify
                 // that the conversion failed.
                 -255
@@ -344,20 +330,22 @@ impl From<&DigestInfo> for Digest {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord,
+)]
 pub struct PackedHash([u8; 32]);
 
 const SIZE_OF_PACKED_HASH: usize = 32;
 impl PackedHash {
     const fn new() -> Self {
-        PackedHash([0; SIZE_OF_PACKED_HASH])
+        Self([0; SIZE_OF_PACKED_HASH])
     }
 
     fn from_hex(hash: &str) -> Result<Self, Error> {
         let mut packed_hash = [0u8; 32];
         hex::decode_to_slice(hash, &mut packed_hash)
             .map_err(|e| make_input_err!("Invalid sha256 hash: {hash} - {e:?}"))?;
-        Ok(PackedHash(packed_hash))
+        Ok(Self(packed_hash))
     }
 
     /// Converts the packed hash into a hex string.
@@ -365,11 +353,7 @@ impl PackedHash {
     fn to_hex(self) -> Result<[u8; SIZE_OF_PACKED_HASH * 2], fmt::Error> {
         let mut hash = [0u8; SIZE_OF_PACKED_HASH * 2];
         hex::encode_to_slice(self.0, &mut hash).map_err(|e| {
-            event!(
-                Level::ERROR,
-                "Could not convert PackedHash to hex - {e:?} - {:?}",
-                self.0
-            );
+            error!("Could not convert PackedHash to hex - {e:?} - {:?}", self.0);
             fmt::Error
         })?;
         Ok(hash)
@@ -379,7 +363,7 @@ impl PackedHash {
 impl fmt::Display for PackedHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let hash = self.to_hex()?;
-        match std::str::from_utf8(&hash) {
+        match core::str::from_utf8(&hash) {
             Ok(hash) => f.write_str(hash)?,
             Err(_) => f.write_str(&format!("Could not convert hash to utf8 {:?}", self.0))?,
         }
@@ -407,14 +391,14 @@ pub trait VecExt<T> {
     fn try_map<F, U>(self, f: F) -> Result<Vec<U>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized;
+        F: (Fn(T) -> Result<U, Error>) + Sized;
 }
 
 impl<T> VecExt<T> for Vec<T> {
     fn try_map<F, U>(self, f: F) -> Result<Vec<U>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized,
+        F: (Fn(T) -> Result<U, Error>) + Sized,
     {
         let mut output = Vec::with_capacity(self.len());
         for item in self {
@@ -431,14 +415,14 @@ pub trait HashMapExt<K: Eq + Hash, T, S: BuildHasher> {
     fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U, S>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized;
+        F: (Fn(T) -> Result<U, Error>) + Sized;
 }
 
 impl<K: Eq + Hash, T, S: BuildHasher + Clone> HashMapExt<K, T, S> for HashMap<K, T, S> {
     fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U, S>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized,
+        F: (Fn(T) -> Result<U, Error>) + Sized,
     {
         let mut output = HashMap::with_capacity_and_hasher(self.len(), (*self.hasher()).clone());
         for (k, v) in self {
@@ -449,9 +433,9 @@ impl<K: Eq + Hash, T, S: BuildHasher + Clone> HashMapExt<K, T, S> for HashMap<K,
 }
 
 // Utility to encode our proto into GRPC stream format.
-pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::error::Error>> {
+pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn core::error::Error>> {
     // See below comment on spec.
-    use std::mem::size_of;
+    use core::mem::size_of;
     const PREFIX_BYTES: usize = size_of::<u8>() + size_of::<u32>();
 
     let mut buf = BytesMut::new();
@@ -475,4 +459,14 @@ pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::
     }
 
     Ok(buf.freeze())
+}
+
+/// Small utility to reseed the global RNG.
+/// Done this way because we use it in a macro
+/// and macro's can't load external crates.
+#[inline]
+pub fn reseed_rng_for_test() -> Result<(), Error> {
+    rand::rng()
+        .reseed()
+        .map_err(|e| make_input_err!("Could not reseed RNG - {e:?}"))
 }

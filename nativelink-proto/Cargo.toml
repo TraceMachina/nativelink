@@ -5,8 +5,8 @@
 
 [package]
 name = "nativelink-proto"
-version = "0.5.4"
-edition = "2021"
+version = "0.6.0"
+edition = "2024"
 autobins = false
 autoexamples = false
 autotests = false
@@ -15,14 +15,14 @@ autobenches = false
 [lib]
 name = "nativelink_proto"
 path = "genproto/lib.rs"
-# TODO(allada) We should support doctests.
+# TODO(aaronmondal) We should support doctests.
 doctest = false
 
 [dependencies]
-prost = { version = "0.13.4", default-features = false }
-prost-types = { version = "0.13.4", default-features = false }
-tonic = { version = "0.12.3", features = ["transport", "tls"], default-features = false }
+prost = { version = "0.13.5", default-features = false }
+prost-types = { version = "0.13.5", default-features = false }
+tonic = { version = "0.13.0", features = ["codegen", "prost", "transport", "tls-ring"], default-features = false }
 
 [dev-dependencies]
-prost-build = { version = "0.13.4", default-features = false }
-tonic-build = { version = "0.12.3", features = ["prost"], default-features = false }
+prost-build = { version = "0.13.5", default-features = false }
+tonic-build = { version = "0.13.0", features = ["prost"], default-features = false }

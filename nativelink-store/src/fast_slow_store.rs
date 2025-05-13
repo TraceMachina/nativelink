@@ -12,36 +12,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::BorrowMut;
-use std::cmp::{max, min};
-use std::ops::Range;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use core::borrow::BorrowMut;
+use core::cmp::{max, min};
+use core::ops::Range;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
+use std::ffi::OsString;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use futures::{join, FutureExt};
+use futures::{FutureExt, join};
 use nativelink_config::stores::FastSlowSpec;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::fs;
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    slow_update_store_with_file, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
-    UploadSizeInfo,
+    Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
+    slow_update_store_with_file,
 };
 
-// TODO(blaise.bruer) This store needs to be evaluated for more efficient memory usage,
+// TODO(aaronmondal) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
 
-// TODO(blaise.bruer) We should consider copying the data in the background to allow the
+// TODO(aaronmondal) We should consider copying the data in the background to allow the
 // client to hang up while the data is buffered. An alternative is to possibly make a
 // "BufferedStore" that could be placed on the "slow" store that would hang up early
 // if data is in the buffer.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct FastSlowStore {
     #[metric(group = "fast_store")]
     fast_store: Store,
@@ -62,11 +63,11 @@ impl FastSlowStore {
         })
     }
 
-    pub fn fast_store(&self) -> &Store {
+    pub const fn fast_store(&self) -> &Store {
         &self.fast_store
     }
 
-    pub fn slow_store(&self) -> &Store {
+    pub const fn slow_store(&self) -> &Store {
         &self.slow_store
     }
 
@@ -87,7 +88,7 @@ impl FastSlowStore {
         if maybe_size_info.is_some() {
             return Ok(());
         }
-        // TODO(blaise.bruer) This is extremely inefficient, since we are just trying
+        // TODO(aaronmondal) This is extremely inefficient, since we are just trying
         // to send the stream to /dev/null. Maybe we could instead make a version of
         // the stream that can send to the drain more efficiently?
         let (tx, mut rx) = make_buf_channel_pair();
@@ -101,7 +102,7 @@ impl FastSlowStore {
 
     /// Returns the range of bytes that should be sent given a slice bounds
     /// offset so the output range maps the `received_range.start` to 0.
-    // TODO(allada) This should be put into utils, as this logic is used
+    // TODO(aaronmondal) This should be put into utils, as this logic is used
     // elsewhere in the code.
     pub fn calculate_range(
         received_range: &Range<u64>,
@@ -175,9 +176,9 @@ impl StoreDriver for FastSlowStore {
                     .err_tip(|| "Failed to read buffer in fastslow store")?;
                 if buffer.is_empty() {
                     // EOF received.
-                    fast_tx.send_eof().err_tip(|| {
-                        "Failed to write eof to fast store in fast_slow store update"
-                    })?;
+                    fast_tx.send_eof().err_tip(
+                        || "Failed to write eof to fast store in fast_slow store update",
+                    )?;
                     slow_tx
                         .send_eof()
                         .err_tip(|| "Failed to write eof to writer in fast_slow store update")?;
@@ -224,9 +225,10 @@ impl StoreDriver for FastSlowStore {
     async fn update_with_whole_file(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        mut file: fs::ResumeableFileSlot,
+        path: OsString,
+        mut file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
+    ) -> Result<Option<fs::FileSlot>, Error> {
         if self
             .fast_store
             .optimized_for(StoreOptimizations::FileUpdates)
@@ -246,7 +248,7 @@ impl StoreDriver for FastSlowStore {
             }
             return self
                 .fast_store
-                .update_with_whole_file(key, file, upload_size)
+                .update_with_whole_file(key, path, file, upload_size)
                 .await;
         }
 
@@ -269,7 +271,7 @@ impl StoreDriver for FastSlowStore {
             }
             return self
                 .slow_store
-                .update_with_whole_file(key, file, upload_size)
+                .update_with_whole_file(key, path, file, upload_size)
                 .await;
         }
 
@@ -286,7 +288,7 @@ impl StoreDriver for FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        // TODO(blaise.bruer) Investigate if we should maybe ignore errors here instead of
+        // TODO(aaronmondal) Investigate if we should maybe ignore errors here instead of
         // forwarding the up.
         if self.fast_store.has(key.borrow()).await?.is_some() {
             self.metrics
@@ -342,14 +344,15 @@ impl StoreDriver for FastSlowStore {
                     .slow_store_downloaded_bytes
                     .fetch_add(output_buf_len, Ordering::Acquire);
 
-                let writer_fut = if let Some(range) = Self::calculate_range(
+                let writer_fut = Self::calculate_range(
                     &(bytes_received..bytes_received + output_buf_len),
                     &send_range,
-                )? {
-                    writer_pin.send(output_buf.slice(range)).right_future()
-                } else {
-                    futures::future::ready(Ok(())).left_future()
-                };
+                )?
+                .map_or_else(
+                    || futures::future::ready(Ok(())).left_future(),
+                    |range| writer_pin.send(output_buf.slice(range)).right_future(),
+                );
+
                 bytes_received += output_buf_len;
 
                 let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf), writer_fut);
@@ -383,16 +386,16 @@ impl StoreDriver for FastSlowStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }
 
-#[derive(Default, MetricsComponent)]
+#[derive(Debug, Default, MetricsComponent)]
 struct FastSlowStoreMetrics {
     #[metric(help = "Hit count for the fast store")]
     fast_store_hit_count: AtomicU64,

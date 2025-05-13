@@ -1,8 +1,8 @@
 import { component$, useVisibleTask$ } from "@builder.io/qwik";
 
-import { GitHub, Slack } from "../../media/icons/icons";
+import { GitHub, Slack } from "../../media/icons/icons.tsx";
 
-import { Label, LinearGradient } from "../components/text";
+import { Label, LinearGradient } from "../components/text.tsx";
 
 const connectOn = [
   {
@@ -67,7 +67,9 @@ export const CommunityPage = component$(() => {
             <div key={title} class="flex flex-col gap-5 pb-6">
               <LinearGradient text={title} class="text-lg text-left" />
               <span class="text-sm">{description}</span>
-              <a href={link}>{icon}</a>
+              <a href={link} aria-label={title}>
+                {icon}
+              </a>
             </div>
           ))}
         </div>

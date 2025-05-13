@@ -4,10 +4,12 @@ name: Bazel Native
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'web/**'
   pull_request:
     branches: [main]
     paths-ignore:
-      - 'docs/**'
+      - 'web/**'
 
 permissions: read-all
 
@@ -20,54 +22,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-13]
+        os: [ubuntu-24.04, macos-15]
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: >- # v4.1.1
-          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Setup Bazelisk
-        uses: >- # v0.8.1
-          bazel-contrib/setup-bazel@b388b84bb637e50cdae241d0f255670d4bd79f29
+      - name: Setup Bazel
+        uses: >- # v0.13.0
+          bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
         with:
           bazelisk-cache: true
-
-      - name: Delete Applications and Simulators to free up disk space
-        if: contains(matrix.os, 'macos')
-        run: |
-          echo "Deleting Applications"
-          sudo rm -rf ~/Applications/*
-          echo "Deleting all iOS simulators"
-          xcrun simctl delete all
-          echo "Deleting iOS Simulator caches"
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/*
-
-      - name: Determine Bazel cache mountpoint
-        id: bazel-cache
-        run: |
-          if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
-            echo "mountpoint=~/.cache/bazel" >> "$GITHUB_OUTPUT"
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            echo "mountpoint=C:/tmp" >> "$GITHUB_OUTPUT"
-          else
-            echo "Unknown runner OS: $RUNNER_OS"
-            exit 1
-          fi
-        shell: bash
-
-      - name: Mount bazel cache
-        uses: >- # v4.0.1
-          actions/cache@ab5e6d0c87105b4c9c2047343972218f562e4319
-        with:
-          path: |
-            ${{ steps.bazel-cache.outputs.mountpoint }}
-          key: |
-            ${{ matrix.os }}-bazel-native-${{ hashFiles('.bazelversion', '.bazelrc', 'WORKSPACE.bazel', 'MODULE.bazel') }}
-          restore-keys: |
-            ${{ matrix.os }}-bazel-native-
+          repository-cache: true
+          disk-cache: ${{ github.workflow }}-${{ matrix.os }}
 
       - name: Run Bazel tests
         run: |

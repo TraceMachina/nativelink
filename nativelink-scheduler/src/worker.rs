@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::hash::{Hash, Hasher};
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
+    ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
@@ -45,6 +45,7 @@ pub struct ActionInfoWithProps {
 }
 
 /// Notifications to send worker about a requested state change.
+#[derive(Debug)]
 pub enum WorkerUpdate {
     /// Requests that the worker begin executing this action.
     RunAction((OperationId, ActionInfoWithProps)),
@@ -53,7 +54,7 @@ pub enum WorkerUpdate {
     Disconnect,
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct PendingActionInfoData {
     #[metric]
     pub action_info: ActionInfoWithProps,
@@ -62,7 +63,7 @@ pub struct PendingActionInfoData {
 
 /// Represents a connection to a worker and used as the medium to
 /// interact with the worker from the client/scheduler.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct Worker {
     /// Unique identifier of the worker.
     #[metric(help = "The unique identifier of the worker.")]
@@ -99,7 +100,7 @@ pub struct Worker {
 }
 
 fn send_msg_to_worker(
-    tx: &mut UnboundedSender<UpdateForWorker>,
+    tx: &UnboundedSender<UpdateForWorker>,
     msg: update_for_worker::Update,
 ) -> Result<(), Error> {
     tx.send(UpdateForWorker { update: Some(msg) })
@@ -158,7 +159,7 @@ impl Worker {
     /// This should only be sent once and should always be the first item in the stream.
     pub fn send_initial_connection_result(&mut self) -> Result<(), Error> {
         send_msg_to_worker(
-            &mut self.tx,
+            &self.tx,
             update_for_worker::Update::ConnectionResult(ConnectionResult {
                 worker_id: self.id.clone().into(),
             }),
@@ -174,7 +175,7 @@ impl Worker {
             }
             WorkerUpdate::Disconnect => {
                 self.metrics.notify_disconnect.inc();
-                send_msg_to_worker(&mut self.tx, update_for_worker::Update::Disconnect(()))
+                send_msg_to_worker(&self.tx, update_for_worker::Update::Disconnect(()))
             }
         }
     }
@@ -257,7 +258,7 @@ impl Worker {
         }
     }
 
-    pub fn can_accept_work(&self) -> bool {
+    pub const fn can_accept_work(&self) -> bool {
         !self.is_paused && !self.is_draining
     }
 }
@@ -276,7 +277,7 @@ impl Hash for Worker {
     }
 }
 
-#[derive(Default, MetricsComponent)]
+#[derive(Debug, Default, MetricsComponent)]
 struct Metrics {
     #[metric(help = "The timestamp of when this worker connected.")]
     connected_timestamp: u64,

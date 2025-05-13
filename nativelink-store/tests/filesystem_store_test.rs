@@ -12,45 +12,42 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::{Debug, Formatter};
+use core::marker::PhantomData;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::time::Duration;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fmt::{Debug, Formatter};
-use std::marker::PhantomData;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, SystemTime};
 
 use async_lock::RwLock;
 use bytes::Bytes;
-use filetime::{set_file_atime, FileTime};
 use futures::executor::block_on;
 use futures::task::Poll;
-use futures::{poll, Future, FutureExt};
-use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use futures::{Future, FutureExt, poll};
+use nativelink_config::stores::FilesystemSpec;
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
-use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{
-    key_from_file, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
-    DIGEST_FOLDER, STR_FOLDER,
+    DIGEST_FOLDER, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
+    STR_FOLDER, key_from_file,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::origin_context::ContextAwareFuture;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
-use rand::{thread_rng, Rng};
-use serial_test::serial;
+use rand::Rng;
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Take};
 use tokio::sync::Barrier;
 use tokio::time::sleep;
-use tokio_stream::wrappers::ReadDirStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReadDirStream;
 use tracing::Instrument;
 
 trait FileEntryHooks {
@@ -64,7 +61,7 @@ struct TestFileEntry<Hooks: FileEntryHooks + 'static + Sync + Send> {
 }
 
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> Debug for TestFileEntry<Hooks> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), core::fmt::Error> {
         f.debug_struct("TestFileEntry")
             .field("inner", &self.inner)
             .finish()
@@ -86,7 +83,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
     async fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(Self, fs::ResumeableFileSlot, OsString), Error> {
+    ) -> Result<(Self, fs::FileSlot, OsString), Error> {
         let (inner, file_slot, path) =
             FileEntryImpl::make_and_open_file(block_size, encoded_file_path).await?;
         Ok((
@@ -111,11 +108,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         self.inner.as_ref().unwrap().get_encoded_file_path()
     }
 
-    async fn read_file_part(
-        &self,
-        offset: u64,
-        length: u64,
-    ) -> Result<fs::ResumeableFileSlot, Error> {
+    async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot>, Error> {
         self.inner
             .as_ref()
             .unwrap()
@@ -148,10 +141,6 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> LenEntry for TestFileEntry<H
         self.inner.as_ref().unwrap().is_empty()
     }
 
-    async fn touch(&self) -> bool {
-        self.inner.as_ref().unwrap().touch().await
-    }
-
     async fn unref(&self) {
         Hooks::on_unref(self);
         self.inner.as_ref().unwrap().unref().await;
@@ -177,7 +166,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
             }
             .instrument(tracing::error_span!("test_file_entry_drop")),
         );
-        #[allow(clippy::disallowed_methods)]
+        #[expect(clippy::disallowed_methods, reason = "testing implementation")]
         let thread_handle = {
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
@@ -197,20 +186,18 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
 fn make_temp_path(data: &str) -> String {
     format!(
         "{}/{}/{}",
-        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
-        thread_rng().gen::<u64>(),
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
+        rand::rng().random::<u64>(),
         data
     )
 }
 
 async fn read_file_contents(file_name: &OsStr) -> Result<Vec<u8>, Error> {
-    let mut file = fs::open_file(file_name, u64::MAX)
+    let mut file = fs::open_file(file_name, 0, u64::MAX)
         .await
         .err_tip(|| format!("Failed to open file: {file_name:?}"))?;
     let mut data = vec![];
-    file.as_reader()
-        .await?
-        .read_to_end(&mut data)
+    file.read_to_end(&mut data)
         .await
         .err_tip(|| "Error reading file to end")?;
     Ok(data)
@@ -265,7 +252,6 @@ const VALUE1: &str = "0123456789";
 const VALUE2: &str = "9876543210";
 const STRING_NAME: &str = "String_Filename";
 
-#[serial]
 #[nativelink_test]
 async fn valid_results_after_shutdown_test() -> Result<(), Error> {
     let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -282,7 +268,6 @@ async fn valid_results_after_shutdown_test() -> Result<(), Error> {
             })
             .await?,
         );
-
         // Insert dummy value into store.
         store.update_oneshot(digest, VALUE1.into()).await?;
 
@@ -314,7 +299,6 @@ async fn valid_results_after_shutdown_test() -> Result<(), Error> {
     Ok(())
 }
 
-#[serial]
 #[nativelink_test]
 async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
     static DELETES_FINISHED: AtomicU32 = AtomicU32::new(0);
@@ -381,7 +365,6 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
 // This test ensures that if a file is overridden and an open stream to the file already
 // exists, the open stream will continue to work properly and when the stream is done the
 // temporary file (of the object that was deleted) is cleaned up.
-#[serial]
 #[nativelink_test]
 async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error> {
     static DELETES_FINISHED: AtomicU32 = AtomicU32::new(0);
@@ -418,7 +401,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
     let digest1_clone = digest1;
     background_spawn!(
         "file_continues_to_stream_on_content_replace_test_store_get",
-        async move { store_clone.get(digest1_clone, writer).await },
+        async move { store_clone.get(digest1_clone, writer).await.unwrap() },
     );
 
     {
@@ -471,7 +454,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
 
     assert_eq!(
         &remaining_file_data,
-        VALUE1[1..].as_bytes(),
+        &VALUE1.as_bytes()[1..],
         "Expected file content to match"
     );
 
@@ -489,7 +472,6 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
 // Eviction has a different code path than a file replacement, so we check that if a
 // file is evicted and has an open stream on it, it will stay alive and eventually
 // get deleted.
-#[serial]
 #[nativelink_test]
 async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
     static DELETES_FINISHED: AtomicU32 = AtomicU32::new(0);
@@ -520,14 +502,14 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
     );
 
     // Insert data into store.
-    store.update_oneshot(digest1, VALUE1.into()).await?;
+    store.update_oneshot(digest1, VALUE1.into()).await.unwrap();
 
     let mut reader = {
         let (writer, reader) = make_buf_channel_pair();
         let store_clone = store.clone();
         background_spawn!(
             "file_gets_cleans_up_on_cache_eviction_store_get",
-            async move { store_clone.get(digest1, writer).await },
+            async move { store_clone.get(digest1, writer).await.unwrap() },
         );
         reader
     };
@@ -583,104 +565,9 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
     check_temp_empty(&temp_path).await
 }
 
-#[serial]
-#[nativelink_test]
-async fn atime_updates_on_get_part_test() -> Result<(), Error> {
-    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
-
-    let store = Box::pin(
-        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
-            content_path: make_temp_path("content_path"),
-            temp_path: make_temp_path("temp_path"),
-            eviction_policy: None,
-            ..Default::default()
-        })
-        .await?,
-    );
-    // Insert data into store.
-    store.update_oneshot(digest1, VALUE1.into()).await?;
-
-    let file_entry = store.get_file_entry_for_digest(&digest1).await?;
-    file_entry
-        .get_file_path_locked(move |path| async move {
-            // Set atime to along time ago.
-            set_file_atime(&path, FileTime::from_system_time(SystemTime::UNIX_EPOCH))?;
-
-            // Check to ensure it was set to zero from previous command.
-            assert_eq!(
-                fs::metadata(&path).await?.accessed()?,
-                SystemTime::UNIX_EPOCH
-            );
-            Ok(())
-        })
-        .await?;
-
-    // Now touch digest1.
-    let data = store.get_part_unchunked(digest1, 0, None).await?;
-    assert_eq!(data, VALUE1.as_bytes());
-
-    file_entry
-        .get_file_path_locked(move |path| async move {
-            // Ensure it was updated.
-            assert!(fs::metadata(&path).await?.accessed()? > SystemTime::UNIX_EPOCH);
-            Ok(())
-        })
-        .await?;
-
-    Ok(())
-}
-
-#[serial]
-#[nativelink_test]
-async fn eviction_drops_file_test() -> Result<(), Error> {
-    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
-
-    let store = Box::pin(
-        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
-            content_path: make_temp_path("content_path"),
-            temp_path: make_temp_path("temp_path"),
-            eviction_policy: None,
-            ..Default::default()
-        })
-        .await?,
-    );
-    // Insert data into store.
-    store.update_oneshot(digest1, VALUE1.into()).await?;
-
-    let file_entry = store.get_file_entry_for_digest(&digest1).await?;
-    file_entry
-        .get_file_path_locked(move |path| async move {
-            // Set atime to along time ago.
-            set_file_atime(&path, FileTime::from_system_time(SystemTime::UNIX_EPOCH))?;
-
-            // Check to ensure it was set to zero from previous command.
-            assert_eq!(
-                fs::metadata(&path).await?.accessed()?,
-                SystemTime::UNIX_EPOCH
-            );
-            Ok(())
-        })
-        .await?;
-
-    // Now touch digest1.
-    let data = store.get_part_unchunked(digest1, 0, None).await?;
-    assert_eq!(data, VALUE1.as_bytes());
-
-    file_entry
-        .get_file_path_locked(move |path| async move {
-            // Ensure it was updated.
-            assert!(fs::metadata(&path).await?.accessed()? > SystemTime::UNIX_EPOCH);
-            Ok(())
-        })
-        .await?;
-
-    Ok(())
-}
-
 // Test to ensure that if we are holding a reference to `FileEntry` and the contents are
 // replaced, the `FileEntry` continues to use the old data.
 // `FileEntry` file contents should be immutable for the lifetime of the object.
-#[serial]
 #[nativelink_test]
 async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error> {
     let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -701,11 +588,7 @@ async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error
         // The file contents should equal our initial data.
         let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
         let mut file_contents = String::new();
-        reader
-            .as_reader()
-            .await?
-            .read_to_string(&mut file_contents)
-            .await?;
+        reader.read_to_string(&mut file_contents).await?;
         assert_eq!(file_contents, VALUE1);
     }
 
@@ -716,18 +599,13 @@ async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error
         // The file contents still equal our old data.
         let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
         let mut file_contents = String::new();
-        reader
-            .as_reader()
-            .await?
-            .read_to_string(&mut file_contents)
-            .await?;
+        reader.read_to_string(&mut file_contents).await?;
         assert_eq!(file_contents, VALUE1);
     }
 
     Ok(())
 }
 
-#[serial]
 #[nativelink_test]
 async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
     const SMALL_VALUE: &str = "01";
@@ -788,9 +666,7 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
     Ok(())
 }
 
-#[serial]
 #[nativelink_test]
-#[allow(clippy::await_holding_refcell_ref)]
 async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens() -> Result<(), Error>
 {
     const INITIAL_CONTENT: &str = "hello";
@@ -814,18 +690,11 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
                 let dir_entry = dir_entry?;
                 {
                     // Some filesystems won't sync automatically, so force it.
-                    let mut file_handle =
-                        fs::open_file(dir_entry.path().into_os_string(), u64::MAX)
-                            .await
-                            .err_tip(|| "Failed to open temp file")?;
+                    let file_handle = fs::open_file(dir_entry.path().into_os_string(), 0, u64::MAX)
+                        .await
+                        .err_tip(|| "Failed to open temp file")?;
                     // We don't care if it fails, this is only best attempt.
-                    let _ = file_handle
-                        .as_reader()
-                        .await?
-                        .get_ref()
-                        .as_ref()
-                        .sync_all()
-                        .await;
+                    drop(file_handle.get_ref().as_ref().sync_all().await);
                 }
                 // Ensure we have written to the file too. This ensures we have an open file handle.
                 // Failing to do this may result in the file existing, but the `update_fut` not actually
@@ -844,7 +713,10 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
     struct LocalHooks {}
     impl FileEntryHooks for LocalHooks {
         fn on_drop<Fe: FileEntry>(_file_entry: &Fe) {
-            background_spawn!("rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens_local_hooks_on_drop", FILE_DELETED_BARRIER.wait());
+            background_spawn!(
+                "rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens_local_hooks_on_drop",
+                FILE_DELETED_BARRIER.wait()
+            );
         }
     }
 
@@ -924,7 +796,6 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
     Ok(())
 }
 
-#[serial]
 #[nativelink_test]
 async fn get_part_timeout_test() -> Result<(), Error> {
     let large_value = "x".repeat(1024);
@@ -940,7 +811,6 @@ async fn get_part_timeout_test() -> Result<(), Error> {
                 read_buffer_size: 1,
                 ..Default::default()
             },
-            |_| sleep(Duration::ZERO),
             |from, to| std::fs::rename(from, to),
         )
         .await?,
@@ -972,7 +842,6 @@ async fn get_part_timeout_test() -> Result<(), Error> {
     Ok(())
 }
 
-#[serial]
 #[nativelink_test]
 async fn get_part_is_zero_digest() -> Result<(), Error> {
     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
@@ -987,7 +856,6 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
                 read_buffer_size: 1,
                 ..Default::default()
             },
-            |_| sleep(Duration::ZERO),
             |from, to| std::fs::rename(from, to),
         )
         .await?,
@@ -997,10 +865,12 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     let (mut writer, mut reader) = make_buf_channel_pair();
 
     let _drop_guard = spawn!("get_part_is_zero_digest_get_part", async move {
-        let _ = store_clone
-            .get_part(digest, &mut writer, 0, None)
-            .await
-            .err_tip(|| "Failed to get_part");
+        drop(
+            store_clone
+                .get_part(digest, &mut writer, 0, None)
+                .await
+                .err_tip(|| "Failed to get_part"),
+        );
     });
 
     let file_data = reader
@@ -1014,7 +884,6 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     Ok(())
 }
 
-#[serial]
 #[nativelink_test]
 async fn has_with_results_on_zero_digests() -> Result<(), Error> {
     async fn wait_for_empty_content_file<
@@ -1055,7 +924,6 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
                 read_buffer_size: 1,
                 ..Default::default()
             },
-            |_| sleep(Duration::ZERO),
             |from, to| std::fs::rename(from, to),
         )
         .await?,
@@ -1063,11 +931,13 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
 
     let keys = vec![digest.into()];
     let mut results = vec![None];
-    let _ = store
-        .has_with_results(&keys, &mut results)
-        .await
-        .err_tip(|| "Failed to get_part");
-    assert_eq!(results, vec!(Some(0)));
+    drop(
+        store
+            .has_with_results(&keys, &mut results)
+            .await
+            .err_tip(|| "Failed to get_part"),
+    );
+    assert_eq!(results, vec![Some(0)]);
 
     wait_for_empty_content_file(&content_path, digest, || async move {
         tokio::task::yield_now().await;
@@ -1079,7 +949,6 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
 }
 
 /// Regression test for: https://github.com/TraceMachina/nativelink/issues/495.
-#[serial]
 #[nativelink_test(flavor = "multi_thread")]
 async fn update_file_future_drops_before_rename() -> Result<(), Error> {
     // Mutex can be used to signal to the rename function to pause execution.
@@ -1098,7 +967,6 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
                 eviction_policy: None,
                 ..Default::default()
             },
-            |_| sleep(Duration::ZERO),
             |from, to| {
                 // If someone locked our mutex, it means we need to pause, so we
                 // simply request a lock on the same mutex.
@@ -1167,7 +1035,6 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
     Ok(())
 }
 
-#[serial]
 #[nativelink_test]
 async fn deleted_file_removed_from_store() -> Result<(), Error> {
     let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -1182,7 +1049,6 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
                 read_buffer_size: 1,
                 ..Default::default()
             },
-            |_| sleep(Duration::ZERO),
             |from, to| std::fs::rename(from, to),
         )
         .await?,
@@ -1193,11 +1059,8 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
     let stored_file_path = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
     std::fs::remove_file(stored_file_path)?;
 
-    let digest_result = store
-        .has(digest)
-        .await
-        .err_tip(|| "Failed to execute has")?;
-    assert!(digest_result.is_none());
+    let get_part_res = store.get_part_unchunked(digest, 0, None).await;
+    assert_eq!(get_part_res.unwrap_err().code, Code::NotFound);
 
     // Repeat with a string typed key.
 
@@ -1205,16 +1068,14 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
 
     store
         .update_oneshot(string_key.borrow(), VALUE2.into())
-        .await?;
+        .await
+        .unwrap();
 
     let stored_file_path = OsString::from(format!("{content_path}/{STR_FOLDER}/{STRING_NAME}"));
     std::fs::remove_file(stored_file_path)?;
 
-    let string_result = store
-        .has(string_key)
-        .await
-        .err_tip(|| "Failed to execute has")?;
-    assert!(string_result.is_none());
+    let string_digest_get_part_res = store.get_part_unchunked(string_key, 0, None).await;
+    assert_eq!(string_digest_get_part_res.unwrap_err().code, Code::NotFound);
 
     Ok(())
 }
@@ -1224,7 +1085,6 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
 // assume block size 4K
 // 1B data size = 4K size on disk
 // 5K data size = 8K size on disk
-#[serial]
 #[nativelink_test]
 async fn get_file_size_uses_block_size() -> Result<(), Error> {
     let content_path = make_temp_path("content_path");
@@ -1244,7 +1104,6 @@ async fn get_file_size_uses_block_size() -> Result<(), Error> {
                 read_buffer_size: 1,
                 ..Default::default()
             },
-            |_| sleep(Duration::ZERO),
             |from, to| std::fs::rename(from, to),
         )
         .await?,
@@ -1260,9 +1119,9 @@ async fn get_file_size_uses_block_size() -> Result<(), Error> {
     Ok(())
 }
 
-#[serial]
 #[nativelink_test]
 async fn update_with_whole_file_closes_file() -> Result<(), Error> {
+    #[expect(clippy::collection_is_never_read)] // TODO(jhpratt) investigate
     let mut permits = vec![];
     // Grab all permits to ensure only 1 permit is available.
     {
@@ -1294,87 +1153,27 @@ async fn update_with_whole_file_closes_file() -> Result<(), Error> {
     );
     store.update_oneshot(digest, value.clone().into()).await?;
 
-    let mut file = fs::create_file(OsString::from(format!("{temp_path}/dummy_file"))).await?;
+    let file_path = OsString::from(format!("{temp_path}/dummy_file"));
+    let mut file = fs::create_file(&file_path).await?;
     {
-        let writer = file.as_writer().await?;
-        writer.write_all(value.as_bytes()).await?;
-        writer.as_mut().sync_all().await?;
-        writer.seek(tokio::io::SeekFrom::Start(0)).await?;
+        file.write_all(value.as_bytes()).await?;
+        file.as_mut().sync_all().await?;
+        file.seek(tokio::io::SeekFrom::Start(0)).await?;
     }
 
     store
-        .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len() as u64))
-        .await?;
-    Ok(())
-}
-
-#[serial]
-#[nativelink_test]
-async fn update_with_whole_file_slow_path_when_low_file_descriptors() -> Result<(), Error> {
-    let mut permits = vec![];
-    // Grab all permits to ensure only 1 permit is available.
-    {
-        wait_for_no_open_files().await?;
-        while fs::OPEN_FILE_SEMAPHORE.available_permits() > 1 {
-            permits.push(fs::get_permit().await);
-        }
-        assert_eq!(
-            fs::OPEN_FILE_SEMAPHORE.available_permits(),
-            1,
-            "Expected 1 permit to be available"
-        );
-    }
-
-    let value = "x".repeat(1024);
-
-    let digest = DigestInfo::try_new(HASH1, value.len())?;
-
-    let store = FastSlowStore::new(
-        // Note: The config is not needed for this test, so use dummy data.
-        &FastSlowSpec {
-            fast: StoreSpec::memory(MemorySpec::default()),
-            slow: StoreSpec::memory(MemorySpec::default()),
-        },
-        Store::new(
-            FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
-                content_path: make_temp_path("content_path"),
-                temp_path: make_temp_path("temp_path"),
-                read_buffer_size: 1,
-                ..Default::default()
-            })
-            .await?,
-        ),
-        Store::new(
-            FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
-                content_path: make_temp_path("content_path1"),
-                temp_path: make_temp_path("temp_path1"),
-                read_buffer_size: 1,
-                ..Default::default()
-            })
-            .await?,
-        ),
-    );
-    store.update_oneshot(digest, value.clone().into()).await?;
-
-    let temp_path = make_temp_path("temp_path2");
-    fs::create_dir_all(&temp_path).await?;
-    let mut file = fs::create_file(OsString::from(format!("{temp_path}/dummy_file"))).await?;
-    {
-        let writer = file.as_writer().await?;
-        writer.write_all(value.as_bytes()).await?;
-        writer.as_mut().sync_all().await?;
-        writer.seek(tokio::io::SeekFrom::Start(0)).await?;
-    }
-
-    store
-        .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len() as u64))
+        .update_with_whole_file(
+            digest,
+            file_path,
+            file,
+            UploadSizeInfo::ExactSize(value.len() as u64),
+        )
         .await?;
     Ok(())
 }
 
 // Ensure that update_with_whole_file() moves the file without making a copy.
 #[cfg(target_family = "unix")]
-#[serial]
 #[nativelink_test]
 async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
     use std::os::unix::fs::MetadataExt;
@@ -1393,36 +1192,35 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
                 read_buffer_size: 1,
                 ..Default::default()
             },
-            |_| sleep(Duration::ZERO),
             |from, to| std::fs::rename(from, to),
         )
         .await?,
     );
 
-    let mut file = fs::create_file(OsString::from(format!("{temp_path}/dummy_file"))).await?;
-    let original_inode = file
-        .as_reader()
-        .await?
-        .get_ref()
-        .as_ref()
-        .metadata()
-        .await?
-        .ino();
+    let file_path = OsString::from(format!("{temp_path}/dummy_file"));
+    let original_inode = {
+        let file = fs::create_file(&file_path).await?;
+        let original_inode = file.as_ref().metadata().await?.ino();
 
-    let result = store
-        .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len() as u64))
-        .await?;
-    assert!(
-        result.is_none(),
-        "Expected filesystem store to consume the file"
-    );
+        let result = store
+            .update_with_whole_file(
+                digest,
+                file_path,
+                file,
+                UploadSizeInfo::ExactSize(value.len() as u64),
+            )
+            .await?;
+        assert!(
+            result.is_none(),
+            "Expected filesystem store to consume the file"
+        );
+        original_inode
+    };
 
     let expected_file_name = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
     let new_inode = fs::create_file(expected_file_name)
-        .await?
-        .as_reader()
-        .await?
-        .get_ref()
+        .await
+        .unwrap()
         .as_ref()
         .metadata()
         .await?

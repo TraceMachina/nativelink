@@ -12,31 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::{Borrow, BorrowMut, Cow};
+use core::borrow::{Borrow, BorrowMut};
+use core::convert::Into;
+use core::hash::{Hash, Hasher};
+use core::ops::{Bound, RangeBounds};
+use core::pin::Pin;
+use core::ptr::addr_eq;
+use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher as StdHasher;
-use std::convert::Into;
-use std::hash::{Hash, Hasher};
-use std::ops::{Bound, RangeBounds};
-use std::pin::Pin;
-use std::ptr::addr_eq;
+use std::ffi::OsString;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use futures::future::{select, Either};
-use futures::{join, try_join, Future, FutureExt, Stream};
-use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use futures::{Future, FutureExt, Stream, join, try_join};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncSeekExt;
-use tokio::time::timeout;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use crate::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
+use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair};
 use crate::common::DigestInfo;
-use crate::digest_hasher::{default_digest_hasher_func, DigestHasher, DigestHasherFunc};
-use crate::fs::{self, idle_file_descriptor_timeout};
+use crate::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
+use crate::fs;
 use crate::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 
 static DEFAULT_DIGEST_SIZE_HEALTH_CHECK: OnceLock<usize> = OnceLock::new();
@@ -60,7 +60,7 @@ pub fn set_default_digest_size_health_check(size: usize) -> Result<(), Error> {
     })
 }
 
-#[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize)]
 pub enum UploadSizeInfo {
     /// When the data transfer amount is known to be exact size, this enum should be used.
     /// The receiver store can use this to better optimize the way the data is sent or stored.
@@ -79,54 +79,37 @@ pub enum UploadSizeInfo {
 pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
     store: Pin<&S>,
     digest: impl Into<StoreKey<'_>>,
-    file: &mut fs::ResumeableFileSlot,
+    file: &mut fs::FileSlot,
     upload_size: UploadSizeInfo,
 ) -> Result<(), Error> {
-    file.as_writer()
-        .await
-        .err_tip(|| "Failed to get writer in upload_file_to_store")?
-        .rewind()
+    file.rewind()
         .await
         .err_tip(|| "Failed to rewind in upload_file_to_store")?;
-    let (tx, rx) = make_buf_channel_pair();
+    let (mut tx, rx) = make_buf_channel_pair();
 
-    let mut update_fut = store
+    let update_fut = store
         .update(digest.into(), rx, upload_size)
         .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
-    let read_result = {
-        let read_data_fut = async {
-            let (_, mut tx) = file
-                .read_buf_cb(
-                    (BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE), tx),
-                    move |(chunk, mut tx)| async move {
-                        tx.send(chunk.freeze())
-                            .await
-                            .err_tip(|| "Failed to send in upload_file_to_store")?;
-                        Ok((BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE), tx))
-                    },
-                )
+    let read_data_fut = async move {
+        loop {
+            let mut buf = BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE);
+            let read = file
+                .read_buf(&mut buf)
                 .await
-                .err_tip(|| "Error in upload_file_to_store::read_buf_cb section")?;
-            tx.send_eof()
-                .err_tip(|| "Could not send EOF to store in upload_file_to_store")?;
-            Ok(())
-        };
-        tokio::pin!(read_data_fut);
-        match select(&mut update_fut, read_data_fut).await {
-            Either::Left((update_result, read_data_fut)) => {
-                return update_result.merge(read_data_fut.await)
+                .err_tip(|| "Failed to read in upload_file_to_store")?;
+            if read == 0 {
+                break;
             }
-            Either::Right((read_result, _)) => read_result,
+            tx.send(buf.freeze())
+                .await
+                .err_tip(|| "Failed to send in upload_file_to_store")?;
         }
+        tx.send_eof()
+            .err_tip(|| "Could not send EOF to store in upload_file_to_store")
     };
-    if let Ok(update_result) = timeout(idle_file_descriptor_timeout(), &mut update_fut).await {
-        update_result.merge(read_result)
-    } else {
-        file.close_file()
-            .await
-            .err_tip(|| "Failed to close file in upload_file_to_store")?;
-        update_fut.await.merge(read_result)
-    }
+    tokio::pin!(read_data_fut);
+    let (update_res, read_res) = tokio::join!(update_fut, read_data_fut);
+    update_res.merge(read_res)
 }
 
 /// Optimizations that stores may want to expose to the callers.
@@ -203,7 +186,11 @@ impl<'a> StoreKey<'a> {
     /// This is extremely cheap and should be used when clone
     /// is needed but the key is not going to be modified.
     #[must_use]
-    pub fn borrow(&'a self) -> StoreKey<'a> {
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "False positive on stable, but not on nightly"
+    )]
+    pub fn borrow(&'a self) -> Self {
         match self {
             StoreKey::Str(Cow::Owned(s)) => StoreKey::Str(Cow::Borrowed(s)),
             StoreKey::Str(Cow::Borrowed(s)) => StoreKey::Str(Cow::Borrowed(s)),
@@ -257,18 +244,18 @@ impl Clone for StoreKey<'static> {
 }
 
 impl PartialOrd for StoreKey<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for StoreKey<'_> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         match (self, other) {
             (StoreKey::Str(a), StoreKey::Str(b)) => a.cmp(b),
             (StoreKey::Digest(a), StoreKey::Digest(b)) => a.cmp(b),
-            (StoreKey::Str(_), StoreKey::Digest(_)) => std::cmp::Ordering::Less,
-            (StoreKey::Digest(_), StoreKey::Str(_)) => std::cmp::Ordering::Greater,
+            (StoreKey::Str(_), StoreKey::Digest(_)) => core::cmp::Ordering::Less,
+            (StoreKey::Digest(_), StoreKey::Str(_)) => core::cmp::Ordering::Greater,
         }
     }
 }
@@ -334,6 +321,12 @@ impl From<&DigestInfo> for StoreKey<'_> {
 pub struct Store {
     #[metric]
     inner: Arc<dyn StoreDriver>,
+}
+
+impl core::fmt::Debug for Store {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Store").finish_non_exhaustive()
+    }
 }
 
 impl Store {
@@ -495,18 +488,19 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
         self.as_store_driver_pin().optimized_for(optimization)
     }
 
-    /// Specialized version of `.update()` which takes a `ResumeableFileSlot`.
+    /// Specialized version of `.update()` which takes a `FileSlot`.
     /// This is useful if the underlying store can optimize the upload process
     /// when it knows the data is coming from a file.
     #[inline]
     fn update_with_whole_file<'a>(
         &'a self,
         digest: impl Into<StoreKey<'a>>,
-        file: fs::ResumeableFileSlot,
+        path: OsString,
+        file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> impl Future<Output = Result<Option<fs::ResumeableFileSlot>, Error>> + Send + 'a {
+    ) -> impl Future<Output = Result<Option<fs::FileSlot>, Error>> + Send + 'a {
         self.as_store_driver_pin()
-            .update_with_whole_file(digest.into(), file, upload_size)
+            .update_with_whole_file(digest.into(), path, file, upload_size)
     }
 
     /// Utility to send all the data to the store when you have all the bytes.
@@ -610,7 +604,7 @@ pub trait StoreDriver:
         _range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
         _handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
     ) -> Result<u64, Error> {
-        // TODO(allada) We should force all stores to implement this function instead of
+        // TODO(aaronmondal) We should force all stores to implement this function instead of
         // providing a default implementation.
         Err(make_err!(
             Code::Unimplemented,
@@ -635,9 +629,10 @@ pub trait StoreDriver:
     async fn update_with_whole_file(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        mut file: fs::ResumeableFileSlot,
+        path: OsString,
+        mut file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
+    ) -> Result<Option<fs::FileSlot>, Error> {
         let inner_store = self.inner_store(Some(key.borrow()));
         if inner_store.optimized_for(StoreOptimizations::FileUpdates) {
             error_if!(
@@ -645,7 +640,7 @@ pub trait StoreDriver:
                 "Store::inner_store() returned self when optimization present"
             );
             return Pin::new(inner_store)
-                .update_with_whole_file(key, file, upload_size)
+                .update_with_whole_file(key, path, file, upload_size)
                 .await;
         }
         slow_update_store_with_file(self, key, &mut file, upload_size).await?;
@@ -654,7 +649,7 @@ pub trait StoreDriver:
 
     /// See: [`StoreLike::update_oneshot`] for details.
     async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
-        // TODO(blaise.bruer) This is extremely inefficient, since we have exactly
+        // TODO(aaronmondal) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
         let (mut tx, rx) = make_buf_channel_pair();
@@ -709,7 +704,7 @@ pub trait StoreDriver:
             .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
             .transpose()?;
 
-        // TODO(blaise.bruer) This is extremely inefficient, since we have exactly
+        // TODO(aaronmondal) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
         let (mut tx, mut rx) = make_buf_channel_pair();
@@ -748,7 +743,7 @@ pub trait StoreDriver:
         let digest_data_len = digest_data.len() as u64;
         let digest_info = StoreKey::from(digest_hasher.finalize_digest());
 
-        let digest_bytes = bytes::Bytes::copy_from_slice(&digest_data);
+        let digest_bytes = Bytes::copy_from_slice(&digest_data);
 
         if let Err(e) = self
             .update_oneshot(digest_info.borrow(), digest_bytes.clone())
@@ -810,8 +805,8 @@ pub trait StoreDriver:
     fn inner_store(&self, _digest: Option<StoreKey<'_>>) -> &dyn StoreDriver;
 
     /// Returns an Any variation of whatever Self is.
-    fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static);
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static>;
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static);
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static>;
 
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
@@ -948,6 +943,7 @@ pub trait IsFalse {}
 pub trait IsTrue {}
 
 /// Compile time true value.
+#[derive(Debug, Clone, Copy)]
 pub struct TrueValue;
 impl BoolValue for TrueValue {
     const VALUE: bool = true;
@@ -955,6 +951,7 @@ impl BoolValue for TrueValue {
 impl IsTrue for TrueValue {}
 
 /// Compile time false value.
+#[derive(Debug, Clone, Copy)]
 pub struct FalseValue;
 impl BoolValue for FalseValue {
     const VALUE: bool = false;

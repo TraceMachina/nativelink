@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bytes::Bytes;
 use mock_instant::thread_local::MockClock;
@@ -26,7 +26,7 @@ use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use pretty_assertions::assert_eq;
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BytesWrapper(Bytes);
 
 impl LenEntry for BytesWrapper {
@@ -43,8 +43,8 @@ impl LenEntry for BytesWrapper {
 
 impl From<Bytes> for BytesWrapper {
     #[inline]
-    fn from(bytes: Bytes) -> BytesWrapper {
-        BytesWrapper(bytes)
+    fn from(bytes: Bytes) -> Self {
+        Self(bytes)
     }
 }
 
@@ -356,11 +356,6 @@ async fn unref_called_on_replace() -> Result<(), Error> {
             unreachable!("We are not testing this functionality");
         }
 
-        async fn touch(&self) -> bool {
-            // Do nothing. We are not testing this functionality.
-            true
-        }
-
         async fn unref(&self) {
             self.unref_called.store(true, Ordering::Relaxed);
         }
@@ -590,7 +585,7 @@ async fn remove_evicts_on_time() -> Result<(), Error> {
 async fn range_multiple_items_test() -> Result<(), Error> {
     async fn get_map_range(
         evicting_map: &EvictingMap<String, BytesWrapper, MockInstantWrapped>,
-        range: impl std::ops::RangeBounds<String> + Send,
+        range: impl core::ops::RangeBounds<String> + Send,
     ) -> Vec<(String, Bytes)> {
         let mut found_values = Vec::new();
         evicting_map

@@ -3,12 +3,14 @@ load(
     "rust_doc",
     "rust_doc_test",
     "rust_library",
+    "rust_test",
     "rust_test_suite",
 )
 
 rust_library(
     name = "nativelink-config",
     srcs = [
+        "src/backcompat.rs",
         "src/cas_server.rs",
         "src/lib.rs",
         "src/schedulers.rs",
@@ -31,7 +33,6 @@ rust_test_suite(
     name = "integration",
     timeout = "short",
     srcs = [
-        "tests/backwards_compat_test.rs",
         "tests/deserialization_test.rs",
     ],
     deps = [
@@ -43,6 +44,16 @@ rust_test_suite(
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:serde_json5",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-config",
+    deps = [
+        "@crates//:pretty_assertions",
+        "@crates//:serde_json",
     ],
 )
 

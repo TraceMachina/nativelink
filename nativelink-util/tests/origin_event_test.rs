@@ -14,8 +14,8 @@
 
 use nativelink_macro::nativelink_test;
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
-    event, request_event, response_event, stream_event, Event, RequestEvent, ResponseEvent,
-    StreamEvent,
+    Event, RequestEvent, ResponseEvent, StreamEvent, event, request_event, response_event,
+    stream_event,
 };
 use nativelink_util::origin_event::get_id_for_event;
 
@@ -77,7 +77,7 @@ macro_rules! test_event {
 
 #[nativelink_test]
 fn get_id_for_event_test() {
-    fn get_expected_value(event: &Event) -> [u8; 2] {
+    const fn get_expected_value(event: &Event) -> [u8; 2] {
         match &event.event {
             None => [0x00, 0x00],
             Some(event::Event::Request(req)) => {
@@ -96,6 +96,8 @@ fn get_id_for_event_test() {
                     Some(request_event::Event::ExecuteRequest(_)) => [0x01, 0x0B],
                     Some(request_event::Event::WaitExecutionRequest(_)) => [0x01, 0x0C],
                     Some(request_event::Event::SchedulerStartExecute(_)) => [0x01, 0x0D],
+                    Some(request_event::Event::FetchBlobRequest(_)) => [0x01, 0x0E],
+                    Some(request_event::Event::PushBlobRequest(_)) => [0x01, 0x0F],
                     // Don't forget to add new entries to test cases.
                 }
             }
@@ -111,6 +113,8 @@ fn get_id_for_event_test() {
                     Some(response_event::Event::WriteResponse(_)) => [0x02, 0x07],
                     Some(response_event::Event::QueryWriteStatusResponse(_)) => [0x02, 0x08],
                     Some(response_event::Event::Empty(())) => [0x02, 0x09],
+                    Some(response_event::Event::FetchBlobResponse(_)) => [0x02, 0x0A],
+                    Some(response_event::Event::PushBlobResponse(_)) => [0x02, 0x0B],
                     // Don't forget to add new entries to test cases.
                 }
             }

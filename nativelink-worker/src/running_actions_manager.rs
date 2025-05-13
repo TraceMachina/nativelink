@@ -12,35 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::cmp::min;
+use core::convert::Into;
+use core::fmt::Debug;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use std::borrow::Cow;
-use std::cmp::min;
-use std::collections::vec_deque::VecDeque;
 use std::collections::HashMap;
-use std::convert::Into;
+use std::collections::vec_deque::VecDeque;
 use std::ffi::{OsStr, OsString};
-use std::fmt::Debug;
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
-use std::pin::Pin;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use bytes::{Bytes, BytesMut};
-use filetime::{set_file_mtime, FileTime};
+use filetime::{FileTime, set_file_mtime};
 use formatx::Template;
 use futures::future::{
-    try_join, try_join3, try_join_all, BoxFuture, Future, FutureExt, TryFutureExt,
+    BoxFuture, Future, FutureExt, TryFutureExt, try_join, try_join_all, try_join3,
 };
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
     EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, ActionResult as ProtoActionResult, Command as ProtoCommand,
@@ -51,16 +52,16 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     HistoricalExecuteResponse, StartExecute,
 };
 use nativelink_store::ac_utils::{
-    compute_buf_digest, get_and_decode_digest, serialize_and_upload_message, ESTIMATED_DIGEST_SIZE,
+    ESTIMATED_DIGEST_SIZE, compute_buf_digest, get_and_decode_digest, serialize_and_upload_message,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
-    to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo,
-    NameOrPath, OperationId, SymlinkInfo,
+    ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
+    SymlinkInfo, to_execute_response,
 };
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -69,14 +70,14 @@ use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
 use relative_path::RelativePath;
-use scopeguard::{guard, ScopeGuard};
+use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
 use tokio::sync::{oneshot, watch};
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
-use tracing::{enabled, event, Level};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -87,15 +88,15 @@ const EXIT_CODE_FOR_SIGNAL: i32 = 9;
 /// Note: If this value changes the config documentation
 /// should reflect it.
 const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
-    UploadCacheResultsStrategy::failures_only;
+    UploadCacheResultsStrategy::FailuresOnly;
 
 /// Valid string reasons for a failure.
 /// Note: If these change, the documentation should be updated.
-#[allow(non_camel_case_types)]
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum SideChannelFailureReason {
     /// Task should be considered timed out.
-    timeout,
+    Timeout,
 }
 
 /// This represents the json data that can be passed from the running process
@@ -180,9 +181,9 @@ pub fn download_to_directory<'a>(
                                 })
                             })
                             .await
-                            .err_tip(|| {
-                                "Failed to launch spawn_blocking in download_to_directory"
-                            })??;
+                            .err_tip(
+                                || "Failed to launch spawn_blocking in download_to_directory",
+                            )??;
                         }
                         Ok(())
                     })
@@ -253,6 +254,7 @@ fn is_executable(metadata: &std::fs::Metadata, _full_path: &impl AsRef<Path>) ->
     (metadata.mode() & 0o111) != 0
 }
 
+#[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
 async fn upload_file(
     cas_store: Pin<&impl StoreLike>,
     full_path: impl AsRef<Path> + Debug,
@@ -261,24 +263,17 @@ async fn upload_file(
 ) -> Result<FileInfo, Error> {
     let is_executable = is_executable(&metadata, &full_path);
     let file_size = metadata.len();
-    let resumeable_file = fs::open_file(&full_path, u64::MAX)
+    let file = fs::open_file(&full_path, 0, u64::MAX)
         .await
         .err_tip(|| format!("Could not open file {full_path:?}"))?;
 
-    let (digest, mut resumeable_file) = hasher
+    let (digest, mut file) = hasher
         .hasher()
-        .digest_for_file(resumeable_file, Some(file_size))
+        .digest_for_file(&full_path, file.into_inner(), Some(file_size))
         .await
         .err_tip(|| format!("Failed to hash file in digest_for_file failed for {full_path:?}"))?;
 
-    resumeable_file
-        .as_reader()
-        .await
-        .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?
-        .get_mut()
-        .rewind()
-        .await
-        .err_tip(|| "Could not rewind file")?;
+    file.rewind().await.err_tip(|| "Could not rewind file")?;
 
     // Note: For unknown reasons we appear to be hitting:
     // https://github.com/rust-lang/rust/issues/92096
@@ -288,7 +283,8 @@ async fn upload_file(
         .as_store_driver_pin()
         .update_with_whole_file(
             digest.into(),
-            resumeable_file,
+            full_path.as_ref().into(),
+            file,
             UploadSizeInfo::ExactSize(digest.size_bytes()),
         )
         .await
@@ -490,7 +486,7 @@ async fn process_side_channel_file(
     let mut json_contents = String::new();
     {
         // Note: Scoping `file_slot` allows the file_slot semaphore to be released faster.
-        let mut file_slot = match fs::open_file(side_channel_file, u64::MAX).await {
+        let mut file_slot = match fs::open_file(side_channel_file, 0, u64::MAX).await {
             Ok(file_slot) => file_slot,
             Err(e) => {
                 if e.code != Code::NotFound {
@@ -500,11 +496,7 @@ async fn process_side_channel_file(
                 return Ok(None);
             }
         };
-        let reader = file_slot
-            .as_reader()
-            .await
-            .err_tip(|| "Error getting reader from side channel file (maybe permissions?)")?;
-        reader
+        file_slot
             .read_to_string(&mut json_contents)
             .await
             .err_tip(|| "Error reading side channel file")?;
@@ -517,7 +509,7 @@ async fn process_side_channel_file(
             )
         })?;
     Ok(side_channel_info.failure.map(|failure| match failure {
-        SideChannelFailureReason::timeout => Error::new(
+        SideChannelFailureReason::Timeout => Error::new(
             Code::DeadlineExceeded,
             format!(
                 "Command '{}' timed out after {} seconds",
@@ -533,27 +525,17 @@ async fn do_cleanup(
     operation_id: &OperationId,
     action_directory: &str,
 ) -> Result<(), Error> {
-    event!(Level::INFO, "Worker cleaning up");
+    info!("Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
     let remove_dir_result = fs::remove_dir_all(action_directory)
         .await
         .err_tip(|| format!("Could not remove working directory {action_directory}"));
     if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
-        event!(
-            Level::ERROR,
-            ?operation_id,
-            ?err,
-            "Error cleaning up action"
-        );
+        error!(?operation_id, ?err, "Error cleaning up action");
         return Result::<(), Error>::Err(err).merge(remove_dir_result);
     }
     if let Err(err) = remove_dir_result {
-        event!(
-            Level::ERROR,
-            ?operation_id,
-            ?err,
-            "Error removing working directory"
-        );
+        error!(?operation_id, ?err, "Error removing working directory");
         return Err(err);
     }
     Ok(())
@@ -586,15 +568,17 @@ pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
     fn get_work_directory(&self) -> &String;
 }
 
+#[derive(Debug)]
 struct RunningActionImplExecutionResult {
     stdout: Bytes,
     stderr: Bytes,
     exit_code: i32,
 }
 
+#[derive(Debug)]
 struct RunningActionImplState {
     command_proto: Option<ProtoCommand>,
-    // TODO(allada) Kill is not implemented yet, but is instrumented.
+    // TODO(aaronmondal) Kill is not implemented yet, but is instrumented.
     // However, it is used if the worker disconnects to destroy current jobs.
     kill_channel_tx: Option<oneshot::Sender<()>>,
     kill_channel_rx: Option<oneshot::Receiver<()>>,
@@ -609,6 +593,7 @@ struct RunningActionImplState {
     error: Option<Error>,
 }
 
+#[derive(Debug)]
 pub struct RunningActionImpl {
     operation_id: OperationId,
     action_directory: String,
@@ -651,6 +636,10 @@ impl RunningActionImpl {
         }
     }
 
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "False positive on stable, but not on nightly"
+    )]
     fn metrics(&self) -> &Arc<Metrics> {
         &self.running_actions_manager.metrics
     }
@@ -735,7 +724,7 @@ impl RunningActionImpl {
                 ))
                 .await?;
         }
-        event!(Level::INFO, ?command, "Worker received command",);
+        info!(?command, "Worker received command",);
         {
             let mut state = self.state.lock();
             state.command_proto = Some(command);
@@ -771,13 +760,13 @@ impl RunningActionImpl {
             .execution_configuration
             .entrypoint
         {
-            std::iter::once(entrypoint.as_ref())
+            core::iter::once(entrypoint.as_ref())
                 .chain(command_proto.arguments.iter().map(AsRef::as_ref))
                 .collect()
         } else {
             command_proto.arguments.iter().map(AsRef::as_ref).collect()
         };
-        event!(Level::INFO, ?args, "Executing command",);
+        info!(?args, "Executing command",);
         let mut command_builder = process::Command::new(args[0]);
         command_builder
             .args(&args[1..])
@@ -805,22 +794,22 @@ impl RunningActionImpl {
         {
             for (name, source) in additional_environment {
                 let value = match source {
-                    EnvironmentSource::property(property) => self
+                    EnvironmentSource::Property(property) => self
                         .action_info
                         .platform_properties
                         .get(property)
                         .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.as_str())),
-                    EnvironmentSource::value(value) => Cow::Borrowed(value.as_str()),
-                    EnvironmentSource::timeout_millis => {
+                    EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                    EnvironmentSource::TimeoutMillis => {
                         Cow::Owned(requested_timeout.as_millis().to_string())
                     }
-                    EnvironmentSource::side_channel_file => {
+                    EnvironmentSource::SideChannelFile => {
                         let file_cow =
                             format!("{}/{}", self.action_directory, Uuid::new_v4().simple());
                         maybe_side_channel_file = Some(Cow::Owned(file_cow.clone().into()));
                         Cow::Owned(file_cow)
                     }
-                    EnvironmentSource::action_directory => {
+                    EnvironmentSource::ActionDirectory => {
                         Cow::Borrowed(self.action_directory.as_str())
                     }
                 };
@@ -870,8 +859,7 @@ impl RunningActionImpl {
             .err_tip(|| "Expected stderr to exist on command this should never happen")?;
 
         let mut child_process_guard = guard(child_process, |mut child_process| {
-            event!(
-                Level::ERROR,
+            error!(
                 "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
             );
             background_spawn!("running_actions_manager_kill_child_process", async move {
@@ -915,8 +903,7 @@ impl RunningActionImpl {
                     self.running_actions_manager.metrics.task_timeouts.inc();
                     killed_action = true;
                     if let Err(err) = child_process_guard.start_kill() {
-                        event!(
-                            Level::ERROR,
+                        error!(
                             ?err,
                             "Could not kill process in RunningActionsManager for action timeout",
                         );
@@ -937,9 +924,9 @@ impl RunningActionImpl {
                     // Defuse our guard so it does not try to cleanup and make nessless logs.
                     drop(ScopeGuard::<_, _>::into_inner(child_process_guard));
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
-                    // TODO(allada) We should implement stderr/stdout streaming to client here.
+                    // TODO(aaronmondal) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
-                    // TODO(allada) There is a significant bug here. If we kill the action and the action creates
+                    // TODO(aaronmondal) There is a significant bug here. If we kill the action and the action creates
                     // child processes, it can create zombies. See: https://github.com/tracemachina/nativelink/issues/225
                     let (stdout, stderr) = if killed_action {
                         drop(timer);
@@ -952,16 +939,15 @@ impl RunningActionImpl {
                             maybe_all_stderr.err_tip(|| "Internal error reading from stderr of worker task")??
                         )
                     };
-                    let exit_code = if let Some(exit_code) = exit_status.code() {
+
+                    let exit_code = exit_status.code().map_or(EXIT_CODE_FOR_SIGNAL, |exit_code| {
                         if exit_code == 0 {
                             self.metrics().child_process_success_error_code.inc();
                         } else {
                             self.metrics().child_process_failure_error_code.inc();
                         }
                         exit_code
-                    } else {
-                        EXIT_CODE_FOR_SIGNAL
-                    };
+                    });
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
@@ -986,17 +972,10 @@ impl RunningActionImpl {
                 _ = &mut kill_channel_rx => {
                     killed_action = true;
                     if let Err(err) = child_process_guard.start_kill() {
-                        event!(
-                            Level::ERROR,
+                        error!(
                             operation_id = ?self.operation_id,
                             ?err,
                             "Could not kill process",
-                        );
-                    } else {
-                        event!(
-                            Level::ERROR,
-                            operation_id = ?self.operation_id,
-                            "Could not get child process id, maybe already dead?",
                         );
                     }
                     {
@@ -1024,7 +1003,7 @@ impl RunningActionImpl {
             DirectorySymlink(SymlinkInfo),
         }
 
-        event!(Level::INFO, "Worker uploading results",);
+        info!("Worker uploading results",);
         let (mut command_proto, execution_result, mut execution_metadata) = {
             let mut state = self.state.lock();
             state.execution_metadata.output_upload_start_timestamp =
@@ -1155,18 +1134,14 @@ impl RunningActionImpl {
         let mut output_file_symlinks = vec![];
 
         if execution_result.exit_code != 0 {
-            // Don't convert our stdout/stderr to strings unless we are need too.
-            if enabled!(Level::ERROR) {
-                let stdout = std::str::from_utf8(&execution_result.stdout).unwrap_or("<no-utf8>");
-                let stderr = std::str::from_utf8(&execution_result.stderr).unwrap_or("<no-utf8>");
-                event!(
-                    Level::ERROR,
-                    exit_code = ?execution_result.exit_code,
-                    stdout = ?stdout[..min(stdout.len(), 1000)],
-                    stderr = ?stderr[..min(stderr.len(), 1000)],
-                    "Command returned non-zero exit code",
-                );
-            }
+            let stdout = core::str::from_utf8(&execution_result.stdout).unwrap_or("<no-utf8>");
+            let stderr = core::str::from_utf8(&execution_result.stderr).unwrap_or("<no-utf8>");
+            error!(
+                exit_code = ?execution_result.exit_code,
+                stdout = ?stdout[..min(stdout.len(), 1000)],
+                stderr = ?stderr[..min(stderr.len(), 1000)],
+                "Command returned non-zero exit code",
+            );
         }
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
@@ -1229,7 +1204,7 @@ impl RunningActionImpl {
                 stdout_digest,
                 stderr_digest,
                 execution_metadata,
-                server_logs: HashMap::default(), // TODO(allada) Not implemented.
+                server_logs: HashMap::default(), // TODO(aaronmondal) Not implemented.
                 error: state.error.clone(),
                 message: String::new(), // Will be filled in on cache_action_result if needed.
             });
@@ -1252,8 +1227,7 @@ impl Drop for RunningActionImpl {
             return;
         }
         let operation_id = self.operation_id.clone();
-        event!(
-            Level::ERROR,
+        error!(
             ?operation_id,
             "RunningActionImpl did not cleanup. This is a violation of the requirements, will attempt to do it in the background."
         );
@@ -1265,8 +1239,7 @@ impl Drop for RunningActionImpl {
             else {
                 return;
             };
-            event!(
-                Level::ERROR,
+            error!(
                 ?operation_id,
                 ?action_directory,
                 ?err,
@@ -1369,11 +1342,18 @@ type SleepFn = fn(Duration) -> BoxFuture<'static, ()>;
 
 /// Functions that may be injected for testing purposes, during standard control
 /// flows these are specified by the new function.
+#[derive(Clone, Copy)]
 pub struct Callbacks {
     /// A function that gets the current time.
     pub now_fn: NowFn,
     /// A function that sleeps for a given Duration.
     pub sleep_fn: SleepFn,
+}
+
+impl Debug for Callbacks {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Callbacks").finish_non_exhaustive()
+    }
 }
 
 /// The set of additional information for executing an action over and above
@@ -1382,7 +1362,7 @@ pub struct Callbacks {
 /// may be used to run the action with a particular set of additional
 /// environment variables, or perhaps configure it to execute within a
 /// container.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ExecutionConfiguration {
     /// If set, will be executed instead of the first argument passed in the
     /// `ActionInfo` with all of the arguments in the `ActionInfo` passed as
@@ -1394,6 +1374,7 @@ pub struct ExecutionConfiguration {
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
 }
 
+#[derive(Debug)]
 struct UploadActionResults {
     upload_ac_results_strategy: UploadCacheResultsStrategy,
     upload_historical_results_strategy: UploadCacheResultsStrategy,
@@ -1414,7 +1395,7 @@ impl UploadActionResults {
             .unwrap_or(DEFAULT_HISTORICAL_RESULTS_STRATEGY);
         if !matches!(
             config.upload_ac_results_strategy,
-            UploadCacheResultsStrategy::never
+            UploadCacheResultsStrategy::Never
         ) && ac_store.is_none()
         {
             return Err(make_input_err!(
@@ -1445,23 +1426,21 @@ impl UploadActionResults {
         })
     }
 
-    fn should_cache_result(
+    const fn should_cache_result(
         strategy: UploadCacheResultsStrategy,
         action_result: &ActionResult,
         treat_infra_error_as_failure: bool,
     ) -> bool {
-        let mut did_fail = action_result.exit_code != 0;
-        if treat_infra_error_as_failure && action_result.error.is_some() {
-            did_fail = true;
-        }
+        let did_fail = action_result.exit_code != 0
+            || (treat_infra_error_as_failure && action_result.error.is_some());
         match strategy {
-            UploadCacheResultsStrategy::success_only => !did_fail,
-            UploadCacheResultsStrategy::never => false,
+            UploadCacheResultsStrategy::SuccessOnly => !did_fail,
+            UploadCacheResultsStrategy::Never => false,
             // Never cache internal errors or timeouts.
-            UploadCacheResultsStrategy::everything => {
+            UploadCacheResultsStrategy::Everything => {
                 treat_infra_error_as_failure || action_result.error.is_none()
             }
-            UploadCacheResultsStrategy::failures_only => did_fail,
+            UploadCacheResultsStrategy::FailuresOnly => did_fail,
         }
     }
 
@@ -1637,6 +1616,7 @@ impl UploadActionResults {
     }
 }
 
+#[derive(Debug)]
 pub struct RunningActionsManagerArgs<'a> {
     pub root_action_directory: String,
     pub execution_configuration: ExecutionConfiguration,
@@ -1650,6 +1630,7 @@ pub struct RunningActionsManagerArgs<'a> {
 
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
+#[derive(Debug)]
 pub struct RunningActionsManagerImpl {
     root_action_directory: String,
     execution_configuration: ExecutionConfiguration,
@@ -1676,9 +1657,9 @@ impl RunningActionsManagerImpl {
             .cas_store
             .fast_store()
             .downcast_ref::<FilesystemStore>(None)
-            .err_tip(|| {
-                "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl"
-            })?
+            .err_tip(
+                || "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl",
+            )?
             .get_arc()
             .err_tip(|| "FilesystemStore's internal Arc was lost")?;
         let (action_done_tx, _) = watch::channel(());
@@ -1768,8 +1749,7 @@ impl RunningActionsManagerImpl {
     // Note: We do not capture metrics on this call, only `.kill_all()`.
     // Important: When the future returns the process may still be running.
     async fn kill_operation(action: Arc<RunningActionImpl>) {
-        event!(
-            Level::WARN,
+        warn!(
             operation_id = ?action.operation_id,
             "Sending kill to running operation",
         );
@@ -1779,8 +1759,7 @@ impl RunningActionsManagerImpl {
         };
         if let Some(kill_channel_tx) = kill_channel_tx {
             if kill_channel_tx.send(()).is_err() {
-                event!(
-                    Level::ERROR,
+                error!(
                     operation_id = ?action.operation_id,
                     "Error sending kill to running operation",
                 );
@@ -1807,8 +1786,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 let operation_id = start_execute
                     .operation_id.as_str().into();
                 let action_info = self.create_action_info(start_execute, queued_timestamp).await?;
-                event!(
-                    Level::INFO,
+                info!(
                     ?action_info,
                     "Worker received action",
                 );
@@ -1887,11 +1865,12 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     // Use the ShutdownGuard to signal the completion of the actions
     // Dropping the sender automatically notifies the process to terminate.
     async fn complete_actions(&self, _complete_msg: ShutdownGuard) {
-        let _ = self
-            .action_done_tx
-            .subscribe()
-            .wait_for(|()| self.running_actions.lock().is_empty())
-            .await;
+        drop(
+            self.action_done_tx
+                .subscribe()
+                .wait_for(|()| self.running_actions.lock().is_empty())
+                .await,
+        );
     }
 
     // Note: When the future returns the process should be fully killed and cleaned up.
@@ -1914,11 +1893,12 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         // Ignore error. If error happens it means there's no sender, which is not a problem.
         // Note: Sanity check this API will always check current value then future values:
         // https://play.rust-lang.org/?version=stable&edition=2021&gist=23103652cc1276a97e5f9938da87fdb2
-        let _ = self
-            .action_done_tx
-            .subscribe()
-            .wait_for(|()| self.running_actions.lock().is_empty())
-            .await;
+        drop(
+            self.action_done_tx
+                .subscribe()
+                .wait_for(|()| self.running_actions.lock().is_empty())
+                .await,
+        );
     }
 
     #[inline]
@@ -1927,7 +1907,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     }
 }
 
-#[derive(Default, MetricsComponent)]
+#[derive(Debug, Default, MetricsComponent)]
 pub struct Metrics {
     #[metric(help = "Stats about the create_and_add_action command.")]
     create_and_add_action: AsyncCounterWrapper,

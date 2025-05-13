@@ -16,10 +16,10 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use nativelink_metric::{
-    publish, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, publish,
 };
-use nativelink_proto::build::bazel::remote::execution::v2::platform::Property as ProtoProperty;
 use nativelink_proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
+use nativelink_proto::build::bazel::remote::execution::v2::platform::Property as ProtoProperty;
 use serde::{Deserialize, Serialize};
 
 /// `PlatformProperties` helps manage the configuration of platform properties to
@@ -72,7 +72,7 @@ impl From<ProtoPlatform> for PlatformProperties {
 
 impl From<&PlatformProperties> for ProtoPlatform {
     fn from(val: &PlatformProperties) -> Self {
-        ProtoPlatform {
+        Self {
             properties: val
                 .properties
                 .iter()
@@ -94,7 +94,7 @@ impl From<&PlatformProperties> for ProtoPlatform {
 /// Priority - Means the worker is given this information, but does not restrict
 ///            what workers can take this value. However, the worker must have the
 ///            associated key present to be matched.
-///            TODO(allada) In the future this will be used by the scheduler and
+///            TODO(aaronmondal) In the future this will be used by the scheduler and
 ///            worker to cause the scheduler to prefer certain workers over others,
 ///            but not restrict them based on these values.
 #[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug, Serialize, Deserialize)]

@@ -2,37 +2,97 @@
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: provider
-  namespace: default
+  name: tekton-operator
+  namespace: flux-system
 spec:
   interval: 2m
-  path: "./kubernetes/resources/provider"
+  path: "./kubernetes/vendor/tekton-operator"
   prune: true
   force: true
   retryInterval: 20s
-  targetNamespace: default
+  targetNamespace: ci
   wait: true
   sourceRef:
     kind: GitRepository
-    name: nativelink
-    namespace: default
+    name: nativelink-infra
+    namespace: flux-system
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: tekton-config
+  namespace: flux-system
+spec:
+  interval: 2m
+  path: "./kubernetes/resources/tekton-config"
+  prune: true
+  force: true
+  retryInterval: 20s
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: nativelink-infra
+    namespace: flux-system
   dependsOn:
-    - name: nativelink-tekton-resources
+    - name: tekton-operator
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: nativelink-tekton-resources
-  namespace: default
+  namespace: flux-system
 spec:
   interval: 2m
   path: "./kubernetes/resources/tekton"
   prune: true
   force: true
   retryInterval: 20s
+  targetNamespace: ci
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: nativelink-infra
+    namespace: flux-system
+  dependsOn:
+    - name: tekton-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: nativelink-tekton-deployment-roles
+  namespace: flux-system
+spec:
+  interval: 2m
+  path: "./kubernetes/resources/tekton-roles"
+  prune: true
+  force: true
+  retryInterval: 20s
+  # Namespace for the nativelink deployment.
   targetNamespace: default
   wait: true
   sourceRef:
     kind: GitRepository
-    name: nativelink
-    namespace: default
+    name: nativelink-infra
+    namespace: flux-system
+  dependsOn:
+    - name: nativelink-tekton-resources
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: provider
+  namespace: flux-system
+spec:
+  interval: 2m
+  path: "./kubernetes/resources/provider"
+  prune: true
+  force: true
+  retryInterval: 20s
+  targetNamespace: ci
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: nativelink-infra
+    namespace: flux-system
+  dependsOn:
+    - name: nativelink-tekton-resources

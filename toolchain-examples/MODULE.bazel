@@ -4,19 +4,19 @@ module(
     compatibility_level = 0,
 )
 
-bazel_dep(name = "platforms", version = "0.0.10")
+bazel_dep(name = "platforms", version = "0.0.11")
 
 # C++
-bazel_dep(name = "rules_cc", version = "0.0.17")
+bazel_dep(name = "rules_cc", version = "0.1.1")
 
 # Java
-bazel_dep(name = "rules_java", version = "8.5.1")
+bazel_dep(name = "rules_java", version = "8.11.0")
 
 java = use_extension("//java:extensions.bzl", "toolchains")
 use_repo(java, "local_jdk")
 
 # Python
-bazel_dep(name = "rules_python", version = "0.40.0")
+bazel_dep(name = "rules_python", version = "1.2.0")
 
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
 pip.parse(
@@ -34,10 +34,10 @@ python.toolchain(
 use_repo(pip, "pip")
 
 # Go
-bazel_dep(name = "rules_go", version = "0.50.1")
+bazel_dep(name = "rules_go", version = "0.53.0")
 
 # Rust
-bazel_dep(name = "rules_rust", version = "0.54.1")
+bazel_dep(name = "rules_rust", version = "0.59.1")
 
 # C++ toolchain via zig-cc.
 #
@@ -47,10 +47,18 @@ bazel_dep(name = "rules_rust", version = "0.54.1")
 #
 # To test this toolchain, use for use with the config flag `--config=zig-cc`.
 #
-bazel_dep(name = "hermetic_cc_toolchain", version = "3.1.1")
+bazel_dep(name = "hermetic_cc_toolchain", version = "3.2.0")
 
 zig = use_extension("@hermetic_cc_toolchain//toolchain:ext.bzl", "toolchains")
-use_repo(zig, "zig_sdk")
+use_repo(
+    zig,
+    "zig_sdk",
+    "zig_sdk-linux-amd64",
+    "zig_sdk-linux-arm64",
+    "zig_sdk-macos-amd64",
+    "zig_sdk-macos-arm64",
+    "zig_sdk-windows-amd64",
+)
 
 # C++ toolchain via contrib/toolchains_llvm.
 #
@@ -61,7 +69,7 @@ use_repo(zig, "zig_sdk")
 #
 # To test this toolchain, use for use with the config flag `--config=llvm`.
 #
-bazel_dep(name = "toolchains_llvm", version = "1.2.0")
+bazel_dep(name = "toolchains_llvm", version = "1.3.0")
 
 llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
 llvm.toolchain(llvm_version = "19.1.0")
@@ -70,19 +78,19 @@ use_repo(llvm, "llvm_toolchain")
 # Example projects to test compilation.
 
 # libcurl (C)
-bazel_dep(name = "curl", version = "8.8.0.bcr.1")
+bazel_dep(name = "curl", version = "8.8.0.bcr.3")
 
 # Zstandard (C)
-bazel_dep(name = "zstd", version = "1.5.6")
+bazel_dep(name = "zstd", version = "1.5.7")
 
 # Abseil for C++
-bazel_dep(name = "abseil-cpp", version = "20240722.0.bcr.1")
+bazel_dep(name = "abseil-cpp", version = "20250127.0")
 
 # Abseil for python
 bazel_dep(name = "abseil-py", version = "2.1.0")
 
 # GRPC
-bazel_dep(name = "grpc", version = "1.68.0")
+bazel_dep(name = "grpc", version = "1.71.0")
 
 # Circl (Go, C++)
 bazel_dep(name = "circl", version = "1.3.8")

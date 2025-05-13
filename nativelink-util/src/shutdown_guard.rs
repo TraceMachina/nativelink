@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use tokio::sync::watch;
 
-#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum Priority {
     // The least important priority.
     LeastImportant = 2,
@@ -29,15 +29,15 @@ pub enum Priority {
 impl From<usize> for Priority {
     fn from(value: usize) -> Self {
         match value {
-            0 => Priority::P0,
-            1 => Priority::P1,
-            _ => Priority::LeastImportant,
+            0 => Self::P0,
+            1 => Self::P1,
+            _ => Self::LeastImportant,
         }
     }
 }
 
 impl From<Priority> for usize {
-    fn from(priority: Priority) -> usize {
+    fn from(priority: Priority) -> Self {
         match priority {
             Priority::P0 => 0,
             Priority::P1 => 1,
@@ -48,6 +48,7 @@ impl From<Priority> for usize {
 
 /// Tracks other services that have registered to be notified when
 /// the process is being shut down.
+#[derive(Debug)]
 pub struct ShutdownGuard {
     priority: Priority,
     tx: watch::Sender<HashMap<Priority, usize>>,
@@ -72,19 +73,20 @@ impl ShutdownGuard {
         }
         // Ignore error because the receiver will never be closed
         // if the sender is still alive here.
-        let _ = self
-            .rx
-            .wait_for(|map| {
-                let start = usize::from(priority) + 1;
-                let end = usize::from(Priority::LeastImportant);
-                for p in start..=end {
-                    if *map.get(&p.into()).unwrap_or(&0) > 0 {
-                        return false;
+        drop(
+            self.rx
+                .wait_for(|map| {
+                    let start = usize::from(priority) + 1;
+                    let end = usize::from(Priority::LeastImportant);
+                    for p in start..=end {
+                        if *map.get(&p.into()).unwrap_or(&0) > 0 {
+                            return false;
+                        }
                     }
-                }
-                true
-            })
-            .await;
+                    true
+                })
+                .await,
+        );
     }
 }
 

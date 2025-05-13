@@ -14,8 +14,8 @@
 
 use std::sync::Arc;
 
-use base64::prelude::BASE64_STANDARD_NO_PAD;
 use base64::Engine;
+use base64::prelude::BASE64_STANDARD_NO_PAD;
 use futures::future::BoxFuture;
 use futures::task::{Context, Poll};
 use hyper::http::{self, StatusCode};
@@ -24,26 +24,26 @@ use nativelink_proto::build::bazel::remote::execution::v2::RequestMetadata;
 use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
 use prost::Message;
 use tokio::sync::mpsc;
-use tower::layer::Layer;
 use tower::Service;
+use tower::layer::Layer;
 use tracing::trace_span;
 
 use crate::origin_context::{ActiveOriginContext, ORIGIN_IDENTITY};
-use crate::origin_event::{OriginEventCollector, OriginMetadata, ORIGIN_EVENT_COLLECTOR};
+use crate::origin_event::{ORIGIN_EVENT_COLLECTOR, OriginEventCollector, OriginMetadata};
 
 /// Default identity header name.
 /// Note: If this is changed, the default value in the [`IdentityHeaderSpec`]
-// TODO(allada) This has a mirror in bep_server.rs.
+// TODO(aaronmondal) This has a mirror in bep_server.rs.
 // We should consolidate these.
 const DEFAULT_IDENTITY_HEADER: &str = "x-identity";
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct OriginRequestMetadata {
     pub identity: String,
     pub bazel_metadata: Option<RequestMetadata>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct OriginEventMiddlewareLayer {
     maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     idenity_header_config: Arc<IdentityHeaderSpec>,
@@ -73,7 +73,7 @@ impl<S> Layer<S> for OriginEventMiddlewareLayer {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct OriginEventMiddleware<S> {
     inner: S,
     maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
@@ -84,7 +84,7 @@ impl<S, ReqBody, ResBody> Service<http::Request<ReqBody>> for OriginEventMiddlew
 where
     S: Service<http::Request<ReqBody>, Response = http::Response<ResBody>> + Clone + Send + 'static,
     S::Future: Send + 'static,
-    ReqBody: std::fmt::Debug + Send + 'static,
+    ReqBody: core::fmt::Debug + Send + 'static,
     ResBody: From<String> + Send + 'static,
 {
     type Response = S::Response;
@@ -99,7 +99,7 @@ where
         // We must take the current `inner` and not the clone.
         // See: https://docs.rs/tower/latest/tower/trait.Service.html#be-careful-when-cloning-inner-services
         let clone = self.inner.clone();
-        let mut inner = std::mem::replace(&mut self.inner, clone);
+        let mut inner = core::mem::replace(&mut self.inner, clone);
 
         let mut context = ActiveOriginContext::fork().unwrap_or_default();
         let identity = {
@@ -108,13 +108,13 @@ where
                 .header_name
                 .as_deref()
                 .unwrap_or(DEFAULT_IDENTITY_HEADER);
-            let identity = if !identity_header.is_empty() {
+            let identity = if identity_header.is_empty() {
+                String::new()
+            } else {
                 req.headers()
                     .get(identity_header)
                     .and_then(|header| header.to_str().ok().map(str::to_string))
                     .unwrap_or_default()
-            } else {
-                String::new()
             };
 
             if identity.is_empty() && self.idenity_header_config.required {

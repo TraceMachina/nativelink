@@ -1,0 +1,6 @@
+.direnv/
+.pre-commit-config.yaml
+MODULE.bazel.lock
+bazel-*
+compile_commands.json
+lre.bazelrc

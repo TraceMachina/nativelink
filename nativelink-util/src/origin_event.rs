@@ -12,15 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::marker::PhantomData;
-use std::pin::Pin;
+use core::marker::PhantomData;
+use core::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-use base64::prelude::BASE64_STANDARD_NO_PAD;
 use base64::Engine;
+use base64::prelude::BASE64_STANDARD_NO_PAD;
 use futures::future::ready;
 use futures::task::{Context, Poll};
 use futures::{Future, FutureExt, Stream, StreamExt};
+use nativelink_proto::build::bazel::remote::asset::v1::{
+    FetchBlobRequest, FetchBlobResponse, PushBlobRequest, PushBlobResponse,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, ExecuteRequest, FindMissingBlobsRequest, FindMissingBlobsResponse,
@@ -28,9 +31,10 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     RequestMetadata, ServerCapabilities, UpdateActionResultRequest, WaitExecutionRequest,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
+    BatchReadBlobsResponseOverride, BatchUpdateBlobsRequestOverride, Event, OriginEvent,
+    RequestEvent, ResponseEvent, StreamEvent, WriteRequestOverride,
     batch_read_blobs_response_override, batch_update_blobs_request_override, event, request_event,
-    response_event, stream_event, BatchReadBlobsResponseOverride, BatchUpdateBlobsRequestOverride,
-    Event, OriginEvent, RequestEvent, ResponseEvent, StreamEvent, WriteRequestOverride,
+    response_event, stream_event,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use nativelink_proto::google::bytestream::{
@@ -49,7 +53,7 @@ use tonic::{Response, Status as TonicStatus, Streaming};
 use uuid::Uuid;
 
 use crate::origin_context::ActiveOriginContext;
-use crate::{background_spawn, make_symbol};
+use crate::{background_spawn, unsafe_make_symbol};
 
 const ORIGIN_EVENT_VERSION: u32 = 0;
 
@@ -61,7 +65,7 @@ static NODE_ID: OnceLock<[u8; 6]> = OnceLock::new();
 /// meaning you may use the first nibble for other
 /// purposes.
 #[inline]
-pub fn get_id_for_event(event: &Event) -> [u8; 2] {
+pub const fn get_id_for_event(event: &Event) -> [u8; 2] {
     match &event.event {
         None => [0x00, 0x00],
         Some(event::Event::Request(req)) => match req.event {
@@ -79,6 +83,8 @@ pub fn get_id_for_event(event: &Event) -> [u8; 2] {
             Some(request_event::Event::ExecuteRequest(_)) => [0x01, 0x0B],
             Some(request_event::Event::WaitExecutionRequest(_)) => [0x01, 0x0C],
             Some(request_event::Event::SchedulerStartExecute(_)) => [0x01, 0x0D],
+            Some(request_event::Event::FetchBlobRequest(_)) => [0x01, 0x0E],
+            Some(request_event::Event::PushBlobRequest(_)) => [0x01, 0x0F],
         },
         Some(event::Event::Response(res)) => match res.event {
             None => [0x02, 0x00],
@@ -91,6 +97,8 @@ pub fn get_id_for_event(event: &Event) -> [u8; 2] {
             Some(response_event::Event::WriteResponse(_)) => [0x02, 0x07],
             Some(response_event::Event::QueryWriteStatusResponse(_)) => [0x02, 0x08],
             Some(response_event::Event::Empty(())) => [0x02, 0x09],
+            Some(response_event::Event::FetchBlobResponse(_)) => [0x02, 0x0A],
+            Some(response_event::Event::PushBlobResponse(_)) => [0x02, 0x0B],
         },
         Some(event::Event::Stream(stream)) => match stream.event {
             None => [0x03, 0x00],
@@ -107,9 +115,8 @@ pub fn get_id_for_event(event: &Event) -> [u8; 2] {
 /// Returns a unique node ID for this process.
 pub fn get_node_id(event: Option<&Event>) -> [u8; 6] {
     let mut node_id = *NODE_ID.get_or_init(|| {
-        let mut rng = rand::thread_rng();
         let mut out = [0; 6];
-        rng.fill_bytes(&mut out);
+        rand::rng().fill_bytes(&mut out);
         out
     });
     let Some(event) = event else {
@@ -164,13 +171,14 @@ pub struct OriginMetadata {
     pub bazel_metadata: Option<RequestMetadata>,
 }
 
+#[derive(Debug)]
 pub struct OriginEventCollector {
     sender: mpsc::Sender<OriginEvent>,
     pub metadata: OriginMetadata,
 }
 
 impl OriginEventCollector {
-    pub fn new(sender: mpsc::Sender<OriginEvent>, metadata: OriginMetadata) -> Self {
+    pub const fn new(sender: mpsc::Sender<OriginEvent>, metadata: OriginMetadata) -> Self {
         Self { sender, metadata }
     }
 
@@ -193,17 +201,18 @@ impl OriginEventCollector {
         let parent_event_id =
             parent_event_id.map_or_else(String::new, |id| id.as_hyphenated().to_string());
         // Ignore cases when channel is dropped.
-        let _ = self
-            .sender
-            .send(OriginEvent {
-                version: ORIGIN_EVENT_VERSION,
-                event_id: event_id.as_hyphenated().to_string(),
-                parent_event_id,
-                bazel_request_metadata: self.metadata.bazel_metadata.clone(),
-                identity: self.metadata.identity.clone(),
-                event: Some(event),
-            })
-            .await;
+        drop(
+            self.sender
+                .send(OriginEvent {
+                    version: ORIGIN_EVENT_VERSION,
+                    event_id: event_id.as_hyphenated().to_string(),
+                    parent_event_id,
+                    bazel_request_metadata: self.metadata.bazel_metadata.clone(),
+                    identity: self.metadata.identity.clone(),
+                    event: Some(event),
+                })
+                .await,
+        );
         event_id
     }
 
@@ -230,7 +239,7 @@ impl OriginEventCollector {
                         let sender = self.sender.clone();
                         background_spawn!("send_end_stream_origin_event", async move {
                             // Ignore cases when channel is dropped.
-                            let _ = sender.send(event).await;
+                            drop(sender.send(event).await);
                         });
                     }
                     // Ignore cases when channel is dropped.
@@ -280,11 +289,21 @@ where
     }
 }
 
-make_symbol!(ORIGIN_EVENT_COLLECTOR, OriginEventCollector);
+// Safety: There is no other symbol named `ORIGIN_EVENT_COLLECTOR`.
+unsafe_make_symbol!(ORIGIN_EVENT_COLLECTOR, OriginEventCollector);
 
 pub struct OriginEventContext<T> {
     inner: Option<OriginEventContextImpl>,
     _phantom: PhantomData<T>,
+}
+
+impl<T> core::fmt::Debug for OriginEventContext<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OriginEventContext")
+            .field("inner", &self.inner)
+            .field("_phantom", &self._phantom)
+            .finish()
+    }
 }
 
 impl<T> Clone for OriginEventContext<T> {
@@ -367,7 +386,7 @@ impl<U> OriginEventContext<U> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct OriginEventContextImpl {
     origin_event_collector: Arc<OriginEventCollector>,
     parent_event_id: Uuid,
@@ -550,6 +569,8 @@ impl_as_event! {Request, (), UpdateActionResultRequest}
 impl_as_event! {Request, (), FindMissingBlobsRequest}
 impl_as_event! {Request, (), BatchReadBlobsRequest}
 impl_as_event! {Request, (), BatchUpdateBlobsRequest, BatchUpdateBlobsRequest, to_batch_update_blobs_request_override}
+impl_as_event! {Request, (), FetchBlobRequest}
+impl_as_event! {Request, (), PushBlobRequest}
 impl_as_event! {Request, (), GetTreeRequest}
 impl_as_event! {Request, (), ReadRequest}
 impl_as_event! {Request, (), Streaming<WriteRequest>, WriteRequest, to_empty_write_request}
@@ -568,6 +589,8 @@ impl_as_event! {Response, ReadRequest, Pin<Box<dyn Stream<Item = Result<ReadResp
 impl_as_event! {Response, QueryWriteStatusRequest, QueryWriteStatusResponse}
 impl_as_event! {Response, FindMissingBlobsRequest, FindMissingBlobsResponse}
 impl_as_event! {Response, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse}
+impl_as_event! {Response, FetchBlobRequest, FetchBlobResponse}
+impl_as_event! {Response, PushBlobRequest, PushBlobResponse}
 impl_as_event! {Response, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchReadBlobsResponseOverride, to_batch_read_blobs_response_override}
 impl_as_event! {Response, GetTreeRequest, Pin<Box<dyn Stream<Item = Result<GetTreeResponse, TonicStatus>> + Send + '_>>, Empty, to_empty_response}
 impl_as_event! {Response, ExecuteRequest, Pin<Box<dyn Stream<Item = Result<Operation, TonicStatus>> + Send + '_>>, Empty, to_empty_response}

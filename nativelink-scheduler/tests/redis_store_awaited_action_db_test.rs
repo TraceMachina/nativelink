@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::thread::panicking;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use bytes::Bytes;
 use fred::bytes_utils::string::Str;
@@ -24,8 +25,8 @@ use fred::clients::SubscriberClient;
 use fred::error::{Error as RedisError, ErrorKind as RedisErrorKind};
 use fred::mocks::{MockCommand, Mocks};
 use fred::prelude::{Builder, Pool as RedisPool};
-use fred::types::config::{Config as RedisConfig, PerformanceConfig};
 use fred::types::Value as RedisValue;
+use fred::types::config::{Config as RedisConfig, PerformanceConfig};
 use mock_instant::global::SystemTime as MockSystemTime;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
@@ -50,6 +51,7 @@ const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 const SCRIPT_VERSION: &str = "3e762c15";
 const VERSION_SCRIPT_HASH: &str = "fdf1152fd21705c8763752809b86b55c5d4511ce";
 const MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
+const SCAN_COUNT: u32 = 10_000;
 
 fn mock_uuid_generator() -> String {
     uuid::Uuid::parse_str(TEMP_UUID).unwrap().to_string()
@@ -112,7 +114,7 @@ impl Mocks for MockRedisBackend {
             args: Vec::new(),
         };
 
-        let results = std::iter::once(MULTI.clone())
+        let results = core::iter::once(MULTI.clone())
             .chain(commands)
             .chain([EXEC.clone()])
             .map(|command| self.process_command(command))
@@ -212,6 +214,10 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         2000.into(),
     ];
     let mocks = Arc::new(MockRedisBackend::new());
+    #[expect(
+        clippy::string_lit_as_bytes,
+        reason = r#"avoids `b"foo".as_slice()`, which is hardly better"#
+    )]
     mocks
         .expect(
             MockCommand {
@@ -404,8 +410,9 @@ async fn add_action_smoke_test() -> Result<(), Error> {
 
     let store = {
         let mut builder = Builder::default_centralized();
+        let mocks = Arc::clone(&mocks);
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
         let (client_pool, subscriber_client) = make_clients(builder);
@@ -418,6 +425,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
                 String::new(),
                 4064,
                 MAX_CHUNK_UPLOADS_PER_UPDATE,
+                SCAN_COUNT,
             )
             .unwrap(),
         )

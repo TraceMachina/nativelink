@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::hash_map::Entry;
+use core::convert::Into;
+use core::fmt::{Debug, Formatter};
+use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use std::collections::HashMap;
-use std::convert::Into;
-use std::fmt::{Debug, Formatter};
-use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
-use std::time::Duration;
 
-use futures::future::{pending, BoxFuture};
+use futures::future::{BoxFuture, pending};
 use futures::stream::unfold;
-use futures::{try_join, Future, Stream, TryFutureExt};
+use futures::{Future, Stream, TryFutureExt, try_join};
 use nativelink_config::cas_server::ByteStreamConfig;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::google::bytestream::byte_stream_server::{
     ByteStream, ByteStreamServer as Server,
 };
@@ -36,11 +36,11 @@ use nativelink_proto::google::bytestream::{
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{
-    default_digest_hasher_func, make_ctx_for_hash_func, DigestHasherFunc,
+    DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func,
 };
 use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
@@ -51,7 +51,7 @@ use nativelink_util::task::JoinHandleDropGuard;
 use parking_lot::Mutex;
 use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{enabled, error_span, event, instrument, Instrument, Level};
+use tracing::{Instrument, Level, debug, error, error_span, info, instrument};
 
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -72,7 +72,7 @@ struct StreamState {
 }
 
 impl Debug for StreamState {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("StreamState")
             .field("uuid", &self.uuid)
             .finish()
@@ -109,8 +109,7 @@ impl Drop for ActiveStreamGuard<'_> {
         let mut active_uploads = self.bytestream_server.active_uploads.lock();
         let uuid = stream_state.uuid.clone();
         let Some(active_uploads_slot) = active_uploads.get_mut(&uuid) else {
-            event!(
-                Level::ERROR,
+            error!(
                 err = "Failed to find active upload. This should never happen.",
                 uuid = ?uuid,
             );
@@ -123,7 +122,7 @@ impl Drop for ActiveStreamGuard<'_> {
                 (*sleep_fn)().await;
                 if let Some(active_uploads) = weak_active_uploads.upgrade() {
                     let mut active_uploads = active_uploads.lock();
-                    event!(Level::INFO, msg = "Removing idle stream", uuid = ?uuid);
+                    info!(msg = "Removing idle stream", uuid = ?uuid);
                     active_uploads.remove(&uuid);
                 }
             }),
@@ -166,13 +165,25 @@ pub struct ByteStreamServer {
     sleep_fn: SleepFn,
 }
 
+impl Debug for ByteStreamServer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ByteStreamServer")
+            .field("stores", &self.stores)
+            .field("max_bytes_per_stream", &self.max_bytes_per_stream)
+            .field("max_decoding_message_size", &self.max_decoding_message_size)
+            .field("active_uploads", &self.active_uploads)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ByteStreamServer {
     pub fn new(config: &ByteStreamConfig, store_manager: &StoreManager) -> Result<Self, Error> {
-        let mut persist_stream_on_disconnect_timeout =
-            Duration::from_secs(config.persist_stream_on_disconnect_timeout as u64);
-        if config.persist_stream_on_disconnect_timeout == 0 {
-            persist_stream_on_disconnect_timeout = DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT;
-        }
+        let persist_stream_on_disconnect_timeout =
+            if config.persist_stream_on_disconnect_timeout == 0 {
+                DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT
+            } else {
+                Duration::from_secs(config.persist_stream_on_disconnect_timeout as u64)
+            };
         Self::new_with_sleep_fn(
             config,
             store_manager,
@@ -202,7 +213,7 @@ impl ByteStreamServer {
         } else {
             config.max_decoding_message_size
         };
-        Ok(ByteStreamServer {
+        Ok(Self {
             stores,
             max_bytes_per_stream,
             max_decoding_message_size,
@@ -229,7 +240,7 @@ impl ByteStreamServer {
                     return Err(make_input_err!("Cannot upload same UUID simultaneously"));
                 };
                 let bytes_received = maybe_idle_stream.0.clone();
-                event!(Level::INFO, msg = "Joining existing stream", entry = ?entry.key());
+                info!(msg = "Joining existing stream", entry = ?entry.key());
                 return Ok(idle_stream.into_active_stream(bytes_received, self));
             }
             Entry::Vacant(entry) => {
@@ -270,7 +281,7 @@ impl ByteStreamServer {
         store: Store,
         digest: DigestInfo,
         read_request: ReadRequest,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + Send + 'static, Error> {
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + Send + use<>, Error> {
         struct ReaderState {
             max_bytes_per_stream: usize,
             rx: DropCloserReadHalf,
@@ -330,11 +341,8 @@ impl ByteStreamServer {
                                         return Some((Err(err.into()), None));
                                     }
                                     response.data = bytes;
-                                    if enabled!(Level::DEBUG) {
-                                        event!(Level::INFO, response = ?response);
-                                    } else {
-                                        event!(Level::INFO, response.data = format!("<redacted len({})>", response.data.len()));
-                                    }
+                                    debug!(response = ?response);
+                                    info!(response.data = format!("<redacted len({})>", response.data.len()));
                                     break;
                                 }
                                 Err(mut e) => {
@@ -358,7 +366,7 @@ impl ByteStreamServer {
                                         // message as it will be the most relevant.
                                         e.messages.truncate(1);
                                     }
-                                    event!(Level::ERROR, response = ?e);
+                                    error!(response = ?e);
                                     return Some((Err(e.into()), None))
                                 }
                             }
@@ -419,7 +427,7 @@ impl ByteStreamServer {
                     None => {
                         return Err(make_input_err!(
                             "Client closed stream before sending all data"
-                        ))
+                        ));
                     }
                     // Code path for client stream error. Probably client disconnect.
                     Some(Err(err)) => return Err(err),
@@ -580,7 +588,6 @@ impl ByteStreamServer {
 impl ByteStream for ByteStreamServer {
     type ReadStream = ReadStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,
@@ -631,13 +638,12 @@ impl ByteStream for ByteStreamServer {
             .map_err(Into::into);
 
         if resp.is_ok() {
-            event!(Level::DEBUG, return = "Ok(<stream>)");
+            debug!(return = "Ok(<stream>)");
         }
         ctx.emit(|| &resp).await;
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,
@@ -697,7 +703,6 @@ impl ByteStream for ByteStreamServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),

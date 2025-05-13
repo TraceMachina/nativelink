@@ -57,10 +57,10 @@ async fn test_all_zeros() -> Result<(), std::io::Error> {
 }
 
 #[nativelink_test]
-async fn test_sekien_16k_chunks() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_sekien_16k_chunks() -> Result<(), Box<dyn core::error::Error>> {
     let contents = include_bytes!("data/SekienAkashita.jpg");
     let mut cursor = Cursor::new(&contents);
-    let mut frame_reader = FramedRead::new(&mut cursor, FastCDC::new(8192, 16384, 32768));
+    let mut frame_reader = FramedRead::new(&mut cursor, FastCDC::new(0x2000, 0x4000, 0x8000));
 
     let mut frames = vec![];
     let mut sum_frame_len = 0;
@@ -74,7 +74,7 @@ async fn test_sekien_16k_chunks() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(frames[1].len(), 8282);
     assert_eq!(frames[2].len(), 16303);
     assert_eq!(frames[3].len(), 18696);
-    assert_eq!(frames[4].len(), 32768);
+    assert_eq!(frames[4].len(), 0x8000);
     assert_eq!(frames[5].len(), 11052);
     assert_eq!(sum_frame_len, contents.len());
     Ok(())
@@ -89,8 +89,9 @@ async fn test_random_20mb_16k_chunks() -> Result<(), std::io::Error> {
         data
     };
     let mut cursor = Cursor::new(&data);
-    let mut frame_reader = FramedRead::new(&mut cursor, FastCDC::new(1024, 2048, 4096));
+    let mut frame_reader = FramedRead::new(&mut cursor, FastCDC::new(0x1000, 0x2000, 0x4000));
 
+    #[expect(clippy::collection_is_never_read, reason = "avoid empty loop")]
     let mut lens = vec![];
     for frame in get_frames(&mut frame_reader).await? {
         lens.push(frame.len());
@@ -126,7 +127,7 @@ async fn insert_garbage_check_boundaries_recover_test() -> Result<(), std::io::E
     {
         // Replace 2k of bytes and append one byte to middle.
         let mut rng = SmallRng::seed_from_u64(2);
-        rng.fill(&mut rand_data[0..2000]);
+        rng.fill(&mut rand_data[0..4097]);
         rand_data.insert(rand_data.len() / 2, 0x71);
     }
 
@@ -147,19 +148,26 @@ async fn insert_garbage_check_boundaries_recover_test() -> Result<(), std::io::E
     let mut expected_missing_hashes = HashSet::<String>::new();
     {
         expected_missing_hashes
-            .insert("076a696917163caac2725f753bd2be2e902478c59cd92eeff012851da5868800".into());
+            .insert("33e2babb553746787fd56754bfd26f25aa2ccf556930fc0e675915e14487f55b".into());
         expected_missing_hashes
-            .insert("b60ffdcaa8f833ca6a9900814e55d5a47b3205a6ac7d21aaadc64f889b556932".into());
+            .insert("7bae75fcdc38f2e24bfb5853d3494ab10fffd1ad412ef61ae3e876aa370a8065".into());
         expected_missing_hashes
-            .insert("11367bd6ecba2833556decd869ac714180456ab9ef815b167ffae947796377fd".into());
+            .insert("bd71822ebcef1d4dfde53d58afc15423ac02cab3588614ab920876cdf0f8d03b".into());
+        expected_missing_hashes
+            .insert("c0946faf7601cc708db30b31d5eecb14315f6e1339d79fa9da12416ee8841c1b".into());
+        expected_missing_hashes
+            .insert("e6d7c4916345db82a5b368834650c9afb51e519e559537efe107d4f386407af3".into());
 
-        for key in left_frames.keys() {
+        let mut left_keys = left_frames.keys().collect::<Vec<&String>>();
+        left_keys.sort();
+
+        for key in left_keys {
             let maybe_right_frame = right_frames.get(key);
             if maybe_right_frame.is_none() {
                 assert_eq!(
                     expected_missing_hashes.contains(key),
                     true,
-                    "Expected to find: {}",
+                    "Expected to find key: {}",
                     key
                 );
                 expected_missing_hashes.remove(key);
@@ -171,17 +179,28 @@ async fn insert_garbage_check_boundaries_recover_test() -> Result<(), std::io::E
     let mut expected_new_hashes = HashMap::<String, usize>::new();
     {
         expected_new_hashes.insert(
-            "867f8da2007726835f89eca1e891c292f648660d0af8cfd169262d13d650fdbd".into(),
+            "57154d1c089eda6418a1e9ab5ca0b929eb0e1e0cd1a35b2907195e33e938554b".into(),
             0,
         );
         expected_new_hashes.insert(
-            "21930b56aa9fd7dca4160be0e4c92f04b883ffda4cdb78704f73eca8b3b98036".into(),
-            1832,
+            "a305c22e712c03c787352f34722d1f223c87f13d4e95253b8a55a6c06a482006".into(),
+            2710,
         );
         expected_new_hashes.insert(
-            "0a58dd0fbd1b4942a83d12d3f143ca26cfa2e8b606065298cf37eebde9232a83".into(),
-            49296,
+            "58e4340a3957d12042fc968cc955ac1059219b1e38198e7f11dac1bada8b7d3f".into(),
+            4141,
         );
+        expected_new_hashes.insert(
+            "16df63de6819fc0565dbd1bdd8656c9557bb04639714e86655b562f7218c6e68".into(),
+            5182,
+        );
+        expected_new_hashes.insert(
+            "c75449da71b4e1aabfcab7c449602411c3c684e85b66b6c176f1ab2716059b69".into(),
+            49909,
+        );
+
+        let mut right_frames = right_frames.into_iter().collect::<Vec<_>>();
+        right_frames.sort_by_key(|(_, (_, pos))| *pos);
 
         for (key, (_, pos)) in right_frames {
             let expected_pos = expected_new_hashes.get(&key);

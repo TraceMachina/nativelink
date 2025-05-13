@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use futures::Future;
 use hyper::rt::Executor;
 use hyper_util::rt::tokio::TokioExecutor;
-use tokio::task::{spawn_blocking, JoinError, JoinHandle};
+use tokio::task::{JoinError, JoinHandle, spawn_blocking};
 pub use tracing::error_span as __error_span;
 use tracing::{Instrument, Span};
 
@@ -34,7 +34,7 @@ where
     T: Send + 'static,
     F: Future<Output = T> + Send + 'static,
 {
-    #[allow(clippy::disallowed_methods)]
+    #[expect(clippy::disallowed_methods, reason = "purpose of the method")]
     tokio::spawn(ContextAwareFuture::new(ctx, f.instrument(span)))
 }
 
@@ -51,7 +51,7 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    #[allow(clippy::disallowed_methods)]
+    #[expect(clippy::disallowed_methods, reason = "purpose of the method")]
     spawn_blocking(move || span.in_scope(f))
 }
 
@@ -109,7 +109,7 @@ pub struct JoinHandleDropGuard<T> {
 }
 
 impl<T> JoinHandleDropGuard<T> {
-    pub fn new(inner: JoinHandle<T>) -> Self {
+    pub const fn new(inner: JoinHandle<T>) -> Self {
         Self { inner }
     }
 }
@@ -128,7 +128,7 @@ impl<T> Drop for JoinHandleDropGuard<T> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TaskExecutor(TokioExecutor);
 
 impl TaskExecutor {

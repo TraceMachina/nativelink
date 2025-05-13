@@ -39,7 +39,7 @@ use tokio::sync::watch;
 use tokio::{self};
 use tokio_stream::StreamExt;
 use utils::mock_scheduler::MockActionScheduler;
-use utils::scheduler_utils::{make_base_action_info, TokioWatchActionStateResult};
+use utils::scheduler_utils::{TokioWatchActionStateResult, make_base_action_info};
 
 struct TestContext {
     mock_scheduler: Arc<MockActionScheduler>,
@@ -80,7 +80,7 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
     skip_cache_action.unique_qualifier = ActionUniqueQualifier::Uncachable(action_key);
     let skip_cache_action = Arc::new(skip_cache_action);
     let client_operation_id = OperationId::default();
-    let _ = join!(
+    let _unused = join!(
         context
             .cache_scheduler
             .add_action(client_operation_id.clone(), skip_cache_action),

@@ -12,22 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::Into;
+use core::pin::Pin;
 use std::collections::{HashMap, VecDeque};
-use std::convert::Into;
-use std::pin::Pin;
 
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
 use futures::{StreamExt, TryStreamExt};
-use nativelink_config::cas_server::{CasStoreConfig, InstanceName};
-use nativelink_error::{error_if, make_input_err, Code, Error, ResultExt};
+use nativelink_config::cas_server::{CasStoreConfig, WithInstanceName};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer as Server,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    batch_read_blobs_response, batch_update_blobs_response, compressor, BatchReadBlobsRequest,
-    BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, Directory,
-    FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest, GetTreeResponse,
+    BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
+    BatchUpdateBlobsResponse, Directory, FindMissingBlobsRequest, FindMissingBlobsResponse,
+    GetTreeRequest, GetTreeResponse, batch_read_blobs_response, batch_update_blobs_response,
+    compressor,
 };
 use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_store::ac_utils::get_and_decode_digest;
@@ -38,8 +39,9 @@ use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::{Store, StoreLike};
 use tonic::{Request, Response, Status};
-use tracing::{error_span, event, instrument, Level};
+use tracing::{Level, debug, error_span, instrument};
 
+#[derive(Debug)]
 pub struct CasServer {
     stores: HashMap<String, Store>,
 }
@@ -48,20 +50,20 @@ type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> 
 
 impl CasServer {
     pub fn new(
-        config: &HashMap<InstanceName, CasStoreConfig>,
+        configs: &[WithInstanceName<CasStoreConfig>],
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
-        let mut stores = HashMap::with_capacity(config.len());
-        for (instance_name, cas_cfg) in config {
-            let store = store_manager.get_store(&cas_cfg.cas_store).ok_or_else(|| {
-                make_input_err!("'cas_store': '{}' does not exist", cas_cfg.cas_store)
+        let mut stores = HashMap::with_capacity(configs.len());
+        for config in configs {
+            let store = store_manager.get_store(&config.cas_store).ok_or_else(|| {
+                make_input_err!("'cas_store': '{}' does not exist", config.cas_store)
             })?;
-            stores.insert(instance_name.to_string(), store);
+            stores.insert(config.instance_name.to_string(), store);
         }
-        Ok(CasServer { stores })
+        Ok(Self { stores })
     }
 
-    pub fn into_service(self) -> Server<CasServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 
@@ -175,7 +177,7 @@ impl CasServer {
             .into_iter()
             .map(|digest| async move {
                 let digest_copy = DigestInfo::try_from(digest.clone())?;
-                // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
+                // TODO(aaronmondal) There is a security risk here of someone taking all the memory on the instance.
                 let result = store_ref
                     .get_part_unchunked(digest_copy, 0, None)
                     .await
@@ -210,7 +212,7 @@ impl CasServer {
     async fn inner_get_tree(
         &self,
         request: GetTreeRequest,
-    ) -> Result<impl Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static, Error> {
+    ) -> Result<impl Stream<Item = Result<GetTreeResponse, Status>> + Send + use<>, Error> {
         let instance_name = &request.instance_name;
 
         let store = self
@@ -285,11 +287,9 @@ impl CasServer {
         }
         // `next_page_token` will return the `{hash_str}:{size_bytes}` of the next request's first directory digest.
         // It will be an empty string when it reached the end of the directory tree.
-        let next_page_token: String = if let Some(value) = deque.front() {
-            format!("{value}")
-        } else {
-            String::new()
-        };
+        let next_page_token: String = deque
+            .front()
+            .map_or_else(String::new, |value| format!("{value}"));
 
         Ok(futures::stream::once(async {
             Ok(GetTreeResponse {
@@ -305,7 +305,6 @@ impl CasServer {
 impl ContentAddressableStorage for CasServer {
     type GetTreeStream = GetTreeStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -332,7 +331,6 @@ impl ContentAddressableStorage for CasServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -359,7 +357,6 @@ impl ContentAddressableStorage for CasServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -386,7 +383,6 @@ impl ContentAddressableStorage for CasServer {
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,
@@ -412,7 +408,7 @@ impl ContentAddressableStorage for CasServer {
             })
             .map_err(Into::into);
         if resp.is_ok() {
-            event!(Level::DEBUG, return = "Ok(<stream>)");
+            debug!(return = "Ok(<stream>)");
         }
         ctx.emit(|| &resp).await;
         resp

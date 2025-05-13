@@ -24,20 +24,20 @@ use crate::serde_utils::{
 /// in the `CasConfig::stores`'s map key.
 pub type StoreRefName = String;
 
-#[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
 pub enum ConfigDigestHashFunction {
     /// Use the sha256 hash function.
     /// <https://en.wikipedia.org/wiki/SHA-2>
-    sha256,
+    Sha256,
 
     /// Use the blake3 hash function.
     /// <https://en.wikipedia.org/wiki/BLAKE_(hash_function)>
-    blake3,
+    Blake3,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
 pub enum StoreSpec {
     /// Memory store will store all data in a hashmap in memory.
     ///
@@ -52,31 +52,55 @@ pub enum StoreSpec {
     /// }
     /// ```
     ///
-    memory(MemorySpec),
+    Memory(MemorySpec),
 
-    /// S3 store will use Amazon's S3 service as a backend to store
-    /// the files. This configuration can be used to share files
-    /// across multiple instances.
-    ///
-    /// This configuration will never delete files, so you are
+    /// A generic blob store that will store files on the cloud
+    /// provider. This configuration will never delete files, so you are
     /// responsible for purging old files in other ways.
+    /// It supports the following backends:
     ///
-    /// **Example JSON Config:**
-    /// ```json
-    /// "experimental_s3_store": {
-    ///   "region": "eu-north-1",
-    ///   "bucket": "crossplane-bucket-af79aeca9",
-    ///   "key_prefix": "test-prefix-index/",
-    ///   "retry": {
-    ///     "max_retries": 6,
-    ///     "delay": 0.3,
-    ///     "jitter": 0.5
-    ///   },
-    ///   "multipart_max_concurrent_uploads": 10
-    /// }
-    /// ```
+    /// 1. **Amazon S3:**
+    ///    S3 store will use Amazon's S3 service as a backend to store
+    ///    the files. This configuration can be used to share files
+    ///    across multiple instances.
     ///
-    experimental_s3_store(S3Spec),
+    ///   **Example JSON Config:**
+    ///   ```json
+    ///   "experimental_cloud_object_store": {
+    ///     "provider": "aws",
+    ///     "region": "eu-north-1",
+    ///     "bucket": "crossplane-bucket-af79aeca9",
+    ///     "key_prefix": "test-prefix-index/",
+    ///     "retry": {
+    ///       "max_retries": 6,
+    ///       "delay": 0.3,
+    ///       "jitter": 0.5
+    ///     },
+    ///     "multipart_max_concurrent_uploads": 10
+    ///   }
+    ///   ```
+    ///
+    /// 2. **Google Cloud Storage:**
+    ///    GCS store uses Google's GCS service as a backend to store
+    ///    the files. This configuration can be used to share files
+    ///    across multiple instances.
+    ///
+    ///   **Example JSON Config:**
+    ///   ```json
+    ///   "experimental_cloud_object_store": {
+    ///     "provider": "gcs",
+    ///     "bucket": "test-bucket",
+    ///     "key_prefix": "test-prefix-index/",
+    ///     "retry": {
+    ///       "max_retries": 6,
+    ///       "delay": 0.3,
+    ///       "jitter": 0.5
+    ///     },
+    ///     "multipart_max_concurrent_uploads": 10
+    ///   }
+    ///   ```
+    ///
+    ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
 
     /// Verify store is used to apply verifications to an underlying
     /// store implementation. It is strongly encouraged to validate
@@ -100,7 +124,7 @@ pub enum StoreSpec {
     /// }
     /// ```
     ///
-    verify(Box<VerifySpec>),
+    Verify(Box<VerifySpec>),
 
     /// Completeness checking store verifies if the
     /// output files & folders exist in the CAS before forwarding
@@ -128,7 +152,7 @@ pub enum StoreSpec {
     ///   }
     /// ```
     ///
-    completeness_checking(Box<CompletenessCheckingSpec>),
+    CompletenessChecking(Box<CompletenessCheckingSpec>),
 
     /// A compression store that will compress the data inbound and
     /// outbound. There will be a non-trivial cost to compress and
@@ -156,7 +180,7 @@ pub enum StoreSpec {
     ///   }
     /// ```
     ///
-    compression(Box<CompressionSpec>),
+    Compression(Box<CompressionSpec>),
 
     /// A dedup store will take the inputs and run a rolling hash
     /// algorithm on them to slice the input into smaller parts then
@@ -221,7 +245,7 @@ pub enum StoreSpec {
     ///   }
     /// ```
     ///
-    dedup(Box<DedupSpec>),
+    Dedup(Box<DedupSpec>),
 
     /// Existence store will wrap around another store and cache calls
     /// to has so that subsequent `has_with_results` calls will be
@@ -248,7 +272,7 @@ pub enum StoreSpec {
     ///   }
     /// ```
     ///
-    existence_cache(Box<ExistenceCacheSpec>),
+    ExistenceCache(Box<ExistenceCacheSpec>),
 
     /// `FastSlow` store will first try to fetch the data from the `fast`
     /// store and then if it does not exist try the `slow` store.
@@ -291,7 +315,7 @@ pub enum StoreSpec {
     ///   }
     /// ```
     ///
-    fast_slow(Box<FastSlowSpec>),
+    FastSlow(Box<FastSlowSpec>),
 
     /// Shards the data to multiple stores. This is useful for cases
     /// when you want to distribute the load across multiple stores.
@@ -313,14 +337,12 @@ pub enum StoreSpec {
     /// }
     /// ```
     ///
-    shard(ShardSpec),
+    Shard(ShardSpec),
 
     /// Stores the data on the filesystem. This store is designed for
     /// local persistent storage. Restarts of this program should restore
     /// the previous state, meaning anything uploaded will be persistent
-    /// as long as the filesystem integrity holds. This store uses the
-    /// filesystem's `atime` (access time) to hold the last touched time
-    /// of the file(s).
+    /// as long as the filesystem integrity holds.
     ///
     /// **Example JSON Config:**
     /// ```json
@@ -334,7 +356,7 @@ pub enum StoreSpec {
     /// }
     /// ```
     ///
-    filesystem(FilesystemSpec),
+    Filesystem(FilesystemSpec),
 
     /// Store used to reference a store in the root store manager.
     /// This is useful for cases when you want to share a store in different
@@ -349,7 +371,7 @@ pub enum StoreSpec {
     /// }
     /// ```
     ///
-    ref_store(RefSpec),
+    RefStore(RefSpec),
 
     /// Uses the size field of the digest to separate which store to send the
     /// data. This is useful for cases when you'd like to put small objects
@@ -377,7 +399,7 @@ pub enum StoreSpec {
     ///   }
     /// ```
     ///
-    size_partitioning(Box<SizePartitioningSpec>),
+    SizePartitioning(Box<SizePartitioningSpec>),
 
     /// This store will pass-through calls to another GRPC store. This store
     /// is not designed to be used as a sub-store of another store, but it
@@ -400,7 +422,7 @@ pub enum StoreSpec {
     ///   }
     /// ```
     ///
-    grpc(GrpcSpec),
+    Grpc(GrpcSpec),
 
     /// Stores data in any stores compatible with Redis APIs.
     ///
@@ -417,7 +439,7 @@ pub enum StoreSpec {
     /// }
     /// ```
     ///
-    redis_store(RedisSpec),
+    RedisStore(RedisSpec),
 
     /// Noop store is a store that sends streams into the void and all data
     /// retrieval will return 404 (`NotFound`). This can be useful for cases
@@ -429,7 +451,7 @@ pub enum StoreSpec {
     /// "noop": {}
     /// ```
     ///
-    noop(NoopSpec),
+    Noop(NoopSpec),
 }
 
 /// Configuration for an individual shard of the store.
@@ -526,7 +548,7 @@ pub struct FastSlowSpec {
     pub slow: StoreSpec,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 pub struct MemorySpec {
     /// Policy used to evict items out of the store. Failure to set this
@@ -643,7 +665,7 @@ pub struct CompletenessCheckingSpec {
     pub cas_store: StoreSpec,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Eq, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 pub struct Lz4Config {
     /// Size of the blocks to compress.
@@ -666,8 +688,8 @@ pub struct Lz4Config {
     pub max_decode_block_size: u32,
 }
 
-#[allow(non_camel_case_types)]
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
 pub enum CompressionAlgorithm {
     /// LZ4 compression algorithm is extremely fast for compression and
     /// decompression, however does not perform very well in compression
@@ -676,7 +698,7 @@ pub enum CompressionAlgorithm {
     /// compressible.
     ///
     /// see: <https://lz4.github.io/lz4/>
-    lz4(Lz4Config),
+    Lz4(Lz4Config),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -697,7 +719,7 @@ pub struct CompressionSpec {
 /// is touched it updates the timestamp. Inserts and updates will execute the
 /// eviction policy removing any expired entries and/or the oldest entries
 /// until the store size becomes smaller than `max_bytes`.
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 pub struct EvictionPolicy {
     /// Maximum number of bytes before eviction takes place.
@@ -724,9 +746,22 @@ pub struct EvictionPolicy {
     pub max_count: u64,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "provider", rename_all = "snake_case")]
+pub enum ExperimentalCloudObjectSpec {
+    Aws(ExperimentalAwsSpec),
+    Gcs(ExperimentalGcsSpec),
+}
+
+impl Default for ExperimentalCloudObjectSpec {
+    fn default() -> Self {
+        Self::Aws(ExperimentalAwsSpec::default())
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct S3Spec {
+pub struct ExperimentalAwsSpec {
     /// S3 region. Usually us-east-1, us-west-2, af-south-1, exc...
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub region: String,
@@ -735,7 +770,31 @@ pub struct S3Spec {
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub bucket: String,
 
-    /// If you wish to prefix the location on s3. If None, no prefix will be used.
+    /// Common retry and upload configuration
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalGcsSpec {
+    /// Bucket name to use as the backend.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+
+    /// Chunk size for resumable uploads.
+    ///
+    /// Default: 2MB
+    pub resumable_chunk_size: Option<usize>,
+
+    /// Common retry and upload configuration
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+pub struct CommonObjectSpec {
+    /// If you wish to prefix the location in the bucket. If None, no prefix will be used.
     #[serde(default)]
     pub key_prefix: Option<String>,
 
@@ -780,20 +839,20 @@ pub struct S3Spec {
     /// configuration will have http/1.1 and http/2 enabled for connection
     /// schemes. Http/2 should be disabled if environments have poor support
     /// or performance related to http/2. Safe to keep default unless
-    /// underlying network environment or S3 API servers specify otherwise.
+    /// underlying network environment, S3, or GCS API servers specify otherwise.
     ///
     /// Default: false
     #[serde(default)]
     pub disable_http2: bool,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
 pub enum StoreType {
     /// The store is content addressable storage.
-    cas,
+    Cas,
     /// The store is an action cache.
-    ac,
+    Ac,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -853,7 +912,7 @@ pub struct GrpcSpec {
 }
 
 /// The possible error codes that might occur on an upstream request.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorCode {
     Cancelled = 1,
     Unknown = 2,
@@ -978,6 +1037,13 @@ pub struct RedisSpec {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_chunk_uploads_per_update: usize,
 
+    /// The COUNT value passed when scanning keys in Redis.
+    /// This is used to hint the amount of work that should be done per response.
+    ///
+    /// Default: 10000
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub scan_count: u32,
+
     /// Retry configuration to use when a network request fails.
     /// See the `Retry` struct for more information.
     ///
@@ -993,8 +1059,8 @@ pub struct RedisSpec {
     pub retry: Retry,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum RedisMode {
     Cluster,
     Sentinel,
@@ -1002,7 +1068,7 @@ pub enum RedisMode {
     Standard,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 pub struct NoopSpec {}
 
 /// Retry configuration. This configuration is exponential and each iteration

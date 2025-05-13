@@ -16,7 +16,7 @@ const newsPosts = allPosts.filter(post => post.data.tags?.includes('news'));
       .sort((a, b) => new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime())
       .map((post) => (
         <a
-          href={"/resources/blog/" + post.slug}
+          href={"/resources/blog/" + post.id}
           class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-white snap-center"
         >
           {post.data.image && (

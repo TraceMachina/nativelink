@@ -30,6 +30,10 @@ spec:
               value: info
             - name: NATIVELINK_ENDPOINT
               value: nativelink
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector-collector.default.svc:4317
+            - name: OTEL_EXPORTER_OTLP_COMPRESSION
+              value: zstd
           volumeMounts:
             - name: worker-config
               mountPath: /worker.json5

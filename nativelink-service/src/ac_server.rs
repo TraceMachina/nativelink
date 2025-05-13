@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::Into;
+use core::fmt::Debug;
 use std::collections::HashMap;
-use std::convert::Into;
-use std::fmt::Debug;
 
 use bytes::BytesMut;
-use nativelink_config::cas_server::{AcStoreConfig, InstanceName};
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_config::cas_server::{AcStoreConfig, WithInstanceName};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::{
     ActionCache, ActionCacheServer as Server,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult, GetActionResultRequest, UpdateActionResultRequest,
 };
-use nativelink_store::ac_utils::{get_and_decode_digest, ESTIMATED_DIGEST_SIZE};
+use nativelink_store::ac_utils::{ESTIMATED_DIGEST_SIZE, get_and_decode_digest};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
@@ -34,9 +34,9 @@ use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::{Store, StoreLike};
 use prost::Message;
 use tonic::{Request, Response, Status};
-use tracing::{error_span, event, instrument, Level};
+use tracing::{Level, error, error_span, instrument};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AcStoreInfo {
     store: Store,
     read_only: bool,
@@ -47,35 +47,35 @@ pub struct AcServer {
 }
 
 impl Debug for AcServer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AcServer").finish()
     }
 }
 
 impl AcServer {
     pub fn new(
-        config: &HashMap<InstanceName, AcStoreConfig>,
+        configs: &[WithInstanceName<AcStoreConfig>],
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
-        let mut stores = HashMap::with_capacity(config.len());
-        for (instance_name, ac_cfg) in config {
-            let store = store_manager.get_store(&ac_cfg.ac_store).ok_or_else(|| {
-                make_input_err!("'ac_store': '{}' does not exist", ac_cfg.ac_store)
+        let mut stores = HashMap::with_capacity(configs.len());
+        for config in configs {
+            let store = store_manager.get_store(&config.ac_store).ok_or_else(|| {
+                make_input_err!("'ac_store': '{}' does not exist", config.ac_store)
             })?;
             stores.insert(
-                instance_name.to_string(),
+                config.instance_name.to_string(),
                 AcStoreInfo {
                     store,
-                    read_only: ac_cfg.read_only,
+                    read_only: config.read_only,
                 },
             );
         }
-        Ok(AcServer {
+        Ok(Self {
             stores: stores.clone(),
         })
     }
 
-    pub fn into_service(self) -> Server<AcServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 
@@ -89,7 +89,7 @@ impl AcServer {
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
 
-        // TODO(blaise.bruer) We should write a test for these errors.
+        // TODO(aaronmondal) We should write a test for these errors.
         let digest: DigestInfo = request
             .action_digest
             .clone()
@@ -169,7 +169,6 @@ impl AcServer {
 
 #[tonic::async_trait]
 impl ActionCache for AcServer {
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         ret(level = Level::INFO),
         level = Level::ERROR,
@@ -192,14 +191,13 @@ impl ActionCache for AcServer {
             .await;
 
         if resp.is_err() && resp.as_ref().err().unwrap().code != Code::NotFound {
-            event!(Level::ERROR, return = ?resp);
+            error!(return = ?resp);
         }
         let resp = resp.map_err(Into::into);
         ctx.emit(|| &resp).await;
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),

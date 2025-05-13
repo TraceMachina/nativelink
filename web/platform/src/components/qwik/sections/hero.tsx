@@ -1,7 +1,9 @@
 import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
-import { Background, Cloud } from "../../media/icons/icons";
+import { Background, Cloud } from "../../media/icons/icons.tsx";
+import { LinearGradient } from "../components/text.tsx";
+import { BackgroundVideo } from "../components/video.tsx";
 
-const videoLink =
+const _videoLink =
   "https://nativelink-cdn.s3.us-east-1.amazonaws.com/background_file.mp4";
 const _MockUp =
   "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp";
@@ -38,22 +40,12 @@ export const Hero = component$(() => {
     updateText();
   });
 
+  const _videoElementSignal = useSignal<HTMLAudioElement | undefined>();
+
   return (
     <div class="relative flex w-full flex-col items-center justify-evenly gap-5 pb-10 text-white overflow-hidden">
       {/* Background Video */}
-      <video
-        class="absolute top-10 md:top-[-20vh] left-0 z-0 w-full object-cover"
-        autoplay={true}
-        loop={true}
-        muted={true}
-        ref={videoElementSignal}
-        controls={false}
-        src={videoLink}
-        playsInline={true}
-      >
-        <source type="video/mp4" />
-        Your browser does not support the video tag.
-      </video>
+      <BackgroundVideo class="absolute top-10 md:top-[-20vh] left-0 z-0 w-full object-cover" />
 
       <div class="absolute md:hidden flex justify-center items-center overflow-hidden">
         <Background class="w-[200vw]" />
@@ -104,15 +96,18 @@ export const Hero = component$(() => {
           </a>
         </div>
         <div class="w-full flex justify-center items-center">
-          <video
-            src={videoMockUp}
-            class="w-9/11 self-center shadow-[0px_0px_50px_0px_rgba(96,80,230,0.3)]"
-            autoplay={false}
-            loop={true}
-            muted={true}
-            poster={_MockUp}
-            controls={true}
-          />
+          <div class="w-9/11 aspect-video relative">
+            <video
+              src={videoMockUp}
+              class="w-full h-full object-contain self-center shadow-[0px_0px_50px_0px_rgba(96,80,230,0.3)]"
+              autoplay={false}
+              loop={true}
+              muted={true}
+              poster={_MockUp}
+              controls={true}
+              preload="metadata"
+            />
+          </div>
         </div>
         {/* <img alt="Nativelink UI" src={MockUp} class="w-[80vw] md:w-full" /> */}
       </div>

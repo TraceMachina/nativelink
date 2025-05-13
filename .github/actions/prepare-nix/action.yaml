@@ -1,0 +1,56 @@
+---
+name: Prepare Nix
+description: "Common setup for all runs using Nix."
+runs:
+  using: "composite"
+  steps:
+    - name: Free disk space
+      uses: >- # v2.0.0
+        endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
+      with:
+        remove_android: false # Takes too long.
+        remove_dotnet: true
+        remove_haskell: true
+        remove_tool_cache: false # TODO(aaronmondal): Do we really need this?
+        # Note: Not deleting google-cloud-cli because it takes too long.
+        remove_packages: >
+          azure-cli
+          microsoft-edge-stable
+          google-chrome-stable
+          firefox
+          postgresql*
+          temurin-*
+          *llvm*
+          mysql*
+          dotnet-sdk-*
+        remove_packages_one_command: true
+        remove_folders: >
+          /usr/share/swift
+          /usr/share/miniconda
+          /usr/share/az*
+          /usr/share/glade*
+          /usr/local/lib/node_modules
+          /usr/local/share/chromium
+          /usr/local/share/powershell
+
+    - name: Delete platform specific items to free up disk space
+      shell: bash
+      run: |
+        if [ "$(uname)" = "Darwin" ]; then
+          echo "Deleting Applications"
+          sudo rm -rf ~/Applications/*
+          echo "Deleting all iOS simulators"
+          xcrun simctl delete all
+          echo "Deleting iOS Simulator caches"
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/*
+        else
+          echo "Nothing to do here."
+        fi
+
+    - name: Install Nix
+      uses: >- # v16
+        DeterminateSystems/nix-installer-action@e50d5f73bfe71c2dd0aa4218de8f4afa59f8f81d
+
+    - name: Cache Nix derivations
+      uses: >- # v9
+        DeterminateSystems/magic-nix-cache-action@6221693898146dc97e38ad0e013488a16477a4c4

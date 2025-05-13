@@ -2,74 +2,70 @@
 resolver = "2"
 
 [package]
+edition = "2024"
 name = "nativelink"
-version = "0.5.4"
-edition = "2021"
-rust-version = "1.84.0"
+rust-version = "1.86.0"
+version = "0.6.0"
 
 [profile.release]
 lto = true
-opt-level = 3
-
-[profile.dev]
-lto = false
-opt-level = 0
-strip = false
-debug = true
 
 # Prefer this profile in CI, for instance via `cargo test --all --profile=smol`.
 # It reduces the size of the `target` directory from ~12GB to ~1GB.
 [profile.smol]
+debug = false
 inherits = "dev"
 opt-level = "z"
 strip = true
-debug = false
 
 [[bin]]
 name = "nativelink"
 
 [features]
-enable_tokio_console = [
-  "nativelink-util/enable_tokio_console"
-]
-nix = [
-  "nativelink-worker/nix"
-]
+nix = ["nativelink-worker/nix"]
 
 [dependencies]
-nativelink-error = { path = "nativelink-error" }
 nativelink-config = { path = "nativelink-config" }
+nativelink-error = { path = "nativelink-error" }
+nativelink-metric = { path = "nativelink-metric" }
+nativelink-metric-collector = { path = "nativelink-metric-collector" }
 nativelink-scheduler = { path = "nativelink-scheduler" }
 nativelink-service = { path = "nativelink-service" }
 nativelink-store = { path = "nativelink-store" }
 nativelink-util = { path = "nativelink-util" }
 nativelink-worker = { path = "nativelink-worker" }
-nativelink-metric = { path = "nativelink-metric" }
-nativelink-metric-collector = { path = "nativelink-metric-collector" }
+
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
-axum = { version = "0.7.9", default-features = false }
-clap = { version = "4.5.26", features = ["derive"] }
+axum = { version = "0.8.3", default-features = false }
+clap = { version = "4.5.35", features = ["derive"] }
 futures = { version = "0.3.31", default-features = false }
-hyper = "1.5.2"
-hyper-util = "0.1.10"
-mimalloc = "0.1.43"
+hyper = "1.6.0"
+hyper-util = "0.1.11"
+mimalloc = "0.1.44"
+opentelemetry = { version = "0.29.1", default-features = false }
+opentelemetry_sdk = { version = "0.29.0", default-features = false }
 parking_lot = "0.12.3"
-rustls-pemfile = { version = "2.2.0", default-features = false }
+rustls-pemfile = { version = "2.2.0", features = [
+  "std",
+], default-features = false }
 scopeguard = { version = "1.2.0", default-features = false }
-serde_json5 = "0.1.0"
-tokio = { version = "1.43.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
-tokio-rustls = { version = "0.26.1", default-features = false, features = [
+serde_json5 = "0.2.1"
+tokio = { version = "1.44.1", features = [
+  "fs",
+  "io-util",
+  "rt-multi-thread",
+  "signal",
+], default-features = false }
+tokio-rustls = { version = "0.26.2", default-features = false, features = [
   "ring",
 ] }
-tonic = { version = "0.12.3", features = ["transport", "tls"], default-features = false }
+tonic = { version = "0.13.0", features = [
+  "tls-ring",
+  "transport",
+], default-features = false }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
-opentelemetry_sdk = { version = "0.27.1", default-features = false }
 tracing-subscriber = { version = "0.3.19", default-features = false }
-opentelemetry = { version = "0.27.1", default-features = false }
-prometheus = { version = "0.13.4", default-features = false }
-opentelemetry-prometheus = "0.27.0"
-serde_json = "1.0.135"
 
 [workspace.cargo-features-manager.keep]
 async-lock = ["std"]
@@ -80,8 +76,104 @@ blake3 = ["std"]
 pretty_assertions = ["std"]
 redis-test = ["aio"]
 serial_test = ["async"]
-tokio = ["fs", "rt-multi-thread", "signal", "io-util"]
+tokio = ["fs", "io-util", "rt-multi-thread", "signal"]
 tokio-stream = ["fs"]
+tonic = ["tls", "transport"]
 tonic-build = ["prost"]
-tonic = ["transport", "tls"]
-uuid = ["v4", "serde"]
+uuid = ["serde", "v4"]
+
+[workspace.lints.rust]
+ambiguous-glob-reexports = "deny"
+clashing-extern-declarations = "deny"
+const-item-mutation = "deny"
+dangling-pointers-from-temporaries = "deny"
+deref-nullptr = "deny"
+drop-bounds = "deny"
+future-incompatible = "deny"
+hidden-glob-reexports = "deny"
+improper-ctypes = "deny"
+improper-ctypes-definitions = "deny"
+invalid-from-utf8 = "deny"
+invalid-macro-export-arguments = "deny"
+invalid-nan-comparisons = "deny"
+invalid-reference-casting = "deny"
+invalid-value = "deny"
+opaque-hidden-inferred-bound = "deny"
+overlapping-range-endpoints = "deny"
+suspicious-double-ref-op = "deny"
+unconditional-recursion = "deny"
+unexpected-cfgs = "deny"
+unnameable-test-items = "deny"
+unsafe-op-in-unsafe-fn = "deny"
+unstable-syntax-pre-expansion = "deny"
+
+keyword-idents = "warn"
+let-underscore = "warn"
+macro-use-extern-crate = "warn"
+meta-variable-misuse = "warn"
+missing-abi = "warn"
+missing-copy-implementations = "warn"
+missing-debug-implementations = "warn"
+noop-method-call = "warn"
+single-use-lifetimes = "warn"
+trivial-casts = "warn"
+trivial-numeric-casts = "warn"
+unreachable-pub = "warn"
+unused = { level = "warn", priority = -1 }
+unused-import-braces = "warn"
+unused-lifetimes = "warn"
+unused-qualifications = "warn"
+variant-size-differences = "warn"
+
+[workspace.lints.clippy]
+
+# Global configuration
+all = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Restriction Denies with default priority
+alloc-instead-of-core = "deny"
+as-underscore = "deny"
+std-instead-of-core = "deny"
+
+# Restriction Warnings with default priority
+dbg-macro = "warn"
+decimal-literal-representation = "warn"
+get-unwrap = "allow"                    # TODO(jhpratt) Flip
+missing-docs-in-private-items = "allow" # TODO(jhpratt) Flip
+print-stdout = "warn"
+todo = "warn"
+unimplemented = "warn"
+unwrap-in-result = "allow"              # TODO(jhpratt) Flip
+unwrap-used = "allow"                   # TODO(jhpratt) Flip
+use-debug = "warn"
+
+# Nursery denies we want once they get out of Nursery
+missing-const-for-fn = "deny"
+
+# Nursery overrides that are either buggy or we want to fix
+fallible-impl-from = { level = "allow", priority = 1 }          # TODO(jhpratt) Flip
+iter-with-drain = { level = "allow", priority = 1 }             # TODO(jhpratt) Flip
+option-if-let-else = { level = "allow", priority = 1 }          # rust-lang/rust-clippy#8829
+redundant-pub-crate = { level = "allow", priority = 1 }         # rust-lang/rust-clippy#5369
+significant-drop-tightening = { level = "allow", priority = 1 } # TODO(jhpratt) Flip
+too-long-first-doc-paragraph = { level = "allow" }              # TODO(jhpratt) Flip
+uninhabited-references = { level = "allow", priority = 1 }      # rust-lang/rust-clippy#11984
+
+# TODO(aaronmondal): Remove these to get to pedantic.
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_possible_wrap = { level = "allow", priority = 1 }
+cast_precision_loss = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
+large_futures = { level = "allow", priority = 1 }
+missing_errors_doc = { level = "allow", priority = 1 }
+missing_fields_in_debug = { level = "allow", priority = 1 }
+missing_panics_doc = { level = "allow", priority = 1 }
+must_use_candidate = { level = "allow", priority = 1 }
+ref_option = { level = "allow", priority = 1 }
+similar_names = { level = "allow", priority = 1 }
+too_many_lines = { level = "allow", priority = 1 }
+unused_async = { level = "allow", priority = 1 }
+unused_self = { level = "allow", priority = 1 }
+used_underscore_binding = { level = "allow", priority = 1 }

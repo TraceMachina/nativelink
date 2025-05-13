@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp;
-use std::pin::Pin;
+use core::cmp;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -21,17 +21,17 @@ use bincode::config::{FixintEncoding, WithOtherIntEncoding};
 use bincode::{DefaultOptions, Options};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use nativelink_config::stores::DedupSpec;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
-use tracing::{event, Level};
+use tracing::warn;
 
 use crate::cas_utils::is_zero_digest;
 
@@ -42,7 +42,7 @@ const DEFAULT_NORM_SIZE: u64 = 256 * 1024;
 const DEFAULT_MAX_SIZE: u64 = 512 * 1024;
 const DEFAULT_MAX_CONCURRENT_FETCH_PER_GET: usize = 10;
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default, Clone)]
 pub struct DedupIndex {
     pub entries: Vec<DigestInfo>,
 }
@@ -57,6 +57,20 @@ pub struct DedupStore {
     #[metric(help = "Maximum number of concurrent fetches per get")]
     max_concurrent_fetch_per_get: usize,
     bincode_options: WithOtherIntEncoding<DefaultOptions, FixintEncoding>,
+}
+
+impl core::fmt::Debug for DedupStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DedupStore")
+            .field("index_store", &self.index_store)
+            .field("content_store", &self.content_store)
+            .field("fast_cdc_decoder", &self.fast_cdc_decoder)
+            .field(
+                "max_concurrent_fetch_per_get",
+                &self.max_concurrent_fetch_per_get,
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl DedupStore {
@@ -120,12 +134,7 @@ impl DedupStore {
 
             match self.bincode_options.deserialize::<DedupIndex>(&data) {
                 Err(err) => {
-                    event!(
-                        Level::WARN,
-                        ?key,
-                        ?err,
-                        "Failed to deserialize index in dedup store",
-                    );
+                    warn!(?key, ?err, "Failed to deserialize index in dedup store",);
                     // We return the equivalent of NotFound here so the client is happy.
                     return Ok(None);
                 }
@@ -355,11 +364,11 @@ impl StoreDriver for DedupStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

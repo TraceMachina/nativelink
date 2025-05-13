@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::ops::Bound;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use std::borrow::Cow;
-use std::ops::Bound;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueQualifier, OperationId,
@@ -34,11 +34,11 @@ use nativelink_util::store_trait::{
 };
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::Notify;
-use tracing::{event, Level};
+use tracing::{error, warn};
 
 use crate::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
-    SortedAwaitedActionState, CLIENT_KEEPALIVE_DURATION,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
+    SortedAwaitedAction, SortedAwaitedActionState,
 };
 
 type ClientOperationId = OperationId;
@@ -61,13 +61,32 @@ pub struct OperationSubscriber<S: SchedulerStore, I: InstantWrapper, NowFn: Fn()
     last_known_keepalive_ts: AtomicU64,
     now_fn: NowFn,
 }
+
+impl<S: SchedulerStore, I: InstantWrapper, NowFn: Fn() -> I + core::fmt::Debug> core::fmt::Debug
+    for OperationSubscriber<S, I, NowFn>
+where
+    OperationSubscriberState<
+        <S::SubscriptionManager as SchedulerSubscriptionManager>::Subscription,
+    >: core::fmt::Debug,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OperationSubscriber")
+            .field("maybe_client_operation_id", &self.maybe_client_operation_id)
+            .field("subscription_key", &self.subscription_key)
+            .field("weak_store", &self.weak_store)
+            .field("state", &self.state)
+            .field("last_known_keepalive_ts", &self.last_known_keepalive_ts)
+            .field("now_fn", &self.now_fn)
+            .finish()
+    }
+}
 impl<S, I, NowFn> OperationSubscriber<S, I, NowFn>
 where
     S: SchedulerStore,
     I: InstantWrapper,
     NowFn: Fn() -> I,
 {
-    fn new(
+    const fn new(
         maybe_client_operation_id: Option<ClientOperationId>,
         subscription_key: OperationIdToAwaitedAction<'static>,
         weak_store: Weak<S>,
@@ -111,6 +130,7 @@ where
         Ok(awaited_action)
     }
 
+    #[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
     async fn get_awaited_action(&self) -> Result<AwaitedAction, Error> {
         let store = self
             .weak_store
@@ -268,7 +288,7 @@ impl SchedulerStoreDecodeTo for ClientIdToOperationId<'_> {
     }
 }
 
-// TODO(allada) We only need operation_id here, it would be nice if we had a way
+// TODO(aaronmondal) We only need operation_id here, it would be nice if we had a way
 // to tell the decoder we only care about specific fields.
 struct SearchUniqueQualifierToAwaitedAction<'a>(&'a ActionUniqueQualifier);
 impl SchedulerIndexProvider for SearchUniqueQualifierToAwaitedAction<'_> {
@@ -303,7 +323,7 @@ impl SchedulerStoreDecodeTo for SearchStateToAwaitedAction {
     }
 }
 
-fn get_state_prefix(state: SortedAwaitedActionState) -> &'static str {
+const fn get_state_prefix(state: SortedAwaitedActionState) -> &'static str {
     match state {
         SortedAwaitedActionState::CacheCheck => "cache_check",
         SortedAwaitedActionState::Queued => "queued",
@@ -399,7 +419,7 @@ async fn inner_update_awaited_action(
     Ok(())
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct StoreAwaitedActionDb<S, F, I, NowFn>
 where
     S: SchedulerStore,
@@ -442,8 +462,7 @@ where
                         .await
                         .err_tip(|| "In RedisAwaitedActionDb::new");
                     if let Err(err) = changed_res {
-                        event!(
-                            Level::ERROR,
+                        error!(
                             "Error waiting for pull task change subscriber in RedisAwaitedActionDb::new  - {err:?}"
                         );
                         // Sleep for a second to avoid a busy loop, then trigger the notify
@@ -463,11 +482,12 @@ where
         })
     }
 
+    #[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
     async fn try_subscribe(
         &self,
         client_operation_id: &ClientOperationId,
         unique_qualifier: &ActionUniqueQualifier,
-        // TODO(allada) To simplify the scheduler 2024 refactor, we
+        // TODO(aaronmondal) To simplify the scheduler 2024 refactor, we
         // removed the ability to upgrade priorities of actions.
         // we should add priority upgrades back in.
         _priority: i32,
@@ -488,12 +508,12 @@ where
             .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
         match maybe_awaited_action {
             Some(mut awaited_action) => {
-                // TODO(allada) We don't support joining completed jobs because we
+                // TODO(aaronmondal) We don't support joining completed jobs because we
                 // need to also check that all the data is still in the cache.
                 if awaited_action.state().stage.is_finished() {
                     return Ok(None);
                 }
-                // TODO(allada) We only care about the operation_id here, we should
+                // TODO(aaronmondal) We only care about the operation_id here, we should
                 // have a way to tell the decoder we only care about specific fields.
                 let operation_id = awaited_action.operation_id().clone();
 
@@ -502,8 +522,7 @@ where
                     .await
                     .err_tip(|| "In OperationSubscriber::changed");
                 if let Err(err) = update_res {
-                    event!(
-                        Level::WARN,
+                    warn!(
                         "Error updating client keep alive in RedisAwaitedActionDb::try_subscribe - {err:?} - This is not a critical error, but we did decide to create a new action instead of joining an existing one."
                     );
                     return Ok(None);
@@ -520,6 +539,7 @@ where
         }
     }
 
+    #[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
     async fn inner_get_awaited_action_by_id(
         &self,
         client_operation_id: &ClientOperationId,
@@ -606,9 +626,9 @@ where
             .update_data(UpdateOperationIdToAwaitedAction(awaited_action))
             .await
             .err_tip(|| "In RedisAwaitedActionDb::add_action")?
-            .err_tip(|| {
-                "Version match failed for new action insert in RedisAwaitedActionDb::add_action"
-            })?;
+            .err_tip(
+                || "Version match failed for new action insert in RedisAwaitedActionDb::add_action",
+            )?;
 
         self.store
             .update_data(UpdateClientIdToOperationId {
@@ -645,7 +665,7 @@ where
                 "Start bound is not supported in RedisAwaitedActionDb::get_range_of_actions",
             ));
         }
-        // TODO(allada) This API is not difficult to implement, but there is no code path
+        // TODO(aaronmondal) This API is not difficult to implement, but there is no code path
         // that uses it, so no reason to implement it yet.
         if !desc {
             return Err(make_err!(

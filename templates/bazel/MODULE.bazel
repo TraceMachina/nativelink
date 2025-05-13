@@ -1,0 +1,16 @@
+module(
+    name = "nativelink-bazel-template",
+    version = "0",
+    compatibility_level = 0,
+)
+
+# Keep the commit in sync with the NativeLinke input from `flake.nix`.
+bazel_dep(name = "local-remote-execution", version = "0")
+archive_override(
+    module_name = "local-remote-execution",
+    integrity = "sha256-/hcZonUZHrbu8ihWLIQM1PoQqrRatzim7ec8phccwTY=",
+    strip_prefix = "nativelink-f9ff630e09a3c22d6a3abea68d1bacc775eac6bb/local-remote-execution",
+    urls = ["https://github.com/TraceMachina/nativelink/archive/f9ff630e09a3c22d6a3abea68d1bacc775eac6bb.zip"],
+)
+
+bazel_dep(name = "rules_cc", version = "0.1.1")

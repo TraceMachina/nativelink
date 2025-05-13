@@ -3,7 +3,7 @@ apiVersion: notification.toolkit.fluxcd.io/v1beta3
 kind: Alert
 metadata:
   name: nativelink-alert
-  namespace: default
+  namespace: ci
 spec:
   eventSeverity: info
   eventSources:

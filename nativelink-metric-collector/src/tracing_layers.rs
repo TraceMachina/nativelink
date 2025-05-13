@@ -12,19 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
+use core::marker::PhantomData;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fmt::Debug;
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tracing::span::Attributes;
 use tracing::subscriber::Interest;
 use tracing::{Event, Id, Metadata, Subscriber};
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::SpanRef;
-use tracing_subscriber::Layer;
 
 use crate::metrics_collection::{
     CollectedMetricChildren, CollectedMetricPrimitive, CollectedMetrics, RootMetricCollectedMetrics,
@@ -34,6 +34,7 @@ use crate::metrics_visitors::{MetricDataVisitor, SpanFields};
 /// The layer that is given to `tracing` to collect metrics.
 /// The output of the metrics will be populated in the `root_collected_metrics`
 /// field.
+#[derive(Debug)]
 pub struct MetricsCollectorLayer<S> {
     spans: Mutex<HashMap<Id, SpanFields>>,
     root_collected_metrics: Arc<Mutex<RootMetricCollectedMetrics>>,
@@ -46,7 +47,7 @@ impl<S> MetricsCollectorLayer<S> {
     pub fn new() -> (Self, Arc<Mutex<RootMetricCollectedMetrics>>) {
         let root_collected_metrics = Arc::new(Mutex::new(RootMetricCollectedMetrics::default()));
         (
-            MetricsCollectorLayer {
+            Self {
                 spans: Mutex::new(HashMap::new()),
                 root_collected_metrics: root_collected_metrics.clone(),
                 _subscriber: PhantomData,
