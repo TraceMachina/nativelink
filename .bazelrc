@@ -127,7 +127,6 @@ build --@rules_rust//:clippy_flag=-Wclippy::use_debug
 build --@rules_rust//:clippy_flag=-Dclippy::missing_const_for_fn
 
 # Nursery overrides that are either buggy or we want to fix
-build --@rules_rust//:clippy_flag=-Aclippy::fallible_impl_from # TODO(jhpratt) Flip
 build --@rules_rust//:clippy_flag=-Aclippy::iter_with_drain # TODO(jhpratt): Flip
 build --@rules_rust//:clippy_flag=-Aclippy::option_if_let_else # rust-lang/rust-clippy#8829
 build --@rules_rust//:clippy_flag=-Aclippy::redundant_pub_crate # rust-lang/rust-clippy#5369
