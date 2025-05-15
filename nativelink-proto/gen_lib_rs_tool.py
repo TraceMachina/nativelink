@@ -48,6 +48,7 @@ _HEADER = """\
     clippy::doc_overindented_list_items,
     clippy::large_enum_variant,
     clippy::missing_const_for_fn,
+    clippy::similar_names,
     clippy::std_instead_of_core,
     rustdoc::invalid_html_tags
 )]

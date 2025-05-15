@@ -92,13 +92,12 @@ pub struct AwaitedAction {
 
 impl AwaitedAction {
     pub fn new(operation_id: OperationId, action_info: Arc<ActionInfo>, now: SystemTime) -> Self {
-        let stage = ActionStage::Queued;
         let sort_key = AwaitedActionSortKey::new_with_unique_key(
             action_info.priority,
             &action_info.insert_timestamp,
         );
-        let state = Arc::new(ActionState {
-            stage,
+        let action_state = Arc::new(ActionState {
+            stage: ActionStage::Queued,
             // Note: We don't use the real client_operation_id here because
             // the only place AwaitedAction::new should ever be called is
             // when the action is first created and this struct will be stored
@@ -133,7 +132,7 @@ impl AwaitedAction {
             last_client_keepalive_timestamp: now,
             maybe_origin_metadata,
             worker_id: None,
-            state,
+            state: action_state,
         }
     }
 
