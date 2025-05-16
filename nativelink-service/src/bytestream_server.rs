@@ -51,7 +51,7 @@ use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
 use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{Instrument, Level, debug, error, error_span, info, instrument};
+use tracing::{Instrument, Level, debug, error, error_span, info, instrument, trace};
 
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -341,8 +341,8 @@ impl ByteStreamServer {
                                         return Some((Err(err.into()), None));
                                     }
                                     response.data = bytes;
-                                    debug!(response = ?response);
-                                    info!(response.data = format!("<redacted len({})>", response.data.len()));
+                                    trace!(response = ?response);
+                                    debug!(response.data = format!("<redacted len({})>", response.data.len()));
                                     break;
                                 }
                                 Err(mut e) => {
@@ -397,7 +397,7 @@ impl ByteStreamServer {
     // that is extracted from the first stream message. If we only implemented it below
     // we would not have the hash available to us.
     #[instrument(
-        ret(level = Level::INFO),
+        ret(level = Level::DEBUG),
         level = Level::ERROR,
         skip(self, store),
         fields(stream.first_msg = "<redacted>")

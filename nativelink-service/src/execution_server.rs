@@ -215,7 +215,7 @@ impl ExecutionServer {
                 let mut action_listener = maybe_action_listener?;
                 match action_listener.changed().await {
                     Ok((action_update, _maybe_origin_metadata)) => {
-                        info!(?action_update, "Execute Resp Stream");
+                        debug!(?action_update, "Execute Resp Stream");
                         // If the action is finished we won't be sending any more updates.
                         let maybe_action_listener = if action_update.stage.is_finished() {
                             None

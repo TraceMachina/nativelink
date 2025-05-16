@@ -77,7 +77,7 @@ use tokio::process;
 use tokio::sync::{oneshot, watch};
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -525,7 +525,7 @@ async fn do_cleanup(
     operation_id: &OperationId,
     action_directory: &str,
 ) -> Result<(), Error> {
-    info!("Worker cleaning up");
+    debug!("Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
     let remove_dir_result = fs::remove_dir_all(action_directory)
         .await
@@ -724,7 +724,7 @@ impl RunningActionImpl {
                 ))
                 .await?;
         }
-        info!(?command, "Worker received command",);
+        debug!(?command, "Worker received command",);
         {
             let mut state = self.state.lock();
             state.command_proto = Some(command);
@@ -1003,7 +1003,7 @@ impl RunningActionImpl {
             DirectorySymlink(SymlinkInfo),
         }
 
-        info!("Worker uploading results",);
+        debug!("Worker uploading results",);
         let (mut command_proto, execution_result, mut execution_metadata) = {
             let mut state = self.state.lock();
             state.execution_metadata.output_upload_start_timestamp =
@@ -1786,7 +1786,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 let operation_id = start_execute
                     .operation_id.as_str().into();
                 let action_info = self.create_action_info(start_execute, queued_timestamp).await?;
-                info!(
+                debug!(
                     ?action_info,
                     "Worker received action",
                 );
