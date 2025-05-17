@@ -170,7 +170,7 @@ impl AcServer {
 #[tonic::async_trait]
 impl ActionCache for AcServer {
     #[instrument(
-        ret(level = Level::INFO),
+        ret(level = Level::DEBUG),
         level = Level::ERROR,
         skip_all,
         fields(request = ?grpc_request.get_ref())

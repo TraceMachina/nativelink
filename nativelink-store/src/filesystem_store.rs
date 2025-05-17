@@ -40,7 +40,7 @@ use nativelink_util::store_trait::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -126,7 +126,7 @@ impl Drop for EncodedFilePath {
             .active_drop_spawns
             .fetch_add(1, Ordering::Relaxed);
         background_spawn!("filesystem_delete_file", async move {
-            info!(?file_path, "File deleted",);
+            debug!(?file_path, "File deleted",);
             let result = fs::remove_file(&file_path)
                 .await
                 .err_tip(|| format!("Failed to remove file {file_path:?}"));
@@ -360,7 +360,7 @@ impl LenEntry for FileEntryImpl {
                     "Failed to rename file",
                 );
             } else {
-                info!(
+                debug!(
                     key = ?encoded_file_path.key,
                     ?from_path,
                     ?to_path,
@@ -504,7 +504,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
             if let Err(err) = rename_fn(&from_file, &to_file) {
                 warn!(?from_file, ?to_file, ?err, "Failed to rename file",);
             } else {
-                info!(?from_file, ?to_file, "Renamed file",);
+                debug!(?from_file, ?to_file, "Renamed file",);
             }
         }
         Ok(())

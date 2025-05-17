@@ -44,7 +44,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
-use tracing::{Level, error, info, info_span, instrument, warn};
+use tracing::{Level, debug, error, info, info_span, instrument, warn};
 
 use crate::running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
@@ -249,7 +249,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         r
                                     })
                                     .and_then(|action| {
-                                        info!(
+                                        debug!(
                                             operation_id = ?action.get_operation_id(),
                                             "Received request to run action"
                                         );
