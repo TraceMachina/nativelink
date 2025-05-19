@@ -48,7 +48,7 @@ pub struct MetricFieldData<'a> {
     pub group: Cow<'a, str>,
 }
 
-/// The final primtive data that is being published with the kind.
+/// The final primitive data that is being published with the kind.
 #[derive(Debug)]
 pub enum MetricPublishKnownKindData {
     Counter(u64),

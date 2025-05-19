@@ -42,7 +42,7 @@ pub(crate) fn make_base_action_info(
         priority: 0,
         load_timestamp: UNIX_EPOCH,
         insert_timestamp,
-        unique_qualifier: ActionUniqueQualifier::Cachable(ActionUniqueKey {
+        unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,

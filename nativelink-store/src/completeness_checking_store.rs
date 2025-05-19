@@ -90,7 +90,7 @@ async fn check_output_directories<'a>(
                     digest_infos.push(maybe_digest?.into());
                     Result::<_, Error>::Ok(())
                 })
-                .err_tip(|| "Expected digest to exist and be convertable")?;
+                .err_tip(|| "Expected digest to exist and be convertible")?;
             handle_digest_infos_fn(digest_infos);
             Ok(())
         });

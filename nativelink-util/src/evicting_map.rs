@@ -124,7 +124,7 @@ impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Syn
             self.evicted_items.inc();
             self.evicted_bytes.add(eviction_item.data.len());
         }
-        // Note: See comment in `unref()` requring global lock of insert/remove.
+        // Note: See comment in `unref()` requiring global lock of insert/remove.
         eviction_item.data.unref().await;
     }
 

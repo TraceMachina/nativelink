@@ -725,10 +725,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // 1. Here will hold a write lock on any file operations of this FileEntry.
         // 2. Then insert the entry into the evicting map. This may trigger an eviction of other
         //    entries.
-        // 3. Eviction triggers `unref()`, which grabs a write lock on the evicted FileEntrys
+        // 3. Eviction triggers `unref()`, which grabs a write lock on the evicted FileEntry
         //    during the rename.
         // 4. It should be impossible for items to be added while eviction is happening, so there
-        //    should not be a deadlock possability. However, it is possible for the new FileEntry
+        //    should not be a deadlock possibility. However, it is possible for the new FileEntry
         //    to be evicted before the file is moved into place. Eviction of the newly inserted
         //    item is not possible within the `insert()` call because the write lock inside the
         //    eviction map. If an eviction of new item happens after `insert()` but before
@@ -736,7 +736,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         //    will be blocked on us because we currently have the lock.
         // 5. Move the file into place. Since we hold a write lock still anyone that gets our new
         //    FileEntry (which has not yet been placed on disk) will not be able to read the file's
-        //    contents until we relese the lock.
+        //    contents until we release the lock.
         let evicting_map = self.evicting_map.clone();
         let rename_fn = self.rename_fn;
 

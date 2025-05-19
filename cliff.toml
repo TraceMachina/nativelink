@@ -101,8 +101,8 @@ commit_parsers = [
   { message = "documentation", group = "<!-- 3 -->📚 Documentation" },
 
   # Filter out all updates, but show them last.
-  { message = "Bumb+", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
   { message = "Bump", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "Bump+", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
   { message = "Update", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
   { message = "to [0-9.]+", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
 

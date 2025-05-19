@@ -2461,7 +2461,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn co
     .await?;
 
     {
-        // Test to ensure that the task timeout is choosen if it is less than the max timeout.
+        // Test to ensure that the task timeout is chosen if it is less than the max timeout.
         static SENT_TIMEOUT: AtomicI64 = AtomicI64::new(-1);
         const MAX_TIMEOUT_DURATION: Duration = Duration::from_secs(100);
         const TASK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -3433,7 +3433,7 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            // If action_timeout is the passed duration then return immeidately,
+            // If action_timeout is the passed duration then return immediately,
             // which will cause the action to be killed and pass the test,
             // otherwise return pending and fail the test.
             sleep_fn: |duration| {
