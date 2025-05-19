@@ -102,7 +102,7 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
+async fn verify_size_true_succeeds_on_update() -> Result<(), Error> {
     const VALUE1: &str = "123";
 
     let inner_store = MemoryStore::new(&MemorySpec::default());
@@ -127,7 +127,7 @@ async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), Error> {
+async fn verify_size_true_succeeds_on_multi_chunk_stream_update() -> Result<(), Error> {
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
         &VerifySpec {
@@ -142,7 +142,7 @@ async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), E
 
     let digest = DigestInfo::try_new(VALID_HASH1, 6).unwrap();
     let future = spawn!(
-        "verify_size_true_suceeds_on_multi_chunk_stream_update",
+        "verify_size_true_succeeds_on_multi_chunk_stream_update",
         async move {
             Pin::new(&store)
                 .update(digest, rx, UploadSizeInfo::ExactSize(6))
@@ -163,7 +163,7 @@ async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), E
 }
 
 #[nativelink_test]
-async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
+async fn verify_sha256_hash_true_succeeds_on_update() -> Result<(), Error> {
     /// This value is sha256("123").
     const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
     const VALUE: &str = "123";
@@ -224,7 +224,7 @@ async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
+async fn verify_blake3_hash_true_succeeds_on_update() -> Result<(), Error> {
     /// This value is blake3("123").
     const HASH: &str = "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
     const VALUE: &str = "123";
@@ -344,7 +344,7 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
 }
 
 #[nativelink_test]
-async fn verify_size_and_hash_suceeds_on_small_data() -> Result<(), Error> {
+async fn verify_size_and_hash_succeeds_on_small_data() -> Result<(), Error> {
     /// This value is sha256("123").
     const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
     const VALUE: &str = "123";

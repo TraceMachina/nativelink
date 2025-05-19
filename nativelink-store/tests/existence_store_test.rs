@@ -68,7 +68,7 @@ async fn simple_exist_cache_test() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn update_flags_existance_cache_test() -> Result<(), Error> {
+async fn update_flags_existence_cache_test() -> Result<(), Error> {
     const VALUE: &str = "123";
     let spec = ExistenceCacheSpec {
         backend: StoreSpec::Noop(NoopSpec::default()),

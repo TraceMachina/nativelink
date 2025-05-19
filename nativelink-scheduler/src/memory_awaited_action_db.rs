@@ -216,7 +216,7 @@ where
     }
 }
 
-/// A struct that is used to keep the devloper from trying to
+/// A struct that is used to keep the developer from trying to
 /// return early from a function.
 struct NoEarlyReturn;
 
@@ -413,7 +413,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     let awaited_action = tx.borrow().clone();
                     // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
                     match &awaited_action.action_info().unique_qualifier {
-                        ActionUniqueQualifier::Cachable(action_key) => {
+                        ActionUniqueQualifier::Cacheable(action_key) => {
                             let maybe_awaited_action = self
                                 .action_info_hash_key_to_awaited_action
                                 .remove(action_key);
@@ -428,7 +428,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                                 );
                             }
                         }
-                        ActionUniqueQualifier::Uncachable(_action_key) => {
+                        ActionUniqueQualifier::Uncacheable(_action_key) => {
                             // This Operation should not be in the hash_key map.
                         }
                     }
@@ -546,7 +546,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             return;
         }
         match &new_awaited_action.action_info().unique_qualifier {
-            ActionUniqueQualifier::Cachable(action_key) => {
+            ActionUniqueQualifier::Cacheable(action_key) => {
                 let maybe_awaited_action =
                     action_info_hash_key_to_awaited_action.remove(action_key);
                 match maybe_awaited_action {
@@ -569,8 +569,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     }
                 }
             }
-            ActionUniqueQualifier::Uncachable(_action_key) => {
-                // If we are not cachable, the action should not be in the
+            ActionUniqueQualifier::Uncacheable(_action_key) => {
+                // If we are not cacheable, the action should not be in the
                 // hash_key map, so we don't need to process anything in
                 // action_info_hash_key_to_awaited_action.
             }
@@ -690,8 +690,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         }
 
         let maybe_unique_key = match &action_info.unique_qualifier {
-            ActionUniqueQualifier::Cachable(unique_key) => Some(unique_key.clone()),
-            ActionUniqueQualifier::Uncachable(_unique_key) => None,
+            ActionUniqueQualifier::Cacheable(unique_key) => Some(unique_key.clone()),
+            ActionUniqueQualifier::Uncacheable(_unique_key) => None,
         };
         let operation_id = OperationId::default();
         let awaited_action =
@@ -716,7 +716,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             .insert(client_operation_id.clone(), client_awaited_action)
             .await;
 
-        // Note: We only put items in the map that are cachable.
+        // Note: We only put items in the map that are cacheable.
         if let Some(unique_key) = maybe_unique_key {
             let old_value = self
                 .action_info_hash_key_to_awaited_action
@@ -758,8 +758,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         _priority: i32,
     ) -> Result<Option<MemoryAwaitedActionSubscriber<I, NowFn>>, Error> {
         let unique_key = match unique_qualifier {
-            ActionUniqueQualifier::Cachable(unique_key) => unique_key,
-            ActionUniqueQualifier::Uncachable(_unique_key) => return Ok(None),
+            ActionUniqueQualifier::Cacheable(unique_key) => unique_key,
+            ActionUniqueQualifier::Uncacheable(_unique_key) => return Ok(None),
         };
 
         let Some(operation_id) = self.action_info_hash_key_to_awaited_action.get(unique_key) else {

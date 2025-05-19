@@ -200,7 +200,7 @@ async fn kill_all_called_on_disconnect() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn blake3_digest_function_registerd_properly() -> Result<(), Error> {
+async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
     let mut test_context = setup_local_worker(HashMap::new()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
@@ -240,7 +240,7 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Error> {
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
-        unique_qualifier: ActionUniqueQualifier::Uncachable(ActionUniqueKey {
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Blake3,
             digest: action_digest,
@@ -330,7 +330,7 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
-        unique_qualifier: ActionUniqueQualifier::Uncachable(ActionUniqueKey {
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -525,8 +525,8 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
         let precondition_script_tmp = format!("{precondition_script}.tmp");
 
         // We use std::fs::File here because we sometimes get strange bugs here
-        // that result in: "Text file busy (os error 26)" if it is an executeable.
-        // It is likley because somewhere the file descriotor does not get closed
+        // that result in: "Text file busy (os error 26)" if it is an executable.
+        // It is likely because somewhere the file descriptor does not get closed
         // in tokio's async context.
         {
             // We write to a temporary file and then rename it to force the kernel
@@ -602,7 +602,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
-        unique_qualifier: ActionUniqueQualifier::Uncachable(ActionUniqueKey {
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -692,7 +692,7 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
-        unique_qualifier: ActionUniqueQualifier::Uncachable(ActionUniqueKey {
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Blake3,
             digest: action_digest,

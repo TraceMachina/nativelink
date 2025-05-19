@@ -37,7 +37,7 @@
             inherit (lre-cc.meta) Env;
             ```
 
-            To add a tool to the local execution environment withoug adding it to
+            To add a tool to the local execution environment without adding it to
             the remote environment:
 
             ```nix

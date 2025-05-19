@@ -177,7 +177,7 @@ pub fn set_open_file_limit(desired_open_file_limit: usize) {
     // other things.
     let reduced_open_file_limit = new_open_file_limit.saturating_sub(new_open_file_limit / 5);
     let previous_open_file_limit = OPEN_FILE_LIMIT.load(Ordering::Acquire);
-    // No permit should be aquired yet, so this warning should not occur.
+    // No permit should be acquired yet, so this warning should not occur.
     if (OPEN_FILE_SEMAPHORE.available_permits() + reduced_open_file_limit)
         < previous_open_file_limit
     {

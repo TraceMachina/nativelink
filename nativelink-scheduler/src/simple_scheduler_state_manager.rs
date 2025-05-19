@@ -280,7 +280,7 @@ where
 
     /// Weak reference to self.
     // We use a weak reference to reduce the risk of a memory leak from
-    // future changes. If this becomes some kind of perforamnce issue,
+    // future changes. If this becomes some kind of performance issue,
     // we can consider using a strong reference.
     weak_self: Weak<Self>,
 
@@ -360,12 +360,12 @@ where
         {
             if let Some(filter_unique_key) = &filter.unique_key {
                 match &awaited_action.action_info().unique_qualifier {
-                    ActionUniqueQualifier::Cachable(unique_key) => {
+                    ActionUniqueQualifier::Cacheable(unique_key) => {
                         if filter_unique_key != unique_key {
                             return false;
                         }
                     }
-                    ActionUniqueQualifier::Uncachable(_) => {
+                    ActionUniqueQualifier::Uncacheable(_) => {
                         return false;
                     }
                 }

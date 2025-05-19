@@ -101,7 +101,7 @@ build --@rules_rust//:extra_rustc_flag=-Wunused_lifetimes
 build --@rules_rust//:extra_rustc_flag=-Wunused_qualifications
 build --@rules_rust//:extra_rustc_flag=-Wvariant_size_differences
 
-# Globbal clippy configuration
+# Global clippy configuration
 build --@rules_rust//:clippy_flag=-Wclippy::all
 build --@rules_rust//:clippy_flag=-Wclippy::nursery
 build --@rules_rust//:clippy_flag=-Wclippy::pedantic

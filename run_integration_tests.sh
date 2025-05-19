@@ -99,7 +99,7 @@ for pattern in "${TEST_PATTERNS[@]}"; do
     find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | grep -v buildstream | while IFS= read -r -d $'\0' fullpath; do
         # Cleanup.
         echo "Cleaning up cache directories NATIVELINK_DIR: $NATIVELINK_DIR"
-        echo "Checking for existince of the NATIVELINK_DIR"
+        echo "Checking for existence of the NATIVELINK_DIR"
         if [ -d "$NATIVELINK_DIR" ]; then
             sudo find "$NATIVELINK_DIR" -delete
         else

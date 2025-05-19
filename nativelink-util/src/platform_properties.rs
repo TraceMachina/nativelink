@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 /// a specific key, it will never be run on a worker that does not have at least
 /// all the platform property keys configured on the worker.
 ///
-/// Additional rules may be applied based on `PlatfromPropertyValue`.
+/// Additional rules may be applied based on `PlatformPropertyValue`.
 #[derive(Eq, PartialEq, Clone, Debug, Default, Serialize, Deserialize, MetricsComponent)]
 pub struct PlatformProperties {
     #[metric]

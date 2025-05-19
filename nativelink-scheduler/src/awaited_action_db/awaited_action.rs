@@ -240,7 +240,7 @@ impl AwaitedActionSortKey {
     #[rustfmt::skip]
     const fn new(priority: i32, insert_timestamp: u32) -> Self {
         // Shift `new_priority` so [`i32::MIN`] is represented by zero.
-        // This makes it so any nagative values are positive, but
+        // This makes it so any negative values are positive, but
         // maintains ordering.
         const MIN_I32: i64 = (i32::MIN as i64).abs();
         let priority = ((priority as i64 + MIN_I32) as u32).to_be_bytes();

@@ -20,7 +20,7 @@ use tokio::sync::watch;
 pub enum Priority {
     // The least important priority.
     LeastImportant = 2,
-    // All priorities greater than 1 must be complted.
+    // All priorities greater than 1 must be completed.
     P1 = 1,
     // All other priorities must be completed.
     P0 = 0,
