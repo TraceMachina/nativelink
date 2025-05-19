@@ -80,7 +80,7 @@ pub fn endpoint_from(
     let endpoint_transport = if let Some(tls_config) = tls_config {
         let Some(authority) = endpoint.authority() else {
             return Err(make_input_err!(
-                "Unable to determine authority of endpont: {endpoint}"
+                "Unable to determine authority of endpoint: {endpoint}"
             ));
         };
         if endpoint.scheme_str() != Some("https") {

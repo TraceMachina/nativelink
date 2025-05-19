@@ -37,7 +37,7 @@ struct StoreAndWeight {
 
 #[derive(Debug, MetricsComponent)]
 pub struct ShardStore {
-    // The weights will always be in ascending order a specific store is choosen based on the
+    // The weights will always be in ascending order a specific store is chosen based on the
     // the hash of the key hash that is nearest-binary searched using the u32 as the index.
     #[metric(
         group = "stores",

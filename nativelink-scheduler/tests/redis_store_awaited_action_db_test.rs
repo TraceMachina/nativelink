@@ -182,7 +182,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
             priority: 0,
             load_timestamp: SystemTime::UNIX_EPOCH,
             insert_timestamp: SystemTime::UNIX_EPOCH,
-            unique_qualifier: ActionUniqueQualifier::Cachable(ActionUniqueKey {
+            unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
                 instance_name: INSTANCE_NAME.to_string(),
                 digest_function: DigestHasherFunc::Sha256,
                 digest: DigestInfo::zero_digest(),

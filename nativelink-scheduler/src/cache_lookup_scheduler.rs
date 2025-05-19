@@ -176,8 +176,8 @@ impl CacheLookupScheduler {
         action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
         let unique_key = match &action_info.unique_qualifier {
-            ActionUniqueQualifier::Cachable(unique_key) => unique_key.clone(),
-            ActionUniqueQualifier::Uncachable(_) => {
+            ActionUniqueQualifier::Cacheable(unique_key) => unique_key.clone(),
+            ActionUniqueQualifier::Uncacheable(_) => {
                 // Cache lookup skipped, forward to the upstream.
                 return self
                     .action_scheduler
@@ -233,11 +233,11 @@ impl CacheLookupScheduler {
             let _scope_guard = scope_guard;
 
             let unique_key = match &action_info.unique_qualifier {
-                ActionUniqueQualifier::Cachable(unique_key) => unique_key,
-                ActionUniqueQualifier::Uncachable(unique_key) => {
+                ActionUniqueQualifier::Cacheable(unique_key) => unique_key,
+                ActionUniqueQualifier::Uncacheable(unique_key) => {
                     error!(
                         ?action_info,
-                        "ActionInfo::unique_qualifier should be ActionUniqueQualifier::Cachable()"
+                        "ActionInfo::unique_qualifier should be ActionUniqueQualifier::Cacheable()"
                     );
                     unique_key
                 }

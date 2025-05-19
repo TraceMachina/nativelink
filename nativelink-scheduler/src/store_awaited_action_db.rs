@@ -353,8 +353,8 @@ impl SchedulerStoreDataProvider for UpdateOperationIdToAwaitedAction {
     fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
         let unique_qualifier = &self.0.action_info().unique_qualifier;
         let maybe_unique_qualifier = match &unique_qualifier {
-            ActionUniqueQualifier::Cachable(_) => Some(unique_qualifier),
-            ActionUniqueQualifier::Uncachable(_) => None,
+            ActionUniqueQualifier::Cacheable(_) => Some(unique_qualifier),
+            ActionUniqueQualifier::Uncacheable(_) => None,
         };
         let mut output = Vec::with_capacity(2 + maybe_unique_qualifier.map_or(0, |_| 1));
         if maybe_unique_qualifier.is_some() {
@@ -493,8 +493,8 @@ where
         _priority: i32,
     ) -> Result<Option<OperationSubscriber<S, I, NowFn>>, Error> {
         match unique_qualifier {
-            ActionUniqueQualifier::Cachable(_) => {}
-            ActionUniqueQualifier::Uncachable(_) => return Ok(None),
+            ActionUniqueQualifier::Cacheable(_) => {}
+            ActionUniqueQualifier::Uncacheable(_) => return Ok(None),
         }
         let stream = self
             .store

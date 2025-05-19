@@ -73,11 +73,11 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));
-    let ActionUniqueQualifier::Cachable(action_key) = action_info.unique_qualifier.clone() else {
+    let ActionUniqueQualifier::Cacheable(action_key) = action_info.unique_qualifier.clone() else {
         panic!("This test should be testing when item was cached first");
     };
     let mut skip_cache_action = action_info.as_ref().clone();
-    skip_cache_action.unique_qualifier = ActionUniqueQualifier::Uncachable(action_key);
+    skip_cache_action.unique_qualifier = ActionUniqueQualifier::Uncacheable(action_key);
     let skip_cache_action = Arc::new(skip_cache_action);
     let client_operation_id = OperationId::default();
     let _unused = join!(

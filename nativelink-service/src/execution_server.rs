@@ -143,9 +143,9 @@ impl InstanceInfo {
             digest: action_digest,
         };
         let unique_qualifier = if skip_cache_lookup {
-            ActionUniqueQualifier::Uncachable(action_key)
+            ActionUniqueQualifier::Uncacheable(action_key)
         } else {
-            ActionUniqueQualifier::Cachable(action_key)
+            ActionUniqueQualifier::Cacheable(action_key)
         };
 
         Ok(ActionInfo {

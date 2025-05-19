@@ -1464,7 +1464,7 @@ pub mod build_metrics {
         #[prost(bool, tag = "6")]
         pub is_measurable: bool,
         /// Hash value of worker key. Needed to distinguish worker pools with same
-        /// menmonic but with different worker keys.
+        /// mnemonic but with different worker keys.
         #[prost(int64, tag = "9")]
         pub worker_key_hash: i64,
         #[prost(enumeration = "worker_metrics::WorkerStatus", tag = "10")]

@@ -55,7 +55,7 @@ impl DerefMut for Workers {
 }
 
 // Note: This could not be a derive macro because this derive-macro
-// does n ot support LruCache and nameless field structs.
+// does not support LruCache and nameless field structs.
 impl MetricsComponent for Workers {
     fn publish(
         &self,
@@ -74,7 +74,7 @@ impl MetricsComponent for Workers {
 /// A collection of workers that are available to run tasks.
 #[derive(MetricsComponent)]
 struct ApiWorkerSchedulerImpl {
-    /// A `LruCache` of workers availabled based on `allocation_strategy`.
+    /// A `LruCache` of workers available based on `allocation_strategy`.
     #[metric(group = "workers")]
     workers: Workers,
 

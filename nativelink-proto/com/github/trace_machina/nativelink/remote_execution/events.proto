@@ -150,7 +150,7 @@ message OriginEvent {
     /// tracking the flow of events.
     string parent_event_id = 3;
 
-    /// If the client is bazel, this is the meatadata that was sent with the
+    /// If the client is bazel, this is the metadata that was sent with the
     /// request. This is useful for tracking the flow of events.
     build.bazel.remote.execution.v2.RequestMetadata bazel_request_metadata = 4;
 

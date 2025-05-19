@@ -160,7 +160,7 @@ impl GrpcScheduler {
         if let Some(initial_response) = result_stream
             .message()
             .await
-            .err_tip(|| "Recieving response from upstream scheduler")?
+            .err_tip(|| "Receiving response from upstream scheduler")?
         {
             let client_operation_id = OperationId::from(initial_response.name.as_str());
             // Our operation_id is not needed here is just a place holder to recycle existing object.
@@ -267,8 +267,8 @@ impl GrpcScheduler {
             })
         };
         let skip_cache_lookup = match action_info.unique_qualifier {
-            ActionUniqueQualifier::Cachable(_) => false,
-            ActionUniqueQualifier::Uncachable(_) => true,
+            ActionUniqueQualifier::Cacheable(_) => false,
+            ActionUniqueQualifier::Uncacheable(_) => true,
         };
         let request = ExecuteRequest {
             instance_name: action_info.instance_name().clone(),

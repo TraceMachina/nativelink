@@ -29,9 +29,9 @@ use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
 #[derive(Clone, Debug)]
-struct ExistanceItem(u64);
+struct ExistenceItem(u64);
 
-impl LenEntry for ExistanceItem {
+impl LenEntry for ExistenceItem {
     #[inline]
     fn len(&self) -> u64 {
         self.0
@@ -47,7 +47,7 @@ impl LenEntry for ExistanceItem {
 pub struct ExistenceCacheStore<I: InstantWrapper> {
     #[metric(group = "inner_store")]
     inner_store: Store,
-    existence_cache: EvictingMap<DigestInfo, ExistanceItem, I>,
+    existence_cache: EvictingMap<DigestInfo, ExistenceItem, I>,
 }
 
 impl ExistenceCacheStore<SystemTime> {
@@ -117,7 +117,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
                 .iter()
                 .zip(inner_results.iter())
                 .filter_map(|(key, result)| {
-                    result.map(|size| (key.borrow().into_digest(), ExistanceItem(size)))
+                    result.map(|size| (key.borrow().into_digest(), ExistenceItem(size)))
                 })
                 .collect::<Vec<_>>();
             drop(self.existence_cache.insert_many(inserts).await);
@@ -189,7 +189,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             if let UploadSizeInfo::ExactSize(size) = size_info {
                 let _ = self
                     .existence_cache
-                    .insert(digest, ExistanceItem(size))
+                    .insert(digest, ExistenceItem(size))
                     .await;
             }
         }
@@ -211,7 +211,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         if result.is_ok() {
             let _ = self
                 .existence_cache
-                .insert(digest, ExistanceItem(digest.size_bytes()))
+                .insert(digest, ExistenceItem(digest.size_bytes()))
                 .await;
         }
         result

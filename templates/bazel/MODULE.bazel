@@ -4,7 +4,7 @@ module(
     compatibility_level = 0,
 )
 
-# Keep the commit in sync with the NativeLinke input from `flake.nix`.
+# Keep the commit in sync with the NativeLink input from `flake.nix`.
 bazel_dep(name = "local-remote-execution", version = "0")
 archive_override(
     module_name = "local-remote-execution",

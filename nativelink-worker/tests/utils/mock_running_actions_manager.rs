@@ -104,7 +104,7 @@ impl MockRunningActionsManager {
         match rx_call_lock
             .recv()
             .await
-            .expect("Could not recieve msg in mpsc")
+            .expect("Could not receive msg in mpsc")
         {
             RunningActionManagerCalls::CacheActionResult(req) => *req,
             RunningActionManagerCalls::CreateAndAddAction(_) => {

@@ -58,7 +58,7 @@ pub struct ExecuteResult {
     #[prost(string, tag = "1")]
     pub worker_id: ::prost::alloc::string::String,
     /// / The `instance_name` this task was initially assigned to. This is set by the client
-    /// / that initially sent the job as part of the BRE protocol.
+    /// / that initially sent the job as part of the RBE protocol.
     #[prost(string, tag = "6")]
     pub instance_name: ::prost::alloc::string::String,
     /// / The operation ID that was executed.
@@ -159,7 +159,7 @@ pub struct StartExecute {
     pub worker_id: ::prost::alloc::string::String,
 }
 /// / This is a special message used to save actions into the CAS that can be used
-/// / by programs like bb_browswer to inspect the history of a build.
+/// / by programs like bb_browser to inspect the history of a build.
 /// / Note: Ensure this is always compatible with:
 /// / <https://github.com/buildbarn/bb-remote-execution/blob/e95e066eb624dc9099682394ec18c12e218e8fc4/pkg/proto/cas/cas.proto#L23>
 #[derive(Clone, PartialEq, ::prost::Message)]

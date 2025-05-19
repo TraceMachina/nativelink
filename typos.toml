@@ -1,0 +1,15 @@
+[default.extend-words]
+# `conly_flags` in lre-cc
+conly = "conly"
+# Ded to Dead in ANDed
+Ded = "Ded"
+
+[files]
+extend-exclude = [
+  # Covered by Vale
+  "*.md",
+  ".git/*",
+  ".github/styles/*",
+  "web/*",
+]
+ignore-hidden = false

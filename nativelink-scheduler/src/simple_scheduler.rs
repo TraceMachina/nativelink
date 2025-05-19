@@ -333,7 +333,7 @@ impl SimpleScheduler {
                 // always yield to any other tasks that might want the lock. The
                 // easiest and most fair way to do this is to sleep for a small
                 // amount of time. Using something like tokio::task::yield_now()
-                // does not yield as aggresively as we'd like if new futures are
+                // does not yield as aggressively as we'd like if new futures are
                 // scheduled within a future.
                 tokio::time::sleep(Duration::from_millis(1))
             },

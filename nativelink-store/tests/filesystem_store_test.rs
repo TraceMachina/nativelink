@@ -773,7 +773,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
         },
     );
 
-    // Now finish waiting on update(). This should reuslt in an error because we deleted our dest
+    // Now finish waiting on update(). This should result in an error because we deleted our dest
     // folder.
     let update_result = &mut *update_fut.lock().await;
     assert!(
@@ -1004,7 +1004,7 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
             // Try to advance our update future.
             assert_eq!(poll!(&mut update_fut), Poll::Pending);
 
-            // Once we are sure the rename fuction is paused break.
+            // Once we are sure the rename function is paused break.
             if RENAME_IS_PAUSED.load(Ordering::Acquire) {
                 break;
             }

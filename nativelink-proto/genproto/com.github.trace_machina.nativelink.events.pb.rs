@@ -273,7 +273,7 @@ pub struct OriginEvent {
     /// / tracking the flow of events.
     #[prost(string, tag = "3")]
     pub parent_event_id: ::prost::alloc::string::String,
-    /// / If the client is bazel, this is the meatadata that was sent with the
+    /// / If the client is bazel, this is the metadata that was sent with the
     /// / request. This is useful for tracking the flow of events.
     #[prost(message, optional, tag = "4")]
     pub bazel_request_metadata: ::core::option::Option<

@@ -73,6 +73,14 @@ in {
     settings.configPath = ".vale.ini";
   };
 
+  # General
+  typos = {
+    args = ["--force-exclude"];
+    enable = true;
+    inherit excludes;
+    settings.configPath = "typos.toml";
+  };
+
   # Go
   gci = {
     description = "Fix go imports.";
