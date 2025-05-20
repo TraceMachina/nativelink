@@ -62,7 +62,7 @@ fn make_cache_scheduler() -> Result<TestContext, Error> {
 async fn add_action_handles_skip_cache() -> Result<(), Error> {
     let context = make_cache_scheduler()?;
     let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
-    let action_result = ProtoActionResult::from(ActionResult::default());
+    let action_result = ProtoActionResult::try_from(ActionResult::default())?;
     context
         .ac_store
         .update_oneshot(action_info.digest(), action_result.encode_to_vec().into())
