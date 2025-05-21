@@ -197,7 +197,7 @@ fn make_temp_path(data: &str) -> String {
 async fn read_file_contents(file_name: &OsStr) -> Result<Vec<u8>, Error> {
     let mut file = fs::open_file(file_name, 0, u64::MAX)
         .await
-        .err_tip(|| format!("Failed to open file: {file_name:?}"))?;
+        .err_tip(|| format!("Failed to open file: {}", file_name.display()))?;
     let mut data = vec![];
     file.read_to_end(&mut data)
         .await
@@ -231,7 +231,10 @@ async fn check_temp_empty(temp_path: &str) -> Result<(), Error> {
 
     if let Some(temp_dir_entry) = read_dir_stream.next().await {
         let path = temp_dir_entry?.path();
-        panic!("No files should exist in temp directory, found: {path:?}");
+        panic!(
+            "No files should exist in temp directory, found: {}",
+            path.display()
+        );
     }
 
     let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{STR_FOLDER}"))
@@ -243,7 +246,10 @@ async fn check_temp_empty(temp_path: &str) -> Result<(), Error> {
 
     if let Some(temp_dir_entry) = read_dir_stream.next().await {
         let path = temp_dir_entry?.path();
-        panic!("No files should exist in temp directory, found: {path:?}");
+        panic!(
+            "No files should exist in temp directory, found: {}",
+            path.display()
+        );
     }
     Ok(())
 }
