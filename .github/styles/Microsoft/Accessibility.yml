@@ -6,20 +6,25 @@ ignorecase: true
 tokens:
   - a victim of
   - able-bodied
-  - affected by
   - an epileptic
+  - birth defect
   - crippled
+  - differently abled
   - disabled
   - dumb
   - handicapped
   - handicaps
-  - healthy
+  - healthy person
+  - hearing-impaired
   - lame
   - maimed
+  - mentally handicapped
   - missing a limb
   - mute
-  - normal
+  - non-verbal
+  - normal person
   - sight-impaired
+  - slow learner
   - stricken with
   - suffers from
   - vision-impaired

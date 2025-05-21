@@ -6,8 +6,8 @@ level: error
 action:
   name: edit
   params:
-    - replace
-    - '[-–]'
-    - 'to'
+    - regex
+    - "[-–]"
+    - "to"
 tokens:
   - '\b(?:AM|PM)\s?[-–]\s?.+(?:AM|PM)\b'
