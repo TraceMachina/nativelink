@@ -858,16 +858,28 @@ pub enum StoreType {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientTlsConfig {
     /// Path to the certificate authority to use to validate the remote.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
-    pub ca_file: String,
+    ///
+    /// Default: None
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub ca_file: Option<String>,
 
     /// Path to the certificate file for client authentication.
-    #[serde(deserialize_with = "convert_optional_string_with_shellexpand")]
+    ///
+    /// Default: None
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     pub cert_file: Option<String>,
 
     /// Path to the private key file for client authentication.
-    #[serde(deserialize_with = "convert_optional_string_with_shellexpand")]
+    ///
+    /// Default: None
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     pub key_file: Option<String>,
+
+    /// If set the client will use the native roots for TLS connections.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub use_native_roots: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

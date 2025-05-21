@@ -100,6 +100,7 @@ rust_test_suite(
         "tests/proto_stream_utils_test.rs",
         "tests/resource_info_test.rs",
         "tests/retry_test.rs",
+        "tests/tls_utils_test.rs",
     ],
     compile_data = [
         "tests/data/SekienAkashita.jpg",
@@ -124,6 +125,7 @@ rust_test_suite(
         "@crates//:rand",
         "@crates//:serde_json",
         "@crates//:sha2",
+        "@crates//:tempfile",
         "@crates//:tokio",
         "@crates//:tokio-stream",
         "@crates//:tokio-util",
