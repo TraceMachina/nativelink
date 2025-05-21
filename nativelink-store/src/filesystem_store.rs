@@ -129,7 +129,7 @@ impl Drop for EncodedFilePath {
             debug!(?file_path, "File deleted",);
             let result = fs::remove_file(&file_path)
                 .await
-                .err_tip(|| format!("Failed to remove file {file_path:?}"));
+                .err_tip(|| format!("Failed to remove file {}", file_path.display()));
             if let Err(err) = result {
                 error!(?file_path, ?err, "Failed to delete file",);
             }
@@ -235,14 +235,21 @@ impl FileEntry for FileEntryImpl {
         let temp_file_result = fs::create_file(temp_full_path.clone())
             .or_else(|mut err| async {
                 let remove_result = fs::remove_file(&temp_full_path).await.err_tip(|| {
-                    format!("Failed to remove file {temp_full_path:?} in filesystem store")
+                    format!(
+                        "Failed to remove file {} in filesystem store",
+                        temp_full_path.display()
+                    )
                 });
                 if let Err(remove_err) = remove_result {
                     err = err.merge(remove_err);
                 }
                 warn!(?err, ?block_size, ?temp_full_path, "Failed to create file",);
-                Err(err)
-                    .err_tip(|| format!("Failed to create {temp_full_path:?} in filesystem store"))
+                Err(err).err_tip(|| {
+                    format!(
+                        "Failed to create {} in filesystem store",
+                        temp_full_path.display()
+                    )
+                })
             })
             .await?;
 
@@ -278,7 +285,10 @@ impl FileEntry for FileEntryImpl {
             let file = fs::open_file(&full_content_path, offset, length)
                 .await
                 .err_tip(|| {
-                    format!("Failed to open file in filesystem store {full_content_path:?}")
+                    format!(
+                        "Failed to open file in filesystem store {}",
+                        full_content_path.display()
+                    )
                 })?;
             Ok(file)
         })
@@ -758,8 +768,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             // Internally tokio spawns fs commands onto a blocking thread anyways.
             // Since we are already on a blocking thread, we just need the `fs` wrapper to manage
             // an open-file permit (ensure we don't open too many files at once).
-            let result = (rename_fn)(&from_path, &final_path)
-                .err_tip(|| format!("Failed to rename temp file to final path {final_path:?}"));
+            let result = (rename_fn)(&from_path, &final_path).err_tip(|| {
+                format!(
+                    "Failed to rename temp file to final path {}",
+                    final_path.display()
+                )
+            });
 
             // In the event our move from temp file to final file fails we need to ensure we remove
             // the entry from our map.
@@ -842,7 +856,12 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
         self.update_file(entry, temp_file, key.into_owned(), reader)
             .await
-            .err_tip(|| format!("While processing with temp file {temp_full_path:?}"))
+            .err_tip(|| {
+                format!(
+                    "While processing with temp file {}",
+                    temp_full_path.display()
+                )
+            })
     }
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
@@ -862,7 +881,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .as_ref()
                 .metadata()
                 .await
-                .err_tip(|| format!("While reading metadata for {path:?}"))?
+                .err_tip(|| format!("While reading metadata for {}", path.display()))?
                 .len(),
         };
         let entry = Fe::create(

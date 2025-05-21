@@ -415,7 +415,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                                     &mut hasher.hasher(),
                                 )
                                 .await
-                                .err_tip(|| format!("for {full_path:?}"))?;
+                                .err_tip(|| format!("for {}", full_path.display()))?;
 
                                 Result::<(DirectoryNode, VecDeque<Directory>), Error>::Ok((
                                     DirectoryNode {
@@ -431,7 +431,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                     file_futures.push(async move {
                         let metadata = fs::metadata(&full_path)
                             .await
-                            .err_tip(|| format!("Could not open file {full_path:?}"))?;
+                            .err_tip(|| format!("Could not open file {}", full_path.display()))?;
                         upload_file(cas_store, &full_path, hasher, metadata)
                             .map_ok(TryInto::try_into)
                             .await?
@@ -958,7 +958,7 @@ impl RunningActionImpl {
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
-                        .err_tip(|| format!("Error processing side channel file: {side_channel_file:?}"))?
+                        .err_tip(|| format!("Error processing side channel file: {}", side_channel_file.display()))?
                     } else {
                         None
                     };
@@ -1058,7 +1058,9 @@ impl RunningActionImpl {
                                 // execution spec, we simply ignore it continue.
                                 return Result::<OutputType, Error>::Ok(OutputType::None);
                             }
-                            return Err(e).err_tip(|| format!("Could not open file {full_path:?}"));
+                            return Err(e).err_tip(|| {
+                                format!("Could not open file {}", full_path.display())
+                            });
                         }
                     };
 
@@ -1070,7 +1072,7 @@ impl RunningActionImpl {
                                     file_info.name_or_path = NameOrPath::Path(entry);
                                     file_info
                                 })
-                                .err_tip(|| format!("Uploading file {full_path:?}"))?,
+                                .err_tip(|| format!("Uploading file {}", full_path.display()))?,
                         ));
                     }
                     metadata
@@ -1096,7 +1098,7 @@ impl RunningActionImpl {
                                 })
                             })
                             .await
-                            .err_tip(|| format!("Uploading directory {full_path:?}"))?,
+                            .err_tip(|| format!("Uploading directory {}", full_path.display()))?,
                     ))
                 } else if metadata.is_symlink() {
                     let output_symlink = upload_symlink(&full_path, work_directory)
@@ -1105,7 +1107,7 @@ impl RunningActionImpl {
                             symlink_info.name_or_path = NameOrPath::Path(entry);
                             symlink_info
                         })
-                        .err_tip(|| format!("Uploading symlink {full_path:?}"))?;
+                        .err_tip(|| format!("Uploading symlink {}", full_path.display()))?;
                     match fs::metadata(&full_path).await {
                         Ok(metadata) => {
                             if metadata.is_dir() {
@@ -1118,7 +1120,8 @@ impl RunningActionImpl {
                             if e.code != Code::NotFound {
                                 return Err(e).err_tip(|| {
                                     format!(
-                                        "While querying target symlink metadata for {full_path:?}"
+                                        "While querying target symlink metadata for {}",
+                                        full_path.display()
                                     )
                                 });
                             }
