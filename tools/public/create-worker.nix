@@ -2,6 +2,7 @@
   createWorker = {
     bash,
     buildEnv,
+    cacert,
     nix2container,
     coreutils,
     gnused,
@@ -87,8 +88,8 @@
           mkEnvSymlink
           (buildEnv {
             name = "${image.imageName}-buildEnv";
-            paths = [coreutils bash gnused];
-            pathsToLink = ["/bin"];
+            paths = [cacert coreutils bash gnused];
+            pathsToLink = ["/bin" "/etc/ssl/certs"];
           })
         ];
 
