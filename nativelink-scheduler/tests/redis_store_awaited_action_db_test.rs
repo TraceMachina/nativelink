@@ -71,6 +71,7 @@ const SCRIPT_VERSION: &str = "3e762c15";
 const VERSION_SCRIPT_HASH: &str = "b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5";
 const MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 const SCAN_COUNT: u32 = 10_000;
+const NO_HASH_SPLIT: usize = 0;
 
 fn mock_uuid_generator() -> String {
     uuid::Uuid::parse_str(TEMP_UUID).unwrap().to_string()
@@ -733,6 +734,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
                 4064,
                 MAX_CHUNK_UPLOADS_PER_UPDATE,
                 SCAN_COUNT,
+                NO_HASH_SPLIT,
             )
             .unwrap(),
         )
@@ -841,6 +843,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
                 4064,
                 MAX_CHUNK_UPLOADS_PER_UPDATE,
                 SCAN_COUNT,
+                NO_HASH_SPLIT,
             )
             .unwrap(),
         )

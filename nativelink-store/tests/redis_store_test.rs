@@ -43,6 +43,7 @@ const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 const DEFAULT_READ_CHUNK_SIZE: usize = 1024;
 const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 const DEFAULT_SCAN_COUNT: u32 = 10_000;
+const NO_HASH_SPLIT: usize = 0;
 
 fn mock_uuid_generator() -> String {
     uuid::Uuid::parse_str(TEMP_UUID).unwrap().to_string()
@@ -203,6 +204,7 @@ fn make_mock_store_with_prefix(mocks: &Arc<MockRedisBackend>, key_prefix: String
         DEFAULT_READ_CHUNK_SIZE,
         DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
         DEFAULT_SCAN_COUNT,
+        NO_HASH_SPLIT,
     )
     .unwrap()
 }

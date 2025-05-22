@@ -1163,6 +1163,12 @@ pub struct RedisSpec {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub scan_count: u32,
 
+    /// The position to split keys at, when hash-splitting is enabled.
+    ///
+    /// Default: 0 (No split)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub hash_split_pos: usize,
+
     /// Retry configuration to use when a network request fails.
     /// See the `Retry` struct for more information.
     ///
