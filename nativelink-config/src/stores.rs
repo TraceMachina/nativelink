@@ -62,7 +62,8 @@ pub enum StoreSpec {
     /// 1. **Amazon S3:**
     ///    S3 store will use Amazon's S3 service as a backend to store
     ///    the files. This configuration can be used to share files
-    ///    across multiple instances.
+    ///    across multiple instances. Uses system certificates for TLS
+    ///    verification via `rustls-platform-verifier`.
     ///
     ///   **Example JSON Config:**
     ///   ```json

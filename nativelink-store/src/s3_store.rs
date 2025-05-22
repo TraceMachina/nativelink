@@ -106,7 +106,7 @@ impl TlsClient {
         spec: &ExperimentalAwsSpec,
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Self {
-        let connector_with_roots = HttpsConnectorBuilder::new().with_webpki_roots();
+        let connector_with_roots = HttpsConnectorBuilder::new().with_platform_verifier();
 
         let connector_with_schemes = if spec.common.insecure_allow_http {
             connector_with_roots.https_or_http()
