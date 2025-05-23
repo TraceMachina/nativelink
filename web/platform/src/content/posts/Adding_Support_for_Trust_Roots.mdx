@@ -4,37 +4,33 @@ tags: ["news", "blog-posts"]
 image: https://raw.githubusercontent.com/TraceMachina/nativelink/eb968ed4ea2147bcf2e0e751215087e1d9a974cd/neuralink-dev-sam-photo.webp
 slug: adding-trust-roots-to-nativelink
 pubDate: 2025-05-15
-readTime: 8 minutes
+readTime: 5 minutes
 ---
 
 # Native Root Certificate Support in Nativelink
 
-**Open source thrives on community contributions, and today's story is a perfect example of why.** External engineer [Sam Eskandar](https://github.com/s6eskand) identified a real pain point in Nativelink's TLS configuration and delivered [a straightforward and elegant solution](https://github.com/TraceMachina/nativelink/pull/1782) that fundamentally improves how developers can deploy and scale their build systems. This contribution showcases the collaborative spirit that makes open source projects stronger and more accessible to everyone.
+**Open source thrives on community contributions, and today’s story is a perfect example of why.**
+External engineer [Sam Eskandar](https://github.com/s6eskand) identified a pain point in Nativelink's TLS configuration and delivered [a clean solution](https://github.com/TraceMachina/nativelink/pull/1782) that eliminates deployment friction for teams using managed certificates.
 
-## The Problem: TLS Configuration Complexity
+## Problem: Manual Certificate Management
 
-Before this enhancement, connecting to gRPC endpoints using TLS in Nativelink required manual configuration of [certificate files](https://en.wikipedia.org/wiki/Certificate_authority) - specifically providing CA certificate files, certificate files, and key files. This created significant friction for teams using managed certificates or deploying in environments where distributing secrets across workers was either impractical or posed security concerns.
+Before this change, connecting to gRPC endpoints using TLS required specifying [`ClientTlsConfig`](https://nativelink.com/docs/reference/nativelink-config/#clienttlsconfig) like this:
 
-Consider the previous [`ClientTlsConfig`](https://nativelink.com/docs/reference/nativelink-config/#clienttlsconfig) structure:
-
-```rust
+```json
 {
-  cert_file: "example_string",
-  key_file: "example_string",
-  client_ca_file: null,
-  client_crl_file: null
+  ca_file: "path/to/ca.pem",
+  cert_file: "path/to/client.pem",
+  key_file: "path/to/client-key.pem"
 }
 ```
 
-Every TLS connection definition. Now, Nativelink can automatically detect certificates from the host. For teams leveraging cloud-managed certificates or certificate authorities, this approach created unnecessary operational overhead and potential security vulnerabilities.
+Teams had to distribute CA certificates, client certificates, and key files across workers - creating friction for cloud deployments and potential security concerns when secrets need to be managed manually.
 
-## The Solution: Native Root Certificate Support
+## Solution: Native Root Certificate Support
 
-The new implementation introduces a `use_native_roots` option in the `ClientTlsConfig`. When enabled, Nativelink automatically leverages the system's native root certificate store, eliminating the need for manual certificate file management in many common deployment scenarios.
+The new implementation adds a `use_native_roots` option that leverages the system's native root certificate store, eliminating manual certificate file management for most deployment scenarios.
 
-### Technical Implementation Details
-
-The core changes improve Nativelink's TLS utilities with certificate handling logic:
+The core change is:
 
 ```rust
 if config.use_native_roots == Some(true) {
@@ -48,31 +44,16 @@ if config.use_native_roots == Some(true) {
 ```
 
 This implementation provides three distinct behaviors:
-
-1. **Native roots enabled** (`use_native_roots: true`): Uses system native root certificates, ignoring any provided certificate files
-2. **Traditional certificate files**: Uses the existing manual certificate file location configuration
-3. **Validation and error handling**: Guides users with clear error messages
-
-The changes span multiple components:
-
-- **Configuration structures**: Improved `ClientTlsConfig` with the new `use_native_roots` field
-- **TLS utilities**: Updated certificate loading logic with native root support
-- **Build configuration**: Added `tls-native-roots` feature to tonic dependency
-- **Comprehensive testing**: New test suite covering all configuration scenarios
-
-### Deployment Flexibility Improvements
-
-This enhancement dramatically improves Nativelink's deployment model flexibility:
-
-**Cloud-Native Deployments**: Teams using managed Kubernetes clusters, cloud load balancers with managed certificates, or service meshes like Istio can now connect seamlessly without certificate file distribution.
-
-**Enterprise Environments**: Organizations with established PKI infrastructure and corporate certificate authorities can leverage existing trust chains without additional configuration overhead.
-
-**Development Workflows**: Local development environments can connect to staging or production endpoints using system trust stores, reducing development friction.
+- **Native roots enabled:** Use system native root certificates, ignore any provided certificate files
+- **Manual certificate path:** Use existing manual certificate configuration
+- **Clear validation:** Warn users when configurations conflict
 
 ## Configuration Examples
 
-### Using Native Root Certificates
+Here are the main ways to configure TLS in Nativelink.
+For complete configuration options, see the [configuration reference](https://www.nativelink.com/docs/reference/nativelink-config).
+
+### Native Root Certificates
 
 For the majority of modern deployments, you can now enable native roots with one parameter:
 
@@ -84,16 +65,15 @@ For the majority of modern deployments, you can now enable native roots with one
 }
 ```
 
-This configuration automatically trusts certificates signed by any certificate authority in your system's trust store - perfect for cloud environments with managed certificates.
+This configuration automatically trusts certificates signed by any certificate authority in your system’s trust store - perfect for cloud environments with managed certificates.
 
-### Traditional Certificate-Based Configuration
+### Manual Certificate Path
 
-For environments requiring specific certificate validation:
+Since `use_native_roots` defaults to `false`, you can still use the previous configuration:
 
 ```json
 {
   "tls_config": {
-    "use_native_roots": false,
     "ca_file": "/path/to/ca.pem",
     "cert_file": "/path/to/client.pem",
     "key_file": "/path/to/client-key.pem"
@@ -101,46 +81,63 @@ For environments requiring specific certificate validation:
 }
 ```
 
-### Hybrid Cloud Deployments
+### GRPC Store and Local Worker Configuration
 
-The new flexibility shines in hybrid scenarios where different components might require different TLS approaches:
+The `tls_config` field can be used in GRPC store endpoints:
 
 ```json
-{
-  "stores": {
-    "production_cache": {
-      "endpoint": "https://cache.production.company.com",
+"stores": [
+  {
+    "grpc": {
+      "endpoints": [
+        {
+          "address": "grpcs://example.com:443",
+          "tls_config": {
+            "use_native_roots": true
+          }
+        }
+      ],
+      "instance_name": "main",
+      "store_type": "cas"
+    },
+    "name": "CAS_STORE"
+  }
+]
+```
+
+And in worker API endpoints:
+
+```json
+"workers": [{
+  "local": {
+    "worker_api_endpoint": {
+      "uri": "grpcs://127.0.0.1:50061",
       "tls_config": {
         "use_native_roots": true
       }
     },
-    "internal_service": {
-      "endpoint": "https://internal.service:8443",
-      "tls_config": {
-        "use_native_roots": false,
-        "ca_file": "/path/to/ca.pem",
-        "cert_file": "/path/to/client.pem",
-        "key_file": "/path/to/client-key.pem"
-      }
-    }
+    // ...
   }
-}
+}]
 ```
 
-## The Open Source Advantage
+## Community Contributions
 
-This contribution exemplifies why open source creates superior software. An engineer outside the core team identified a real-world pain point, designed an elegant solution, and contributed back to the community. The collaborative review process - involving multiple maintainers providing technical feedback, usability insights, and future roadmap considerations - resulted in a more robust implementation than any single organization might have developed in isolation.
+The [PR discussion](https://github.com/TraceMachina/nativelink/pull/1782) shows how the review process strengthened the implementation.
+The contributor included comprehensive unit tests covering all configuration scenarios.
+Reviewers suggested UX improvements like warning users when certificate files are ignored, identified documentation needs, and planned future enhancements.
+One reviewer opened a follow-up PR to extend native roots to S3 stores.
 
-The pull request discussion reveals the thoughtful engineering culture: considerations about error handling for invalid certificates, documentation needs, and integration with other Nativelink components like S3 storage. This collaborative refinement process is open source at its finest.
+This collaborative refinement process caught edge cases, improved error handling, and identified future improvements - resulting in a more robust implementation than any single contributor could have produced alone.
 
-## Looking Forward
+## Looking forward
 
-With native root certificate support, Nativelink becomes significantly more accessible to teams across diverse infrastructure environments. Whether you're running containerized workloads in Kubernetes, deploying on traditional virtual machines with corporate PKI, or prototyping locally, TLS configuration no longer presents a barrier to adoption.
+With native root certificate support, Nativelink becomes more accessible to teams across diverse infrastructure environments.
+Whether you’re running containerized workloads in Kubernetes, deploying on traditional virtual machines with corporate PKI, or prototyping locally, TLS configuration no longer presents a barrier to adoption.
 
-The contribution also highlights areas for future enhancement: improved error messaging for certificate validation failures, documentation expanding TLS configuration patterns, and potential integration with cloud-specific certificate management services.
-
-**This is the power of open source in action** - community-driven improvements that make technology more accessible, secure, and flexible for everyone building the future. We're grateful for contributions like this that strengthen Nativelink's position as the premier open source remote execution platform.
+**This is the power of open source in action** - community-driven improvements that make technology more accessible, secure, and flexible for everyone building the future.
+We’re grateful for contributions like this that strengthen Nativelink’s position as the premier open source remote execution platform.
 
 ---
 
-*Interested in contributing to Nativelink? Check out our [GitHub repository](https://github.com/TraceMachina/nativelink) and join our growing community of developers building the future of distributed build systems.*
+*Interested in contributing? Check out our [GitHub repository](https://github.com/TraceMachina/nativelink).*
