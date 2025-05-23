@@ -10,11 +10,13 @@ Cloudflare
 Colab
 CPUs
 ELB
+Eskandar
 FFI
 FFIs
 GPUs
 Goma
 [Hh]ermeticity
+Istio
 JDK
 JSON
 Kustomization
@@ -30,8 +32,10 @@ Nvidia
 NVMe
 hello@nativelink.com
 NativeLink
+Nativelink
 [Nn]anophotonic
 OCI
+onboarding
 OSSF
 Reclient
 Rosetta
