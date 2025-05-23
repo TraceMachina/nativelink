@@ -11,9 +11,9 @@ readTime: 20 minutes
 
 The future of AI development belongs not necessarily to those with the most powerful infrastructure but to those who can extract maximum value from available resources. This tutorial emphasizes CPU-based fine-tuning demonstrating that with intelligent resource management through NativeLink, impressive results can be achieved without expensive GPU or TPU infrastructure. As compute becomes increasingly costly, competitive advantage will shift toward teams that optimize resource efficiency rather than those deploying state-of-the-art hardware.
 
-This guide demonstrates how to establish an optimized AI development pipeline by integrating several key technologies:<br>
-1\. **Bazel Build System**: For efficient repository management. A repository managed by Bazel allows your team to work in a unified codebase while maintaining clean separation of concerns.<br>
-2\. **NativeLink**: A remote execution system hosted in your cloud. With NativeLink's remote execution capabilities, you can leverage your cloud resources optimally without wasteful duplication of work.<br>
+This guide demonstrates how to establish an optimized AI development pipeline by integrating several key technologies:<br></br>
+1\. **Bazel Build System**: For efficient repository management. A repository managed by Bazel allows your team to work in a unified codebase while maintaining clean separation of concerns.<br></br>
+2\. **NativeLink**: A remote execution system hosted in your cloud. With NativeLink's remote execution capabilities, you can leverage your cloud resources optimally without wasteful duplication of work.<br></br>
 3\. **Hugging Face Transformers**: For integrating with the rich ecosystem of open-source models that you can run locally or deploy anywhere. The transformers library also provides a sophisticated caching mechanism for optimizing loading model weights.
 
 
@@ -23,7 +23,7 @@ Bazel is a build system designed for repositories that allows you to organize co
 
 ### Prerequisites
 
-1\. A recent version of Bazel ([installation instructions](https://bazel.build/install)). <br>
+1\. A recent version of Bazel ([installation instructions](https://bazel.build/install)). <br></br>
 2\. NativeLink [Cloud Account](https://app.nativelink.com/) (it’s free to get started, and secure) or [NativeLink 0.6.0](https://github.com/TraceMachina/nativelink/releases/tag/v0.6.0) (Apache-licensed, open source is hard-mode)
 
 ### Initial Setup
@@ -42,16 +42,16 @@ cd nativelink-blogs/finetuning_on_cpu
 </div>
 
 
-Here's a description of some of the files:<br>
-1\. `README.md` - Instructions on how to connect/use NativeLink Cloud and how to run the code locally as well as remotely<br>
-2\. `requirements.lock` - Ensures consistent Python dependencies across all environments<br>
-3\. `.bazelrc` - Main Bazel configuration file setting global options for hermetic builds and remote execution<br>
-4\. `MODULE.bazel` - Configures the project as a Bazel module, tells Bazel we'll need Python, `pip` and CPU-only PyTorch, and manages external dependencies<br>
-5\. `pyproject.toml` - Python package configuration specifying dependencies and development tools<br>
-6\. `BUILD.bazel` (root) - Root build file defining lock targets for Python dependency management<br>
-7\. `platforms/BUILD` - Defines Linux x86_64 execution platform running in Ubuntu 24.04 for remote builds<br>
-8\. `training/BUILD` - Defines the model training targets and their dependencies<br>
-9\. `training/main.py` - Main script that handles fine-tuning of language models on CPU using efficient training techniques<br>
+Here's a description of some of the files:<br></br>
+1\. `README.md` - Instructions on how to connect/use NativeLink Cloud and how to run the code locally as well as remotely<br></br>
+2\. `requirements.lock` - Ensures consistent Python dependencies across all environments<br></br>
+3\. `.bazelrc` - Main Bazel configuration file setting global options for hermetic builds and remote execution<br></br>
+4\. `MODULE.bazel` - Configures the project as a Bazel module, tells Bazel we'll need Python, `pip` and CPU-only PyTorch, and manages external dependencies<br></br>
+5\. `pyproject.toml` - Python package configuration specifying dependencies and development tools<br></br>
+6\. `BUILD.bazel` (root) - Root build file defining lock targets for Python dependency management<br></br>
+7\. `platforms/BUILD` - Defines Linux x86_64 execution platform running in Ubuntu 24.04 for remote builds<br></br>
+8\. `training/BUILD` - Defines the model training targets and their dependencies<br></br>
+9\. `training/main.py` - Main script that handles fine-tuning of language models on CPU using efficient training techniques<br></br>
 
 
 ## Important Note About Bazel’s Remote Execution Support
@@ -81,16 +81,16 @@ To demonstrate NativeLink’s efficacy, consistency, and reliability, we ran the
 
 3\. Free NativeLink: the quickest run took 4 minutes of compute time while the slowest/longest took 6 minutes. NativeLink Cloud provided the quickest execution times by far.
 
-<img src="https://github.com/user-attachments/assets/c2bf8e0e-1500-4ee7-a0f7-6b4ca2196257" width="1000" alt="Model Fine-Tuning Times">
+<img src="https://github.com/user-attachments/assets/c2bf8e0e-1500-4ee7-a0f7-6b4ca2196257" width="1000" alt="Model Fine-Tuning Times"></img>
 
 
 ## Conclusion: Optimizing AI Development Through Resource Efficiency
 
 As demonstrated through this tutorial, the integration of Bazel's repository management, NativeLink's CPU-optimized remote execution, and Hugging Face's transformers library creates a development ecosystem that prioritizes computational efficiency over raw processing power. This approach addresses several critical challenges facing modern AI teams:
 
-1\. **Resource Optimization**: By leveraging NativeLink's intelligent scheduling and optimization on CPU infrastructure, teams can achieve impressive fine-tuning results without the capital expenditure of specialized GPU/TPU hardware.<br>
-2\. **Strategic Advantage**: This CPU-focused approach provides a competitive edge through efficient resource utilization, enabling teams to allocate budget toward innovation rather than hardware acquisition.<br>
-3\. **Sustainable Scaling**: As models grow in size and complexity, the ability to efficiently distribute workloads across existing CPU infrastructure provides a more sustainable path to scale than continuously upgrading to the latest accelerators.<br>
+1\. **Resource Optimization**: By leveraging NativeLink's intelligent scheduling and optimization on CPU infrastructure, teams can achieve impressive fine-tuning results without the capital expenditure of specialized GPU/TPU hardware.<br></br>
+2\. **Strategic Advantage**: This CPU-focused approach provides a competitive edge through efficient resource utilization, enabling teams to allocate budget toward innovation rather than hardware acquisition.<br></br>
+3\. **Sustainable Scaling**: As models grow in size and complexity, the ability to efficiently distribute workloads across existing CPU infrastructure provides a more sustainable path to scale than continuously upgrading to the latest accelerators.<br></br>
 
 For forward-thinking AI teams, this infrastructure stack represents a shift from the "bigger is better" hardware arms race toward thoughtful resource utilization. The competitive advantage increasingly belongs to those who can extract maximum value from available compute rather than those who deploy more powerful hardware.
 

@@ -104,9 +104,9 @@
               "aarch64-linux" = "aarch64-unknown-linux-gnu";
               "x86_64-darwin" = "x86_64-apple-darwin";
               "x86_64-linux" = "x86_64-unknown-linux-gnu";
-            }
-            .${system}
-            or (throw "Unsupported Nix exec platform: ${system}");
+            }.${
+              system
+            } or (throw "Unsupported Nix exec platform: ${system}");
 
           nixExecToDefaultRustTarget = p: let
             inherit (p.stdenv.targetPlatform) system;
@@ -116,9 +116,9 @@
               "aarch64-linux" = "aarch64-unknown-linux-musl";
               "x86_64-darwin" = "x86_64-apple-darwin";
               "x86_64-linux" = "x86_64-unknown-linux-musl";
-            }
-            .${system}
-            or (throw "Unsupported Nix target platform: ${system}");
+            }.${
+              system
+            } or (throw "Unsupported Nix target platform: ${system}");
 
           # These flags cause a Bazel build to use LRE toolchains regardless of whether
           # the build is running in local or remote configuration.

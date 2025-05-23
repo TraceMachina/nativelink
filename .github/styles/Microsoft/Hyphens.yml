@@ -7,8 +7,8 @@ nonword: true
 action:
   name: edit
   params:
-    - replace
-    - '-'
-    - ' '
+    - regex
+    - "-"
+    - " "
 tokens:
-  - '\s[^\s-]+ly-'
+  - '\b[^\s-]+ly-\w+\b'

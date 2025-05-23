@@ -108,9 +108,9 @@
                   "aarch64-linux" = "aarch64-unknown-linux-musl";
                   "x86_64-darwin" = "x86_64-apple-darwin";
                   "aarch64-darwin" = "aarch64-apple-darwin";
-                }
-                .${nixSystem}
-                or (throw "Unsupported Nix host platform: ${nixSystem}")
+                }.${
+                  nixSystem
+                } or (throw "Unsupported Nix host platform: ${nixSystem}")
             )
             p.stdenv.targetPlatform.system;
 
