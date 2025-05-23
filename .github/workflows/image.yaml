@@ -8,6 +8,7 @@ on:
     branches:
       - main
     paths-ignore:
+      - '.github/styles/**'
       - 'web/**'
 
 permissions: read-all
