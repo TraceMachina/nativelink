@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::cmp;
+use core::convert::TryInto;
 use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
 use core::time::Duration;
@@ -157,7 +158,7 @@ impl RedisStore {
                 "Connecting directly to multiple redis nodes in a cluster is currently unsupported. Please specify a single URL to a single node, and nativelink will use cluster discover to find the other nodes."
             ));
         };
-        let redis_config = match spec.mode {
+        let mut redis_config = match spec.mode {
             RedisMode::Cluster => RedisConfig::from_url_clustered(addr),
             RedisMode::Sentinel => RedisConfig::from_url_sentinel(addr),
             RedisMode::Standard => RedisConfig::from_url_centralized(addr),
@@ -168,7 +169,25 @@ impl RedisStore {
                 format!("while parsing redis node address: {e}"),
             )
         })?;
-
+        if spec.db != 0 {
+            match spec.db.try_into() {
+                Ok(db_u16) => {
+                    redis_config.database = Some(db_u16);
+                    info!(
+                        db = spec.db,
+                        "Configuring Redis client to use database {}", spec.db,
+                    );
+                }
+                Err(_) => {
+                    return Err(make_err!(
+                        Code::InvalidArgument,
+                        "Invalid Redis database number '{}'. Redis databases range from 0 to 15, and the value must fit within a u16 (0-{}).",
+                        spec.db,
+                        u16::MAX
+                    ));
+                }
+            }
+        }
         let reconnect_policy = {
             if spec.retry.delay == 0.0 {
                 spec.retry.delay = DEFAULT_RETRY_DELAY;
@@ -889,16 +908,23 @@ pub struct RedisSubscriptionManager {
     subscribed_keys: Arc<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
     tx_for_test: tokio::sync::mpsc::UnboundedSender<String>,
     _subscription_spawn: JoinHandleDropGuard<()>,
+    key_prefix: String,
 }
 
 impl RedisSubscriptionManager {
-    pub fn new(subscribe_client: SubscriberClient, pub_sub_channel: String) -> Self {
+    pub fn new(
+        subscribe_client: SubscriberClient,
+        pub_sub_channel: String,
+        key_prefix: &str,
+    ) -> Self {
         let subscribed_keys = Arc::new(RwLock::new(StringPatriciaMap::new()));
         let subscribed_keys_weak = Arc::downgrade(&subscribed_keys);
         let (tx_for_test, mut rx_for_test) = tokio::sync::mpsc::unbounded_channel();
+        let key_prefix = key_prefix.to_string();
         Self {
             subscribed_keys,
             tx_for_test,
+            key_prefix,
             _subscription_spawn: spawn!("redis_subscribe_spawn", async move {
                 let mut rx = subscribe_client.message_rx();
                 loop {
@@ -993,12 +1019,13 @@ impl SchedulerSubscriptionManager for RedisSubscriptionManager {
         let mut subscribed_keys = self.subscribed_keys.write();
         let key = key.get_key();
         let key_str = key.as_str();
-        let mut subscription = if let Some(publisher) = subscribed_keys.get(&key_str) {
+        let prefixed_key = format!("{}{}", self.key_prefix, key_str);
+        let mut subscription = if let Some(publisher) = subscribed_keys.get(&prefixed_key) {
             publisher.subscribe(weak_subscribed_keys)
         } else {
             let (publisher, subscription) =
                 RedisSubscriptionPublisher::new(key_str.to_string(), weak_subscribed_keys);
-            subscribed_keys.insert(key_str, publisher);
+            subscribed_keys.insert(prefixed_key, publisher);
             subscription
         };
         subscription
@@ -1033,6 +1060,7 @@ impl SchedulerStore for RedisStore {
             let sub = Arc::new(RedisSubscriptionManager::new(
                 self.subscriber_client.clone(),
                 pub_sub_channel.clone(),
+                &self.key_prefix,
             ));
             *subscription_manager = Some(sub.clone());
             Ok(sub)
@@ -1110,6 +1138,7 @@ impl SchedulerStore for RedisStore {
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
     {
         let index_value = index.index_value();
+        let global_key_prefix = &self.key_prefix;
         let run_ft_aggregate = || {
             let client = self.client_pool.next().clone();
             let sanitized_field = try_sanitize(index_value.as_ref()).err_tip(|| {
@@ -1119,7 +1148,8 @@ impl SchedulerStore for RedisStore {
                 ft_aggregate(
                     client,
                     format!(
-                        "{}",
+                        "{}{}",
+                        global_key_prefix.clone(),
                         get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
                     ),
                     format!("@{}:{{ {} }}", K::INDEX_NAME, sanitized_field),
@@ -1152,6 +1182,7 @@ impl SchedulerStore for RedisStore {
         };
         let stream = run_ft_aggregate()?
             .or_else(|_| async move {
+                let global_key_prefix = global_key_prefix.clone();
                 let mut schema = vec![SearchSchema {
                     field_name: K::INDEX_NAME.into(),
                     alias: None,
@@ -1183,12 +1214,15 @@ impl SchedulerStore for RedisStore {
                     .next()
                     .ft_create::<(), _>(
                         format!(
-                            "{}",
+                            "{}{}",
+                            global_key_prefix,
                             get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
                         ),
                         FtCreateOptions {
                             on: Some(IndexKind::Hash),
-                            prefixes: vec![K::KEY_PREFIX.into()],
+                            prefixes: vec![
+                                format!("{}{}", global_key_prefix, K::KEY_PREFIX).into(),
+                            ],
                             nohl: true,
                             nofields: true,
                             nofreqs: true,

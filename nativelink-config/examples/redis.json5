@@ -4,13 +4,17 @@
       "name": "CAS_FAST_SLOW_STORE",
       "redis_store": {
         "addresses": ["redis://127.0.0.1:6379/"],
-        "mode": "cluster"
+        "mode": "cluster",
+        key_prefix: "my_cas_prefix:",
+        db: 1,
       }
     }, {
       "name": "AC_FAST_SLOW_STORE",
       "redis_store": {
         "addresses": ["redis://127.0.0.1:6379/"],
-        "mode": "cluster"
+        "mode": "cluster",
+        key_prefix: "my_cas_prefix:",
+        db: 1,
       }
     }, {
       "name": "AC_MAIN_STORE",
