@@ -56,7 +56,7 @@ build --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 # Keep this in sync with the top-level Cargo.toml
 
 # rustc lints with negative (low) priority
-build --@rules_rust//:extra_rustc_flag=-Wunused
+build --@rules_rust//:extra_rustc_flag=-Dunused
 
 # rustc denies with default priority
 build --@rules_rust//:extra_rustc_flag=-Dambiguous_glob_reexports
@@ -84,27 +84,27 @@ build --@rules_rust//:extra_rustc_flag=-Dunsafe_op_in_unsafe_fn
 build --@rules_rust//:extra_rustc_flag=-Dunstable_syntax_pre_expansion
 
 # rustc warnings with default priority
-build --@rules_rust//:extra_rustc_flag=-Wkeyword_idents
-build --@rules_rust//:extra_rustc_flag=-Wlet_underscore
-build --@rules_rust//:extra_rustc_flag=-Wmacro_use_extern_crate
-build --@rules_rust//:extra_rustc_flag=-Wmeta_variable_misuse
-build --@rules_rust//:extra_rustc_flag=-Wmissing_abi
-build --@rules_rust//:extra_rustc_flag=-Wmissing_copy_implementations
-build --@rules_rust//:extra_rustc_flag=-Wmissing_debug_implementations
-build --@rules_rust//:extra_rustc_flag=-Wnoop_method_call
-build --@rules_rust//:extra_rustc_flag=-Wsingle_use_lifetimes
-build --@rules_rust//:extra_rustc_flag=-Wtrivial_casts
-build --@rules_rust//:extra_rustc_flag=-Wtrivial_numeric_casts
-build --@rules_rust//:extra_rustc_flag=-Wunreachable_pub
-build --@rules_rust//:extra_rustc_flag=-Wunused_import_braces
-build --@rules_rust//:extra_rustc_flag=-Wunused_lifetimes
-build --@rules_rust//:extra_rustc_flag=-Wunused_qualifications
-build --@rules_rust//:extra_rustc_flag=-Wvariant_size_differences
+build --@rules_rust//:extra_rustc_flag=-Dkeyword_idents
+build --@rules_rust//:extra_rustc_flag=-Dlet_underscore
+build --@rules_rust//:extra_rustc_flag=-Dmacro_use_extern_crate
+build --@rules_rust//:extra_rustc_flag=-Dmeta_variable_misuse
+build --@rules_rust//:extra_rustc_flag=-Dmissing_abi
+build --@rules_rust//:extra_rustc_flag=-Dmissing_copy_implementations
+build --@rules_rust//:extra_rustc_flag=-Dmissing_debug_implementations
+build --@rules_rust//:extra_rustc_flag=-Dnoop_method_call
+build --@rules_rust//:extra_rustc_flag=-Dsingle_use_lifetimes
+build --@rules_rust//:extra_rustc_flag=-Dtrivial_casts
+build --@rules_rust//:extra_rustc_flag=-Dtrivial_numeric_casts
+build --@rules_rust//:extra_rustc_flag=-Dunreachable_pub
+build --@rules_rust//:extra_rustc_flag=-Dunused_import_braces
+build --@rules_rust//:extra_rustc_flag=-Dunused_lifetimes
+build --@rules_rust//:extra_rustc_flag=-Dunused_qualifications
+build --@rules_rust//:extra_rustc_flag=-Dvariant_size_differences
 
 # Global clippy configuration
-build --@rules_rust//:clippy_flag=-Wclippy::all
-build --@rules_rust//:clippy_flag=-Wclippy::nursery
-build --@rules_rust//:clippy_flag=-Wclippy::pedantic
+build --@rules_rust//:clippy_flag=-Dclippy::all
+build --@rules_rust//:clippy_flag=-Dclippy::nursery
+build --@rules_rust//:clippy_flag=-Dclippy::pedantic
 
 # Restriction denies with default priority
 build --@rules_rust//:clippy_flag=-Dclippy::alloc_instead_of_core
@@ -112,16 +112,16 @@ build --@rules_rust//:clippy_flag=-Dclippy::as_underscore
 build --@rules_rust//:clippy_flag=-Dclippy::std_instead_of_core
 
 # Restriction warnings with default priority
-build --@rules_rust//:clippy_flag=-Wclippy::dbg_macro
-build --@rules_rust//:clippy_flag=-Wclippy::decimal_literal_representation
+build --@rules_rust//:clippy_flag=-Dclippy::dbg_macro
+build --@rules_rust//:clippy_flag=-Dclippy::decimal_literal_representation
 build --@rules_rust//:clippy_flag=-Aclippy::get_unwrap # TODO(jhpratt): Flip
 build --@rules_rust//:clippy_flag=-Aclippy::missing_docs_in_private_items # TODO(jhpratt): Flip
-build --@rules_rust//:clippy_flag=-Wclippy::print_stdout
-build --@rules_rust//:clippy_flag=-Wclippy::todo
-build --@rules_rust//:clippy_flag=-Wclippy::unimplemented
+build --@rules_rust//:clippy_flag=-Dclippy::print_stdout
+build --@rules_rust//:clippy_flag=-Dclippy::todo
+build --@rules_rust//:clippy_flag=-Dclippy::unimplemented
 build --@rules_rust//:clippy_flag=-Aclippy::unwrap_in_result # TODO(jhpratt): Flip
 build --@rules_rust//:clippy_flag=-Aclippy::unwrap_used # TODO(jhpratt): Flip
-build --@rules_rust//:clippy_flag=-Wclippy::use_debug
+build --@rules_rust//:clippy_flag=-Dclippy::use_debug
 
 # Nursery denies we want once they get out of Nursery
 build --@rules_rust//:clippy_flag=-Dclippy::missing_const_for_fn
