@@ -63,6 +63,7 @@ async fn insert_purges_at_max_count() -> Result<(), Error> {
             evict_bytes: 0,
         },
         MockInstantWrapped::default(),
+        &[],
     );
     evicting_map
         .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::new().into())
@@ -120,6 +121,7 @@ async fn insert_purges_at_max_bytes() -> Result<(), Error> {
             evict_bytes: 0,
         },
         MockInstantWrapped::default(),
+        &[],
     );
     evicting_map
         .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
@@ -177,6 +179,7 @@ async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
             evict_bytes: 9,
         },
         MockInstantWrapped::default(),
+        &[],
     );
     evicting_map
         .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
@@ -235,6 +238,7 @@ async fn insert_purges_at_max_seconds() -> Result<(), Error> {
             evict_bytes: 0,
         },
         MockInstantWrapped::default(),
+        &[],
     );
 
     evicting_map
@@ -297,6 +301,7 @@ async fn get_refreshes_time() -> Result<(), Error> {
             evict_bytes: 0,
         },
         MockInstantWrapped::default(),
+        &[],
     );
 
     evicting_map
@@ -372,6 +377,7 @@ async fn unref_called_on_replace() -> Result<(), Error> {
             evict_bytes: 0,
         },
         MockInstantWrapped::default(),
+        &[],
     );
 
     let (entry1, entry2) = {
@@ -417,6 +423,7 @@ async fn contains_key_refreshes_time() -> Result<(), Error> {
             evict_bytes: 0,
         },
         MockInstantWrapped::default(),
+        &[],
     );
 
     evicting_map
@@ -470,6 +477,7 @@ async fn hashes_equal_sizes_different_doesnt_override() -> Result<(), Error> {
             evict_bytes: 0,
         },
         MockInstantWrapped::default(),
+        &[],
     );
 
     let value1 = BytesWrapper(Bytes::from_static(b"12345678"));
@@ -525,6 +533,7 @@ async fn get_evicts_on_time() -> Result<(), Error> {
             evict_bytes: 0,
         },
         MockInstantWrapped::default(),
+        &[],
     );
 
     let digest_info1: DigestInfo = DigestInfo::try_new(HASH1, 0)?;
@@ -558,6 +567,7 @@ async fn remove_evicts_on_time() -> Result<(), Error> {
             evict_bytes: 0,
         },
         MockInstantWrapped::default(),
+        &[],
     );
 
     let digest_info1: DigestInfo = DigestInfo::try_new(HASH1, 0)?;
@@ -614,6 +624,7 @@ async fn range_multiple_items_test() -> Result<(), Error> {
             evict_bytes: 0,
         },
         MockInstantWrapped::default(),
+        &[],
     );
 
     evicting_map

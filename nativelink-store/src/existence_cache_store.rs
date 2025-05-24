@@ -26,7 +26,9 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_util::metrics::CACHE_TYPE;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use opentelemetry::KeyValue;
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -66,7 +68,11 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
         let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
         Arc::new(Self {
             inner_store,
-            existence_cache: EvictingMap::new(eviction_policy, anchor_time),
+            existence_cache: EvictingMap::new(
+                eviction_policy,
+                anchor_time,
+                &[KeyValue::new(CACHE_TYPE, "existence_cache")],
+            ),
         })
     }
 
