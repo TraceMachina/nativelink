@@ -18,7 +18,7 @@ use core::str::from_utf8;
 use std::io::Cursor;
 use std::sync::Arc;
 
-use bincode::{DefaultOptions, Options};
+use bincode::serde::decode_from_slice;
 use bytes::Bytes;
 use nativelink_config::stores::{CompressionSpec, MemorySpec, StoreSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -59,10 +59,9 @@ fn extract_footer(data: &[u8]) -> Result<Footer, Error> {
         "Expected frame_type to be footer"
     );
 
-    DefaultOptions::new()
-        .with_fixint_encoding()
-        .deserialize::<Footer>(&data[pos..])
-        .map_err(|e| make_err!(Code::Internal, "Failed to deserialize header : {:?}", e))
+    let (footer, _) = decode_from_slice::<Footer, _>(&data[pos..], bincode::config::legacy())
+        .map_err(|e| make_err!(Code::Internal, "Failed to deserialize header : {:?}", e))?;
+    Ok(footer)
 }
 
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
