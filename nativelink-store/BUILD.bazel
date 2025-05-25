@@ -101,6 +101,7 @@ rust_test_suite(
         "tests/filesystem_store_test.rs",
         "tests/gcs_client_test.rs",
         "tests/gcs_store_test.rs",
+        "tests/grpc_store_test.rs",
         "tests/memory_store_test.rs",
         "tests/redis_store_test.rs",
         "tests/ref_store_test.rs",
