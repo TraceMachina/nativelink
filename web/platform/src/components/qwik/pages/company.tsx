@@ -8,7 +8,7 @@ const team = [
   {
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/aaron_mondal.webp",
     name: "Aaron Mondal",
-    title: "Software Engineer",
+    title: "Co-Founder & Software Engineer",
   },
   {
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/tim_potter.webp",
@@ -23,7 +23,7 @@ const team = [
   {
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/marcus_eagan.webp",
     name: "Marcus Eagan",
-    title: "Founder",
+    title: "Co-Founder and Janitor",
   },
 ];
 
