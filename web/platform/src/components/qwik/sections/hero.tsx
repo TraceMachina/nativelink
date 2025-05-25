@@ -6,6 +6,7 @@ const _MockUp =
   "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp";
 const videoMockUp =
   "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_introduction.mp4";
+import { Cloud } from "../../media/icons/icons.tsx";
 
 export const Hero = component$(() => {
   const rotatingText = useSignal("Accelerating Advanced CI");
@@ -89,7 +90,7 @@ export const Hero = component$(() => {
             Clone the repo
           </a>
         </div>
-        <div class="w-full flex justify-center items-center">
+               <div class="w-full flex justify-center items-center">
           <div class="w-9/11 aspect-video relative">
             <video
               src={videoMockUp}
