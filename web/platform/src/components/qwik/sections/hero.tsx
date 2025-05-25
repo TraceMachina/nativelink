@@ -1,11 +1,5 @@
 import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
-import { Background, Cloud } from "../../media/icons/icons.tsx";
-import { BackgroundVideo } from "../components/video.tsx";
-
-const _MockUp =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp";
-const videoMockUp =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_introduction.mp4";
+import { Cloud } from "../../media/icons/icons.tsx";
 
 export const Hero = component$(() => {
   const rotatingText = useSignal("Accelerating Advanced CI");
@@ -38,23 +32,6 @@ export const Hero = component$(() => {
 
   return (
     <div class="relative flex w-full flex-col items-center justify-evenly gap-5 pb-10 text-white overflow-hidden">
-      {/* Background Video */}
-      <BackgroundVideo class="absolute top-10 md:top-[-20vh] left-0 z-0 w-full object-cover" />
-
-      <div class="absolute md:hidden flex justify-center items-center overflow-hidden">
-        <Background class="w-[200vw]" />
-      </div>
-      <div class="absolute hidden md:flex justify-center items-center overflow-hidden">
-        <div class="bg-black/50 w-screen h-screen" />
-      </div>
-
-      {/* Overlay Image */}
-      {/* <img
-        src={Overlay.src}
-        class="absolute left-0 right-0 top-0 z-10 mx-auto h-auto w-full object-cover"
-        alt="Overlay"
-      /> */}
-
       {/* Content */}
       <div class="relative z-20 flex w-full flex-col items-center justify-evenly gap-2 pb-10 pt-36 text-white md:w-[850px]">
         <div class="px-12 md:px-0 md:py-12">
@@ -88,20 +65,6 @@ export const Hero = component$(() => {
           >
             Clone the repo
           </a>
-        </div>
-        <div class="w-full flex justify-center items-center">
-          <div class="w-9/11 aspect-video relative">
-            <video
-              src={videoMockUp}
-              class="w-full h-full object-contain self-center shadow-[0px_0px_50px_0px_rgba(96,80,230,0.3)]"
-              autoplay={false}
-              loop={true}
-              muted={true}
-              poster={_MockUp}
-              controls={true}
-              preload="metadata"
-            />
-          </div>
         </div>
         {/* <img alt="Nativelink UI" src={MockUp} class="w-[80vw] md:w-full" /> */}
       </div>
