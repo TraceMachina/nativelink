@@ -164,7 +164,8 @@ pub struct PushConfig {}
 #[serde(deny_unknown_fields)]
 pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
-    pub cas_stores: HashMap<InstanceName, StoreRefName>,
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub cas_store: StoreRefName,
 
     /// Max number of bytes to send on each grpc stream chunk.
     /// According to <https://github.com/grpc/grpc.github.io/issues/371>
@@ -175,7 +176,10 @@ pub struct ByteStreamConfig {
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_bytes_per_stream: usize,
 
-    /// Maximum number of bytes to decode on each grpc stream chunk.
+    /// Maximum number of bytes to decode on each gRPC stream chunk.
+    /// The gRPC server uses the maximum value across all stores as the global
+    /// limit.
+    ///
     /// Default: 4 MiB
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_decoding_message_size: usize,
@@ -306,7 +310,7 @@ pub struct ServicesConfig {
     /// This is the service used to stream data to and from the CAS.
     /// Bazel's protocol strongly encourages users to use this streaming
     /// interface to interact with the CAS when the data is large.
-    pub bytestream: Option<ByteStreamConfig>,
+    pub bytestream: Option<Vec<WithInstanceName<ByteStreamConfig>>>,
 
     /// These two are collectively the Remote Asset protocol, but it's
     /// defined as two separate services
