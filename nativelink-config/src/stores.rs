@@ -1141,3 +1141,76 @@ pub struct Retry {
     #[serde(default)]
     pub retry_on_errors: Option<Vec<ErrorCode>>,
 }
+
+// This would go in nativelink-config/src/stores.rs
+
+/// Configuration for ExperimentalMongoDB store.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalMongoSpec {
+    /// ExperimentalMongoDB connection string.
+    /// Example: "mongodb://localhost:27017" or "mongodb+srv://cluster.mongodb.net"
+    pub connection_string: String,
+
+    /// The database name to use.
+    /// Default: "nativelink"
+    #[serde(default)]
+    pub database: String,
+
+    /// The collection name for CAS data.
+    /// Default: "cas"
+    #[serde(default)]
+    pub cas_collection: String,
+
+    /// The collection name for scheduler data.
+    /// Default: "scheduler"
+    #[serde(default)]
+    pub scheduler_collection: String,
+
+    /// Prefix to prepend to all keys stored in MongoDB.
+    /// Default: ""
+    #[serde(default)]
+    pub key_prefix: String,
+
+    /// The maximum amount of data to read from MongoDB in a single chunk (in bytes).
+    /// Default: 65536 (64KB)
+    #[serde(default)]
+    pub read_chunk_size: usize,
+
+    /// Maximum number of concurrent uploads allowed.
+    /// Default: 10
+    #[serde(default)]
+    pub max_concurrent_uploads: usize,
+
+    /// Connection timeout in milliseconds.
+    /// Default: 3000
+    #[serde(default)]
+    pub connection_timeout_ms: u64,
+
+    /// Command timeout in milliseconds.
+    /// Default: 10000
+    #[serde(default)]
+    pub command_timeout_ms: u64,
+
+    /// Enable MongoDB change streams for real-time updates.
+    /// Required for scheduler subscriptions.
+    /// Default: false
+    #[serde(default)]
+    pub enable_change_streams: bool,
+
+    /// Write concern 'w' parameter.
+    /// Examples: 1 (acknowledged by one server), "majority", etc.
+    /// Default: None (uses MongoDB default)
+    #[serde(default)]
+    pub write_concern_w: Option<u32>,
+
+    /// Write concern 'j' parameter (journal acknowledgment).
+    /// Default: None (uses MongoDB default)
+    #[serde(default)]
+    pub write_concern_j: Option<bool>,
+
+    /// Write concern timeout in milliseconds.
+    /// Default: None (uses MongoDB default)
+    #[serde(default)]
+    pub write_concern_timeout_ms: Option<u64>,
+}
