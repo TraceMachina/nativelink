@@ -32,6 +32,7 @@ use crate::filesystem_store::FilesystemStore;
 use crate::gcs_store::GcsStore;
 use crate::grpc_store::GrpcStore;
 use crate::memory_store::MemoryStore;
+use crate::mongo_store::ExperimentalMongoStore;
 use crate::noop_store::NoopStore;
 use crate::redis_store::RedisStore;
 use crate::ref_store::RefStore;
@@ -95,6 +96,7 @@ pub fn store_factory<'a>(
             ),
             StoreSpec::Grpc(spec) => GrpcStore::new(spec).await?,
             StoreSpec::Noop(_) => NoopStore::new(),
+            StoreSpec::ExperimentalMongo(spec) => ExperimentalMongoStore::new(spec.clone()).await?,
             StoreSpec::Shard(spec) => {
                 let stores = spec
                     .stores

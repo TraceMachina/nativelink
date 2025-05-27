@@ -25,6 +25,7 @@ pub mod gcs_client;
 pub mod gcs_store;
 pub mod grpc_store;
 pub mod memory_store;
+pub mod mongo_store;
 pub mod noop_store;
 pub mod redis_store;
 mod redis_utils;
