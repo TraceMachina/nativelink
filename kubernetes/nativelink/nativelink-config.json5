@@ -151,11 +151,11 @@
             scheduler: "MAIN_SCHEDULER",
           },
         ],
-        bytestream: {
-          cas_stores: {
-            "": "CAS_MAIN_STORE",
+        bytestream: [
+          {
+            cas_store: "CAS_MAIN_STORE",
           },
-        },
+        ],
       },
     },
     {

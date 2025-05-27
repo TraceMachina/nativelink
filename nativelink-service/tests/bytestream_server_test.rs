@@ -23,8 +23,7 @@ use hyper::body::Frame;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
-use maplit::hashmap;
-use nativelink_config::cas_server::ByteStreamConfig;
+use nativelink_config::cas_server::{ByteStreamConfig, WithInstanceName};
 use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
@@ -72,15 +71,18 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
 
 fn make_bytestream_server(
     store_manager: &StoreManager,
-    config: Option<ByteStreamConfig>,
+    config: Option<Vec<WithInstanceName<ByteStreamConfig>>>,
 ) -> Result<ByteStreamServer, Error> {
-    let config = config.unwrap_or_else(|| ByteStreamConfig {
-        cas_stores: hashmap! {
-            "foo_instance_name".to_string() => "main_cas".to_string(),
-        },
-        persist_stream_on_disconnect_timeout: 0,
-        max_bytes_per_stream: 1024,
-        max_decoding_message_size: 0,
+    let config = config.unwrap_or_else(|| {
+        vec![WithInstanceName {
+            instance_name: "foo_instance_name".to_string(),
+            config: ByteStreamConfig {
+                cas_store: "main_cas".to_string(),
+                persist_stream_on_disconnect_timeout: 0,
+                max_bytes_per_stream: 1024,
+                max_decoding_message_size: 0,
+            },
+        }]
     });
     ByteStreamServer::new(&config, store_manager)
 }
@@ -961,13 +963,14 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
     const WRITE_REQUEST_MSG_WRAPPER_SIZE: usize = 150;
 
     let store_manager = make_store_manager().await?;
-    let config = ByteStreamConfig {
-        cas_stores: hashmap! {
-            INSTANCE_NAME.to_string() => "main_cas".to_string(),
+    let config = vec![WithInstanceName {
+        instance_name: INSTANCE_NAME.to_string(),
+        config: ByteStreamConfig {
+            cas_store: "main_cas".to_string(),
+            max_decoding_message_size: MAX_MESSAGE_SIZE,
+            ..Default::default()
         },
-        max_decoding_message_size: MAX_MESSAGE_SIZE,
-        ..Default::default()
-    };
+    }];
     let bs_server = make_bytestream_server(store_manager.as_ref(), Some(config))
         .expect("Failed to make server");
     let (server_join_handle, mut bs_client) = server_and_client_stub(bs_server).await;
