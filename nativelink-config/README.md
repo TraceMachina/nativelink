@@ -53,11 +53,10 @@ A very basic configuration that's a pure in-memory store is:
       "capabilities": [{
         "instance_name": "main"
       }],
-      "bytestream": {
-        "cas_stores": {
-          "main": "CAS_MAIN_STORE",
-        }
-      }
+      "bytestream": [{
+        "instance_name": "main",
+        "cas_store": "CAS_MAIN_STORE"
+      }]
     }
   }]
 }

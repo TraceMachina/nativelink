@@ -48,11 +48,9 @@
         "ac_store": "AC_MAIN_STORE"
       }],
       "capabilities": [],
-      "bytestream": {
-        "cas_stores": {
-          "": "CAS_MAIN_STORE"
-        }
-      },
+      "bytestream": [{
+        "cas_store": "CAS_MAIN_STORE"
+      }],
       "fetch": {},
       "push": {},
     }
@@ -79,11 +77,9 @@
         "ac_store": "AC_MAIN_STORE"
       }],
       "capabilities": [],
-      "bytestream": {
-        "cas_stores": {
-          "": "CAS_MAIN_STORE"
-        }
-      },
+      "bytestream": [{
+        "cas_store": "CAS_MAIN_STORE"
+      }],
       "health": {}
     }
   }]
