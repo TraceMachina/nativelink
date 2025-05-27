@@ -309,7 +309,7 @@ run the `@rules_rust//tools/rust_analyzer:gen_rust_project` target:
 bazel run @rules_rust//tools/rust_analyzer:gen_rust_project
 ```
 
-This will generate a `rust-project.json` file in the root directory. This file needs to be regenerated every time new files or dependencies are added in order to stay up-to-date. You can configure rust-analyzer can pick it up by setting the [`rust-analyzer.linkedProjects`](https://rust-analyzer.github.io/manual.html#rust-analyzer.linkedProjects) [configuration option](https://rust-analyzer.github.io/manual.html#configuration).
+This will generate a `rust-project.json` file in the root directory. This file needs to be regenerated every time new files or dependencies are added in order to stay up-to-date. You can configure rust-analyzer by setting the [`rust-analyzer.linkedProjects`](https://rust-analyzer.github.io/manual.html#rust-analyzer.linkedProjects) [configuration option](https://rust-analyzer.github.io/manual.html#configuration).
 
 If you use VS Code, you can configure the following `tasks.json` file to automatically generate this file when you open the editor:
 
