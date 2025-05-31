@@ -1,4 +1,4 @@
-import { component$, useSignal } from "@builder.io/qwik";
+import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
 
 const videoLink =
   "https://nativelink-cdn.s3.us-east-1.amazonaws.com/background_file.mp4";
@@ -11,6 +11,16 @@ export const BackgroundVideo = component$<BackgroundVideoProps>(
   ({ class: customClass = "" }) => {
     const videoElementSignal = useSignal<HTMLAudioElement | undefined>();
 
+    useVisibleTask$(() => {
+      const isMobile = window.innerWidth < 768;
+      if (!isMobile && videoElementSignal.value) {
+        videoElementSignal.value.src = videoLink;
+        videoElementSignal.value.load(); 
+        videoElementSignal.value.play().catch((error) => {
+          console.error("Video autoplay failed:", error);
+        });
+      }
+    });
     return (
       <video
         class={`${customClass}`}
@@ -19,7 +29,6 @@ export const BackgroundVideo = component$<BackgroundVideoProps>(
         muted={true}
         ref={videoElementSignal}
         controls={false}
-        src={videoLink}
         playsInline={true}
       >
         <source type="video/mp4" />
