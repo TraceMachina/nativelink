@@ -1,10 +1,11 @@
 {
   nativelink,
-  bst,
+  buildstream,
+  buildbox,
   writeShellScriptBin,
 }:
 writeShellScriptBin "buildstream-with-nativelink-test" ''
-  set -xuo pipefail
+  set -uo pipefail
 
   cleanup() {
     local pids=$(jobs -pr)
@@ -14,7 +15,8 @@ writeShellScriptBin "buildstream-with-nativelink-test" ''
 
   ${nativelink}/bin/nativelink -- integration_tests/buildstream/buildstream_cas.json5 &
 
-  bst_output="$(cd integration_tests/buildstream && ${bst}/bin/bst -c buildstream.conf build hello.bst 2>&1 | tee -i buildstream.log)"
+  # TODO(palfrey): PATH is workaround for https://github.com/NixOS/nixpkgs/issues/248000#issuecomment-2934704963
+  bst_output="$(cd integration_tests/buildstream && PATH=${buildbox}/bin:$PATH ${buildstream}/bin/bst -c buildstream.conf build hello.bst 2>&1 | tee -i buildstream.log)"
 
   case $bst_output in
     *"SUCCESS Build"* )
