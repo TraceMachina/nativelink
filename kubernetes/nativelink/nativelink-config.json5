@@ -2,199 +2,219 @@
 // `~/.cache/nativelink`. When this location is mounted as a PersistentVolume
 // it persists the cache across restarts.
 {
-  "stores": [
+  stores: [
     {
-      "name": "CAS_MAIN_STORE",
-      "existence_cache": {
-        "backend": {
-          "verify": {
-            "verify_size": true,
-            "verify_hash": true,
-            "backend": {
-              "fast_slow": {
-                "fast": {
-                  "size_partitioning":{
-                    "size": "64kb",
-                    "lower_store": {
-                      "memory": {
-                        "eviction_policy": {
-                          "max_bytes": "1gb",
-                          "max_count": 100000
-                        }
-                      }
+      name: "CAS_MAIN_STORE",
+      existence_cache: {
+        backend: {
+          verify: {
+            verify_size: true,
+            verify_hash: true,
+            backend: {
+              fast_slow: {
+                fast: {
+                  size_partitioning: {
+                    size: "64kb",
+                    lower_store: {
+                      memory: {
+                        eviction_policy: {
+                          max_bytes: "1gb",
+                          max_count: 100000,
+                        },
+                      },
                     },
-                    "upper_store": {
-                      "noop": {} // Entries larger than 64kb in slow store.
+                    upper_store: {
+                      noop: {}, // Entries larger than 64kb in slow store.
                     },
-                  }
+                  },
                 },
-                "slow": {
-                  "compression": {
-                    "compression_algorithm": {
-                      "lz4": {}
+                slow: {
+                  compression: {
+                    compression_algorithm: {
+                      lz4: {},
                     },
-                    "backend": {
-                      "filesystem": {
-                        "content_path": "/tmp/nativelink/data/content_path-cas",
-                        "temp_path": "/tmp/nativelink/data/tmp_path-cas",
-                        "eviction_policy": {
-                          "max_bytes": "10Gb"
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }, {
-      "name": "AC_MAIN_STORE",
-      "completeness_checking": {
-        "backend": {
-          "fast_slow": {
-            "fast": {
-              "size_partitioning":{
-                "size": "1kb",
-                "lower_store": {
-                  "memory": {
-                    "eviction_policy": {
-                      "max_bytes": "100mb",
-                      "max_count": 150000
-                    }
-                  }
+                    backend: {
+                      filesystem: {
+                        content_path: "/tmp/nativelink/data/content_path-cas",
+                        temp_path: "/tmp/nativelink/data/tmp_path-cas",
+                        eviction_policy: {
+                          max_bytes: "10Gb",
+                        },
+                      },
+                    },
+                  },
                 },
-                "upper_store": {
-                  "noop": {} // Entries larger than 1kb in slow store.
-                }
-              }
+              },
             },
-            "slow": {
-              "filesystem": {
-                "content_path": "/tmp/nativelink/data/content_path-ac",
-                "temp_path": "/tmp/nativelink/data/tmp_path-ac",
-                "eviction_policy": {
-                  "max_bytes": "1gb"
-                }
-              }
-            }
-          }
+          },
         },
-        "cas_store": {
-          "ref_store": {
-            "name": "CAS_MAIN_STORE"
-          }
-        }
-      }
-    }
-  ],
-  "schedulers": [
+      },
+    },
     {
-      "name": "MAIN_SCHEDULER",
+      name: "AC_MAIN_STORE",
+      completeness_checking: {
+        backend: {
+          fast_slow: {
+            fast: {
+              size_partitioning: {
+                size: "1kb",
+                lower_store: {
+                  memory: {
+                    eviction_policy: {
+                      max_bytes: "100mb",
+                      max_count: 150000,
+                    },
+                  },
+                },
+                upper_store: {
+                  noop: {}, // Entries larger than 1kb in slow store.
+                },
+              },
+            },
+            slow: {
+              filesystem: {
+                content_path: "/tmp/nativelink/data/content_path-ac",
+                temp_path: "/tmp/nativelink/data/tmp_path-ac",
+                eviction_policy: {
+                  max_bytes: "1gb",
+                },
+              },
+            },
+          },
+        },
+        cas_store: {
+          ref_store: {
+            name: "CAS_MAIN_STORE",
+          },
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+
       // TODO(aaronmondal): use the right scheduler because reclient doesn't use the cached results?
       // TODO(aaronmondal): max_bytes_per_stream
-      "simple": {
-        "supported_platform_properties": {
-          "cpu_count": "priority",
-          "memory_kb": "priority",
-          "network_kbps": "priority",
-          "disk_read_iops": "priority",
-          "disk_read_bps": "priority",
-          "disk_write_iops": "priority",
-          "disk_write_bps": "priority",
-          "shm_size": "priority",
-          "gpu_count": "priority",
-          "gpu_model": "priority",
-          "cpu_vendor": "priority",
-          "cpu_arch": "priority",
-          "cpu_model": "priority",
-          "kernel_version": "priority",
-          "OSFamily": "priority",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "priority",
+          memory_kb: "priority",
+          network_kbps: "priority",
+          disk_read_iops: "priority",
+          disk_read_bps: "priority",
+          disk_write_iops: "priority",
+          disk_write_bps: "priority",
+          shm_size: "priority",
+          gpu_count: "priority",
+          gpu_model: "priority",
+          cpu_vendor: "priority",
+          cpu_arch: "priority",
+          cpu_model: "priority",
+          kernel_version: "priority",
+          OSFamily: "priority",
           "container-image": "priority",
           "lre-rs": "priority",
-          "ISA": "exact",
-        }
-      }
-    }
-  ],
-  "servers": [{
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50051"
-      }
-    },
-    "services": {
-      "cas": [{
-        "cas_store": "CAS_MAIN_STORE"
-      }],
-      "ac": [{
-        "ac_store": "AC_MAIN_STORE"
-      }],
-      "capabilities": [{
-        "remote_execution": {
-          "scheduler": "MAIN_SCHEDULER"
-        }
-      }],
-      "execution": [{
-        "cas_store": "CAS_MAIN_STORE",
-        "scheduler": "MAIN_SCHEDULER"
-      }],
-      "bytestream": {
-        "cas_stores": {
-          "": "CAS_MAIN_STORE"
-        }
-      }
-    }
-  },
-  {
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50052",
-        "tls": {
-          "cert_file": "/root/example-do-not-use-in-prod-rootca.crt",
-          "key_file": "/root/example-do-not-use-in-prod-key.pem"
-        }
-      }
-    },
-    "services": {
-      "cas": [{
-        "cas_store": "CAS_MAIN_STORE"
-      }],
-      "ac": [{
-        "ac_store": "AC_MAIN_STORE"
-      }],
-      "capabilities": [{
-        "remote_execution": {
-          "scheduler": "MAIN_SCHEDULER"
-        }
-      }],
-      "execution": [{
-        "cas_store": "CAS_MAIN_STORE",
-        "scheduler": "MAIN_SCHEDULER"
-      }],
-      "bytestream": {
-        "cas_stores": {
-          "": "CAS_MAIN_STORE"
-        }
-      }
-    }
-  },
-  {
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50061"
-      }
-    },
-    "services": {
-      // Note: This should be served on a different port, because it has
-      // a different permission set than the other services.
-      // In other words, this service is a backend api. The ones above
-      // are a frontend api.
-      "worker_api": {
-        "scheduler": "MAIN_SCHEDULER"
+          ISA: "exact",
+        },
       },
-      "health": {}
-    }
-  }]
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        capabilities: [
+          {
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        execution: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        bytestream: {
+          cas_stores: {
+            "": "CAS_MAIN_STORE",
+          },
+        },
+      },
+    },
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50052",
+          tls: {
+            cert_file: "/root/example-do-not-use-in-prod-rootca.crt",
+            key_file: "/root/example-do-not-use-in-prod-key.pem",
+          },
+        },
+      },
+      services: {
+        cas: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        capabilities: [
+          {
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        execution: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        bytestream: {
+          cas_stores: {
+            "": "CAS_MAIN_STORE",
+          },
+        },
+      },
+    },
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        // Note: This should be served on a different port, because it has
+        // a different permission set than the other services.
+        // In other words, this service is a backend api. The ones above
+        // are a frontend api.
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        health: {},
+      },
+    },
+  ],
 }
