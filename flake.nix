@@ -87,7 +87,7 @@
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
           filter = path: type:
-            (builtins.match "^.*(data/SekienAkashita\.jpg|nativelink-config/README\.md)" path != null)
+            (builtins.match "^.*(examples/.+\.json5|data/SekienAkashita\.jpg|nativelink-config/README\.md)" path != null)
             || ((craneLibFor pkgs).filterCargoSources path type);
         };
 
