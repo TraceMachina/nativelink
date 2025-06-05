@@ -148,7 +148,6 @@ build --@rules_rust//:clippy_flag=-Aclippy::ref_option
 build --@rules_rust//:clippy_flag=-Aclippy::too_many_lines
 build --@rules_rust//:clippy_flag=-Aclippy::unused_async
 build --@rules_rust//:clippy_flag=-Aclippy::unused_self
-build --@rules_rust//:clippy_flag=-Aclippy::used_underscore_binding
 
 build --@rules_rust//:clippy.toml=//:clippy.toml
 test --@rules_rust//:rustfmt.toml=//:.rustfmt.toml
