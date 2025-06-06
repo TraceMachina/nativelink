@@ -4,7 +4,7 @@
   writeShellScriptBin,
 }:
 writeShellScriptBin "buildstream-with-nativelink-test" ''
-  set -xuo pipefail
+  set -uo pipefail
 
   cleanup() {
     local pids=$(jobs -pr)
@@ -12,9 +12,9 @@ writeShellScriptBin "buildstream-with-nativelink-test" ''
   }
   trap "cleanup" INT QUIT TERM EXIT
 
-  ${nativelink}/bin/nativelink -- integration_tests/buildstream/buildstream_cas.json5 &
+  ${nativelink}/bin/nativelink -- integration_tests/buildstream/buildstream_cas.json5 | tee -i integration_tests/buildstream/nativelink.log &
 
-  bst_output="$(cd integration_tests/buildstream && ${bst}/bin/bst -c buildstream.conf build hello.bst 2>&1 | tee -i buildstream.log)"
+  bst_output=$(cd integration_tests/buildstream && ${bst}/bin/bst -c buildstream.conf build hello.bst 2>&1 | tee -i buildstream.log)
 
   case $bst_output in
     *"SUCCESS Build"* )
@@ -24,6 +24,18 @@ writeShellScriptBin "buildstream-with-nativelink-test" ''
       echo 'Failed buildstream build:'
       echo $bst_output
       exit 1
+    ;;
+  esac
+
+  nativelink_output=$(cat integration_tests/buildstream/nativelink.log)
+
+  case $nativelink_output in
+    *"ERROR"* )
+      echo "Error in nativelink build"
+      exit 1
+    ;;
+    *)
+      echo 'Successful nativelink build'
     ;;
   esac
 ''

@@ -119,8 +119,12 @@
         "cas_store": "WORKER_FAST_SLOW_STORE",
         "scheduler": "MAIN_SCHEDULER"
       }],
-      "fetch": [],
-      "push": [],
+      "fetch": [{
+        "fetch_store": "WORKER_FAST_SLOW_STORE"
+      }],
+      "push": [{
+        "push_store": "WORKER_FAST_SLOW_STORE"
+      }],
       "capabilities": [{
         "remote_execution": {
           "scheduler": "MAIN_SCHEDULER"
