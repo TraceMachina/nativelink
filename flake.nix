@@ -369,6 +369,7 @@
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
               inherit nativelink bst;
             };
+            generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
           }
           // (
             # It's not possible to crosscompile to darwin, not even between
@@ -397,6 +398,7 @@
         pre-commit.settings = {
           hooks = import ./tools/pre-commit-hooks.nix {
             inherit pkgs;
+            inherit (packages) generate-bazel-rc;
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
