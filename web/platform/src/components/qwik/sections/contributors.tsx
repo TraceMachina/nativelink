@@ -3,6 +3,7 @@ import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
 import { Label } from "../components/text.tsx";
 
 import {
+  Browserbase,
   Citrix,
   MenloSecurity,
   Meta,
@@ -48,6 +49,9 @@ export const Contributors = component$(() => {
     },
     {
       img: <ThirdWave width={logo_width} />,
+    },
+    {
+      img: <Browserbase width={logo_width} />,
     },
   ];
 
