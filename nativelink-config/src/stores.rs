@@ -954,6 +954,12 @@ pub struct RedisSpec {
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
     pub addresses: Vec<String>,
 
+    /// The Redis database number to select.
+    ///
+    /// Defaults to 0.
+    #[serde(default)]
+    pub db: u32,
+
     /// The response timeout for the Redis connection in seconds.
     ///
     /// Default: 10
