@@ -14,7 +14,7 @@ bazel_dep(name = "rules_cc", version = "0.1.1")
 
 # Use the starlark implementation of Java rules instead of the builtin ones.
 bazel_dep(name = "rules_java", version = "8.11.0")
-bazel_dep(name = "rules_rust", version = "0.59.1")
+bazel_dep(name = "rules_rust", version = "0.61.0")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
 
 lre_rs = use_extension("//rust:extension.bzl", "lre_rs")
