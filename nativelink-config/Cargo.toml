@@ -6,6 +6,8 @@ name = "nativelink-config"
 version = "0.6.0"
 
 [dependencies]
+nativelink-error = { path = "../nativelink-error" }
+
 byte-unit = { version = "5.1.6", default-features = false, features = ["byte"] }
 humantime = "2.2.0"
 serde = { version = "1.0.219", default-features = false, features = ["derive"] }
@@ -16,4 +18,6 @@ shellexpand = { version = "3.1.0", default-features = false, features = [
 
 [dev-dependencies]
 pretty_assertions = { version = "1.4.1", features = ["std"] }
-serde_json = { version = "1.0.140", default-features = false }
+serde_json = { version = "1.0.140", default-features = false, features = [
+  "std",
+] }

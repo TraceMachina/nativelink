@@ -822,11 +822,7 @@ async fn inner_main(
 
 fn get_config() -> Result<CasConfig, Box<dyn core::error::Error>> {
     let args = Args::parse();
-    let json_contents = String::from_utf8(
-        std::fs::read(&args.config_file)
-            .err_tip(|| format!("Could not open config file {}", args.config_file))?,
-    )?;
-    Ok(serde_json5::from_str(&json_contents)?)
+    CasConfig::from_json5_file(&args.config_file)
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
