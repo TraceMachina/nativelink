@@ -173,4 +173,13 @@ in {
     name = "buildifier lint";
     types = ["bazel"];
   };
+
+  # json5
+  formatjson5 = {
+    description = "Format json5 files";
+    enable = true;
+    entry = "${pkgs.formatjson5}/bin/formatjson5";
+    args = ["-r" "--indent" "2"];
+    types = ["json5"];
+  };
 }
