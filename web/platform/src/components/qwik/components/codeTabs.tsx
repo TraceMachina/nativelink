@@ -45,14 +45,14 @@ export const CodeTabs = component$(
             <pre class="text-sm">
               <code class="whitespace-pre-wrap">
                 curl -O \{"\n"}
-                https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json
+                https://raw.githubusercontent.com/TraceMachina/nativelink/v0.6.0/nativelink-config/examples/basic_cas.json5
                 {"\n\n"}# See{"\n"}
                 https://github.com/TraceMachina/nativelink/pkgs/container/nativelink
                 {"\n\n"}
                 docker run \{"\n"}
                 -v $(pwd)/basic_cas.json:/config \{"\n"}
                 -p 50051:50051 \{"\n"}
-                ghcr.io/tracemachina/nativelink:v0.5.3 \{"\n"}
+                ghcr.io/tracemachina/nativelink:v0.6.0 \{"\n"}
                 config
               </code>
             </pre>
@@ -61,12 +61,12 @@ export const CodeTabs = component$(
             <pre class="text-sm">
               <code class="whitespace-pre-wrap">
                 curl.exe -O \{"\n"}
-                https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json
+                https://raw.githubusercontent.com/TraceMachina/nativelink/v0.6.0/nativelink-config/examples/basic_cas.json5
                 {"\n\n"}
                 docker run \{"\n"}
                 -v $(pwd)/basic_cas.json:/config \{"\n"}
                 -p 50051:50051 \{"\n"}
-                ghcr.io/tracemachina/nativelink:v0.5.3 \{"\n"}
+                ghcr.io/tracemachina/nativelink:v0.6.0 \{"\n"}
                 config
               </code>
             </pre>
