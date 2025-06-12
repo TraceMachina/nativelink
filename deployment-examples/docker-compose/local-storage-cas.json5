@@ -4,87 +4,100 @@
 // so objects are compressed, deduplicated and uses some in-memory
 // optimizations for certain hot paths.
 {
-  "stores": [
+  stores: [
     {
-      "name": "CAS_MAIN_STORE",
-      "compression": {
-        "compression_algorithm": {
-          "lz4": {}
+      name: "CAS_MAIN_STORE",
+      compression: {
+        compression_algorithm: {
+          lz4: {},
         },
-        "backend": {
-          "filesystem": {
-            "content_path": "~/.cache/nativelink/content_path-cas",
-            "temp_path": "~/.cache/nativelink/tmp_path-cas",
-            "eviction_policy": {
+        backend: {
+          filesystem: {
+            content_path: "~/.cache/nativelink/content_path-cas",
+            temp_path: "~/.cache/nativelink/tmp_path-cas",
+            eviction_policy: {
               // 10gb.
-              "max_bytes": 10000000000
-            }
-          }
-        }
-      }
-    }, {
-      "name": "AC_MAIN_STORE",
-      "filesystem": {
-        "content_path": "~/.cache/nativelink/content_path-ac",
-        "temp_path": "~/.cache/nativelink/tmp_path-ac",
-        "eviction_policy": {
+              max_bytes: 10000000000,
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "~/.cache/nativelink/content_path-ac",
+        temp_path: "~/.cache/nativelink/tmp_path-ac",
+        eviction_policy: {
           // 500mb.
-          "max_bytes": 500000000
-        }
-      }
-    }
+          max_bytes: 500000000,
+        },
+      },
+    },
   ],
-  "servers": [{
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50051"
-      }
-    },
-    "services": {
-      "cas": [{
-        "cas_store": "CAS_MAIN_STORE"
-      }],
-      "ac": [{
-        "ac_store": "AC_MAIN_STORE"
-      }],
-      "capabilities": [],
-      "bytestream": {
-        "cas_stores": {
-          "": "CAS_MAIN_STORE"
-        }
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
       },
-      "fetch": {},
-      "push": {},
-    }
-  }, {
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50071",
-        "tls": {
-          "cert_file": "/root/example-do-not-use-in-prod-rootca.crt",
-          "key_file": "/root/example-do-not-use-in-prod-key.pem"
-        }
-      }
-    },
-    // Each of the services below is keyed on an instance_name.
-    // By default, an empty string is used, but if a different
-    // instance_name is provided, the instance name must be
-    // specified by the invoking tool (e.g. using
-    // `--remote_instance_name=` for Bazel)
-    "services": {
-      "cas": [{
-        "cas_store": "CAS_MAIN_STORE"
-      }],
-      "ac": [{
-        "ac_store": "AC_MAIN_STORE"
-      }],
-      "capabilities": [],
-      "bytestream": {
-        "cas_stores": {
-          "": "CAS_MAIN_STORE"
-        }
+      services: {
+        cas: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        capabilities: [],
+        bytestream: {
+          cas_stores: {
+            "": "CAS_MAIN_STORE",
+          },
+        },
+        fetch: {},
+        push: {},
       },
-      "health": {}
-    }
-  }]
+    },
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50071",
+          tls: {
+            cert_file: "/root/example-do-not-use-in-prod-rootca.crt",
+            key_file: "/root/example-do-not-use-in-prod-key.pem",
+          },
+        },
+      },
+
+      // Each of the services below is keyed on an instance_name.
+      // By default, an empty string is used, but if a different
+      // instance_name is provided, the instance name must be
+      // specified by the invoking tool (e.g. using
+      // `--remote_instance_name=` for Bazel)
+      services: {
+        cas: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        capabilities: [],
+        bytestream: {
+          cas_stores: {
+            "": "CAS_MAIN_STORE",
+          },
+        },
+        health: {},
+      },
+    },
+  ],
 }

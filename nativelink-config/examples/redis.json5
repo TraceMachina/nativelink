@@ -1,72 +1,83 @@
 {
-  "stores": [
+  stores: [
     {
-      "name": "CAS_FAST_SLOW_STORE",
-      "redis_store": {
-        "addresses": ["redis://127.0.0.1:6379/"],
-        "mode": "cluster"
-      }
-    }, {
-      "name": "AC_FAST_SLOW_STORE",
-      "redis_store": {
-        "addresses": ["redis://127.0.0.1:6379/"],
-        "mode": "cluster"
-      }
-    }, {
-      "name": "AC_MAIN_STORE",
-      "completeness_checking": {
-        "backend": {
-          "ref_store": {
-            "name": "AC_FAST_SLOW_STORE"
-          }
-        },
-        "cas_store": {
-          "ref_store": {
-            "name": "CAS_MAIN_STORE"
-          }
-        }
-      }
-    }, {
-      "name": "CAS_MAIN_STORE",
-      "existence_cache": {
-        "backend": {
-          "compression": {
-            "compression_algorithm": {
-              "lz4": {}
-            },
-            "backend": {
-              "ref_store": {
-                "name": "CAS_FAST_SLOW_STORE"
-              }
-            }
-          }
-        }
-      }
-    }
-  ],
-  "servers": [
-    {
-      "listener": {
-        "http": {
-          "socket_address": "0.0.0.0:50051"
-        }
+      name: "CAS_FAST_SLOW_STORE",
+      redis_store: {
+        addresses: [
+          "redis://127.0.0.1:6379/",
+        ],
+        mode: "cluster",
       },
-      "services": {
-        "cas": [{
-          "instance_name": "main",
-          "cas_store": "CAS_MAIN_STORE"
-        }],
-        "ac": [{
-          "instance_name": "main",
-          "ac_store": "AC_MAIN_STORE"
-        }],
-        "capabilities": [],
-        "bytestream": {
-          "cas_stores": {
-            "main": "CAS_MAIN_STORE"
-          }
-        }
-      }
-    }
-  ]
+    },
+    {
+      name: "AC_FAST_SLOW_STORE",
+      redis_store: {
+        addresses: [
+          "redis://127.0.0.1:6379/",
+        ],
+        mode: "cluster",
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      completeness_checking: {
+        backend: {
+          ref_store: {
+            name: "AC_FAST_SLOW_STORE",
+          },
+        },
+        cas_store: {
+          ref_store: {
+            name: "CAS_MAIN_STORE",
+          },
+        },
+      },
+    },
+    {
+      name: "CAS_MAIN_STORE",
+      existence_cache: {
+        backend: {
+          compression: {
+            compression_algorithm: {
+              lz4: {},
+            },
+            backend: {
+              ref_store: {
+                name: "CAS_FAST_SLOW_STORE",
+              },
+            },
+          },
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        capabilities: [],
+        bytestream: {
+          cas_stores: {
+            main: "CAS_MAIN_STORE",
+          },
+        },
+      },
+    },
+  ],
 }
