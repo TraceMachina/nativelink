@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 
+use nativelink_error::{Error, ResultExt};
 use serde::Deserialize;
 
 use crate::schedulers::SchedulerSpec;
@@ -820,4 +821,12 @@ pub struct CasConfig {
 
     /// Any global configurations that apply to all modules live here.
     pub global: Option<GlobalConfig>,
+}
+
+impl CasConfig {
+    pub fn try_from_json5_file(config_file: &str) -> Result<Self, Error> {
+        let json_contents = std::fs::read_to_string(config_file)
+            .err_tip(|| format!("Could not open config file {config_file}"))?;
+        Ok(serde_json5::from_str(&json_contents)?)
+    }
 }
