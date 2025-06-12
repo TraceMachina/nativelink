@@ -23,3 +23,5 @@ rust-project.json
 darwin.bazelrc
 nativelink.bazelrc
 integration_tests/buildstream/*.log
+integration_tests/buck2/*.log
+buck-out/
