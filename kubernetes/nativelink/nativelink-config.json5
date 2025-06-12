@@ -7,16 +7,42 @@
       "name": "CAS_MAIN_STORE",
       "existence_cache": {
         "backend": {
-          "compression": {
-            "compression_algorithm": {
-              "lz4": {}
-            },
+          "verify": {
+            "verify_size": true,
+            "verify_hash": true,
             "backend": {
-              "filesystem": {
-                "content_path": "/tmp/nativelink/data/content_path-cas",
-                "temp_path": "/tmp/nativelink/data/tmp_path-cas",
-                "eviction_policy": {
-                  "max_bytes": "10Gb"
+              "fast_slow": {
+                "fast": {
+                  "size_partitioning":{
+                    "size": "64kb",
+                    "lower_store": {
+                      "memory": {
+                        "eviction_policy": {
+                          "max_bytes": "1gb",
+                          "max_count": 100000
+                        }
+                      }
+                    },
+                    "upper_store": {
+                      "noop": {} // Entries larger than 64kb in slow store.
+                    },
+                  }
+                },
+                "slow": {
+                  "compression": {
+                    "compression_algorithm": {
+                      "lz4": {}
+                    },
+                    "backend": {
+                      "filesystem": {
+                        "content_path": "/tmp/nativelink/data/content_path-cas",
+                        "temp_path": "/tmp/nativelink/data/tmp_path-cas",
+                        "eviction_policy": {
+                          "max_bytes": "10Gb"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -27,11 +53,31 @@
       "name": "AC_MAIN_STORE",
       "completeness_checking": {
         "backend": {
-          "filesystem": {
-            "content_path": "/tmp/nativelink/data/content_path-ac",
-            "temp_path": "/tmp/nativelink/data/tmp_path-ac",
-            "eviction_policy": {
-              "max_bytes": "500Mb"
+          "fast_slow": {
+            "fast": {
+              "size_partitioning":{
+                "size": "1kb",
+                "lower_store": {
+                  "memory": {
+                    "eviction_policy": {
+                      "max_bytes": "100mb",
+                      "max_count": 150000
+                    }
+                  }
+                },
+                "upper_store": {
+                  "noop": {} // Entries larger than 1kb in slow store.
+                }
+              }
+            },
+            "slow": {
+              "filesystem": {
+                "content_path": "/tmp/nativelink/data/content_path-ac",
+                "temp_path": "/tmp/nativelink/data/tmp_path-ac",
+                "eviction_policy": {
+                  "max_bytes": "1gb"
+                }
+              }
             }
           }
         },

@@ -37,6 +37,7 @@ export const starlightConfig = {
       },
     }),
   ],
+  routeMiddleware: "./src/routeData.ts",
   sidebar: [
     // The documentation structure follows the Diátaxis framework.
     // See https://diataxis.fr/ for details.
