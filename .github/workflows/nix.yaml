@@ -97,7 +97,7 @@ jobs:
     name: ${{ matrix.test-name }}
     strategy:
       matrix:
-          test-name: [buildstream, mongo, rbe-toolchain]
+          test-name: [buildstream, mongo, buck2, rbe-toolchain]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
