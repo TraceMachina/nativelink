@@ -1,0 +1,9 @@
+[package]
+edition = "2024"
+name = "generate-bazel-rc"
+version = "0.1.0"
+
+[dependencies]
+toml = "0.8.22"
+
+[workspace]
