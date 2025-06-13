@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
-use std::task::{ready, Context};
+use core::pin::Pin;
+use core::task::{Context, ready};
 
 use bytes::Bytes;
 use futures::task::Poll;

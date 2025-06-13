@@ -14,8 +14,8 @@
 # limitations under the License.
 
 if [[ $UNDER_TEST_RUNNER -ne 1 ]]; then
-  echo "This script should be run under run_integration_tests.sh"
-  exit 1
+    echo "This script should be run under run_integration_tests.sh"
+    exit 1
 fi
 
 RESULTS=$(curl --retry 5 --insecure --cacert ./example-do-not-use-in-prod-rootca.crt --key ./example-do-not-use-in-prod-key1.pem https://127.0.0.1:50071/status 2>&1)
@@ -23,8 +23,8 @@ RESULTS=$(curl --retry 5 --insecure --cacert ./example-do-not-use-in-prod-rootca
 echo "Results from curl: $RESULTS"
 
 if echo "$RESULTS" | grep -q "Ok"; then
-  echo "Curl returned 'Ok' status via TLS"
+    echo "Curl returned 'Ok' status via TLS"
 else
-  echo "Expected curl to be able to get 'Ok' status via TLS"
-  exit 1
+    echo "Expected curl to be able to get 'Ok' status via TLS"
+    exit 1
 fi

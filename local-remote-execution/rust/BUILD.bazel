@@ -82,7 +82,7 @@ config_setting(
             "fastbuild": "0",
             "opt": "0",
         },
-        default_edition = "2021",
+        default_edition = "2024",
         dylib_ext = select({
             "@platforms//os:linux": ".so",
             "@platforms//os:macos": ".dylib",

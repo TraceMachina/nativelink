@@ -148,6 +148,8 @@ async fn test_channel_body_cancellation() {
         let mut body = body;
         for _ in 0..2 {
             match body.frame().await {
+                #[expect(clippy::print_stdout, reason = "improves debugging")]
+                #[expect(clippy::use_debug, reason = "improves debugging")]
                 Some(Ok(frame)) => {
                     println!("Received: {:?}", frame.into_data().unwrap());
                 }

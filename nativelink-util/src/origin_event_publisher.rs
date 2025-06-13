@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use bytes::BytesMut;
-use futures::{future, FutureExt};
+use futures::{FutureExt, future};
 use nativelink_proto::com::github::trace_machina::nativelink::events::{OriginEvent, OriginEvents};
 use prost::Message;
 use tokio::sync::{broadcast, mpsc};
@@ -25,6 +25,7 @@ use crate::shutdown_guard::{Priority, ShutdownGuard};
 use crate::store_trait::{Store, StoreLike};
 
 /// Publishes origin events to the store.
+#[derive(Debug)]
 pub struct OriginEventPublisher {
     store: Store,
     rx: mpsc::Receiver<OriginEvent>,
@@ -86,13 +87,14 @@ impl OriginEventPublisher {
     async fn handle_batch(&self, batch: &mut Vec<OriginEvent>) {
         let uuid = Uuid::now_v6(&get_node_id(None));
         let events = OriginEvents {
-            // Clippy wants us to use use `mem::take`, but this would
-            // move all capacity as well to the new vector. Since it is
-            // much more likely that we will have a small number of events
-            // in the batch, we prefer to use `drain` and `collect` here,
-            // so we only need to allocate the exact amount of memory needed
-            // and let the batch vector's capacity be reused.
-            #[allow(clippy::drain_collect)]
+            #[expect(
+                clippy::drain_collect,
+                reason = "Clippy wants us to use use `mem::take`, but this would move all capacity \
+                    as well to the new vector. Since it is much more likely that we will have a \
+                    small number of events in the batch, we prefer to use `drain` and `collect` \
+                    here, so we only need to allocate the exact amount of memory needed and let \
+                    the batch vector's capacity be reused."
+            )]
             events: batch.drain(..).collect(),
         };
         let mut data = BytesMut::new();

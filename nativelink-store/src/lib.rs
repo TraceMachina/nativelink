@@ -14,6 +14,7 @@
 
 pub mod ac_utils;
 pub mod cas_utils;
+pub mod common_s3_utils;
 pub mod completeness_checking_store;
 pub mod compression_store;
 pub mod dedup_store;
@@ -21,6 +22,8 @@ pub mod default_store_factory;
 pub mod existence_cache_store;
 pub mod fast_slow_store;
 pub mod filesystem_store;
+pub mod gcs_client;
+pub mod gcs_store;
 pub mod grpc_store;
 pub mod memory_store;
 pub mod noop_store;

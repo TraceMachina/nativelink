@@ -4,10 +4,14 @@ name: Nix
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
   pull_request:
     branches: [main]
     paths-ignore:
-      - 'docs/**'
+      - '.github/styles/**'
+      - 'web/**'
 
 permissions: read-all
 
@@ -74,7 +78,6 @@ jobs:
         os:
           - ubuntu-22.04
           - ubuntu-24.04
-          - macos-13
           - macos-14
           - macos-15
     name: Installation / ${{ matrix.os }}
@@ -91,3 +94,19 @@ jobs:
       - name: Test nix run
         run: |
           nix run -L .#nativelink-is-executable-test
+
+  buildstream:
+    name: buildstream
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+
+      - name: Test buildstream run
+        run: |
+          nix run -L .#buildstream-with-nativelink-test

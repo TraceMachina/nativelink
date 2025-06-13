@@ -35,6 +35,15 @@ pub struct PropertyModifierScheduler {
     known_properties: Mutex<HashMap<String, Vec<String>>>,
 }
 
+impl core::fmt::Debug for PropertyModifierScheduler {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PropertyModifierScheduler")
+            .field("modifications", &self.modifications)
+            .field("known_properties", &self.known_properties)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PropertyModifierScheduler {
     pub fn new(spec: &PropertyModifierSpec, scheduler: Arc<dyn ClientStateManager>) -> Self {
         Self {
@@ -62,10 +71,10 @@ impl PropertyModifierScheduler {
         );
         for modification in &self.modifications {
             match modification {
-                PropertyModification::remove(name) => {
+                PropertyModification::Remove(name) => {
                     known_properties.insert(name.clone());
                 }
-                PropertyModification::add(_) => (),
+                PropertyModification::Add(_) => (),
             }
         }
         let final_known_properties: Vec<String> = known_properties.into_iter().collect();
@@ -84,10 +93,10 @@ impl PropertyModifierScheduler {
         let action_info_mut = Arc::make_mut(&mut action_info);
         for modification in &self.modifications {
             match modification {
-                PropertyModification::add(addition) => action_info_mut
+                PropertyModification::Add(addition) => action_info_mut
                     .platform_properties
                     .insert(addition.name.clone(), addition.value.clone()),
-                PropertyModification::remove(name) => {
+                PropertyModification::Remove(name) => {
                     action_info_mut.platform_properties.remove(name)
                 }
             };

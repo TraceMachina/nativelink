@@ -3,6 +3,7 @@ load(
     "rust_doc",
     "rust_doc_test",
     "rust_library",
+    "rust_test",
     "rust_test_suite",
 )
 
@@ -15,8 +16,11 @@ rust_library(
         "src/capabilities_server.rs",
         "src/cas_server.rs",
         "src/execution_server.rs",
+        "src/fetch_server.rs",
         "src/health_server.rs",
         "src/lib.rs",
+        "src/push_server.rs",
+        "src/remote_asset_proto.rs",
         "src/worker_api_server.rs",
     ],
     visibility = ["//visibility:public"],
@@ -33,10 +37,14 @@ rust_library(
         "@crates//:http-body",
         "@crates//:http-body-util",
         "@crates//:hyper-1.6.0",
+        "@crates//:opentelemetry",
+        "@crates//:opentelemetry-semantic-conventions",
         "@crates//:parking_lot",
         "@crates//:prost",
+        "@crates//:prost-types",
         "@crates//:rand",
         "@crates//:serde_json5",
+        "@crates//:sha2",
         "@crates//:tokio",
         "@crates//:tonic",
         "@crates//:tower",
@@ -53,6 +61,8 @@ rust_test_suite(
         "tests/bep_server_test.rs",
         "tests/bytestream_server_test.rs",
         "tests/cas_server_test.rs",
+        "tests/fetch_server_test.rs",
+        "tests/push_server_test.rs",
         "tests/worker_api_server_test.rs",
     ],
     proc_macro_deps = [
@@ -71,6 +81,7 @@ rust_test_suite(
         "@crates//:async-lock",
         "@crates//:bytes",
         "@crates//:futures",
+        "@crates//:hex",
         "@crates//:http-body-util",
         "@crates//:hyper-1.6.0",
         "@crates//:hyper-util",
@@ -78,10 +89,30 @@ rust_test_suite(
         "@crates//:pretty_assertions",
         "@crates//:prost",
         "@crates//:prost-types",
+        "@crates//:sha2",
         "@crates//:tokio",
         "@crates//:tokio-stream",
         "@crates//:tonic",
         "@crates//:tower",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-service",
+    proc_macro_deps = [
+        "//nativelink-macro",
+        "@crates//:async-trait",
+    ],
+    deps = [
+        "//nativelink-metric",
+        "@crates//:async-lock",
+        "@crates//:hyper",
+        "@crates//:hyper-util",
+        "@crates//:maplit",
+        "@crates//:pretty_assertions",
+        "@crates//:prost-types",
     ],
 )
 

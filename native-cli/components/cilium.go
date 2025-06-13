@@ -28,7 +28,7 @@ func (component *Cilium) Install(
 	name string,
 ) ([]pulumi.Resource, error) {
 	gatewayAPI, err := yaml.NewConfigFile(ctx, name, &yaml.ConfigFileArgs{
-		File: "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/experimental-install.yaml",
+		File: "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/experimental-install.yaml",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errPulumi, err)
@@ -188,7 +188,7 @@ func defaultPool(
 			},
 			OtherFields: map[string]interface{}{
 				"spec": pulumi.Map{
-					"cidrs": pulumi.Array{
+					"blocks": pulumi.Array{
 						pulumi.Map{
 							"cidr": pulumi.String(ciliumIPCIDR),
 						},

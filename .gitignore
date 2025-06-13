@@ -14,7 +14,6 @@ __pycache__
 .DS_Store
 .pre-commit-config.yaml
 result
-user.bazelrc
 MODULE.bazel.lock
 trivy-results.sarif
 Pulumi.dev.yaml
@@ -23,3 +22,4 @@ nixos.bazelrc
 rust-project.json
 darwin.bazelrc
 nativelink.bazelrc
+integration_tests/buildstream/*.log

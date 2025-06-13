@@ -11,7 +11,7 @@ Remote Execution page in the NativeLink Cloud to enable RBE.
 This guide shows how to configure remote build execution (RBE) for your
 [Bazel](https://bazel.build/) projects with the
 [NativeLink Cloud](https://app.nativelink.com). Before using this guide
-make sure you have followed our [Bazel Quickstart](/nativelink-cloud/bazel).
+make sure you have followed our [Bazel Quickstart](/docs/nativelink-cloud/bazel).
 
 ## Basic Configuration
 To enable RBE all you need to do is add the below flag to your Bazel builds:
@@ -42,11 +42,11 @@ credentials to allow us to pull your RBE images.
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-<Tabs syncKey="platfomr">
+<Tabs syncKey="platform">
   <TabItem label="AWS">
     ```bash
-    --remote_default_exec_properties="container-image=docker://123456789100.dkr.ecr.us-east-2.amazonaws.com/rbe-images:tag"
-    --remote_exec_header=x-nativelink-rbe-registry-server=123456789100.dkr.ecr.us-east-2.amazonaws.com
+    --remote_default_exec_properties="container-image=docker://YOUR_AWS_ACCOUNT.dkr.ecr.YOUR_REGION.amazonaws.com/rbe-images:tag"
+    --remote_exec_header=x-nativelink-rbe-registry-server=YOUR_AWS_ACCOUNT.dkr.ecr.YOUR_REGION.amazonaws.com
     --remote_exec_header=x-nativelink-rbe-registry-username=AWS
     --remote_exec_header=x-nativelink-rbe-registry-password="$(aws ecr get-login-password --region YOUR_REGION)"
     ```

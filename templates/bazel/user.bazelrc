@@ -1,0 +1,8 @@
+# Replace with credentials from https://app.nativelink.com/.
+build --remote_cache=grpcs://TODO
+build --remote_header=x-nativelink-api-key=TODO
+build --bes_backend=grpcs://TODO
+build --bes_header=x-nativelink-api-key=TODO
+build --bes_results_url=TODO
+build --remote_timeout=600
+build --remote_executor=grpcs://TODO

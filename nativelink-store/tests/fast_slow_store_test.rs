@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::stores::{FastSlowSpec, MemorySpec, NoopSpec, StoreSpec};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_store::fast_slow_store::FastSlowStore;
@@ -27,7 +27,7 @@ use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::noop_store::NoopStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike};
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
@@ -40,8 +40,8 @@ fn make_stores() -> (Store, Store, Store) {
     let slow_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let fast_slow_store = Store::new(FastSlowStore::new(
         &FastSlowSpec {
-            fast: StoreSpec::memory(MemorySpec::default()),
-            slow: StoreSpec::memory(MemorySpec::default()),
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -283,7 +283,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
         ) -> Result<(), Error> {
             // Gets called in the slow store and we provide the data that's
             // sent to the upstream and the fast store.
-            let bytes = length.unwrap_or(key.into_digest().size_bytes()) - offset;
+            let bytes = length.unwrap_or_else(|| key.into_digest().size_bytes()) - offset;
             let data = vec![0_u8; bytes as usize];
             writer.send(Bytes::copy_from_slice(&data)).await?;
             writer.send_eof()
@@ -293,11 +293,11 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             self
         }
 
-        fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static) {
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
             self
         }
 
-        fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
             self
         }
     }
@@ -330,8 +330,8 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
     let fast_slow_store = FastSlowStore::new(
         &FastSlowSpec {
-            fast: StoreSpec::memory(MemorySpec::default()),
-            slow: StoreSpec::memory(MemorySpec::default()),
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
         },
         fast_store,
         slow_store,
@@ -371,8 +371,8 @@ async fn ignore_value_in_fast_store() -> Result<(), Error> {
     let slow_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &FastSlowSpec {
-            fast: StoreSpec::memory(MemorySpec::default()),
-            slow: StoreSpec::memory(MemorySpec::default()),
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
         },
         fast_store.clone(),
         slow_store,
@@ -394,8 +394,8 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
     let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let slow_store = Store::new(NoopStore::new());
     let fast_slow_store_config = FastSlowSpec {
-        fast: StoreSpec::memory(MemorySpec::default()),
-        slow: StoreSpec::noop(NoopSpec::default()),
+        fast: StoreSpec::Memory(MemorySpec::default()),
+        slow: StoreSpec::Noop(NoopSpec::default()),
     };
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &fast_slow_store_config,

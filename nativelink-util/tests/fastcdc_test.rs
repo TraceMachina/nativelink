@@ -57,10 +57,10 @@ async fn test_all_zeros() -> Result<(), std::io::Error> {
 }
 
 #[nativelink_test]
-async fn test_sekien_16k_chunks() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_sekien_16k_chunks() -> Result<(), Box<dyn core::error::Error>> {
     let contents = include_bytes!("data/SekienAkashita.jpg");
     let mut cursor = Cursor::new(&contents);
-    let mut frame_reader = FramedRead::new(&mut cursor, FastCDC::new(8192, 16384, 32768));
+    let mut frame_reader = FramedRead::new(&mut cursor, FastCDC::new(0x2000, 0x4000, 0x8000));
 
     let mut frames = vec![];
     let mut sum_frame_len = 0;
@@ -74,7 +74,7 @@ async fn test_sekien_16k_chunks() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(frames[1].len(), 8282);
     assert_eq!(frames[2].len(), 16303);
     assert_eq!(frames[3].len(), 18696);
-    assert_eq!(frames[4].len(), 32768);
+    assert_eq!(frames[4].len(), 0x8000);
     assert_eq!(frames[5].len(), 11052);
     assert_eq!(sum_frame_len, contents.len());
     Ok(())
@@ -89,8 +89,9 @@ async fn test_random_20mb_16k_chunks() -> Result<(), std::io::Error> {
         data
     };
     let mut cursor = Cursor::new(&data);
-    let mut frame_reader = FramedRead::new(&mut cursor, FastCDC::new(1024, 2048, 4096));
+    let mut frame_reader = FramedRead::new(&mut cursor, FastCDC::new(0x1000, 0x2000, 0x4000));
 
+    #[expect(clippy::collection_is_never_read, reason = "avoid empty loop")]
     let mut lens = vec![];
     for frame in get_frames(&mut frame_reader).await? {
         lens.push(frame.len());
@@ -163,11 +164,10 @@ async fn insert_garbage_check_boundaries_recover_test() -> Result<(), std::io::E
         for key in left_keys {
             let maybe_right_frame = right_frames.get(key);
             if maybe_right_frame.is_none() {
-                println!("missing {key}");
                 assert_eq!(
                     expected_missing_hashes.contains(key),
                     true,
-                    "Expected to find: {}",
+                    "Expected to find key: {}",
                     key
                 );
                 expected_missing_hashes.remove(key);

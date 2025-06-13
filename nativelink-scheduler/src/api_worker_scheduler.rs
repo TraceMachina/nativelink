@@ -12,31 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ops::{Deref, DerefMut};
+use core::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use async_lock::Mutex;
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
-use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_metric::{
-    group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
-    RootMetricsComponent,
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    RootMetricsComponent, group,
 };
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::Notify;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tonic::async_trait;
-use tracing::{event, Level};
+use tracing::{error, warn};
 
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
 
+#[derive(Debug)]
 struct Workers(LruCache<WorkerId, Worker>);
 
 impl Deref for Workers {
@@ -54,7 +55,7 @@ impl DerefMut for Workers {
 }
 
 // Note: This could not be a derive macro because this derive-macro
-// does n ot support LruCache and nameless field structs.
+// does not support LruCache and nameless field structs.
 impl MetricsComponent for Workers {
     fn publish(
         &self,
@@ -73,7 +74,7 @@ impl MetricsComponent for Workers {
 /// A collection of workers that are available to run tasks.
 #[derive(MetricsComponent)]
 struct ApiWorkerSchedulerImpl {
-    /// A `LruCache` of workers availabled based on `allocation_strategy`.
+    /// A `LruCache` of workers available based on `allocation_strategy`.
     #[metric(group = "workers")]
     workers: Workers,
 
@@ -86,6 +87,17 @@ struct ApiWorkerSchedulerImpl {
     worker_change_notify: Arc<Notify>,
     /// A channel to notify that an operation is still alive.
     operation_keep_alive_tx: UnboundedSender<(OperationId, WorkerId)>,
+}
+
+impl core::fmt::Debug for ApiWorkerSchedulerImpl {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ApiWorkerSchedulerImpl")
+            .field("workers", &self.workers)
+            .field("allocation_strategy", &self.allocation_strategy)
+            .field("worker_change_notify", &self.worker_change_notify)
+            .field("operation_keep_alive_tx", &self.operation_keep_alive_tx)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ApiWorkerSchedulerImpl {
@@ -114,8 +126,7 @@ impl ApiWorkerSchedulerImpl {
                 .send((operation_id.clone(), worker_id.clone()))
                 .is_err()
             {
-                event!(
-                    Level::ERROR,
+                error!(
                     ?operation_id,
                     ?worker_id,
                     "OperationKeepAliveTx stream closed"
@@ -139,8 +150,7 @@ impl ApiWorkerSchedulerImpl {
             .send_initial_connection_result()
             .err_tip(|| "Failed to send initial connection result to worker");
         if let Err(err) = &res {
-            event!(
-                Level::ERROR,
+            error!(
                 ?worker_id,
                 ?err,
                 "Worker connection appears to have been closed while adding to pool"
@@ -181,11 +191,11 @@ impl ApiWorkerSchedulerImpl {
         let mut workers_iter = self.workers.iter();
         let workers_iter = match self.allocation_strategy {
             // Use rfind to get the least recently used that satisfies the properties.
-            WorkerAllocationStrategy::least_recently_used => workers_iter.rfind(|(_, w)| {
+            WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter.rfind(|(_, w)| {
                 w.can_accept_work() && platform_properties.is_satisfied_by(&w.platform_properties)
             }),
             // Use find to get the most recently used that satisfies the properties.
-            WorkerAllocationStrategy::most_recently_used => workers_iter.find(|(_, w)| {
+            WorkerAllocationStrategy::MostRecentlyUsed => workers_iter.find(|(_, w)| {
                 w.can_accept_work() && platform_properties.is_satisfied_by(&w.platform_properties)
             }),
         };
@@ -230,8 +240,7 @@ impl ApiWorkerSchedulerImpl {
                 .await
                 .err_tip(|| "in update_operation on SimpleScheduler::update_action");
             if let Err(err) = update_operation_res {
-                event!(
-                    Level::ERROR,
+                error!(
                     ?operation_id,
                     ?worker_id,
                     ?err,
@@ -278,8 +287,7 @@ impl ApiWorkerSchedulerImpl {
                 .await;
 
             if notify_worker_result.is_err() {
-                event!(
-                    Level::WARN,
+                warn!(
                     ?worker_id,
                     ?action_info,
                     ?notify_worker_result,
@@ -295,8 +303,7 @@ impl ApiWorkerSchedulerImpl {
                     .merge(self.immediate_evict_worker(&worker_id, err).await);
             }
         } else {
-            event!(
-                Level::WARN,
+            warn!(
                 ?worker_id,
                 ?operation_id,
                 ?action_info,
@@ -315,7 +322,7 @@ impl ApiWorkerSchedulerImpl {
         let mut result = Ok(());
         if let Some(mut worker) = self.remove_worker(worker_id) {
             // We don't care if we fail to send message to worker, this is only a best attempt.
-            let _ = worker.notify_update(WorkerUpdate::Disconnect).await;
+            drop(worker.notify_update(WorkerUpdate::Disconnect).await);
             for (operation_id, _) in worker.running_action_infos.drain() {
                 result = result.merge(
                     self.worker_state_manager
@@ -329,13 +336,13 @@ impl ApiWorkerSchedulerImpl {
             }
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
-        // TODO(allada) This should be moved to inside the Workers struct.
+        // TODO(aaronmondal) This should be moved to inside the Workers struct.
         self.worker_change_notify.notify_one();
         result
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct ApiWorkerScheduler {
     #[metric]
     inner: Mutex<ApiWorkerSchedulerImpl>,
@@ -390,7 +397,10 @@ impl ApiWorkerScheduler {
                                 )
                                 .await;
                             if let Err(err) = update_operation_res {
-                                event!(Level::WARN, ?err, "Error while running worker_keep_alive_received, maybe job is done?");
+                                warn!(
+                                    ?err,
+                                    "Error while running worker_keep_alive_received, maybe job is done?"
+                                );
                             }
                         }
                     }
@@ -412,7 +422,7 @@ impl ApiWorkerScheduler {
     }
 
     /// Attempts to find a worker that is capable of running this action.
-    // TODO(blaise.bruer) This algorithm is not very efficient. Simple testing using a tree-like
+    // TODO(aaronmondal) This algorithm is not very efficient. Simple testing using a tree-like
     // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
     // simulation of worst cases in a single threaded environment.
     pub async fn find_worker_for_action(
@@ -512,11 +522,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
             })
             .collect();
         for worker_id in &worker_ids_to_remove {
-            event!(
-                Level::WARN,
-                ?worker_id,
-                "Worker timed out, removing from pool"
-            );
+            warn!(?worker_id, "Worker timed out, removing from pool");
             result = result.merge(
                 inner
                     .immediate_evict_worker(

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
@@ -20,7 +21,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 mod utils {
     pub(crate) mod local_worker_test_utils;
@@ -30,14 +31,14 @@ mod utils {
 use hyper::body::Frame;
 use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
 use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
-use nativelink_error::{make_err, make_input_err, Code, Error};
+use nativelink_error::{Code, Error, make_err, make_input_err};
 use nativelink_macro::nativelink_test;
-use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::build::bazel::remote::execution::v2::Platform;
+use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest,
-    StartExecute, UpdateForWorker,
+    ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest, StartExecute,
+    UpdateForWorker, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
@@ -46,7 +47,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionUniqueKey, ActionUniqueQualifier,
     ExecutionMetadata, OperationId,
 };
-use nativelink_util::common::{encode_stream_proto, fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, encode_stream_proto, fs};
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::Store;
 use nativelink_worker::local_worker::new_local_worker;
@@ -67,7 +68,7 @@ const INSTANCE_NAME: &str = "foo";
 fn make_temp_path(data: &str) -> String {
     format!(
         "{}/{}/{}",
-        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
         rand::rng().random::<u64>(),
         data
     )
@@ -79,15 +80,15 @@ async fn platform_properties_smoke_test() -> Result<(), Error> {
     let mut platform_properties = HashMap::new();
     platform_properties.insert(
         "foo".to_string(),
-        WorkerProperty::values(vec!["bar1".to_string(), "bar2".to_string()]),
+        WorkerProperty::Values(vec!["bar1".to_string(), "bar2".to_string()]),
     );
     platform_properties.insert(
         "baz".to_string(),
         // Note: new lines will result in two entries for same key.
         #[cfg(target_family = "unix")]
-        WorkerProperty::query_cmd("printf 'hello\ngoodbye'".to_string()),
+        WorkerProperty::QueryCmd("printf 'hello\ngoodbye'".to_string()),
         #[cfg(target_family = "windows")]
-        WorkerProperty::query_cmd("cmd /C \"echo hello && echo goodbye\"".to_string()),
+        WorkerProperty::QueryCmd("cmd /C \"echo hello && echo goodbye\"".to_string()),
     );
     let mut test_context = setup_local_worker(platform_properties).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
@@ -199,7 +200,7 @@ async fn kill_all_called_on_disconnect() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn blake3_digest_function_registerd_properly() -> Result<(), Error> {
+async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
     let mut test_context = setup_local_worker(HashMap::new()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
@@ -239,7 +240,7 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Error> {
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
-        unique_qualifier: ActionUniqueQualifier::Uncachable(ActionUniqueKey {
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Blake3,
             digest: action_digest,
@@ -329,7 +330,7 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
-        unique_qualifier: ActionUniqueQualifier::Uncachable(ActionUniqueKey {
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -428,8 +429,8 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Error> {
     let cas_store = Store::new(FastSlowStore::new(
         &FastSlowSpec {
             // Note: These are not needed for this test, so we put dummy memory stores here.
-            fast: StoreSpec::memory(MemorySpec::default()),
-            slow: StoreSpec::memory(MemorySpec::default()),
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -467,8 +468,8 @@ async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(
     let cas_store = Store::new(FastSlowStore::new(
         &FastSlowSpec {
             // Note: These are not needed for this test, so we put dummy memory stores here.
-            fast: StoreSpec::memory(MemorySpec::default()),
-            slow: StoreSpec::memory(MemorySpec::default()),
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -524,8 +525,8 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
         let precondition_script_tmp = format!("{precondition_script}.tmp");
 
         // We use std::fs::File here because we sometimes get strange bugs here
-        // that result in: "Text file busy (os error 26)" if it is an executeable.
-        // It is likley because somewhere the file descriotor does not get closed
+        // that result in: "Text file busy (os error 26)" if it is an executable.
+        // It is likely because somewhere the file descriptor does not get closed
         // in tokio's async context.
         {
             // We write to a temporary file and then rename it to force the kernel
@@ -601,7 +602,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
-        unique_qualifier: ActionUniqueQualifier::Uncachable(ActionUniqueKey {
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -691,7 +692,7 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
-        unique_qualifier: ActionUniqueQualifier::Uncachable(ActionUniqueKey {
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Blake3,
             digest: action_digest,

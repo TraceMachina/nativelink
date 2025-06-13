@@ -7,26 +7,24 @@ module(
 bazel_dep(name = "rules_cc", version = "0.1.1")
 bazel_dep(name = "platforms", version = "0.0.11")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
-bazel_dep(name = "rules_python", version = "1.2.0")
+bazel_dep(name = "rules_python", version = "1.3.0")  # TODO(aaronmondal): Bump.
+bazel_dep(name = "rules_shell", version = "0.4.1")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(
     configure_coverage_tool = True,
-    # TODO(aaronmondal): Fix or remove legacy container pipelines so that they
-    #                    run rootless.
-    ignore_root_user_error = True,
-    python_version = "3.12",
+    python_version = "3.13",
 )
 use_repo(python, python = "python_versions")
 
-bazel_dep(name = "rules_rust", version = "0.59.1")
+bazel_dep(name = "rules_rust", version = "0.61.0")
 archive_override(
     module_name = "rules_rust",
-    integrity = "sha256-N37buXa2l1U9N3VmNH3Qv/xd8PxX6TsdLBCM9F497Ac=",
+    integrity = "sha256-U8G6x+xI985IxMHGqgBvJ1Fa3SrrBXJZNyJObgDsfOo=",
     patch_strip = 1,
     patches = ["//tools:rules_rust-musl-platforms.diff"],
     urls = [
-        "https://github.com/bazelbuild/rules_rust/releases/download/0.59.1/rules_rust-0.59.1.tar.gz",
+        "https://github.com/bazelbuild/rules_rust/releases/download/0.61.0/rules_rust-0.61.0.tar.gz",
     ],
 )
 
@@ -41,7 +39,6 @@ crate.from_cargo(
         "//nativelink-macro:Cargo.toml",
         "//nativelink-metric:Cargo.toml",
         "//nativelink-metric/nativelink-metric-macro-derive:Cargo.toml",
-        "//nativelink-metric-collector:Cargo.toml",
         "//nativelink-proto:Cargo.toml",
         "//nativelink-scheduler:Cargo.toml",
         "//nativelink-service:Cargo.toml",
@@ -75,42 +72,44 @@ use_repo(crate, "crates")
 #          grade nativelink executables. It may be removed at any point in time.
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
-    edition = "2021",
+    edition = "2024",
 
     # These should always follow the versions from LRE.
-    rust_analyzer_version = "nightly/2025-01-15",
-    rustfmt_version = "nightly/2025-01-15",
+    rust_analyzer_version = "nightly/2025-05-21",
+    rustfmt_version = "nightly/2025-05-21",
     sha256s = {
-        "2025-01-15/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "f970a04baeee340116fed7e9c64b11b6fa557b339f23c4ef05bac0d2d32966f9",
-        "2025-01-15/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "0ff237a58fe2c060f636cdd22e3be363cb7c242e4118fbffc54b0df3915aa358",
-        "2025-01-15/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "3884a607d4cc75f3e7c9475dc206f864868f17a45c1c1d9b37669119102d3391",
-        "2025-01-15/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "f477cc00da908f55f122a0dd6efd45c981ae147570bd5d7e5ceca3a2ee1414e1",
-        "2025-01-15/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "690ff845ba85d5a4126f89385e26597fc8ff4d02ab77cc7c7ecc84ccbefe9b5e",
-        "2025-01-15/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "692a58a03666823def6e88a8aa8048b5f09276642ffd0f766cd3634e19125928",
-        "cargo-1.85.0-aarch64-apple-darwin.tar.xz": "d67766fb2e62214b3ee3faf01dcddddcb48e8d0483c2bb3475a16cb96210afed",
-        "cargo-1.85.0-x86_64-unknown-linux-gnu.tar.xz": "0aff33b57b0e0b102d762a2b53042846c1ca346cff4b7bd96b5c03c9e8e51d81",
-        "clippy-1.85.0-aarch64-apple-darwin.tar.xz": "62038ee7a541e78ebb34172eac2b8e458e00ecdf4f83bfbe204044c70d9a5e9c",
-        "clippy-1.85.0-x86_64-unknown-linux-gnu.tar.xz": "0dc3ca1708a6c9eed05d0802364377572b79ff079815b7bcbe8e3991f77c4117",
-        "llvm-tools-1.85.0-aarch64-apple-darwin.tar.xz": "2652b489590805718981db100a7d4f27611510b3ac46b588a433cb61dcce2402",
-        "llvm-tools-1.85.0-x86_64-unknown-linux-gnu.tar.xz": "01d5f0f8b3aeb1c7bd4c3ebbf0b30a8be02481f8dfb3fcbf950627460d0d4b5e",
-        "rust-std-1.85.0-aarch64-apple-darwin.tar.xz": "7da1367209de00e3fb315c0e76658e3605ee2559892d29851a3159ae7ea1ddc5",
-        "rust-std-1.85.0-x86_64-unknown-linux-gnu.tar.xz": "285e105d25ebdf501341238d4c0594ecdda50ec9078f45095f793a736b1f1ac2",
-        "rustc-1.85.0-aarch64-apple-darwin.tar.xz": "2a03e227b57a49d80b43473b6fa2d56ad661ece0d8ffd81f639cd31600d3823e",
-        "rustc-1.85.0-x86_64-unknown-linux-gnu.tar.xz": "7436f13797475082cd87aa65547449e01659d6a810b4cd5f8aedc48bb9f89dfb",
+        "2025-05-21/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "e866f249dfbdf10a68b7191c025257591e8a5aa2fede1663b34c88a4f4bb8a74",
+        "2025-05-21/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "0a312d722a94e3b9e1f7871d9a9af01d410917c2406dbf91d014c06fe79540fb",
+        "2025-05-21/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "eee28e99ac24c27f3de969915e808c0645ee099b136e5547681110607d09d050",
+        "2025-05-21/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "0985b6a8befea11c3f1465faac0adc8193a93512ede2fbe8afd3e6e84dd507e8",
+        "2025-05-21/rustc-nightly-aarch64-apple-darwin.tar.xz": "f2c390199913eed60e2e0045afe96aa302e79977916deabc738dc39f2e16dc0d",
+        "2025-05-21/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "ad97dbb43664f7dab1a32c4b22ee08ba40306e80972cb5583d7c16f2bf0a36df",
+        "2025-05-21/rustfmt-nightly-aarch64-apple-darwin.tar.xz": "1409e65606d2db4ae6792ab9b075bf10986a0b6665dc54df575ce66a41efccdc",
+        "2025-05-21/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "41ef09602146fe9ee9f2cdcea4341510551a80dcbdb55cb231b6b0e718a03eab",
+        "cargo-1.87.0-aarch64-apple-darwin.tar.xz": "f8d6f554e5ed081de5c3fd23cf2f30f4012013e95fb7a5458a50d8215651fb88",
+        "cargo-1.87.0-x86_64-unknown-linux-gnu.tar.xz": "469d5dc479835adadd728bc3587f8abf1941b3dd71f9865abd3e0783ae662555",
+        "clippy-1.87.0-aarch64-apple-darwin.tar.xz": "eeadac2cc415890d952510bd32110da8ea14a710e997ae696212294b4401740f",
+        "clippy-1.87.0-x86_64-unknown-linux-gnu.tar.xz": "9d440eef6811112a000acf96a062df7bcbc013fa4f8e00a7f9a4f57ef90637a1",
+        "llvm-tools-1.87.0-aarch64-apple-darwin.tar.xz": "7efc6357a4422ca648ce027cc4c8bd7c36676bc38b1a82c17ccb2ad6dcd5d7a5",
+        "llvm-tools-1.87.0-x86_64-unknown-linux-gnu.tar.xz": "872fdd4b3b8f6bcb01d20aae02cdd7848472386c9ba54c641d63ff82246ae935",
+        "rust-std-1.87.0-aarch64-apple-darwin.tar.xz": "6547322b317f18b73695724ff60a7860457df1a646b4a79f89a70a13d0747375",
+        "rust-std-1.87.0-x86_64-unknown-linux-gnu.tar.xz": "1b57253bd32b8b292c965b3a2d992a266763158494cab8555584c09360b90f77",
+        "rustc-1.87.0-aarch64-apple-darwin.tar.xz": "175800bc89cccd8f8ee2f3a4d07bdf98c163030fd5d3dc6d5b23cf4dd0a2a4c3",
+        "rustc-1.87.0-x86_64-unknown-linux-gnu.tar.xz": "e8395c5c5756253b76107055e093ffbc4431af7b30aeebe72ce2684b9cb53973",
     },
     versions = [
-        "1.85.0",
-        "nightly/2025-01-15",
+        "1.87.0",
+        "nightly/2025-05-21",
     ],
 )
 use_repo(rust, "rust_toolchains")
 
-bazel_dep(name = "toolchains_protoc", version = "0.3.7")
+bazel_dep(name = "toolchains_protoc", version = "0.4.1")
 
 protoc = use_extension("@toolchains_protoc//protoc:extensions.bzl", "protoc")
 protoc.toolchain(
     google_protobuf = "com_google_protobuf",
-    version = "v29.3",
+    version = "v30.2",
 )
 
 # Local remote execution.

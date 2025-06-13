@@ -12,17 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::Into;
+use core::pin::Pin;
+use core::time::Duration;
 use std::collections::HashMap;
-use std::convert::Into;
 use std::fmt;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::stream::unfold;
 use futures::{Stream, StreamExt};
-use nativelink_config::cas_server::{ExecutionConfig, InstanceName};
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_config::cas_server::{ExecutionConfig, InstanceName, WithInstanceName};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{
     Execution, ExecutionServer as Server,
 };
@@ -33,17 +34,17 @@ use nativelink_proto::google::longrunning::Operation;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, OperationId, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, DEFAULT_EXECUTION_PRIORITY, OperationId,
 };
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
+use nativelink_util::digest_hasher::{DigestHasherFunc, make_ctx_for_hash_func};
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, OperationFilter,
 };
-use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::Store;
+use opentelemetry::context::FutureExt;
 use tonic::{Request, Response, Status};
-use tracing::{error_span, event, instrument, Level};
+use tracing::{Instrument, Level, debug, error, error_span, instrument};
 
 type InstanceInfoName = String;
 
@@ -62,9 +63,9 @@ impl NativelinkOperationId {
 
     fn from_name(name: &str) -> Result<Self, Error> {
         let (instance_name, name) = name
-            .split_once('/')
+            .rsplit_once('/')
             .err_tip(|| "Expected instance_name and name to be separated by '/'")?;
-        Ok(NativelinkOperationId::new(
+        Ok(Self::new(
             instance_name.to_string(),
             OperationId::from(name),
         ))
@@ -80,6 +81,14 @@ impl fmt::Display for NativelinkOperationId {
 struct InstanceInfo {
     scheduler: Arc<dyn ClientStateManager>,
     cas_store: Store,
+}
+
+impl fmt::Debug for InstanceInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InstanceInfo")
+            .field("cas_store", &self.cas_store)
+            .finish_non_exhaustive()
+    }
 }
 
 impl InstanceInfo {
@@ -134,9 +143,9 @@ impl InstanceInfo {
             digest: action_digest,
         };
         let unique_qualifier = if skip_cache_lookup {
-            ActionUniqueQualifier::Uncachable(action_key)
+            ActionUniqueQualifier::Uncacheable(action_key)
         } else {
-            ActionUniqueQualifier::Cachable(action_key)
+            ActionUniqueQualifier::Cacheable(action_key)
         };
 
         Ok(ActionInfo {
@@ -152,37 +161,36 @@ impl InstanceInfo {
     }
 }
 
+#[derive(Debug)]
 pub struct ExecutionServer {
     instance_infos: HashMap<InstanceName, InstanceInfo>,
 }
 
-type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + 'static>>;
+type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send>>;
 
 impl ExecutionServer {
     pub fn new(
-        config: &HashMap<InstanceName, ExecutionConfig>,
+        configs: &[WithInstanceName<ExecutionConfig>],
         scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
-        let mut instance_infos = HashMap::with_capacity(config.len());
-        for (instance_name, exec_cfg) in config {
-            let cas_store = store_manager
-                .get_store(&exec_cfg.cas_store)
-                .ok_or_else(|| {
-                    make_input_err!("'cas_store': '{}' does not exist", exec_cfg.cas_store)
-                })?;
+        let mut instance_infos = HashMap::with_capacity(configs.len());
+        for config in configs {
+            let cas_store = store_manager.get_store(&config.cas_store).ok_or_else(|| {
+                make_input_err!("'cas_store': '{}' does not exist", config.cas_store)
+            })?;
             let scheduler = scheduler_map
-                .get(&exec_cfg.scheduler)
+                .get(&config.scheduler)
                 .err_tip(|| {
                     format!(
                         "Scheduler needs config for '{}' because it exists in execution",
-                        exec_cfg.scheduler
+                        config.scheduler
                     )
                 })?
                 .clone();
 
             instance_infos.insert(
-                instance_name.to_string(),
+                config.instance_name.to_string(),
                 InstanceInfo {
                     scheduler,
                     cas_store,
@@ -192,14 +200,14 @@ impl ExecutionServer {
         Ok(Self { instance_infos })
     }
 
-    pub fn into_service(self) -> Server<ExecutionServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 
     fn to_execute_stream(
         nl_client_operation_id: &NativelinkOperationId,
         action_listener: Box<dyn ActionStateResult>,
-    ) -> impl Stream<Item = Result<Operation, Status>> + Send + 'static {
+    ) -> impl Stream<Item = Result<Operation, Status>> + Send + use<> {
         let client_operation_id = OperationId::from(nl_client_operation_id.to_string());
         unfold(Some(action_listener), move |maybe_action_listener| {
             let client_operation_id = client_operation_id.clone();
@@ -207,7 +215,7 @@ impl ExecutionServer {
                 let mut action_listener = maybe_action_listener?;
                 match action_listener.changed().await {
                     Ok((action_update, _maybe_origin_metadata)) => {
-                        event!(Level::INFO, ?action_update, "Execute Resp Stream");
+                        debug!(?action_update, "Execute Resp Stream");
                         // If the action is finished we won't be sending any more updates.
                         let maybe_action_listener = if action_update.stage.is_finished() {
                             None
@@ -220,7 +228,7 @@ impl ExecutionServer {
                         ))
                     }
                     Err(err) => {
-                        event!(Level::ERROR, ?err, "Error in action_listener stream");
+                        error!(?err, "Error in action_listener stream");
                         Some((Err(err.into()), None))
                     }
                 }
@@ -231,7 +239,7 @@ impl ExecutionServer {
     async fn inner_execute(
         &self,
         request: ExecuteRequest,
-    ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + 'static, Error> {
+    ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + use<>, Error> {
         let instance_name = request.instance_name;
 
         let instance_info = self
@@ -290,7 +298,7 @@ impl ExecutionServer {
     async fn inner_wait_execution(
         &self,
         request: WaitExecutionRequest,
-    ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + 'static, Status> {
+    ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + use<>, Status> {
         let nl_operation_id = NativelinkOperationId::from_name(&request.name)
             .err_tip(|| "Failed to parse operation_id in ExecutionServer::wait_execution")?;
         let Some(instance_info) = self.instance_infos.get(&nl_operation_id.instance_name) else {
@@ -321,7 +329,6 @@ impl Execution for ExecutionServer {
     type ExecuteStream = ExecuteStream;
     type WaitExecutionStream = ExecuteStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,
@@ -333,23 +340,21 @@ impl Execution for ExecutionServer {
         grpc_request: Request<ExecuteRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
         let request = grpc_request.into_inner();
-        let ctx = OriginEventContext::new(|| &request).await;
-        let resp = make_ctx_for_hash_func(request.digest_function)
-            .err_tip(|| "In ExecutionServer::execute")?
-            .wrap_async(
-                error_span!("execution_server_execute"),
-                self.inner_execute(request),
+
+        let digest_function = request.digest_function;
+        let result = self
+            .inner_execute(request)
+            .instrument(error_span!("execution_server_execute"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function)
+                    .err_tip(|| "In ExecutionServer::execute")?,
             )
             .await
-            .map(|stream| ctx.wrap_stream(stream))
-            .map(Response::new)
-            .err_tip(|| "Failed on execute() command")
-            .map_err(Into::into);
-        ctx.emit(|| &resp).await;
-        resp
+            .err_tip(|| "Failed on execute() command")?;
+
+        Ok(Response::new(Box::pin(result)))
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,
@@ -361,18 +366,30 @@ impl Execution for ExecutionServer {
         grpc_request: Request<WaitExecutionRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
         let request = grpc_request.into_inner();
-        let ctx = OriginEventContext::new(|| &request).await;
-        let resp = self
+
+        let stream_result = self
             .inner_wait_execution(request)
             .await
             .err_tip(|| "Failed on wait_execution() command")
-            .map(|stream| ctx.wrap_stream(stream))
-            .map(Response::new)
             .map_err(Into::into);
-
-        if resp.is_ok() {
-            event!(Level::DEBUG, return = "Ok(<stream>)");
-        }
-        resp
+        let stream = match stream_result {
+            Ok(stream) => stream,
+            Err(e) => return Err(e),
+        };
+        debug!(return = "Ok(<stream>)");
+        Ok(Response::new(Box::pin(stream)))
     }
+}
+
+#[cfg(test)]
+#[test]
+fn test_nl_op_id_from_name() -> Result<(), Box<dyn core::error::Error>> {
+    let examples = [("foo/bar", "foo"), ("a/b/c/d", "a/b/c")];
+
+    for (input, expected) in examples {
+        let id = NativelinkOperationId::from_name(input)?;
+        assert_eq!(id.instance_name, expected);
+    }
+
+    Ok(())
 }

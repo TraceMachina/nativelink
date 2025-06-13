@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
 use std::borrow::Cow;
-use std::pin::Pin;
 
 use bytes::BytesMut;
-use futures::stream::unfold;
 use futures::Stream;
+use futures::stream::unfold;
 use nativelink_error::{Error, ResultExt};
-use nativelink_proto::com::github::trace_machina::nativelink::events::{bep_event, BepEvent};
+use nativelink_proto::com::github::trace_machina::nativelink::events::{BepEvent, bep_event};
 use nativelink_proto::google::devtools::build::v1::publish_build_event_server::{
     PublishBuildEvent, PublishBuildEventServer,
 };
@@ -28,23 +28,27 @@ use nativelink_proto::google::devtools::build::v1::{
     PublishLifecycleEventRequest,
 };
 use nativelink_store::store_manager::StoreManager;
-use nativelink_util::origin_context::{ActiveOriginContext, ORIGIN_IDENTITY};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike};
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::Context;
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use prost::Message;
 use tonic::{Request, Response, Result, Status, Streaming};
-use tracing::{instrument, Level};
+use tracing::{Level, instrument};
 
 /// Current version of the BEP event. This might be used in the future if
 /// there is a breaking change in the BEP event format.
 const BEP_EVENT_VERSION: u32 = 0;
 
-fn get_identity() -> Result<Option<String>, Status> {
-    ActiveOriginContext::get()
-        .map_or(Ok(None), |ctx| ctx.get_value(&ORIGIN_IDENTITY))
-        .err_tip(|| "In BepServer")
-        .map_or_else(|e| Err(e.into()), |v| Ok(v.map(|v| v.as_ref().clone())))
+#[allow(clippy::result_large_err, reason = "TODO Fix this. Breaks on nightly")]
+fn get_identity() -> Option<String> {
+    Context::current()
+        .baggage()
+        .get(ENDUSER_ID)
+        .map(|value| value.as_str().to_string())
 }
 
+#[derive(Debug)]
 pub struct BepServer {
     store: Store,
 }
@@ -61,7 +65,7 @@ impl BepServer {
         Ok(Self { store })
     }
 
-    pub fn into_service(self) -> PublishBuildEventServer<BepServer> {
+    pub fn into_service(self) -> PublishBuildEventServer<Self> {
         PublishBuildEventServer::new(self)
     }
 
@@ -170,9 +174,9 @@ impl BepServer {
                 move |maybe_state| async move {
                     let mut state = maybe_state?;
                     let request =
-                        match state.stream.message().await.err_tip(|| {
-                            "While receiving message in publish_build_tool_event_stream"
-                        }) {
+                        match state.stream.message().await.err_tip(
+                            || "While receiving message in publish_build_tool_event_stream",
+                        ) {
                             Ok(Some(request)) => request,
                             Ok(None) => return None,
                             Err(e) => return Some((Err(e.into()), None)),
@@ -202,7 +206,6 @@ type PublishBuildToolEventStreamStream = Pin<
 impl PublishBuildEvent for BepServer {
     type PublishBuildToolEventStreamStream = PublishBuildToolEventStreamStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -214,12 +217,11 @@ impl PublishBuildEvent for BepServer {
         &self,
         grpc_request: Request<PublishLifecycleEventRequest>,
     ) -> Result<Response<()>, Status> {
-        self.inner_publish_lifecycle_event(grpc_request.into_inner(), get_identity()?)
+        self.inner_publish_lifecycle_event(grpc_request.into_inner(), get_identity())
             .await
             .map_err(Error::into)
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
       err,
       level = Level::ERROR,
@@ -230,7 +232,7 @@ impl PublishBuildEvent for BepServer {
         &self,
         grpc_request: Request<Streaming<PublishBuildToolEventStreamRequest>>,
     ) -> Result<Response<Self::PublishBuildToolEventStreamStream>, Status> {
-        self.inner_publish_build_tool_event_stream(grpc_request.into_inner(), get_identity()?)
+        self.inner_publish_build_tool_event_stream(grpc_request.into_inner(), get_identity())
             .await
             .map_err(Error::into)
     }

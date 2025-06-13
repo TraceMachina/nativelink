@@ -21,7 +21,7 @@ use nativelink_config::cas_server::BepConfig;
 use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
-use nativelink_proto::com::github::trace_machina::nativelink::events::{bep_event, BepEvent};
+use nativelink_proto::com::github::trace_machina::nativelink::events::{BepEvent, bep_event};
 use nativelink_proto::google::devtools::build::v1::build_event::console_output::Output;
 use nativelink_proto::google::devtools::build::v1::build_event::{
     BuildEnqueued, BuildFinished, ConsoleOutput, Event, InvocationAttemptFinished,
@@ -31,8 +31,8 @@ use nativelink_proto::google::devtools::build::v1::publish_build_event_server::P
 use nativelink_proto::google::devtools::build::v1::publish_lifecycle_event_request::ServiceLevel;
 use nativelink_proto::google::devtools::build::v1::stream_id::BuildComponent;
 use nativelink_proto::google::devtools::build::v1::{
-    build_status, BuildEvent, BuildStatus, ConsoleOutputStream, OrderedBuildEvent,
-    PublishBuildToolEventStreamRequest, PublishLifecycleEventRequest, StreamId,
+    BuildEvent, BuildStatus, ConsoleOutputStream, OrderedBuildEvent,
+    PublishBuildToolEventStreamRequest, PublishLifecycleEventRequest, StreamId, build_status,
 };
 use nativelink_service::bep_server::BepServer;
 use nativelink_store::default_store_factory::store_factory;
@@ -55,7 +55,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         BEP_STORE_NAME,
         store_factory(
-            &StoreSpec::memory(MemorySpec::default()),
+            &StoreSpec::Memory(MemorySpec::default()),
             &store_manager,
             None,
         )
@@ -82,7 +82,7 @@ fn get_bep_store(store_manager: &StoreManager) -> Result<Store, Error> {
 
 /// Asserts that a gRPC request for a [`PublishLifecycleEventRequest`] is correctly dumped into a [`Store`]
 #[nativelink_test]
-async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn publish_lifecycle_event_test() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bep_server = make_bep_server(&store_manager)?;
     let bep_store = get_bep_store(&store_manager)?;
@@ -156,7 +156,7 @@ async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[nativelink_test]
-async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bep_server = make_bep_server(&store_manager)?;
     let bep_store = get_bep_store(&store_manager)?;
@@ -172,7 +172,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
             .err_tip(|| "While invoking publish_build_tool_event_stream")?
             .into_inner();
 
-        Ok::<_, Box<dyn std::error::Error>>((tx, stream))
+        Ok::<_, Box<dyn core::error::Error>>((tx, stream))
     }
     .await?;
 
@@ -276,7 +276,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
                     }),
                 }),
                 notification_keywords: vec!["testing".to_string()],
-                project_id: project_id.clone(),
+                project_id,
                 check_preceding_lifecycle_events_present: false,
             },
         ];
@@ -353,4 +353,90 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
 
         Ok(())
     }
+}
+#[nativelink_test]
+async fn build_tool_event_stream_termination_test() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let bep_server = make_bep_server(&store_manager)?;
+    let bep_store = get_bep_store(&store_manager)?;
+
+    let (request_tx, mut response_stream) = async {
+        let (tx, body) = ChannelBody::new();
+        let mut codec = ProstCodec::<PublishBuildToolEventStreamRequest, _>::default();
+        let stream = Streaming::new_request(codec.decoder(), body, None, None);
+        let stream = bep_server
+            .publish_build_tool_event_stream(Request::new(stream))
+            .await
+            .err_tip(|| "While invoking publish_build_tool_event_stream")?
+            .into_inner();
+
+        Ok::<_, Box<dyn core::error::Error>>((tx, stream))
+    }
+    .await?;
+
+    let stream_id = StreamId {
+        build_id: "termination-test-build-id".to_string(),
+        invocation_id: "termination-test-invocation-id".to_string(),
+        component: BuildComponent::Controller as i32,
+    };
+
+    let initial_request = PublishBuildToolEventStreamRequest {
+        ordered_build_event: Some(OrderedBuildEvent {
+            stream_id: Some(stream_id.clone()),
+            sequence_number: 1,
+            event: Some(BuildEvent {
+                event_time: Some(Timestamp::date(2024, 5, 3)?),
+                event: Some(Event::BuildEnqueued(BuildEnqueued { details: None })),
+            }),
+        }),
+        notification_keywords: vec!["testing".to_string()],
+        project_id: "test-project-id".to_string(),
+        check_preceding_lifecycle_events_present: false,
+    };
+
+    let encoded_request = encode_stream_proto(&initial_request)?;
+    request_tx.send(Frame::data(encoded_request)).await?;
+
+    let response = response_stream
+        .next()
+        .await
+        .err_tip(|| "Response stream closed unexpectedly")?
+        .err_tip(|| "While awaiting first response")?;
+
+    assert_eq!(response.sequence_number, 1);
+    assert_eq!(
+        response.stream_id,
+        initial_request
+            .ordered_build_event
+            .as_ref()
+            .unwrap()
+            .stream_id
+            .clone()
+    );
+    // Simulate stream termination by dropping the request_tx
+    drop(request_tx);
+
+    let next_item = response_stream.next().await;
+    assert!(
+        next_item.is_none(),
+        "Expected response stream to end, but got: {next_item:?}"
+    );
+
+    let store_key = StoreKey::Str(Cow::Owned(format!(
+        "BepEvent:be:{}:{}:{}",
+        stream_id.build_id, stream_id.invocation_id, 1
+    )));
+
+    let (mut writer, mut reader) = make_buf_channel_pair();
+    bep_store.get_part(store_key, &mut writer, 0, None).await?;
+
+    let bytes = reader.recv().await?;
+    let decoded_event = BepEvent::decode(bytes)?;
+
+    assert_eq!(
+        decoded_event.event,
+        Some(bep_event::Event::BuildToolEvent(initial_request.clone()))
+    );
+
+    Ok(())
 }

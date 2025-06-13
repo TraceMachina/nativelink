@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::Into;
+use core::pin::Pin;
+use core::time::Duration;
 use std::collections::HashMap;
-use std::convert::Into;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::stream::unfold;
 use futures::Stream;
@@ -38,7 +39,7 @@ use rand::RngCore;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 use tonic::{Request, Response, Status};
-use tracing::{event, instrument, Level};
+use tracing::{debug, error, warn, instrument, Level};
 use uuid::Uuid;
 
 pub type ConnectWorkerStream =
@@ -50,6 +51,14 @@ pub struct WorkerApiServer {
     scheduler: Arc<dyn WorkerScheduler>,
     now_fn: NowFn,
     node_id: [u8; 6],
+}
+
+impl core::fmt::Debug for WorkerApiServer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WorkerApiServer")
+            .field("node_id", &self.node_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WorkerApiServer {
@@ -79,7 +88,7 @@ impl WorkerApiServer {
                             if let Err(err) =
                                 scheduler.remove_timedout_workers(timestamp.as_secs()).await
                             {
-                                event!(Level::ERROR, ?err, "Failed to remove_timedout_workers",);
+                                error!(?err, "Failed to remove_timedout_workers",);
                             }
                         }
                         // If we fail to upgrade, our service is probably destroyed, so return.
@@ -125,7 +134,7 @@ impl WorkerApiServer {
         })
     }
 
-    pub fn into_service(self) -> Server<WorkerApiServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 
@@ -178,8 +187,7 @@ impl WorkerApiServer {
                 if let Some(update_for_worker) = rx.recv().await {
                     return Some((Ok(update_for_worker), (rx, worker_id)));
                 }
-                event!(
-                    Level::WARN,
+                warn!(
                     ?worker_id,
                     "UpdateForWorker channel was closed, thus closing connection to worker node",
                 );
@@ -256,7 +264,6 @@ impl WorkerApiServer {
 impl WorkerApi for WorkerApiServer {
     type ConnectWorkerStream = ConnectWorkerStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,
@@ -272,16 +279,15 @@ impl WorkerApi for WorkerApiServer {
             .await
             .map_err(Into::into);
         if resp.is_ok() {
-            event!(Level::DEBUG, return = "Ok(<stream>)");
+            debug!(return = "Ok(<stream>)");
         }
         resp
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
-        ret(level = Level::INFO),
-        level = Level::INFO,
+        ret(level = Level::DEBUG),
+        level = Level::DEBUG,
         skip_all,
         fields(request = ?grpc_request.get_ref())
     )]
@@ -294,7 +300,6 @@ impl WorkerApi for WorkerApiServer {
             .map_err(Into::into)
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -311,10 +316,9 @@ impl WorkerApi for WorkerApiServer {
             .map_err(Into::into)
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
-        ret(level = Level::INFO),
+        ret(level = Level::DEBUG),
         level = Level::ERROR,
         skip_all,
         fields(request = ?grpc_request.get_ref())

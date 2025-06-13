@@ -1,4 +1,4 @@
-#!/nix/store/b0szb1r3cyih06nlzip0ywrxk33lqdsm-bash/bin/bash
+#!/nix/store/pwkixxwbpb4l70hxndaq74l8jp4r7dkw-bash/bin/bash
 #
 # Copyright 2023 The Bazel Authors. All rights reserved.
 #
@@ -30,15 +30,16 @@ set -euo pipefail
 #    of nm because it is not in POSIX and demangled names may not be unique
 #    (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=35201).
 DUPLICATE_SYMBOLS=$(
-  "/nix/store/2v3virr5293gp2xgfb7nvzz0dljg8i9m-llvm-binutils-wrapper-19.1.7/bin/nm" -A -g -P  "$1" |
-  sed -E -e 's/.*\[([^][]+)\]: (.+) ([A-TX-Z]) [a-f0-9]+ [a-f0-9]+/\1: \3 \2/g' -e t -e d |
-  LC_ALL=C sort -k 3 |
-  LC_ALL=C uniq -D -f 2 |
-  "/nix/store/2v3virr5293gp2xgfb7nvzz0dljg8i9m-llvm-binutils-wrapper-19.1.7/bin/c++filt")
-if [[ -n "$DUPLICATE_SYMBOLS" ]]; then
-  >&2 echo "Duplicate symbols found in $1:"
-  >&2 echo "$DUPLICATE_SYMBOLS"
-  exit 1
+    "/nix/store/5nl2gpmbi8icd0jnsx5w11z4q8afhj5h-llvm-binutils-wrapper-20.1.4/bin/nm" -A -g -P "$1" |
+        sed -E -e 's/.*\[([^][]+)\]: (.+) ([A-TX-Z]) [a-f0-9]+ [a-f0-9]+/\1: \3 \2/g' -e t -e d |
+        LC_ALL=C sort -k 3 |
+        LC_ALL=C uniq -D -f 2 |
+        "/nix/store/5nl2gpmbi8icd0jnsx5w11z4q8afhj5h-llvm-binutils-wrapper-20.1.4/bin/c++filt"
+)
+if [[ -n $DUPLICATE_SYMBOLS ]]; then
+    >&2 echo "Duplicate symbols found in $1:"
+    >&2 echo "$DUPLICATE_SYMBOLS"
+    exit 1
 else
-  touch "$2"
+    touch "$2"
 fi
