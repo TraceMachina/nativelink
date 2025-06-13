@@ -361,9 +361,12 @@
             nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
-            inherit (pkgs) buildstream buildbox;
+            inherit (pkgs) buildstream buildbox buck2;
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
               inherit nativelink buildstream buildbox;
+            };
+            buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
+              inherit nativelink buck2;
             };
             generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
           }
@@ -446,6 +449,7 @@
               # Development tooling
               pkgs.git
               pkgs.pre-commit
+              pkgs.buck2
 
               # Rust
               bazel
