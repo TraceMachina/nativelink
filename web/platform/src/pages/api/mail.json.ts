@@ -1,5 +1,5 @@
-import { getRe } from "@utils/resend";
 import type { APIRoute } from "astro";
+import { getRe } from "../../../utils/resend.ts";
 
 export const POST: APIRoute = async ({ request }) => {
   if (request.headers.get("Content-Type") === "application/json") {

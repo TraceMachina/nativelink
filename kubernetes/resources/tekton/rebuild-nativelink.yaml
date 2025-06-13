@@ -33,6 +33,10 @@ spec:
 
         Other parts of the cluster may refer to this configmap to get the
         pre-evaluated tag of the image.
+    - name: configMapNamespace
+      type: string
+      description: |
+        The namespace of the ConfigMap that we write the image tag to.
     - name: registry
       type: string
       description: |
@@ -181,6 +185,8 @@ spec:
           value: "$(tasks.get-image-info.results.imageTag)"
         - name: configMapName
           value: "$(params.configMapName)"
+        - name: configMapNamespace
+          value: "$(params.configMapNamespace)"
       runAfter:
         - copy-verified-prebuilt-image
         - copy-nix-built-image

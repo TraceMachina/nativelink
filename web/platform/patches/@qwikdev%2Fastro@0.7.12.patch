@@ -1,0 +1,22 @@
+diff --git a/src/index.ts b/src/index.ts
+index 00f0ab8d19df58785fbd4cada10b0b8145220438..f717667940f8d2dc5ad5a47e4ac4aff820b6569c 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -136,7 +136,7 @@ export default defineIntegration({
+           buildEnd() {
+             resolveEntrypoints();
+           },
+-          async resolveId(id, importer) {
++          async resolveId(id, importer, options) {
+             const isFromAstro =
+               importer?.endsWith(".astro") || importer?.endsWith(".mdx");
+             const isFromTrackedFile = potentialEntries.has(importer ?? "");
+@@ -145,7 +145,7 @@ export default defineIntegration({
+               return null;
+             }
+
+-            const resolved = await this.resolve(id, importer);
++            const resolved = await this.resolve(id, importer, {skipSelf: true, ...options});
+             if (!resolved) {
+               throw new Error(`Could not resolve ${id} from ${importer}`);
+             }

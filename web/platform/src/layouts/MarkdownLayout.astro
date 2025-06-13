@@ -79,7 +79,7 @@ const formattedDate = pubDate.toLocaleDateString('en-US', {
 <div class="w-full gap-2 h-auto flex justify-between text-black">
    <div class="w-full pb-24 h-auto flex justify-between text-black gap-2 md:gap-10">
     {prevEntry ? (
-        <a href={`/resources/blog/${prevEntry.slug}`} class="w-1/3 no-underline! flex bg-white bg-opacity-10 backdrop-blur-md text-sm font-semibold p-2 rounded-lg border border-white border-opacity-20 shadow-lg transition-transform transform hover:scale-105 items-center justify-center text-center">
+        <a href={`/resources/blog/${prevEntry.id}`} class="w-1/3 no-underline! flex bg-white bg-opacity-10 backdrop-blur-md text-sm font-semibold p-2 rounded-lg border border-white border-opacity-20 shadow-lg transition-transform transform hover:scale-105 items-center justify-center text-center">
             &larr;
         </a>
     ) : (
@@ -91,7 +91,7 @@ const formattedDate = pubDate.toLocaleDateString('en-US', {
     </a>
 
     {nextEntry ? (
-        <a href={`/resources/blog/${nextEntry.slug}`} class="w-1/3 no-underline! flex bg-white bg-opacity-10 backdrop-blur-md text-sm font-semibold p-2 rounded-lg border border-white border-opacity-20 shadow-lg transition-transform transform hover:scale-105 items-center justify-center text-center">
+        <a href={`/resources/blog/${nextEntry.id}`} class="w-1/3 no-underline! flex bg-white bg-opacity-10 backdrop-blur-md text-sm font-semibold p-2 rounded-lg border border-white border-opacity-20 shadow-lg transition-transform transform hover:scale-105 items-center justify-center text-center">
             &rarr;
         </a>
     ) : (

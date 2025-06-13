@@ -1,14 +1,14 @@
 import { component$, useVisibleTask$ } from "@builder.io/qwik";
 
-import { Label, LinearGradient } from "../components/text";
+import { Label, LinearGradient } from "../components/text.tsx";
 
-import { BackgroundVideo } from "../components/video";
+import { BackgroundVideo } from "../components/video.tsx";
 
 const team = [
   {
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/aaron_mondal.webp",
     name: "Aaron Mondal",
-    title: "Software Engineer",
+    title: "Co-Founder & Software Engineer",
   },
   {
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/tim_potter.webp",
@@ -23,12 +23,7 @@ const team = [
   {
     img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/marcus_eagan.webp",
     name: "Marcus Eagan",
-    title: "Co-Founder",
-  },
-  {
-    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/blaise_bruer.webp",
-    name: "Blaise Bruer",
-    title: "Co-Founder",
+    title: "Co-Founder and Janitor",
   },
 ];
 

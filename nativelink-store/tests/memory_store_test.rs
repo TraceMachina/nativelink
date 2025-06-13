@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ops::RangeBounds;
-use std::pin::Pin;
+use core::ops::RangeBounds;
+use core::pin::Pin;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use memory_stats::memory_stats;
@@ -122,9 +122,10 @@ async fn ensure_full_copy_of_bytes_is_made_test() -> Result<(), Error> {
         sum_memory_usage_increase_perc += new_virtual_mem as f64 / initial_virtual_mem as f64;
     }
     assert!(
-            (sum_memory_usage_increase_perc / MAX_STATS_ITERATIONS as f64) < MAXIMUM_MEMORY_USAGE_INCREASE_PERC,
-            "Memory usage increased by {sum_memory_usage_increase_perc} perc, which is more than {MAXIMUM_MEMORY_USAGE_INCREASE_PERC} perc",
-        );
+        (sum_memory_usage_increase_perc / MAX_STATS_ITERATIONS as f64)
+            < MAXIMUM_MEMORY_USAGE_INCREASE_PERC,
+        "Memory usage increased by {sum_memory_usage_increase_perc} perc, which is more than {MAXIMUM_MEMORY_USAGE_INCREASE_PERC} perc",
+    );
     Ok(())
 }
 
@@ -140,10 +141,10 @@ async fn read_partial() -> Result<(), Error> {
     let store_data = store.get_part_unchunked(digest, 1, Some(2)).await?;
 
     assert_eq!(
-        VALUE1[1..3].as_bytes(),
+        &VALUE1.as_bytes()[1..3],
         store_data,
         "Expected partial data to match, expected '{:#x?}' got: {:#x?}'",
-        VALUE1[1..3].as_bytes(),
+        &VALUE1.as_bytes()[1..3],
         store_data,
     );
     Ok(())
@@ -247,10 +248,12 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     let (mut writer, mut reader) = make_buf_channel_pair();
 
     let _drop_guard = spawn!("get_part_is_zero_digest", async move {
-        let _ = Pin::new(store_clone.as_ref())
-            .get_part(digest, &mut writer, 0, None)
-            .await
-            .err_tip(|| "Failed to get_part");
+        drop(
+            Pin::new(store_clone.as_ref())
+                .get_part(digest, &mut writer, 0, None)
+                .await
+                .err_tip(|| "Failed to get_part"),
+        );
     });
 
     let file_data = reader
@@ -273,12 +276,14 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
     let store_owned = MemoryStore::new(&MemorySpec::default());
     let store = Pin::new(&store_owned);
 
-    let _ = store
-        .as_ref()
-        .has_with_results(&keys, &mut results)
-        .await
-        .err_tip(|| "Failed to get_part");
-    assert_eq!(results, vec!(Some(0)));
+    drop(
+        store
+            .as_ref()
+            .has_with_results(&keys, &mut results)
+            .await
+            .err_tip(|| "Failed to get_part"),
+    );
+    assert_eq!(results, vec![Some(0)]);
 
     Ok(())
 }

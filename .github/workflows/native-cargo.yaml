@@ -4,16 +4,23 @@ name: Cargo Native
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
   pull_request:
     branches: [main]
     paths-ignore:
-      - 'docs/**'
+      - '.github/styles/**'
+      - 'web/**'
 
 permissions: read-all
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  RUSTFLAGS: -Dwarnings
 
 jobs:
   cargo-native:

@@ -7,7 +7,7 @@ level: error
 action:
   name: edit
   params:
-    - remove
-    - ' '
+    - trim
+    - " "
 tokens:
-  - '[—–]\s|\s[—–]'
+  - '\s[—–]\s|\s[—–]|[—–]\s'

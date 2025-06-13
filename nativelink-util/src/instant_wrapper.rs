@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::future::Future;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use core::future::Future;
+use core::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use mock_instant::thread_local::{Instant as MockInstant, MockClock};
 
@@ -28,8 +29,8 @@ pub trait InstantWrapper: Send + Sync + Unpin + 'static {
 }
 
 impl InstantWrapper for SystemTime {
-    fn from_secs(secs: u64) -> SystemTime {
-        SystemTime::UNIX_EPOCH
+    fn from_secs(secs: u64) -> Self {
+        Self::UNIX_EPOCH
             .checked_add(Duration::from_secs(secs))
             .unwrap()
     }
@@ -39,11 +40,11 @@ impl InstantWrapper for SystemTime {
     }
 
     fn now(&self) -> SystemTime {
-        SystemTime::now()
+        Self::now()
     }
 
     fn elapsed(&self) -> Duration {
-        <SystemTime>::elapsed(self).unwrap()
+        <Self>::elapsed(self).unwrap()
     }
 
     async fn sleep(self, duration: Duration) {
@@ -56,6 +57,7 @@ pub fn default_instant_wrapper() -> impl InstantWrapper {
 }
 
 /// Our mocked out instant that we can pass to our `EvictionMap`.
+#[derive(Debug, Clone, Copy)]
 pub struct MockInstantWrapped(MockInstant);
 
 impl Default for MockInstantWrapped {
@@ -66,7 +68,7 @@ impl Default for MockInstantWrapped {
 
 impl InstantWrapper for MockInstantWrapped {
     fn from_secs(_secs: u64) -> Self {
-        MockInstantWrapped(MockInstant::now())
+        Self(MockInstant::now())
     }
 
     fn unix_timestamp(&self) -> u64 {

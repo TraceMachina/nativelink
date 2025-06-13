@@ -12,58 +12,47 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::cmp;
+use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::Duration;
-use std::{cmp, env};
 
 use async_trait::async_trait;
 use aws_config::default_provider::credentials;
+use aws_config::provider_config::ProviderConfig;
 use aws_config::{AppName, BehaviorVersion};
+use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
 use aws_sdk_s3::operation::get_object::GetObjectError;
 use aws_sdk_s3::operation::head_object::HeadObjectError;
-use aws_sdk_s3::primitives::{ByteStream, SdkBody};
+use aws_sdk_s3::primitives::ByteStream; // SdkBody
 use aws_sdk_s3::types::builders::{CompletedMultipartUploadBuilder, CompletedPartBuilder};
-use aws_sdk_s3::Client;
-use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
-use aws_smithy_types::checksum_config::{RequestChecksumCalculation, ResponseChecksumValidation};
-use bytes::Bytes;
+use aws_smithy_types::body::SdkBody;
 use futures::future::FusedFuture;
-use futures::stream::{unfold, FuturesUnordered};
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
-use http_body::{Frame, SizeHint};
-use hyper::client::connect::{Connected, Connection, HttpConnector};
-use hyper::service::Service;
-use hyper::Uri;
-use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
-use nativelink_config::stores::S3Spec;
+use futures::stream::{FuturesUnordered, unfold};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+use nativelink_config::stores::ExperimentalAwsSpec;
 // Note: S3 store should be very careful about the error codes it returns
 // when in a retryable wrapper. Always prefer Code::Aborted or another
 // retryable code over Code::InvalidArgument or make_input_err!().
 // ie: Don't import make_input_err!() to help prevent this.
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
-use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
-use rand::Rng;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::TcpStream;
-use tokio::sync::{mpsc, SemaphorePermit};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
-use tracing::{event, Level};
+use tracing::{error, info};
 
 use crate::cas_utils::is_zero_digest;
+use crate::common_s3_utils::{BodyWrapper, TlsClient};
 
 // S3 parts cannot be smaller than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
@@ -85,158 +74,7 @@ const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 5 * 1024 * 1024; // 5MB.
 // Note: If you change this, adjust the docs in the config.
 const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: usize = 10;
 
-pub struct ConnectionWithPermit<T: Connection + AsyncRead + AsyncWrite + Unpin> {
-    connection: T,
-    _permit: SemaphorePermit<'static>,
-}
-
-impl<T: Connection + AsyncRead + AsyncWrite + Unpin> Connection for ConnectionWithPermit<T> {
-    fn connected(&self) -> Connected {
-        self.connection.connected()
-    }
-}
-
-impl<T: Connection + AsyncRead + AsyncWrite + Unpin> AsyncRead for ConnectionWithPermit<T> {
-    #[inline]
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<Result<(), tokio::io::Error>> {
-        Pin::new(&mut Pin::get_mut(self).connection).poll_read(cx, buf)
-    }
-}
-
-impl<T: Connection + AsyncWrite + AsyncRead + Unpin> AsyncWrite for ConnectionWithPermit<T> {
-    #[inline]
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, tokio::io::Error>> {
-        Pin::new(&mut Pin::get_mut(self).connection).poll_write(cx, buf)
-    }
-
-    #[inline]
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), tokio::io::Error>> {
-        Pin::new(&mut Pin::get_mut(self).connection).poll_flush(cx)
-    }
-
-    #[inline]
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), tokio::io::Error>> {
-        Pin::new(&mut Pin::get_mut(self).connection).poll_shutdown(cx)
-    }
-}
-
-#[derive(Clone)]
-pub struct TlsConnector {
-    connector: HttpsConnector<HttpConnector>,
-    retrier: Retrier,
-}
-
-impl TlsConnector {
-    #[must_use]
-    pub fn new(spec: &S3Spec, jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>) -> Self {
-        let connector_with_roots = hyper_rustls::HttpsConnectorBuilder::new().with_webpki_roots();
-
-        let connector_with_schemes = if spec.insecure_allow_http {
-            connector_with_roots.https_or_http()
-        } else {
-            connector_with_roots.https_only()
-        };
-
-        let connector = if spec.disable_http2 {
-            connector_with_schemes.enable_http1().build()
-        } else {
-            connector_with_schemes.enable_http1().enable_http2().build()
-        };
-
-        Self {
-            connector,
-            retrier: Retrier::new(
-                Arc::new(|duration| Box::pin(sleep(duration))),
-                jitter_fn,
-                spec.retry.clone(),
-            ),
-        }
-    }
-
-    async fn call_with_retry(
-        &self,
-        req: &Uri,
-    ) -> Result<ConnectionWithPermit<MaybeHttpsStream<TcpStream>>, Error> {
-        let retry_stream_fn = unfold(self.connector.clone(), move |mut connector| async move {
-            let _permit = fs::get_permit().await.unwrap();
-            match connector.call(req.clone()).await {
-                Ok(connection) => Some((
-                    RetryResult::Ok(ConnectionWithPermit {
-                        connection,
-                        _permit,
-                    }),
-                    connector,
-                )),
-                Err(e) => Some((
-                    RetryResult::Retry(make_err!(
-                        Code::Unavailable,
-                        "Failed to call S3 connector: {e:?}"
-                    )),
-                    connector,
-                )),
-            }
-        });
-        self.retrier.retry(retry_stream_fn).await
-    }
-}
-
-impl Service<Uri> for TlsConnector {
-    type Response = ConnectionWithPermit<MaybeHttpsStream<TcpStream>>;
-    type Error = Error;
-    type Future =
-        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.connector
-            .poll_ready(cx)
-            .map_err(|e| make_err!(Code::Unavailable, "Failed poll in S3: {e}"))
-    }
-
-    fn call(&mut self, req: Uri) -> Self::Future {
-        let connector_clone = self.clone();
-        Box::pin(async move { connector_clone.call_with_retry(&req).await })
-    }
-}
-
-pub struct BodyWrapper {
-    reader: DropCloserReadHalf,
-    size: u64,
-}
-
-impl http_body::Body for BodyWrapper {
-    type Data = Bytes;
-    type Error = std::io::Error;
-
-    fn poll_frame(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let reader = Pin::new(&mut Pin::get_mut(self).reader);
-        reader
-            .poll_next(cx)
-            .map(|maybe_bytes_res| maybe_bytes_res.map(|res| res.map(Frame::data)))
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        SizeHint::with_exact(self.size)
-    }
-}
-
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct S3Store<NowFn> {
     s3_client: Arc<Client>,
     now_fn: NowFn,
@@ -258,25 +96,20 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
-    pub async fn new(spec: &S3Spec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
-        let jitter_amt = spec.retry.jitter;
-        let jitter_fn = Arc::new(move |delay: Duration| {
-            if jitter_amt == 0. {
-                return delay;
-            }
-            let min = 1. - (jitter_amt / 2.);
-            let max = 1. + (jitter_amt / 2.);
-            delay.mul_f32(rand::rng().random_range(min..max))
-        });
+    pub async fn new(spec: &ExperimentalAwsSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
         let s3_client = {
-            let http_client =
-                HyperClientBuilder::new().build(TlsConnector::new(spec, jitter_fn.clone()));
-            let credential_provider = credentials::default_provider().await;
-            let mut config_builder = aws_config::defaults(BehaviorVersion::v2024_03_28())
-                // TODO(aaronmondal): Flip these to the default "WhenSupported".
-                //                    See: https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-01-15
-                .request_checksum_calculation(RequestChecksumCalculation::WhenRequired)
-                .response_checksum_validation(ResponseChecksumValidation::WhenRequired)
+            let http_client = TlsClient::new(&spec.common.clone());
+
+            let credential_provider = credentials::DefaultCredentialsChain::builder()
+                .configure(
+                    ProviderConfig::without_region()
+                        .with_region(Some(Region::new(Cow::Owned(spec.region.clone()))))
+                        .with_http_client(http_client.clone()),
+                )
+                .build()
+                .await;
+
+            let config = aws_config::defaults(BehaviorVersion::v2025_01_17())
                 .credentials_provider(credential_provider)
                 .app_name(AppName::new("nativelink").expect("valid app name"))
                 .timeout_config(
@@ -285,20 +118,22 @@ where
                         .build(),
                 )
                 .region(Region::new(Cow::Owned(spec.region.clone())))
-                .http_client(http_client);
-            // TODO(allada) When aws-sdk supports this env variable we should be able
-            // to remove this.
-            // See: https://github.com/awslabs/aws-sdk-rust/issues/932
-            if let Ok(endpoint_url) = env::var("AWS_ENDPOINT_URL") {
-                config_builder = config_builder.endpoint_url(endpoint_url);
-            }
-            aws_sdk_s3::Client::new(&config_builder.load().await)
+                .http_client(http_client)
+                .load()
+                .await;
+
+            Client::new(&config)
         };
-        Self::new_with_client_and_jitter(spec, s3_client, jitter_fn, now_fn)
+        Self::new_with_client_and_jitter(
+            spec,
+            s3_client,
+            spec.common.retry.make_jitter_fn(),
+            now_fn,
+        )
     }
 
     pub fn new_with_client_and_jitter(
-        spec: &S3Spec,
+        spec: &ExperimentalAwsSpec,
         s3_client: Client,
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
         now_fn: NowFn,
@@ -307,17 +142,24 @@ where
             s3_client: Arc::new(s3_client),
             now_fn,
             bucket: spec.bucket.to_string(),
-            key_prefix: spec.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
+            key_prefix: spec
+                .common
+                .key_prefix
+                .as_ref()
+                .unwrap_or(&String::new())
+                .clone(),
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
-                jitter_fn,
-                spec.retry.clone(),
+                spec.common.retry.make_jitter_fn(),
+                spec.common.retry.clone(),
             ),
-            consider_expired_after_s: i64::from(spec.consider_expired_after_s),
+            consider_expired_after_s: i64::from(spec.common.consider_expired_after_s),
             max_retry_buffer_per_request: spec
+                .common
                 .max_retry_buffer_per_request
                 .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST),
             multipart_max_concurrent_uploads: spec
+                .common
                 .multipart_max_concurrent_uploads
                 .map_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS, |v| v),
         }))
@@ -417,13 +259,13 @@ where
             UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
         };
 
-        // Note(allada) It might be more optimal to use a different
+        // Note(aaronmondal) It might be more optimal to use a different
         // heuristic here, but for simplicity we use a hard coded value.
         // Anything going down this if-statement will have the advantage of only
         // 1 network request for the upload instead of minimum of 3 required for
         // multipart upload requests.
         //
-        // Note(allada) If the upload size is not known, we go down the multipart upload path.
+        // Note(aaronmondal) If the upload size is not known, we go down the multipart upload path.
         // This is not very efficient, but it greatly reduces the complexity of the code.
         if max_size < MIN_MULTIPART_SIZE && matches!(upload_size, UploadSizeInfo::ExactSize(_)) {
             let UploadSizeInfo::ExactSize(sz) = upload_size else {
@@ -469,8 +311,7 @@ where
                         err.code = Code::Aborted;
                         let bytes_received = reader.get_bytes_received();
                         if let Err(try_reset_err) = reader.try_reset_stream() {
-                            event!(
-                                Level::ERROR,
+                            error!(
                                 ?bytes_received,
                                 err = ?try_reset_err,
                                 "Unable to reset stream after failed upload in S3Store::update"
@@ -480,8 +321,7 @@ where
                                 .append(format!("Failed to retry upload with {bytes_received} bytes received in S3Store::update")));
                         }
                         let err = err.append(format!("Retry on upload happened with {bytes_received} bytes received in S3Store::update"));
-                        event!(
-                            Level::INFO,
+                        info!(
                             ?err,
                             ?bytes_received,
                             "Retryable S3 error"
@@ -541,53 +381,57 @@ where
                 // Note: Our break condition is when we reach EOF.
                 for part_number in 1..i32::MAX {
                     let write_buf = reader
-                        .consume(Some(usize::try_from(bytes_per_upload_part).err_tip(|| "Could not convert bytes_per_upload_part to usize")?))
+                        .consume(Some(usize::try_from(bytes_per_upload_part).err_tip(
+                            || "Could not convert bytes_per_upload_part to usize",
+                        )?))
                         .await
                         .err_tip(|| "Failed to read chunk in s3_store")?;
                     if write_buf.is_empty() {
                         break; // Reached EOF.
                     }
 
-                    tx.send(retrier.retry(unfold(
-                        write_buf,
-                        move |write_buf| {
-                            async move {
-                                let retry_result = self
-                                    .s3_client
-                                    .upload_part()
-                                    .bucket(&self.bucket)
-                                    .key(s3_path)
-                                    .upload_id(upload_id)
-                                    .body(ByteStream::new(SdkBody::from(write_buf.clone())))
-                                    .part_number(part_number)
-                                    .send()
-                                    .await
-                                    .map_or_else(
-                                        |e| {
-                                            RetryResult::Retry(make_err!(
-                                                Code::Aborted,
-                                                "Failed to upload part {part_number} in S3 store: {e:?}"
-                                            ))
-                                        },
-                                        |mut response| {
-                                            RetryResult::Ok(
-                                                CompletedPartBuilder::default()
-                                                    // Only set an entity tag if it exists. This saves
-                                                    // 13 bytes per part on the final request if it can
-                                                    // omit the `<ETAG><ETAG/>` string.
-                                                    .set_e_tag(response.e_tag.take())
-                                                    .part_number(part_number)
-                                                    .build(),
-                                            )
-                                        },
-                                    );
-                                Some((retry_result, write_buf))
-                            }
+                    tx.send(retrier.retry(unfold(write_buf, move |write_buf| {
+                        async move {
+                            let retry_result = self
+                                .s3_client
+                                .upload_part()
+                                .bucket(&self.bucket)
+                                .key(s3_path)
+                                .upload_id(upload_id)
+                                .body(ByteStream::new(SdkBody::from(write_buf.clone())))
+                                .part_number(part_number)
+                                .send()
+                                .await
+                                .map_or_else(
+                                    |e| {
+                                        RetryResult::Retry(make_err!(
+                                            Code::Aborted,
+                                            "Failed to upload part {part_number} in S3 store: {e:?}"
+                                        ))
+                                    },
+                                    |mut response| {
+                                        RetryResult::Ok(
+                                            CompletedPartBuilder::default()
+                                                // Only set an entity tag if it exists. This saves
+                                                // 13 bytes per part on the final request if it can
+                                                // omit the `<ETAG><ETAG/>` string.
+                                                .set_e_tag(response.e_tag.take())
+                                                .part_number(part_number)
+                                                .build(),
+                                        )
+                                    },
+                                );
+                            Some((retry_result, write_buf))
                         }
-                    ))).await.map_err(|_| make_err!(Code::Internal, "Failed to send part to channel in s3_store"))?;
+                    })))
+                    .await
+                    .map_err(|_| {
+                        make_err!(Code::Internal, "Failed to send part to channel in s3_store")
+                    })?;
                 }
                 Result::<_, Error>::Ok(())
-            }.fuse();
+            }
+            .fuse();
 
             let mut upload_futures = FuturesUnordered::new();
 
@@ -662,7 +506,7 @@ where
                                     Code::Aborted,
                                     "Failed to abort multipart upload in S3 store : {e:?}"
                                 );
-                                event!(Level::INFO, ?err, "Multipart upload error");
+                                info!(?err, "Multipart upload error");
                                 Err(err)
                             },
                             |_| Ok(()),
@@ -735,7 +579,7 @@ where
                     match maybe_bytes {
                         Ok(bytes) => {
                             if bytes.is_empty() {
-                                // Ignore possible EOF. Different implimentations of S3 may or may not
+                                // Ignore possible EOF. Different implementations of S3 may or may not
                                 // send EOF this way.
                                 continue;
                             }
@@ -778,11 +622,11 @@ where
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 

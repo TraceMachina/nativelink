@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
-use nativelink_config::stores::StoreSpec;
+use nativelink_config::stores::{ExperimentalCloudObjectSpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::store_trait::{Store, StoreDriver};
@@ -29,6 +29,7 @@ use crate::dedup_store::DedupStore;
 use crate::existence_cache_store::ExistenceCacheStore;
 use crate::fast_slow_store::FastSlowStore;
 use crate::filesystem_store::FilesystemStore;
+use crate::gcs_store::GcsStore;
 use crate::grpc_store::GrpcStore;
 use crate::memory_store::MemoryStore;
 use crate::noop_store::NoopStore;
@@ -42,7 +43,7 @@ use crate::size_partitioning_store::SizePartitioningStore;
 use crate::store_manager::StoreManager;
 use crate::verify_store::VerifyStore;
 
-type FutureMaybeStore<'a> = Box<dyn Future<Output = Result<Store, Error>> + 'a>;
+type FutureMaybeStore<'a> = Box<dyn Future<Output = Result<Store, Error>> + Send + 'a>;
 
 pub fn store_factory<'a>(
     backend: &'a StoreSpec,
@@ -51,49 +52,58 @@ pub fn store_factory<'a>(
 ) -> Pin<FutureMaybeStore<'a>> {
     Box::pin(async move {
         let store: Arc<dyn StoreDriver> = match backend {
-            StoreSpec::memory(spec) => MemoryStore::new(spec),
-            StoreSpec::experimental_s3_store(spec) => S3Store::new(spec, SystemTime::now).await?,
-            StoreSpec::ontap_s3_store(spec) => OntapS3Store::new(spec, SystemTime::now).await?,
-            StoreSpec::ontap_s3_existence_cache(spec) => {
-                OntapS3ExistenceCache::new(spec, SystemTime::now).await?
-            }
-            StoreSpec::redis_store(spec) => RedisStore::new(spec.clone())?,
-            StoreSpec::verify(spec) => VerifyStore::new(
+            StoreSpec::Memory(spec) => MemoryStore::new(spec),
+            StoreSpec::ExperimentalCloudObjectStore(spec) => match spec {
+                ExperimentalCloudObjectSpec::Aws(aws_config) => {
+                    S3Store::new(aws_config, SystemTime::now).await?
+                }
+                ExperimentalCloudObjectSpec::Ontap(ontap_config) => {
+                    OntapS3Store::new(ontap_config, SystemTime::now).await?
+                }
+                ExperimentalCloudObjectSpec::Gcs(gcs_config) => {
+                    GcsStore::new(gcs_config, SystemTime::now).await?
+                }
+            },
+            StoreSpec::RedisStore(spec) => RedisStore::new(spec.clone())?,
+            StoreSpec::Verify(spec) => VerifyStore::new(
                 spec,
                 store_factory(&spec.backend, store_manager, None).await?,
             ),
-            StoreSpec::compression(spec) => CompressionStore::new(
+            StoreSpec::Compression(spec) => CompressionStore::new(
                 &spec.clone(),
                 store_factory(&spec.backend, store_manager, None).await?,
             )?,
-            StoreSpec::dedup(spec) => DedupStore::new(
+            StoreSpec::Dedup(spec) => DedupStore::new(
                 spec,
                 store_factory(&spec.index_store, store_manager, None).await?,
                 store_factory(&spec.content_store, store_manager, None).await?,
             )?,
-            StoreSpec::existence_cache(spec) => ExistenceCacheStore::new(
+            StoreSpec::ExistenceCache(spec) => ExistenceCacheStore::new(
                 spec,
                 store_factory(&spec.backend, store_manager, None).await?,
             ),
-            StoreSpec::completeness_checking(spec) => CompletenessCheckingStore::new(
+            StoreSpec::OntapS3ExistenceCache(spec) => {
+                OntapS3ExistenceCache::new(spec, SystemTime::now).await?
+            }
+            StoreSpec::CompletenessChecking(spec) => CompletenessCheckingStore::new(
                 store_factory(&spec.backend, store_manager, None).await?,
                 store_factory(&spec.cas_store, store_manager, None).await?,
             ),
-            StoreSpec::fast_slow(spec) => FastSlowStore::new(
+            StoreSpec::FastSlow(spec) => FastSlowStore::new(
                 spec,
                 store_factory(&spec.fast, store_manager, None).await?,
                 store_factory(&spec.slow, store_manager, None).await?,
             ),
-            StoreSpec::filesystem(spec) => <FilesystemStore>::new(spec).await?,
-            StoreSpec::ref_store(spec) => RefStore::new(spec, Arc::downgrade(store_manager)),
-            StoreSpec::size_partitioning(spec) => SizePartitioningStore::new(
+            StoreSpec::Filesystem(spec) => <FilesystemStore>::new(spec).await?,
+            StoreSpec::RefStore(spec) => RefStore::new(spec, Arc::downgrade(store_manager)),
+            StoreSpec::SizePartitioning(spec) => SizePartitioningStore::new(
                 spec,
                 store_factory(&spec.lower_store, store_manager, None).await?,
                 store_factory(&spec.upper_store, store_manager, None).await?,
             ),
-            StoreSpec::grpc(spec) => GrpcStore::new(spec).await?,
-            StoreSpec::noop(_) => NoopStore::new(),
-            StoreSpec::shard(spec) => {
+            StoreSpec::Grpc(spec) => GrpcStore::new(spec).await?,
+            StoreSpec::Noop(_) => NoopStore::new(),
+            StoreSpec::Shard(spec) => {
                 let stores = spec
                     .stores
                     .iter()

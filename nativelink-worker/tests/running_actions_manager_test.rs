@@ -12,29 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::str::from_utf8;
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+#[cfg(target_family = "unix")]
+use core::task::Poll;
+use core::time::Duration;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::io::{Cursor, Write};
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::str::from_utf8;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::task::Poll;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use futures::{poll, FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+use futures::prelude::*;
 use nativelink_config::cas_server::EnvironmentSource;
 use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
-use nativelink_error::{make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable;
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function::Value as ProtoDigestFunction, platform::Property, Action,
-    ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest,
+    Action, ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest,
     ExecuteResponse, FileNode, NodeProperties, Platform, SymlinkNode, Tree,
+    digest_function::Value as ProtoDigestFunction, platform::Property,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     HistoricalExecuteResponse, StartExecute,
@@ -44,17 +46,19 @@ use nativelink_store::ac_utils::{get_and_decode_digest, serialize_and_upload_mes
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
+#[cfg(target_family = "unix")]
+use nativelink_util::action_messages::DirectoryInfo;
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
 use nativelink_util::action_messages::SymlinkInfo;
 use nativelink_util::action_messages::{
-    ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
+    ActionResult, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
 };
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::store_trait::{Store, StoreLike};
 use nativelink_worker::running_actions_manager::{
-    download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl,
-    RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
+    Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
+    RunningActionsManagerArgs, RunningActionsManagerImpl, download_to_directory,
 };
 use pretty_assertions::assert_eq;
 use prost::Message;
@@ -68,14 +72,14 @@ fn make_temp_path(data: &str) -> String {
     #[cfg(target_family = "unix")]
     return format!(
         "{}/{}/{}",
-        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
         rand::rng().random::<u64>(),
         data
     );
     #[cfg(target_family = "windows")]
     return format!(
         "{}\\{}\\{}",
-        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
         rand::rng().random::<u64>(),
         data
     );
@@ -102,8 +106,8 @@ async fn setup_stores() -> Result<
     let ac_store = MemoryStore::new(&slow_config);
     let cas_store = FastSlowStore::new(
         &FastSlowSpec {
-            fast: StoreSpec::filesystem(fast_config),
-            slow: StoreSpec::memory(slow_config),
+            fast: StoreSpec::Filesystem(fast_config),
+            slow: StoreSpec::Memory(slow_config),
         },
         Store::new(fast_store.clone()),
         Store::new(slow_store.clone()),
@@ -146,7 +150,7 @@ fn increment_clock(time: &mut SystemTime) -> SystemTime {
 
 #[serial]
 #[nativelink_test]
-async fn download_to_directory_file_download_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn download_to_directory_file_download_test() -> Result<(), Box<dyn core::error::Error>> {
     const FILE1_NAME: &str = "file1.txt";
     const FILE1_CONTENT: &str = "HELLOFILE1";
     const FILE2_NAME: &str = "file2.exec";
@@ -222,11 +226,11 @@ async fn download_to_directory_file_download_test() -> Result<(), Box<dyn std::e
     {
         // Now ensure that our download_dir has the files.
         let file1_content = fs::read(format!("{download_dir}/{FILE1_NAME}")).await?;
-        assert_eq!(std::str::from_utf8(&file1_content)?, FILE1_CONTENT);
+        assert_eq!(from_utf8(&file1_content)?, FILE1_CONTENT);
 
         let file2_path = format!("{download_dir}/{FILE2_NAME}");
         let file2_content = fs::read(&file2_path).await?;
-        assert_eq!(std::str::from_utf8(&file2_content)?, FILE2_CONTENT);
+        assert_eq!(from_utf8(&file2_content)?, FILE2_CONTENT);
 
         let file2_metadata = fs::metadata(&file2_path).await?;
         // Note: We sent 0o710, but because is_executable was set it turns into 0o711.
@@ -245,7 +249,7 @@ async fn download_to_directory_file_download_test() -> Result<(), Box<dyn std::e
 
 #[serial]
 #[nativelink_test]
-async fn download_to_directory_folder_download_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn download_to_directory_folder_download_test() -> Result<(), Box<dyn core::error::Error>> {
     const DIRECTORY1_NAME: &str = "folder1";
     const FILE1_NAME: &str = "file1.txt";
     const FILE1_CONTENT: &str = "HELLOFILE1";
@@ -329,7 +333,7 @@ async fn download_to_directory_folder_download_test() -> Result<(), Box<dyn std:
         let file1_content = fs::read(format!("{download_dir}/{DIRECTORY1_NAME}/{FILE1_NAME}"))
             .await
             .err_tip(|| "On file_1 read")?;
-        assert_eq!(std::str::from_utf8(&file1_content)?, FILE1_CONTENT);
+        assert_eq!(from_utf8(&file1_content)?, FILE1_CONTENT);
 
         let folder2_path = format!("{download_dir}/{DIRECTORY2_NAME}");
         let folder2_metadata = fs::metadata(&folder2_path)
@@ -344,7 +348,7 @@ async fn download_to_directory_folder_download_test() -> Result<(), Box<dyn std:
 #[cfg(not(target_family = "windows"))]
 #[serial]
 #[nativelink_test]
-async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn core::error::Error>> {
     const FILE_NAME: &str = "file.txt";
     const FILE_CONTENT: &str = "HELLOFILE";
     const SYMLINK_NAME: &str = "symlink_file.txt";
@@ -404,7 +408,7 @@ async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std
         let symlink_content = fs::read(&symlink_path)
             .await
             .err_tip(|| "On symlink read")?;
-        assert_eq!(std::str::from_utf8(&symlink_content)?, FILE_CONTENT);
+        assert_eq!(from_utf8(&symlink_content)?, FILE_CONTENT);
 
         let symlink_metadata = fs::symlink_metadata(&symlink_path)
             .await
@@ -416,8 +420,8 @@ async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std
 
 #[serial]
 #[nativelink_test]
-async fn ensure_output_files_full_directories_are_created_no_working_directory_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn ensure_output_files_full_directories_are_created_no_working_directory_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     fn test_monotonic_clock() -> SystemTime {
@@ -438,7 +442,7 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -446,7 +450,7 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     {
@@ -455,7 +459,7 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
             output_files: vec!["some/path/test.txt".to_string()],
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -538,8 +542,8 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
 
 #[serial]
 #[nativelink_test]
-async fn ensure_output_files_full_directories_are_created_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn ensure_output_files_full_directories_are_created_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     fn test_monotonic_clock() -> SystemTime {
@@ -560,7 +564,7 @@ async fn ensure_output_files_full_directories_are_created_test(
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -568,7 +572,7 @@ async fn ensure_output_files_full_directories_are_created_test(
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     {
@@ -579,7 +583,7 @@ async fn ensure_output_files_full_directories_are_created_test(
             working_directory: working_directory.to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -663,7 +667,7 @@ async fn ensure_output_files_full_directories_are_created_test(
 
 #[serial]
 #[nativelink_test]
-async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
+async fn blake3_upload_files() -> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     fn test_monotonic_clock() -> SystemTime {
@@ -684,7 +688,7 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -692,7 +696,7 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     let action_result = {
@@ -718,7 +722,7 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
             working_directory: working_directory.to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -843,7 +847,7 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
 
 #[serial]
 #[nativelink_test]
-async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     fn test_monotonic_clock() -> SystemTime {
@@ -864,7 +868,7 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -872,7 +876,7 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     let action_result = {
@@ -898,7 +902,7 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
             working_directory: working_directory.to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -1024,7 +1028,7 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
 #[cfg(not(target_family = "windows"))]
 #[serial]
 #[nativelink_test]
-async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     fn test_monotonic_clock() -> SystemTime {
@@ -1045,7 +1049,7 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1053,7 +1057,7 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     let queued_timestamp = make_system_time(1000);
@@ -1075,7 +1079,7 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
             working_directory: ".".to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -1231,7 +1235,7 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
 
 #[serial]
 #[nativelink_test]
-async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Error>> {
+async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     fn test_monotonic_clock() -> SystemTime {
@@ -1252,7 +1256,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1260,7 +1264,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     let queued_timestamp = make_system_time(1000);
@@ -1277,7 +1281,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
             working_directory: ".".to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -1370,7 +1374,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
 
 #[serial]
 #[nativelink_test]
-async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
+async fn kill_ends_action() -> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -1386,7 +1390,7 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1424,7 +1428,7 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -1477,7 +1481,7 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(target_family = "unix")]
     loop {
-        assert_eq!(poll!(&mut run_action_fut), Poll::Pending);
+        assert_eq!(futures::poll!(&mut run_action_fut), Poll::Pending);
         tokio::task::yield_now().await;
         match fs::metadata(&process_started_file).await {
             Ok(_) => break,
@@ -1515,7 +1519,7 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg_attr(feature = "nix", ignore)]
 #[serial]
 #[nativelink_test]
-async fn entrypoint_does_invoke_if_set() -> Result<(), Box<dyn std::error::Error>> {
+async fn entrypoint_does_invoke_if_set() -> Result<(), Box<dyn core::error::Error>> {
     #[cfg(target_family = "unix")]
     const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
 #!/usr/bin/env bash
@@ -1587,7 +1591,7 @@ exit 0
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1602,7 +1606,7 @@ exit 0
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -1671,7 +1675,7 @@ exit 0
 #[cfg_attr(feature = "nix", ignore)]
 #[serial]
 #[nativelink_test]
-async fn entrypoint_injects_properties() -> Result<(), Box<dyn std::error::Error>> {
+async fn entrypoint_injects_properties() -> Result<(), Box<dyn core::error::Error>> {
     #[cfg(target_family = "unix")]
     const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
 #!/usr/bin/env bash
@@ -1740,19 +1744,19 @@ exit 0
                 additional_environment: Some(HashMap::from([
                     (
                         "PROPERTY".to_string(),
-                        EnvironmentSource::property("property_name".to_string()),
+                        EnvironmentSource::Property("property_name".to_string()),
                     ),
                     (
                         "VALUE".to_string(),
-                        EnvironmentSource::value("raw_value".to_string()),
+                        EnvironmentSource::Value("raw_value".to_string()),
                     ),
                     (
                         "INNER_TIMEOUT".to_string(),
-                        EnvironmentSource::timeout_millis,
+                        EnvironmentSource::TimeoutMillis,
                     ),
                     (
                         "PATH".to_string(),
-                        EnvironmentSource::value(std::env::var("PATH").unwrap()),
+                        EnvironmentSource::Value(env::var("PATH").unwrap()),
                     ),
                 ])),
             },
@@ -1761,7 +1765,7 @@ exit 0
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1776,7 +1780,7 @@ exit 0
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -1848,11 +1852,11 @@ exit 0
         .compute_from_reader(Cursor::new(expected_stderr))
         .await?;
 
-    let actual_stderr: prost::bytes::Bytes = cas_store
+    let actual_stderr: bytes::Bytes = cas_store
         .as_ref()
         .get_part_unchunked(result.stderr_digest, 0, None)
         .await?;
-    let actual_stderr_decoded = std::str::from_utf8(&actual_stderr)?;
+    let actual_stderr_decoded = from_utf8(&actual_stderr)?;
     assert_eq!(expected_stderr, actual_stderr_decoded);
     assert_eq!(expected_stdout, result.stdout_digest);
     assert_eq!(expected_stderr_digest, result.stderr_digest);
@@ -1863,7 +1867,7 @@ exit 0
 #[cfg_attr(feature = "nix", ignore)]
 #[serial]
 #[nativelink_test]
-async fn entrypoint_sends_timeout_via_side_channel() -> Result<(), Box<dyn std::error::Error>> {
+async fn entrypoint_sends_timeout_via_side_channel() -> Result<(), Box<dyn core::error::Error>> {
     #[cfg(target_family = "unix")]
     const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
 #!/bin/bash
@@ -1919,7 +1923,7 @@ exit 1
                 entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                 additional_environment: Some(HashMap::from([(
                     "SIDE_CHANNEL_FILE".to_string(),
-                    EnvironmentSource::side_channel_file,
+                    EnvironmentSource::SideChannelFile,
                 )])),
             },
             cas_store: cas_store.clone(),
@@ -1927,7 +1931,7 @@ exit 1
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1939,7 +1943,7 @@ exit 1
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -1998,7 +2002,7 @@ exit 1
 
 #[serial]
 #[nativelink_test]
-async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn std::error::Error>> {
+async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn core::error::Error>> {
     let (_, _, cas_store, ac_store) = setup_stores().await?;
 
     let running_actions_manager =
@@ -2010,7 +2014,7 @@ async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn std::error
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -2062,7 +2066,7 @@ async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn std::error
     let retrieved_result =
         get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), action_digest.into()).await?;
 
-    let proto_result: ProtoActionResult = action_result.into();
+    let proto_result: ProtoActionResult = action_result.try_into()?;
     assert_eq!(proto_result, retrieved_result);
 
     Ok(())
@@ -2070,7 +2074,7 @@ async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn std::error
 
 #[serial]
 #[nativelink_test]
-async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn std::error::Error>> {
+async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn core::error::Error>> {
     let (_, _, cas_store, ac_store) = setup_stores().await?;
 
     let running_actions_manager =
@@ -2082,7 +2086,7 @@ async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn st
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::everything,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Everything,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -2134,7 +2138,7 @@ async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn st
     let retrieved_result =
         get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), action_digest.into()).await?;
 
-    let proto_result: ProtoActionResult = action_result.into();
+    let proto_result: ProtoActionResult = action_result.try_into()?;
     assert_eq!(proto_result, retrieved_result);
 
     Ok(())
@@ -2142,7 +2146,7 @@ async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn st
 
 #[serial]
 #[nativelink_test]
-async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>> {
+async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn core::error::Error>> {
     let (_, _, cas_store, ac_store) = setup_stores().await?;
 
     let running_actions_manager =
@@ -2154,9 +2158,12 @@ async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn std::e
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
                 ),
-                #[allow(clippy::literal_string_with_formatting_args)]
+                #[expect(
+                    clippy::literal_string_with_formatting_args,
+                    reason = "passed to `formatx` crate for runtime interpretation"
+                )]
                 success_message_template: "{historical_results_hash}-{historical_results_size}"
                     .to_string(),
                 ..Default::default()
@@ -2230,7 +2237,7 @@ async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn std::e
         HistoricalExecuteResponse {
             action_digest: Some(action_digest.into()),
             execute_response: Some(ExecuteResponse {
-                result: Some(action_result.into()),
+                result: Some(action_result.try_into()?),
                 status: Some(Status::default()),
                 ..Default::default()
             }),
@@ -2243,7 +2250,7 @@ async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn std::e
 
 #[serial]
 #[nativelink_test]
-async fn failure_does_not_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>> {
+async fn failure_does_not_cache_in_historical_results() -> Result<(), Box<dyn core::error::Error>> {
     let (_, _, cas_store, ac_store) = setup_stores().await?;
 
     let running_actions_manager =
@@ -2255,9 +2262,8 @@ async fn failure_does_not_cache_in_historical_results() -> Result<(), Box<dyn st
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
                 ),
-                #[allow(clippy::literal_string_with_formatting_args)]
                 success_message_template: "{historical_results_hash}-{historical_results_size}"
                     .to_string(),
                 ..Default::default()
@@ -2284,7 +2290,7 @@ async fn failure_does_not_cache_in_historical_results() -> Result<(), Box<dyn st
 
 #[serial]
 #[nativelink_test]
-async fn infra_failure_does_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>>
+async fn infra_failure_does_cache_in_historical_results() -> Result<(), Box<dyn core::error::Error>>
 {
     let (_, _, cas_store, ac_store) = setup_stores().await?;
 
@@ -2297,9 +2303,12 @@ async fn infra_failure_does_cache_in_historical_results() -> Result<(), Box<dyn 
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::failures_only,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::FailuresOnly,
                 ),
-                #[allow(clippy::literal_string_with_formatting_args)]
+                #[expect(
+                    clippy::literal_string_with_formatting_args,
+                    reason = "passed to `formatx` crate for runtime interpretation"
+                )]
                 failure_message_template: "{historical_results_hash}-{historical_results_size}"
                     .to_string(),
                 ..Default::default()
@@ -2342,7 +2351,7 @@ async fn infra_failure_does_cache_in_historical_results() -> Result<(), Box<dyn 
         HistoricalExecuteResponse {
             action_digest: Some(action_digest.into()),
             execute_response: Some(ExecuteResponse {
-                result: Some(action_result.into()),
+                result: Some(action_result.try_into()?),
                 status: Some(make_input_err!("test error").into()),
                 ..Default::default()
             }),
@@ -2354,7 +2363,7 @@ async fn infra_failure_does_cache_in_historical_results() -> Result<(), Box<dyn 
 
 #[serial]
 #[nativelink_test]
-async fn action_result_has_used_in_message() -> Result<(), Box<dyn std::error::Error>> {
+async fn action_result_has_used_in_message() -> Result<(), Box<dyn core::error::Error>> {
     let (_, _, cas_store, ac_store) = setup_stores().await?;
 
     let running_actions_manager =
@@ -2366,8 +2375,7 @@ async fn action_result_has_used_in_message() -> Result<(), Box<dyn std::error::E
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
-                #[allow(clippy::literal_string_with_formatting_args)]
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
                 success_message_template: "{action_digest_hash}-{action_digest_size}".to_string(),
                 ..Default::default()
             },
@@ -2399,14 +2407,14 @@ async fn action_result_has_used_in_message() -> Result<(), Box<dyn std::error::E
         get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), action_result_digest.into())
             .await?;
 
-    let proto_result: ProtoActionResult = action_result.into();
+    let proto_result: ProtoActionResult = action_result.try_into()?;
     assert_eq!(proto_result, retrieved_result);
     Ok(())
 }
 
 #[serial]
 #[nativelink_test]
-async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn std::error::Error>> {
+async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     fn test_monotonic_clock() -> SystemTime {
@@ -2435,7 +2443,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -2453,7 +2461,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
     .await?;
 
     {
-        // Test to ensure that the task timeout is choosen if it is less than the max timeout.
+        // Test to ensure that the task timeout is chosen if it is less than the max timeout.
         static SENT_TIMEOUT: AtomicI64 = AtomicI64::new(-1);
         const MAX_TIMEOUT_DURATION: Duration = Duration::from_secs(100);
         const TASK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -2484,7 +2492,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                         ..Default::default()
                     },
                 max_action_timeout: MAX_TIMEOUT_DURATION,
@@ -2494,7 +2502,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                 now_fn: test_monotonic_clock,
                 sleep_fn: |duration| {
                     SENT_TIMEOUT.store(duration.as_millis() as i64, Ordering::Relaxed);
-                    Box::pin(futures::future::pending())
+                    Box::pin(future::pending())
                 },
             },
         )?);
@@ -2566,7 +2574,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                         ..Default::default()
                     },
                 max_action_timeout: MAX_TIMEOUT_DURATION,
@@ -2576,7 +2584,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                 now_fn: test_monotonic_clock,
                 sleep_fn: |duration| {
                     SENT_TIMEOUT.store(duration.as_millis() as i64, Ordering::Relaxed);
-                    Box::pin(futures::future::pending())
+                    Box::pin(future::pending())
                 },
             },
         )?);
@@ -2648,7 +2656,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                         ..Default::default()
                     },
                 max_action_timeout: MAX_TIMEOUT_DURATION,
@@ -2658,7 +2666,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                 now_fn: test_monotonic_clock,
                 sleep_fn: |duration| {
                     SENT_TIMEOUT.store(duration.as_millis() as i64, Ordering::Relaxed);
-                    Box::pin(futures::future::pending())
+                    Box::pin(future::pending())
                 },
             },
         )?);
@@ -2701,7 +2709,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
 
 #[serial]
 #[nativelink_test]
-async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
+async fn worker_times_out() -> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     fn test_monotonic_clock() -> SystemTime {
@@ -2727,7 +2735,7 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -2765,7 +2773,7 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -2837,7 +2845,7 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
 
 #[serial]
 #[nativelink_test]
-async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::error::Error>> {
+async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     fn test_monotonic_clock() -> SystemTime {
@@ -2858,7 +2866,7 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -2866,7 +2874,7 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
 
@@ -2891,7 +2899,7 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -3004,7 +3012,7 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
 #[cfg(target_family = "unix")]
 #[serial]
 #[nativelink_test]
-async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn unix_executable_file_test() -> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
     const FILE_1_NAME: &str = "file1";
 
@@ -3026,7 +3034,7 @@ async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -3034,7 +3042,7 @@ async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     // Create and run an action which
@@ -3044,13 +3052,13 @@ async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
             arguments: vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                format!("touch {FILE_1_NAME} && chmod 700 {FILE_1_NAME}").to_string(),
+                format!("touch {FILE_1_NAME} && chmod 700 {FILE_1_NAME}"),
             ],
             output_paths: vec![FILE_1_NAME.to_string()],
             working_directory: ".".to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -3107,7 +3115,7 @@ async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
 
 #[serial]
 #[nativelink_test]
-async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::error::Error>> {
+async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -3125,7 +3133,7 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -3144,7 +3152,7 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };
@@ -3205,12 +3213,12 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
 // check it's able to handle uploading some directories with some files in.
 // Note: If this test is failing or timing out, check that other tests in this file
 // are also `#[serial]`.
-// TODO(allada) This is unix only only because I was lazy and didn't spend the time to
+// TODO(aaronmondal) This is unix only only because I was lazy and didn't spend the time to
 // build the bash-like commands in windows as well.
 #[serial]
 #[nativelink_test]
 #[cfg(target_family = "unix")]
-async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
+async fn upload_with_single_permit() -> Result<(), Box<dyn core::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
 
     fn test_monotonic_clock() -> SystemTime {
@@ -3223,7 +3231,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&root_action_directory).await?;
 
     // Take all but one FD permit away.
-    let _permits = futures::stream::iter(1..fs::OPEN_FILE_SEMAPHORE.available_permits())
+    let _permits = stream::iter(1..fs::OPEN_FILE_SEMAPHORE.available_permits())
         .then(|_| fs::OPEN_FILE_SEMAPHORE.acquire())
         .try_collect::<Vec<_>>()
         .await?;
@@ -3238,7 +3246,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -3246,7 +3254,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            sleep_fn: |_duration| Box::pin(future::pending()),
         },
     )?);
     let action_result = {
@@ -3263,7 +3271,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
             working_directory: working_directory.to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
-                value: std::env::var("PATH").unwrap(),
+                value: env::var("PATH").unwrap(),
             }],
             ..Default::default()
         };
@@ -3393,7 +3401,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
 
 #[serial]
 #[nativelink_test]
-async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn std::error::Error>>
+async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn core::error::Error>>
 {
     const WORKER_ID: &str = "foo_worker_id";
 
@@ -3417,7 +3425,7 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
             historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy:
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -3425,12 +3433,12 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
         },
         Callbacks {
             now_fn: test_monotonic_clock,
-            // If action_timeout is the passed duration then return immeidately,
+            // If action_timeout is the passed duration then return immediately,
             // which will cause the action to be killed and pass the test,
             // otherwise return pending and fail the test.
             sleep_fn: |duration| {
                 assert_eq!(duration.as_secs(), ACTION_TIMEOUT as u64);
-                Box::pin(futures::future::ready(()))
+                Box::pin(future::ready(()))
             },
         },
     )?);
@@ -3447,7 +3455,7 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
         working_directory: ".".to_string(),
         environment_variables: vec![EnvironmentVariable {
             name: "PATH".to_string(),
-            value: std::env::var("PATH").unwrap(),
+            value: env::var("PATH").unwrap(),
         }],
         ..Default::default()
     };

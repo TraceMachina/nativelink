@@ -8,9 +8,14 @@ import {
   useVisibleTask$,
 } from "@builder.io/qwik";
 
-import { NavLink } from "./nav-link";
+import { NavLink } from "./nav-link.tsx";
 
-import { GitHub, GitHubIcon, Slack, SlackIcon } from "../../media/icons/icons";
+import {
+  GitHub,
+  GitHubIcon,
+  Slack,
+  SlackIcon,
+} from "../../media/icons/icons.tsx";
 import styles from "./header.css?inline";
 
 const Logo =
@@ -133,13 +138,14 @@ const Hamburger = component$<Hamburger>(({ navState }) => {
 const Widgets = component$(() => {
   useStylesScoped$(styles);
   return (
-    <div class="justify-center w-1/2 md:w-[25vw] flex flex-row items-center gap-2 justify-center text-[16px]">
-      <div class="z-60 flex flex-row gap-3 ">
+    <div class="w-1/2 md:w-[25vw] flex flex-row items-center justify-center gap-2 text-[16px]">
+      <div class="z-60 flex flex-row gap-3">
         <a
           target="_blank"
           class="md:hidden"
           href="https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A"
           rel="noreferrer"
+          aria-label="Nativelink Slack channel"
         >
           <Slack />
         </a>
@@ -148,6 +154,7 @@ const Widgets = component$(() => {
           class="hidden md:flex hover:rotate-360 transition-all duration-300"
           href="https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A"
           rel="noreferrer"
+          aria-label="Nativelink Slack channel"
         >
           <SlackIcon />
         </a>
@@ -156,6 +163,7 @@ const Widgets = component$(() => {
           href="https://github.com/tracemachina/nativelink"
           target="_blank"
           rel="noreferrer"
+          aria-label="Nativelink GitHub repository"
         >
           <GitHub />
         </a>
@@ -164,6 +172,7 @@ const Widgets = component$(() => {
           href="https://github.com/tracemachina/nativelink"
           target="_blank"
           rel="noreferrer"
+          aria-label="Nativelink GitHub repository"
         >
           <GitHubIcon />
         </a>
@@ -172,7 +181,7 @@ const Widgets = component$(() => {
         id="button"
         href="https://app.nativelink.com"
         target="_blank"
-        class="hidden md:flex bg-white text-black w-30 hover: p-5 h-8 rounded-xl justify-center items-center"
+        class="hidden md:flex bg-white text-black hover:bg-gray-200 transition-colors duration-300 px-4 h-8 rounded-xl justify-center items-center"
         rel="noreferrer"
       >
         Try for free
@@ -198,9 +207,9 @@ export const Header = component$((url: URL) => {
 
   return (
     <header
-      class={` ${scrolled.value ? "bg-black" : "bg-transparent"}
-    fixed  top-0 z-30 flex  h-14 py-10 md:px-0 transition-all duration-500
-    w-full justify-between flex-row items-center `}
+      class={`${scrolled.value ? "bg-black" : "bg-transparent"}
+    fixed top-0 z-30 flex h-14 py-10 md:px-0 transition-all duration-500
+    w-full justify-between flex-row items-center`}
     >
       <HeaderLogo />
       <DesktopNav url={url} scrolled={scrolled} />

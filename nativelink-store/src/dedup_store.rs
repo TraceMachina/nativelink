@@ -12,26 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp;
-use std::pin::Pin;
+use core::cmp;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bincode::config::{FixintEncoding, WithOtherIntEncoding};
-use bincode::{DefaultOptions, Options};
+use bincode::serde::{decode_from_slice, encode_to_vec};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use nativelink_config::stores::DedupSpec;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
-use tracing::{event, Level};
+use tracing::warn;
 
 use crate::cas_utils::is_zero_digest;
 
@@ -42,10 +41,16 @@ const DEFAULT_NORM_SIZE: u64 = 256 * 1024;
 const DEFAULT_MAX_SIZE: u64 = 512 * 1024;
 const DEFAULT_MAX_CONCURRENT_FETCH_PER_GET: usize = 10;
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default, Clone)]
 pub struct DedupIndex {
     pub entries: Vec<DigestInfo>,
 }
+
+type LegacyBincodeConfig = bincode::config::Configuration<
+    bincode::config::LittleEndian,
+    bincode::config::Fixint,
+    bincode::config::NoLimit,
+>;
 
 #[derive(MetricsComponent)]
 pub struct DedupStore {
@@ -56,7 +61,21 @@ pub struct DedupStore {
     fast_cdc_decoder: FastCDC,
     #[metric(help = "Maximum number of concurrent fetches per get")]
     max_concurrent_fetch_per_get: usize,
-    bincode_options: WithOtherIntEncoding<DefaultOptions, FixintEncoding>,
+    bincode_config: LegacyBincodeConfig,
+}
+
+impl core::fmt::Debug for DedupStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DedupStore")
+            .field("index_store", &self.index_store)
+            .field("content_store", &self.content_store)
+            .field("fast_cdc_decoder", &self.fast_cdc_decoder)
+            .field(
+                "max_concurrent_fetch_per_get",
+                &self.max_concurrent_fetch_per_get,
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl DedupStore {
@@ -95,7 +114,7 @@ impl DedupStore {
                 usize::try_from(max_size).err_tip(|| "Could not convert max_size to usize")?,
             ),
             max_concurrent_fetch_per_get,
-            bincode_options: DefaultOptions::new().with_fixint_encoding(),
+            bincode_config: bincode::config::legacy(),
         }))
     }
 
@@ -118,18 +137,13 @@ impl DedupStore {
                 Ok(data) => data,
             };
 
-            match self.bincode_options.deserialize::<DedupIndex>(&data) {
+            match decode_from_slice::<DedupIndex, _>(&data, self.bincode_config) {
+                Ok((dedup_index, _)) => dedup_index,
                 Err(err) => {
-                    event!(
-                        Level::WARN,
-                        ?key,
-                        ?err,
-                        "Failed to deserialize index in dedup store",
-                    );
+                    warn!(?key, ?err, "Failed to deserialize index in dedup store",);
                     // We return the equivalent of NotFound here so the client is happy.
                     return Ok(None);
                 }
-                Ok(v) => v,
             }
         };
 
@@ -213,18 +227,19 @@ impl StoreDriver for DedupStore {
             .try_collect()
             .await?;
 
-        let serialized_index = self
-            .bincode_options
-            .serialize(&DedupIndex {
+        let serialized_index = encode_to_vec(
+            &DedupIndex {
                 entries: index_entries,
-            })
-            .map_err(|e| {
-                make_err!(
-                    Code::Internal,
-                    "Failed to serialize index in dedup_store : {:?}",
-                    e
-                )
-            })?;
+            },
+            self.bincode_config,
+        )
+        .map_err(|e| {
+            make_err!(
+                Code::Internal,
+                "Failed to serialize index in dedup_store : {:?}",
+                e
+            )
+        })?;
 
         self.index_store
             .update_oneshot(key, serialized_index.into())
@@ -256,16 +271,15 @@ impl StoreDriver for DedupStore {
                 .get_part_unchunked(key, 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store")?;
-
-            self.bincode_options
-                .deserialize::<DedupIndex>(&data)
+            let (dedup_index, _) = decode_from_slice::<DedupIndex, _>(&data, self.bincode_config)
                 .map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Failed to deserialize index in dedup_store::get_part : {:?}",
-                        e
-                    )
-                })?
+                make_err!(
+                    Code::Internal,
+                    "Failed to deserialize index in dedup_store::get_part : {:?}",
+                    e
+                )
+            })?;
+            dedup_index
         };
 
         let mut start_byte_in_stream: u64 = 0;
@@ -355,11 +369,11 @@ impl StoreDriver for DedupStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

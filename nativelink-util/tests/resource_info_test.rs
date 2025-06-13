@@ -19,8 +19,8 @@ use nativelink_util::resource_info::ResourceInfo;
 use pretty_assertions::assert_eq;
 
 #[nativelink_test]
-async fn read_instance_name_compressed_blobs_compressor_digest_function_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn read_instance_name_compressed_blobs_compressor_digest_function_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str =
         "instance_name/compressed-blobs/zstd/blake3/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
@@ -39,8 +39,8 @@ async fn read_instance_name_compressed_blobs_compressor_digest_function_hash_siz
 }
 
 #[nativelink_test]
-async fn read_instance_name_compressed_blobs_compressor_digest_function_hash_size_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn read_instance_name_compressed_blobs_compressor_digest_function_hash_size_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "instance_name/compressed-blobs/zstd/blake3/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "instance_name");
@@ -55,8 +55,8 @@ async fn read_instance_name_compressed_blobs_compressor_digest_function_hash_siz
 }
 
 #[nativelink_test]
-async fn read_instance_name_blobs_digest_function_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn read_instance_name_blobs_digest_function_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "instance_name/blobs/blake3/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "instance_name");
@@ -74,8 +74,8 @@ async fn read_instance_name_blobs_digest_function_hash_size_optional_metadata_te
 }
 
 #[nativelink_test]
-async fn read_instance_name_blobs_digest_function_hash_size_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn read_instance_name_blobs_digest_function_hash_size_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "instance_name/blobs/blake3/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "instance_name");
@@ -90,8 +90,8 @@ async fn read_instance_name_blobs_digest_function_hash_size_test(
 }
 
 #[nativelink_test]
-async fn read_compressed_blobs_compressor_digest_function_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn read_compressed_blobs_compressor_digest_function_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "compressed-blobs/zstd/blake3/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "");
@@ -109,8 +109,8 @@ async fn read_compressed_blobs_compressor_digest_function_hash_size_optional_met
 }
 
 #[nativelink_test]
-async fn read_compressed_blobs_compressor_digest_function_hash_size_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn read_compressed_blobs_compressor_digest_function_hash_size_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "compressed-blobs/zstd/blake3/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "");
@@ -124,8 +124,8 @@ async fn read_compressed_blobs_compressor_digest_function_hash_size_test(
 }
 
 #[nativelink_test]
-async fn read_blobs_digest_function_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn read_blobs_digest_function_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "blobs/blake3/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "");
@@ -143,7 +143,7 @@ async fn read_blobs_digest_function_hash_size_optional_metadata_test(
 }
 
 #[nativelink_test]
-async fn read_blobs_digest_function_hash_size_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn read_blobs_digest_function_hash_size_test() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "blobs/blake3/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "");
@@ -158,8 +158,8 @@ async fn read_blobs_digest_function_hash_size_test() -> Result<(), Box<dyn std::
 }
 
 #[nativelink_test]
-async fn read_instance_name_compressed_blobs_compressor_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn read_instance_name_compressed_blobs_compressor_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "instance_name/compressed-blobs/zstd/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "instance_name");
@@ -177,8 +177,8 @@ async fn read_instance_name_compressed_blobs_compressor_hash_size_optional_metad
 }
 
 #[nativelink_test]
-async fn read_instance_name_compressed_blobs_compressor_hash_size_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn read_instance_name_compressed_blobs_compressor_hash_size_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "instance_name/compressed-blobs/zstd/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "instance_name");
@@ -193,8 +193,8 @@ async fn read_instance_name_compressed_blobs_compressor_hash_size_test(
 }
 
 #[nativelink_test]
-async fn read_instance_name_blobs_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn read_instance_name_blobs_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "instance_name/blobs/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "instance_name");
@@ -212,7 +212,7 @@ async fn read_instance_name_blobs_hash_size_optional_metadata_test(
 }
 
 #[nativelink_test]
-async fn read_instance_name_blobs_hash_size_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn read_instance_name_blobs_hash_size_test() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "instance_name/blobs/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "instance_name");
@@ -227,8 +227,8 @@ async fn read_instance_name_blobs_hash_size_test() -> Result<(), Box<dyn std::er
 }
 
 #[nativelink_test]
-async fn read_compressed_blobs_compressor_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn read_compressed_blobs_compressor_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "compressed-blobs/zstd/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "");
@@ -246,7 +246,7 @@ async fn read_compressed_blobs_compressor_hash_size_optional_metadata_test(
 }
 
 #[nativelink_test]
-async fn read_compressed_blobs_compressor_hash_size_test() -> Result<(), Box<dyn std::error::Error>>
+async fn read_compressed_blobs_compressor_hash_size_test() -> Result<(), Box<dyn core::error::Error>>
 {
     const RESOURCE_NAME: &str = "compressed-blobs/zstd/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
@@ -262,7 +262,7 @@ async fn read_compressed_blobs_compressor_hash_size_test() -> Result<(), Box<dyn
 }
 
 #[nativelink_test]
-async fn read_blobs_hash_size_optional_metadata_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn read_blobs_hash_size_optional_metadata_test() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "blobs/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "");
@@ -280,7 +280,7 @@ async fn read_blobs_hash_size_optional_metadata_test() -> Result<(), Box<dyn std
 }
 
 #[nativelink_test]
-async fn read_blobs_hash_size_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn read_blobs_hash_size_test() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "blobs/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "");
@@ -295,7 +295,7 @@ async fn read_blobs_hash_size_test() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-async fn read_instance_name_can_have_slashes_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn read_instance_name_can_have_slashes_test() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "my/instance/name/blobs/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "my/instance/name");
@@ -310,7 +310,7 @@ async fn read_instance_name_can_have_slashes_test() -> Result<(), Box<dyn std::e
 }
 
 #[nativelink_test]
-async fn read_instance_name_can_be_blobs_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn read_instance_name_can_be_blobs_test() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "blobs/blobs/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
     assert_eq!(resource_info.instance_name, "blobs");
@@ -325,21 +325,21 @@ async fn read_instance_name_can_be_blobs_test() -> Result<(), Box<dyn std::error
 }
 
 #[nativelink_test]
-async fn read_blobs_missing() -> Result<(), Box<dyn std::error::Error>> {
+async fn read_blobs_missing() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "hash/12345";
     assert!(ResourceInfo::new(RESOURCE_NAME, false).is_err());
     Ok(())
 }
 
 #[nativelink_test]
-async fn read_blobs_invalid() -> Result<(), Box<dyn std::error::Error>> {
+async fn read_blobs_invalid() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "BLOBS/hash/12345";
     assert!(ResourceInfo::new(RESOURCE_NAME, false).is_err());
     Ok(())
 }
 
 #[nativelink_test]
-async fn read_too_short_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn read_too_short_test() -> Result<(), Box<dyn core::error::Error>> {
     assert!(ResourceInfo::new("", false).is_err());
     assert!(ResourceInfo::new("/", false).is_err());
     assert!(ResourceInfo::new("//", false).is_err());
@@ -353,8 +353,8 @@ async fn read_too_short_test() -> Result<(), Box<dyn std::error::Error>> {
 // Begin write tests.
 
 #[nativelink_test]
-async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_digest_function_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_digest_function_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str =
         "instance_name/uploads/uuid/compressed-blobs/zstd/blake3/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
@@ -373,8 +373,8 @@ async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_digest_fun
 }
 
 #[nativelink_test]
-async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_digest_function_hash_size_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_digest_function_hash_size_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str =
         "instance_name/uploads/uuid/compressed-blobs/zstd/blake3/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
@@ -390,8 +390,8 @@ async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_digest_fun
 }
 
 #[nativelink_test]
-async fn write_instance_name_uploads_uuid_blobs_digest_function_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_instance_name_uploads_uuid_blobs_digest_function_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str =
         "instance_name/uploads/uuid/blobs/blake3/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
@@ -410,8 +410,8 @@ async fn write_instance_name_uploads_uuid_blobs_digest_function_hash_size_option
 }
 
 #[nativelink_test]
-async fn write_instance_name_uploads_uuid_blobs_digest_function_hash_size_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_instance_name_uploads_uuid_blobs_digest_function_hash_size_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "instance_name/uploads/uuid/blobs/blake3/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "instance_name");
@@ -426,8 +426,8 @@ async fn write_instance_name_uploads_uuid_blobs_digest_function_hash_size_test(
 }
 
 #[nativelink_test]
-async fn write_uploads_uuid_compressed_blobs_compressor_digest_function_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_uploads_uuid_compressed_blobs_compressor_digest_function_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str =
         "uploads/uuid/compressed-blobs/zstd/blake3/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
@@ -446,8 +446,8 @@ async fn write_uploads_uuid_compressed_blobs_compressor_digest_function_hash_siz
 }
 
 #[nativelink_test]
-async fn write_uploads_uuid_compressed_blobs_compressor_digest_function_hash_size_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_uploads_uuid_compressed_blobs_compressor_digest_function_hash_size_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "uploads/uuid/compressed-blobs/zstd/blake3/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "");
@@ -462,8 +462,8 @@ async fn write_uploads_uuid_compressed_blobs_compressor_digest_function_hash_siz
 }
 
 #[nativelink_test]
-async fn write_uploads_uuid_blobs_digest_function_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_uploads_uuid_blobs_digest_function_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "uploads/uuid/blobs/blake3/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "");
@@ -481,8 +481,8 @@ async fn write_uploads_uuid_blobs_digest_function_hash_size_optional_metadata_te
 }
 
 #[nativelink_test]
-async fn write_uploads_uuid_blobs_digest_function_hash_size_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_uploads_uuid_blobs_digest_function_hash_size_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "uploads/uuid/blobs/blake3/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "");
@@ -497,8 +497,8 @@ async fn write_uploads_uuid_blobs_digest_function_hash_size_test(
 }
 
 #[nativelink_test]
-async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str =
         "instance_name/uploads/uuid/compressed-blobs/zstd/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
@@ -517,8 +517,8 @@ async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_hash_size_
 }
 
 #[nativelink_test]
-async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_hash_size_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_hash_size_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "instance_name/uploads/uuid/compressed-blobs/zstd/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "instance_name");
@@ -533,8 +533,8 @@ async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_hash_size_
 }
 
 #[nativelink_test]
-async fn write_instance_name_uploads_uuid_blobs_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_instance_name_uploads_uuid_blobs_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "instance_name/uploads/uuid/blobs/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "instance_name");
@@ -552,8 +552,8 @@ async fn write_instance_name_uploads_uuid_blobs_hash_size_optional_metadata_test
 }
 
 #[nativelink_test]
-async fn write_instance_name_uploads_uuid_blobs_hash_size_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_instance_name_uploads_uuid_blobs_hash_size_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "instance_name/uploads/uuid/blobs/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "instance_name");
@@ -568,8 +568,8 @@ async fn write_instance_name_uploads_uuid_blobs_hash_size_test(
 }
 
 #[nativelink_test]
-async fn write_uploads_uuid_compressed_blobs_compressor_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_uploads_uuid_compressed_blobs_compressor_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "uploads/uuid/compressed-blobs/zstd/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "");
@@ -587,8 +587,8 @@ async fn write_uploads_uuid_compressed_blobs_compressor_hash_size_optional_metad
 }
 
 #[nativelink_test]
-async fn write_uploads_uuid_compressed_blobs_compressor_hash_size_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_uploads_uuid_compressed_blobs_compressor_hash_size_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "uploads/uuid/compressed-blobs/zstd/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "");
@@ -603,15 +603,15 @@ async fn write_uploads_uuid_compressed_blobs_compressor_hash_size_test(
 }
 
 #[nativelink_test]
-async fn compressed_blob_invalid_compression_format() -> Result<(), Box<dyn std::error::Error>> {
+async fn compressed_blob_invalid_compression_format() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "uploads/uuid/compressed-blobs/INVALID/hash/12345";
     assert!(ResourceInfo::new(RESOURCE_NAME, true).is_err());
     Ok(())
 }
 
 #[nativelink_test]
-async fn write_uploads_uuid_blobs_hash_size_optional_metadata_test(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn write_uploads_uuid_blobs_hash_size_optional_metadata_test()
+-> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "uploads/uuid/blobs/hash/12345/optional_metadata";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "");
@@ -629,7 +629,7 @@ async fn write_uploads_uuid_blobs_hash_size_optional_metadata_test(
 }
 
 #[nativelink_test]
-async fn write_uploads_uuid_blobs_hash_size_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn write_uploads_uuid_blobs_hash_size_test() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "uploads/uuid/blobs/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "");
@@ -644,7 +644,7 @@ async fn write_uploads_uuid_blobs_hash_size_test() -> Result<(), Box<dyn std::er
 }
 
 #[nativelink_test]
-async fn write_instance_name_can_have_slashes_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn write_instance_name_can_have_slashes_test() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "my/instance/name/uploads/uuid/blobs/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "my/instance/name");
@@ -659,7 +659,7 @@ async fn write_instance_name_can_have_slashes_test() -> Result<(), Box<dyn std::
 }
 
 #[nativelink_test]
-async fn write_instance_name_can_be_blobs_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn write_instance_name_can_be_blobs_test() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "blobs/uploads/uuid/blobs/hash/12345";
     let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
     assert_eq!(resource_info.instance_name, "blobs");
@@ -674,35 +674,35 @@ async fn write_instance_name_can_be_blobs_test() -> Result<(), Box<dyn std::erro
 }
 
 #[nativelink_test]
-async fn write_uploads_missing() -> Result<(), Box<dyn std::error::Error>> {
+async fn write_uploads_missing() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "uuid/compressed-blobs/hash/12345";
     assert!(ResourceInfo::new(RESOURCE_NAME, true).is_err());
     Ok(())
 }
 
 #[nativelink_test]
-async fn write_uploads_invalid() -> Result<(), Box<dyn std::error::Error>> {
+async fn write_uploads_invalid() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "UPLOADS/uuid/compressed-blobs/hash/12345";
     assert!(ResourceInfo::new(RESOURCE_NAME, true).is_err());
     Ok(())
 }
 
 #[nativelink_test]
-async fn write_uploads_blobs_missing() -> Result<(), Box<dyn std::error::Error>> {
+async fn write_uploads_blobs_missing() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "uploads/uuid/hash/12345";
     assert!(ResourceInfo::new(RESOURCE_NAME, true).is_err());
     Ok(())
 }
 
 #[nativelink_test]
-async fn write_uploads_blobs_invalid() -> Result<(), Box<dyn std::error::Error>> {
+async fn write_uploads_blobs_invalid() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "uploads/uuid/BLOBS/hash/12345";
     assert!(ResourceInfo::new(RESOURCE_NAME, true).is_err());
     Ok(())
 }
 
 #[nativelink_test]
-async fn write_invalid_size_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn write_invalid_size_test() -> Result<(), Box<dyn core::error::Error>> {
     const RESOURCE_NAME: &str = "uploads/uuid/blobs/hash/INVALID";
     assert!(ResourceInfo::new(RESOURCE_NAME, true).is_err());
     Ok(())

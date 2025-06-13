@@ -12,26 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_config::stores::VerifySpec;
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::common::PackedHash;
-use nativelink_util::digest_hasher::{
-    default_digest_hasher_func, DigestHasher, ACTIVE_HASHER_FUNC,
-};
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
-use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use opentelemetry::context::Context;
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct VerifyStore {
     #[metric(group = "inner_store")]
     inner_store: Store,
@@ -49,7 +47,7 @@ pub struct VerifyStore {
 
 impl VerifyStore {
     pub fn new(spec: &VerifySpec, inner_store: Store) -> Arc<Self> {
-        Arc::new(VerifyStore {
+        Arc::new(Self {
             inner_store,
             verify_size: spec.verify_size,
             verify_hash: spec.verify_hash,
@@ -77,7 +75,7 @@ impl VerifyStore {
             // Ensure if a user sends us too much data we fail quickly.
             if let Some(expected_size) = maybe_expected_digest_size {
                 match sum_size.cmp(&expected_size) {
-                    std::cmp::Ordering::Greater => {
+                    core::cmp::Ordering::Greater => {
                         self.size_verification_failures.inc();
                         return Err(make_input_err!(
                             "Expected size {} but already received {} on insert",
@@ -85,7 +83,7 @@ impl VerifyStore {
                             sum_size
                         ));
                     }
-                    std::cmp::Ordering::Equal => {
+                    core::cmp::Ordering::Equal => {
                         // Ensure our next chunk is the EOF chunk.
                         // If this was an error it'll be caught on the .recv()
                         // on next cycle.
@@ -99,7 +97,7 @@ impl VerifyStore {
                             }
                         }
                     }
-                    std::cmp::Ordering::Less => {}
+                    core::cmp::Ordering::Less => {}
                 }
             }
 
@@ -179,8 +177,8 @@ impl StoreDriver for VerifyStore {
 
         let mut hasher = if self.verify_hash {
             Some(
-                ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-                    .err_tip(|| "In verify_store::update")?
+                Context::current()
+                    .get::<DigestHasherFunc>()
                     .map_or_else(default_digest_hasher_func, |v| *v)
                     .hasher(),
             )
@@ -223,11 +221,11 @@ impl StoreDriver for VerifyStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

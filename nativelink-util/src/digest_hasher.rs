@@ -12,33 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use blake3::Hasher as Blake3Hasher;
 use bytes::BytesMut;
 use futures::Future;
 use nativelink_config::stores::ConfigDigestHashFunction;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Value as ProtoDigestFunction;
+use opentelemetry::context::Context;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 
 use crate::common::DigestInfo;
-use crate::origin_context::{ActiveOriginContext, OriginContext};
-use crate::{fs, make_symbol, spawn_blocking};
-
-// The symbol can be used to retrieve the active hasher function.
-// from an `OriginContext`.
-make_symbol!(ACTIVE_HASHER_FUNC, DigestHasherFunc);
+use crate::{fs, spawn_blocking};
 
 static DEFAULT_DIGEST_HASHER_FUNC: OnceLock<DigestHasherFunc> = OnceLock::new();
 
 /// Utility function to make a context with a specific hasher function set.
-pub fn make_ctx_for_hash_func<H>(hasher: H) -> Result<Arc<OriginContext>, Error>
+pub fn make_ctx_for_hash_func<H>(hasher: H) -> Result<Context, Error>
 where
     H: TryInto<DigestHasherFunc>,
     H::Error: Into<Error>,
@@ -47,9 +43,9 @@ where
         .try_into()
         .err_tip(|| "Could not convert into DigestHasherFunc")?;
 
-    let mut new_ctx = ActiveOriginContext::fork().err_tip(|| "In BytestreamServer::inner_write")?;
-    new_ctx.set_value(&ACTIVE_HASHER_FUNC, Arc::new(digest_hasher_func));
-    Ok(Arc::new(new_ctx))
+    let new_ctx = Context::current_with_value(digest_hasher_func);
+
+    Ok(new_ctx)
 }
 
 /// Get the default hasher.
@@ -98,8 +94,8 @@ impl DigestHasherFunc {
 impl From<ConfigDigestHashFunction> for DigestHasherFunc {
     fn from(value: ConfigDigestHashFunction) -> Self {
         match value {
-            ConfigDigestHashFunction::sha256 => Self::Sha256,
-            ConfigDigestHashFunction::blake3 => Self::Blake3,
+            ConfigDigestHashFunction::Sha256 => Self::Sha256,
+            ConfigDigestHashFunction::Blake3 => Self::Blake3,
         }
     }
 }
@@ -132,11 +128,11 @@ impl TryFrom<&str> for DigestHasherFunc {
     }
 }
 
-impl std::fmt::Display for DigestHasherFunc {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for DigestHasherFunc {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            DigestHasherFunc::Sha256 => write!(f, "SHA256"),
-            DigestHasherFunc::Blake3 => write!(f, "BLAKE3"),
+            Self::Sha256 => write!(f, "SHA256"),
+            Self::Blake3 => write!(f, "BLAKE3"),
         }
     }
 }
@@ -164,7 +160,7 @@ impl From<&DigestHasherFunc> for DigestHasherImpl {
     fn from(value: &DigestHasherFunc) -> Self {
         let hash_func_impl = match value {
             DigestHasherFunc::Sha256 => DigestHasherFuncImpl::Sha256(Sha256::new()),
-            DigestHasherFunc::Blake3 => DigestHasherFuncImpl::Blake3(Box::new(Blake3Hasher::new())),
+            DigestHasherFunc::Blake3 => DigestHasherFuncImpl::Blake3(Box::default()),
         };
         Self {
             hashed_size: 0,
@@ -215,12 +211,18 @@ pub trait DigestHasher {
     }
 }
 
+#[expect(
+    variant_size_differences,
+    reason = "some variants are already boxed; this is acceptable"
+)]
+#[derive(Debug)]
 pub enum DigestHasherFuncImpl {
     Sha256(Sha256),
     Blake3(Box<Blake3Hasher>), // Box because Blake3Hasher is 1.3kb in size.
 }
 
 /// The individual implementation of the hash function.
+#[derive(Debug)]
 pub struct DigestHasherImpl {
     hashed_size: u64,
     hash_func_impl: DigestHasherFuncImpl,

@@ -69,7 +69,7 @@ devShells.default = pkgs.mkShell {
   shellHook = ''
     # Generate lre.bazelrc which configures LRE toolchains when running
     # in the nix environment.
-    ${config.local-remote-execution.installationScript}
+    ${config.lre.installationScript}
   '';
 }
 ```
@@ -101,12 +101,12 @@ build --extra_toolchains=@local-remote-execution//generated-cc/config:cc-toolcha
 
 In the snippet above you can see a warning that no local toolchain is
 configured. LRE needs to know the remote toolchain configuration to make it
-available locally. The `local-remote-execution` settings take an `Env` input and
+available locally. The `lre` settings take an `Env` input and
 an optional `prefix` input to configure the generated `lre.bazelrc`:
 
 ```nix
 # This is a top-level field, next to `packages` and `apps`, and `devShells`
-local-remote-execution.settings = {
+lre = {
   # In this example we import the lre-cc environment from nativelink and make it
   # available locally.
   inherit (lre-cc.meta) Env;
@@ -194,7 +194,7 @@ Let's use NativeLink's Kubernetes example to verify that the setup worked.
 ## 🚢 Testing with local K8s
 
 Start the cluster and set up NativeLink in an LRE configuration. For details on
-this refer to the [Kubernetes example](https://github.com/tracemachina/nativelink/tree/main/deployment-examples/kubernetes):
+this refer to the [Kubernetes example](https://www.nativelink.com/docs/deployment-examples/kubernetes):
 
 > [!TIP]
 > NativeLink's `native` CLI tool is self-contained and can be imported into
@@ -270,8 +270,8 @@ invoke a build against the cluster:
 CACHE=$(kubectl get gtw cache -o=jsonpath='{.status.addresses[0].value}')
 SCHEDULER=$(kubectl get gtw scheduler -o=jsonpath='{.status.addresses[0].value}')
 
-# Note: If you omit setting a `prefix` the `local-remote-execution.settings` you
-#       can omit `--config=lre` here as LRE will be enabled by default.
+# Note: If you don't set `lre.prefix`, you can omit `--config=lre` here as
+# LRE will be enabled by default.
 bazel build \
     --config=lre \
     --remote_instance_name=main \
@@ -300,8 +300,8 @@ bazel clean
 
 CACHE=$(kubectl get gtw cache -o=jsonpath='{.status.addresses[0].value}')
 
-# Note: If you omit setting a `prefix` the `local-remote-execution.settings` you
-#       can omit `--config=lre` here as LRE will be enabled by default.
+# Note: If you don't set `lre.prefix`, you can omit `--config=lre` here as
+# LRE will be enabled by default.
 bazel build \
     --config=lre \
     --remote_instance_name=main \

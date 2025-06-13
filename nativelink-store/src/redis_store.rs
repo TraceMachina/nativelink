@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::cmp;
+use core::ops::{Bound, RangeBounds};
+use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
-use std::cmp;
-use std::pin::Pin;
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -31,12 +32,13 @@ use fred::types::redisearch::{
     AggregateOperation, FtAggregateOptions, FtCreateOptions, IndexKind, Load, SearchField,
     SearchSchema, SearchSchemaKind, WithCursor,
 };
+use fred::types::scan::Scanner;
 use fred::types::scripts::Script;
 use fred::types::{Builder, Key as RedisKey, Map as RedisMap, SortOrder, Value as RedisValue};
 use futures::stream::FuturesUnordered;
-use futures::{future, FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
 use nativelink_config::stores::{RedisMode, RedisSpec};
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
@@ -51,7 +53,7 @@ use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use tokio::select;
 use tokio::time::sleep;
-use tracing::{event, Level};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
@@ -88,13 +90,12 @@ const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 10_000;
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn to_hex(value: &u32) -> String {
-    format!("{value:08x}")
-}
+/// The default COUNT value passed when scanning keys in Redis.
+/// Note: If this changes it should be updated in the config documentation.
+const DEFAULT_SCAN_COUNT: u32 = 10_000;
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct RedisStore {
     /// The client pool connecting to the backing Redis instance(s).
     client_pool: RedisPool,
@@ -108,13 +109,6 @@ pub struct RedisStore {
     /// A redis client for managing subscriptions.
     /// TODO: This should be moved into the store in followups once a standard use pattern has been determined.
     subscriber_client: SubscriberClient,
-
-    /// For metrics only.
-    #[metric(
-        help = "A unique identifier for the FT.CREATE command used to create the index template",
-        handler = to_hex
-    )]
-    fingerprint_create_index: u32,
 
     /// A function used to generate names for temporary keys.
     temp_name_generator_fn: fn() -> String,
@@ -134,6 +128,11 @@ pub struct RedisStore {
     #[metric(help = "The maximum number of chunk uploads per update")]
     max_chunk_uploads_per_update: usize,
 
+    /// The COUNT value passed when scanning keys in Redis.
+    /// This is used to hint the amount of work that should be done per response.
+    #[metric(help = "The COUNT value passed when scanning keys in Redis")]
+    scan_count: u32,
+
     /// Redis script used to update a value in redis if the version matches.
     /// This is done by incrementing the version number and then setting the new data
     /// only if the version number matches the existing version number.
@@ -151,9 +150,12 @@ impl RedisStore {
                 Code::InvalidArgument,
                 "No addresses were specified in redis store configuration."
             ));
-        };
+        }
         let [addr] = spec.addresses.as_slice() else {
-            return Err(make_err!(Code::Unimplemented, "Connecting directly to multiple redis nodes in a cluster is currently unsupported. Please specify a single URL to a single node, and nativelink will use cluster discover to find the other nodes."));
+            return Err(make_err!(
+                Code::Unimplemented,
+                "Connecting directly to multiple redis nodes in a cluster is currently unsupported. Please specify a single URL to a single node, and nativelink will use cluster discover to find the other nodes."
+            ));
         };
         let redis_config = match spec.mode {
             RedisMode::Cluster => RedisConfig::from_url_clustered(addr),
@@ -210,6 +212,9 @@ impl RedisStore {
             if spec.max_chunk_uploads_per_update == 0 {
                 spec.max_chunk_uploads_per_update = DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE;
             }
+            if spec.scan_count == 0 {
+                spec.scan_count = DEFAULT_SCAN_COUNT;
+            }
         }
         let connection_timeout = Duration::from_millis(spec.connection_timeout_ms);
         let command_timeout = Duration::from_millis(spec.command_timeout_ms);
@@ -251,11 +256,13 @@ impl RedisStore {
             spec.key_prefix.clone(),
             spec.read_chunk_size,
             spec.max_chunk_uploads_per_update,
+            spec.scan_count,
         )
         .map(Arc::new)
     }
 
     /// Used for testing when determinism is required.
+    #[expect(clippy::too_many_arguments)]
     pub fn new_from_builder_and_parts(
         client_pool: RedisPool,
         subscriber_client: SubscriberClient,
@@ -264,20 +271,23 @@ impl RedisStore {
         key_prefix: String,
         read_chunk_size: usize,
         max_chunk_uploads_per_update: usize,
+        scan_count: u32,
     ) -> Result<Self, Error> {
         // Start connection pool (this will retry forever by default).
         client_pool.connect();
         subscriber_client.connect();
 
+        info!("Redis index fingerprint: {FINGERPRINT_CREATE_INDEX_HEX}");
+
         Ok(Self {
             client_pool,
             pub_sub_channel,
             subscriber_client,
-            fingerprint_create_index: fingerprint_create_index_template(),
             temp_name_generator_fn,
             key_prefix,
             read_chunk_size,
             max_chunk_uploads_per_update,
+            scan_count,
             update_if_version_matches_script: Script::from_lua(LUA_VERSION_SET_SCRIPT),
             subscription_manager: Mutex::new(None),
         })
@@ -314,7 +324,7 @@ impl StoreDriver for RedisStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // TODO(allada) We could use pipeline here, but it makes retry more
+        // TODO(aaronmondal) We could use pipeline here, but it makes retry more
         // difficult and it doesn't work very well in cluster mode.
         // If we wanted to optimize this with pipeline be careful to
         // implement retry and to support cluster mode.
@@ -357,6 +367,58 @@ impl StoreDriver for RedisStore {
             .collect::<FuturesUnordered<_>>()
             .try_collect()
             .await
+    }
+
+    async fn list(
+        self: Pin<&Self>,
+        range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
+        handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
+    ) -> Result<u64, Error> {
+        let range = (
+            range.0.map(StoreKey::into_owned),
+            range.1.map(StoreKey::into_owned),
+        );
+        let pattern = match range.0 {
+            Bound::Included(ref start) | Bound::Excluded(ref start) => match range.1 {
+                Bound::Included(ref end) | Bound::Excluded(ref end) => {
+                    let start = start.as_str();
+                    let end = end.as_str();
+                    let max_length = start.len().min(end.len());
+                    let length = start
+                        .chars()
+                        .zip(end.chars())
+                        .position(|(a, b)| a != b)
+                        .unwrap_or(max_length);
+                    format!("{}{}*", self.key_prefix, &start[..length])
+                }
+                Bound::Unbounded => format!("{}*", self.key_prefix),
+            },
+            Bound::Unbounded => format!("{}*", self.key_prefix),
+        };
+        let client = self.client_pool.next();
+        let mut scan_stream = client.scan(pattern, Some(self.scan_count), None);
+        let mut iterations = 0;
+        'outer: while let Some(mut page) = scan_stream.try_next().await? {
+            if let Some(keys) = page.take_results() {
+                for key in keys {
+                    // TODO: Notification of conversion errors
+                    // Any results that do not conform to expectations are ignored.
+                    if let Some(key) = key.as_str() {
+                        if let Some(key) = key.strip_prefix(&self.key_prefix) {
+                            let key = StoreKey::new_str(key);
+                            if range.contains(&key) {
+                                iterations += 1;
+                                if !handler(&key) {
+                                    break 'outer;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            page.next();
+        }
+        Ok(iterations)
     }
 
     async fn update(
@@ -405,9 +467,9 @@ impl StoreDriver for RedisStore {
                         .err_tip(|| "Failed to read chunk in update in redis store")
                         .and_then(|chunk| {
                             let offset = *bytes_read;
-                            let chunk_len = u32::try_from(chunk.len()).err_tip(|| {
-                                "Could not convert chunk length to u32 in RedisStore::update"
-                            })?;
+                            let chunk_len = u32::try_from(chunk.len()).err_tip(
+                                || "Could not convert chunk length to u32 in RedisStore::update",
+                            )?;
                             let new_bytes_read = bytes_read
                                 .checked_add(chunk_len)
                                 .err_tip(|| "Overflow protection in RedisStore::update")?;
@@ -423,9 +485,9 @@ impl StoreDriver for RedisStore {
                     client
                         .setrange::<(), _, _>(temp_key_ref, offset, chunk)
                         .await
-                        .err_tip(|| {
-                            "While appending to append to temp key in RedisStore::update"
-                        })?;
+                        .err_tip(
+                            || "While appending to append to temp key in RedisStore::update",
+                        )?;
                     Ok::<u32, Error>(end_pos)
                 })
             })
@@ -463,7 +525,7 @@ impl StoreDriver for RedisStore {
         // If we have a publish channel configured, send a notice that the key has been set.
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
             return Ok(client.publish(pub_sub_channel, final_key.as_ref()).await?);
-        };
+        }
 
         Ok(())
     }
@@ -568,11 +630,11 @@ impl StoreDriver for RedisStore {
         self
     }
 
-    fn as_any(&self) -> &(dyn std::any::Any + Sync + Send) {
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send> {
         self
     }
 
@@ -606,16 +668,6 @@ const DATA_FIELD_NAME: &str = "data";
 const VERSION_FIELD_NAME: &str = "version";
 /// The time to live of indexes in seconds. After this time redis may delete the index.
 const INDEX_TTL_S: u64 = 60 * 60 * 24; // 24 hours.
-
-/// String of the `FT.CREATE` command used to create the index template. It is done this
-/// way so we can use it in both const (compile time) functions and runtime functions.
-/// This is a macro because we need to use it in multiple places that sometimes require the
-/// data as different data types (specifically for rust's `format_args!` macro).
-macro_rules! get_create_index_template {
-    () => {
-        "FT.CREATE {} ON HASH PREFIX 1 {} NOOFFSETS NOHL NOFIELDS NOFREQS SCHEMA {} TAG CASESENSITIVE SORTABLE"
-    }
-}
 
 /// Lua script to set a key if the version matches.
 /// Args:
@@ -655,31 +707,51 @@ return new_version
 "
 );
 
-/// Compile-time fingerprint of the `FT.CREATE` command used to create the index template.
-/// This is a simple CRC32 checksum of the command string. We don't care about it actually
-/// being a valid CRC32 checksum, just that it's a unique identifier with a low chance of
-/// collision.
-const fn fingerprint_create_index_template() -> u32 {
-    const POLY: u32 = 0xEDB8_8320;
-    const DATA: &[u8] = get_create_index_template!().as_bytes();
-    let mut crc = 0xFFFF_FFFF;
-    let mut i = 0;
-    while i < DATA.len() {
-        let byte = DATA[i];
-        crc ^= byte as u32;
+/// This is the output of the calculations below hardcoded into the executable.
+const FINGERPRINT_CREATE_INDEX_HEX: &str = "3e762c15";
 
-        let mut j = 0;
-        while j < 8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ POLY
-            } else {
-                crc >> 1
-            };
-            j += 1;
+#[cfg(test)]
+mod test {
+    use super::FINGERPRINT_CREATE_INDEX_HEX;
+
+    /// String of the `FT.CREATE` command used to create the index template.
+    const CREATE_INDEX_TEMPLATE: &str = "FT.CREATE {} ON HASH PREFIX 1 {} NOOFFSETS NOHL NOFIELDS NOFREQS SCHEMA {} TAG CASESENSITIVE SORTABLE";
+
+    /// Compile-time fingerprint of the `FT.CREATE` command used to create the
+    /// index template. This is a simple CRC32 checksum of the command string.
+    /// We don't care about it actually being a valid CRC32 checksum, just that
+    /// it's a unique identifier with a low chance of collision.
+    const fn fingerprint_create_index_template() -> u32 {
+        const POLY: u32 = 0xEDB8_8320;
+        const DATA: &[u8] = CREATE_INDEX_TEMPLATE.as_bytes();
+        let mut crc = 0xFFFF_FFFF;
+        let mut i = 0;
+        while i < DATA.len() {
+            let byte = DATA[i];
+            crc ^= byte as u32;
+
+            let mut j = 0;
+            while j < 8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ POLY
+                } else {
+                    crc >> 1
+                };
+                j += 1;
+            }
+            i += 1;
         }
-        i += 1;
+        crc
     }
-    crc
+
+    /// Verify that our calculation always evaluates to this fixed value.
+    #[test]
+    fn test_fingerprint_value() {
+        assert_eq!(
+            format!("{:08x}", &fingerprint_create_index_template()),
+            FINGERPRINT_CREATE_INDEX_HEX,
+        );
+    }
 }
 
 /// Get the name of the index to create for the given field.
@@ -688,11 +760,11 @@ const fn fingerprint_create_index_template() -> u32 {
 macro_rules! get_index_name {
     ($prefix:expr, $field:expr, $maybe_sort:expr) => {
         format_args!(
-            "{}_{}_{}_{:08x}",
+            "{}_{}_{}_{}",
             $prefix,
             $field,
             $maybe_sort.unwrap_or(""),
-            fingerprint_create_index_template(),
+            FINGERPRINT_CREATE_INDEX_HEX
         )
     };
 }
@@ -720,6 +792,7 @@ const fn try_sanitize(s: &str) -> Option<&str> {
 }
 
 /// An individual subscription to a key in Redis.
+#[derive(Debug)]
 pub struct RedisSubscription {
     receiver: Option<tokio::sync::watch::Receiver<String>>,
     weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
@@ -744,10 +817,7 @@ impl SchedulerSubscription for RedisSubscription {
 impl Drop for RedisSubscription {
     fn drop(&mut self) {
         let Some(receiver) = self.receiver.take() else {
-            event!(
-                Level::WARN,
-                "RedisSubscription has already been dropped, nothing to do."
-            );
+            warn!("RedisSubscription has already been dropped, nothing to do.");
             return; // Already dropped, nothing to do.
         };
         let key = receiver.borrow().clone();
@@ -758,8 +828,7 @@ impl Drop for RedisSubscription {
         };
         let mut subscribed_keys = subscribed_keys.write();
         let Some(value) = subscribed_keys.get(&key) else {
-            event!(
-                Level::ERROR,
+            error!(
                 "Key {key} was not found in subscribed keys when checking if it should be removed."
             );
             return;
@@ -772,6 +841,7 @@ impl Drop for RedisSubscription {
 }
 
 /// A publisher for a key in Redis.
+#[derive(Debug)]
 struct RedisSubscriptionPublisher {
     sender: Mutex<tokio::sync::watch::Sender<String>>,
 }
@@ -779,7 +849,7 @@ struct RedisSubscriptionPublisher {
 impl RedisSubscriptionPublisher {
     fn new(
         key: String,
-        weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
+        weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<Self>>>,
     ) -> (Self, RedisSubscription) {
         let (sender, receiver) = tokio::sync::watch::channel(key);
         let publisher = Self {
@@ -794,7 +864,7 @@ impl RedisSubscriptionPublisher {
 
     fn subscribe(
         &self,
-        weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
+        weak_subscribed_keys: Weak<RwLock<StringPatriciaMap<Self>>>,
     ) -> RedisSubscription {
         let receiver = self.sender.lock().subscribe();
         RedisSubscription {
@@ -814,6 +884,7 @@ impl RedisSubscriptionPublisher {
     }
 }
 
+#[derive(Debug)]
 pub struct RedisSubscriptionManager {
     subscribed_keys: Arc<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
     tx_for_test: tokio::sync::mpsc::UnboundedSender<String>,
@@ -832,7 +903,7 @@ impl RedisSubscriptionManager {
                 let mut rx = subscribe_client.message_rx();
                 loop {
                     if let Err(e) = subscribe_client.subscribe(&pub_sub_channel).await {
-                        event!(Level::ERROR, "Error subscribing to pattern - {e}");
+                        error!("Error subscribing to pattern - {e}");
                         return;
                     }
                     let mut reconnect_rx = subscribe_client.reconnect_rx();
@@ -852,28 +923,30 @@ impl RedisSubscriptionManager {
                                         if let RedisValue::String(s) = msg.value {
                                             s
                                         } else {
-                                            event!(Level::ERROR, "Received non-string message in RedisSubscriptionManager");
+                                            error!("Received non-string message in RedisSubscriptionManager");
                                             continue;
                                         }
                                     },
                                     Err(e) => {
                                         // Check to see if our parent has been dropped and if so kill spawn.
                                         if subscribed_keys_weak.upgrade().is_none() {
-                                            event!(Level::WARN, "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
+                                            warn!("It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
                                             return;
-                                        };
-                                        event!(Level::ERROR, "Error receiving message in RedisSubscriptionManager reconnecting and flagging everything changed - {e}");
+                                        }
+                                        error!("Error receiving message in RedisSubscriptionManager reconnecting and flagging everything changed - {e}");
                                         break;
                                     }
                                 }
                             },
                             _ = &mut reconnect_fut => {
-                                event!(Level::WARN, "Redis reconnected flagging all subscriptions as changed and resuming");
+                                warn!("Redis reconnected flagging all subscriptions as changed and resuming");
                                 break;
                             }
                         };
                         let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
-                            event!(Level::WARN, "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
+                            warn!(
+                                "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn"
+                            );
                             return;
                         };
                         let subscribed_keys_mux = subscribed_keys.read();
@@ -886,7 +959,9 @@ impl RedisSubscriptionManager {
                     // If we reconnect or lag behind we might have had dirty keys, so we need to
                     // flag all of them as changed.
                     let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
-                        event!(Level::WARN, "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
+                        warn!(
+                            "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn"
+                        );
                         return;
                     };
                     let subscribed_keys_mux = subscribed_keys.read();
@@ -951,7 +1026,9 @@ impl SchedulerStore for RedisStore {
             Ok(subscription_manager.clone())
         } else {
             let Some(pub_sub_channel) = &self.pub_sub_channel else {
-                return Err(make_input_err!("RedisStore must have a pubsub channel for a Redis Scheduler if using subscriptions"));
+                return Err(make_input_err!(
+                    "RedisStore must have a pubsub channel for a Redis Scheduler if using subscriptions"
+                ));
             };
             let sub = Arc::new(RedisSubscriptionManager::new(
                 self.subscriber_client.clone(),
@@ -998,7 +1075,7 @@ impl SchedulerStore for RedisStore {
             // If we have a publish channel configured, send a notice that the key has been set.
             if let Some(pub_sub_channel) = &self.pub_sub_channel {
                 return Ok(client.publish(pub_sub_channel, key.as_ref()).await?);
-            };
+            }
             Ok(Some(new_version))
         } else {
             let data = data.try_into_bytes().err_tip(|| {
@@ -1017,7 +1094,7 @@ impl SchedulerStore for RedisStore {
             // If we have a publish channel configured, send a notice that the key has been set.
             if let Some(pub_sub_channel) = &self.pub_sub_channel {
                 return Ok(client.publish(pub_sub_channel, key.as_ref()).await?);
-            };
+            }
             Ok(Some(0)) // Always use "0" version since this is not a versioned request.
         }
     }

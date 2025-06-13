@@ -123,12 +123,6 @@ nix run github:TraceMachina/nativelink ./basic_cas.json5
 
 See the [contribution docs](https://nativelink.com/docs/contribute/nix) for further information.
 
-## ✍️ Contributors
-
-<a href="https://github.com/tracemachina/nativelink/graphs/contributors" aria-label="View contributors of the NativeLink project on GitHub">
-  <img src="https://contrib.rocks/image?repo=tracemachina/nativelink" alt="NativeLink contributors" loading="lazy" />
-</a>
-
 ## 🤝 Contributing
 
 Visit our [Contributing](https://github.com/tracemachina/nativelink/blob/main/CONTRIBUTING.md) guide to learn how to contribute to NativeLink. We welcome contributions from developers of all skill levels and backgrounds!
@@ -139,6 +133,6 @@ Visit our [Contributing](https://github.com/tracemachina/nativelink/blob/main/CO
 
 ## 📜 License
 
-Copyright 2020–2024 Trace Machina, Inc.
+Copyright 2020–2025 Trace Machina, Inc.
 
 Licensed under the Apache 2.0 License, SPDX identifier `Apache-2.0`.

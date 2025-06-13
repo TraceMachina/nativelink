@@ -17,7 +17,7 @@
 //                    THREADSAFETY. FIGURE OUT WHY AND MOVE IT TO UTILS.
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
-use std::pin::Pin;
+use core::pin::Pin;
 
 use bytes::BytesMut;
 use futures::TryFutureExt;
@@ -27,7 +27,7 @@ use nativelink_util::digest_hasher::DigestHasher;
 use nativelink_util::store_trait::{StoreKey, StoreLike};
 use prost::Message;
 
-// NOTE(blaise.bruer) From some local testing it looks like action cache items are rarely greater than
+// NOTE(aaronmondal) From some local testing it looks like action cache items are rarely greater than
 // 1.2k. Giving a bit more just in case to reduce allocs.
 pub const ESTIMATED_DIGEST_SIZE: usize = 2048;
 
