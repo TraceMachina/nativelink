@@ -21,8 +21,7 @@ use aws_smithy_types::body::SdkBody;
 use bytes::Bytes;
 use http::status::StatusCode;
 use nativelink_config::stores::{
-    CommonObjectSpec, ExperimentalCloudObjectSpec, ExperimentalOntapS3Spec,
-    OntapS3ExistenceCacheSpec, Retry, StoreSpec,
+    CommonObjectSpec, ExperimentalOntapS3Spec, OntapS3ExistenceCacheSpec, Retry, StoreSpec,
 };
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
@@ -78,7 +77,7 @@ async fn create_test_store(mock_client: StaticReplayClient) -> Result<Store, Err
     let cache_spec = OntapS3ExistenceCacheSpec {
         index_path: cache_path,
         sync_interval_seconds: 10,
-        backend: Box::new(ExperimentalCloudObjectSpec::Ontap(ontap_s3_spec)),
+        backend: Box::new(ontap_s3_spec),
     };
 
     let store_manager = Arc::new(StoreManager::new());

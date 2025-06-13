@@ -25,9 +25,7 @@ use aws_config::default_provider::credentials::DefaultCredentialsChain;
 use aws_config::provider_config::ProviderConfig;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
-use nativelink_config::stores::{
-    ExperimentalCloudObjectSpec, ExperimentalOntapS3Spec, OntapS3ExistenceCacheSpec,
-};
+use nativelink_config::stores::{ExperimentalOntapS3Spec, OntapS3ExistenceCacheSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -276,12 +274,7 @@ where
     }
 
     pub async fn new(spec: &OntapS3ExistenceCacheSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
-        let ExperimentalCloudObjectSpec::Ontap(inner_spec) = &*spec.backend else {
-            return Err(make_err!(
-                Code::InvalidArgument,
-                "Backend must be ontap_s3_store"
-            ));
-        };
+        let inner_spec = &spec.backend;
         let inner_store = Arc::new(OntapS3Store::new(inner_spec, now_fn.clone()).await?);
         let inner_store = Store::new((*inner_store).clone());
         let s3_client = create_s3_client(inner_spec).await?;

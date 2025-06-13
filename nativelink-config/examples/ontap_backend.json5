@@ -13,7 +13,6 @@
                         "index_path": "/path/to/cache/index.json",
                         "sync_interval_seconds": 300,
                         "backend": {
-                            "provider": "ontap",
                             "endpoint": "https://ontap-s3-endpoint:443",
                             "vserver_name": "your-vserver",
                             "bucket": "your-bucket",
@@ -51,7 +50,6 @@
                         "index_path": "/path/to/cache/index.json",
                         "sync_interval_seconds": 300,
                         "backend": {
-                            "provider": "ontap",
                             "endpoint": "https://ontap-s3-endpoint:443",
                             "vserver_name": "your-vserver",
                             "bucket": "your-bucket",
@@ -91,7 +89,6 @@
               "index_path": "/path/to/cache/index.json",
               "sync_interval_seconds": 300,
               "backend": {
-                  "provider": "ontap",
                   "endpoint": "https://ontap-s3-endpoint:443",
                   "vserver_name": "your-vserver",
                   "bucket": "your-bucket",

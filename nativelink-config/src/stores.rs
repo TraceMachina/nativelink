@@ -148,7 +148,6 @@ pub enum StoreSpec {
     ///   "index_path": "/path/to/cache/index.json",
     ///   "sync_interval_seconds": 300,
     ///   "backend": {
-    ///     "provider": "ontap",
     ///     "endpoint": "https://ontap-s3-endpoint:443",
     ///     "vserver_name": "your-vserver",
     ///     "bucket": "your-bucket",
@@ -618,7 +617,7 @@ pub struct OntapS3ExistenceCacheSpec {
     pub index_path: String,
     #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
     pub sync_interval_seconds: u32,
-    pub backend: Box<ExperimentalCloudObjectSpec>,
+    pub backend: Box<ExperimentalOntapS3Spec>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
