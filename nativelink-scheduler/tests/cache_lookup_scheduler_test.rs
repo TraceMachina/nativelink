@@ -39,7 +39,7 @@ use tokio::sync::watch;
 use tokio::{self};
 use tokio_stream::StreamExt;
 use utils::mock_scheduler::MockActionScheduler;
-use utils::scheduler_utils::{make_base_action_info, TokioWatchActionStateResult};
+use utils::scheduler_utils::{TokioWatchActionStateResult, make_base_action_info};
 
 struct TestContext {
     mock_scheduler: Arc<MockActionScheduler>,
@@ -62,7 +62,7 @@ fn make_cache_scheduler() -> Result<TestContext, Error> {
 async fn add_action_handles_skip_cache() -> Result<(), Error> {
     let context = make_cache_scheduler()?;
     let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
-    let action_result = ProtoActionResult::from(ActionResult::default());
+    let action_result = ProtoActionResult::try_from(ActionResult::default())?;
     context
         .ac_store
         .update_oneshot(action_info.digest(), action_result.encode_to_vec().into())
@@ -73,14 +73,14 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));
-    let ActionUniqueQualifier::Cachable(action_key) = action_info.unique_qualifier.clone() else {
+    let ActionUniqueQualifier::Cacheable(action_key) = action_info.unique_qualifier.clone() else {
         panic!("This test should be testing when item was cached first");
     };
     let mut skip_cache_action = action_info.as_ref().clone();
-    skip_cache_action.unique_qualifier = ActionUniqueQualifier::Uncachable(action_key);
+    skip_cache_action.unique_qualifier = ActionUniqueQualifier::Uncacheable(action_key);
     let skip_cache_action = Arc::new(skip_cache_action);
     let client_operation_id = OperationId::default();
-    let _ = join!(
+    let _unused = join!(
         context
             .cache_scheduler
             .add_action(client_operation_id.clone(), skip_cache_action),

@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::future::Future;
+use core::time::Duration;
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream::unfold;
 use futures::{StreamExt, TryFutureExt};
 use nativelink_config::schedulers::GrpcSpec;
-use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_client::ExecutionClient;
@@ -30,7 +30,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionState, ActionUniqueQualifier, OperationId, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionState, ActionUniqueQualifier, DEFAULT_EXECUTION_PRIORITY, OperationId,
 };
 use nativelink_util::connection_manager::ConnectionManager;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
@@ -46,7 +46,7 @@ use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{Request, Streaming};
-use tracing::{event, Level};
+use tracing::{error, info, warn};
 
 struct GrpcActionStateResult {
     client_operation_id: OperationId,
@@ -58,7 +58,7 @@ impl ActionStateResult for GrpcActionStateResult {
     async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
-        // TODO(allada) We currently don't support OriginMetadata in this implementation, but
+        // TODO(aaronmondal) We currently don't support OriginMetadata in this implementation, but
         // we should.
         Ok((action_state, None))
     }
@@ -72,13 +72,13 @@ impl ActionStateResult for GrpcActionStateResult {
         })?;
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
-        // TODO(allada) We currently don't support OriginMetadata in this implementation, but
+        // TODO(aaronmondal) We currently don't support OriginMetadata in this implementation, but
         // we should.
         Ok((action_state, None))
     }
 
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
-        // TODO(allada) We should probably remove as_action_info()
+        // TODO(aaronmondal) We should probably remove as_action_info()
         // or implement it properly.
         return Err(make_err!(
             Code::Unimplemented,
@@ -87,7 +87,7 @@ impl ActionStateResult for GrpcActionStateResult {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct GrpcScheduler {
     #[metric(group = "property_managers")]
     supported_props: Mutex<HashMap<String, Vec<String>>>,
@@ -125,7 +125,7 @@ impl GrpcScheduler {
                 spec.retry.clone(),
             ),
             connection_manager: ConnectionManager::new(
-                std::iter::once(endpoint),
+                core::iter::once(endpoint),
                 spec.connections_per_endpoint,
                 spec.max_concurrent_requests,
                 spec.retry.clone(),
@@ -160,7 +160,7 @@ impl GrpcScheduler {
         if let Some(initial_response) = result_stream
             .message()
             .await
-            .err_tip(|| "Recieving response from upstream scheduler")?
+            .err_tip(|| "Receiving response from upstream scheduler")?
         {
             let client_operation_id = OperationId::from(initial_response.name.as_str());
             // Our operation_id is not needed here is just a place holder to recycle existing object.
@@ -175,8 +175,7 @@ impl GrpcScheduler {
                 loop {
                     select!(
                         () = tx.closed() => {
-                            event!(
-                                Level::INFO,
+                            info!(
                                 "Client disconnected in GrpcScheduler"
                             );
                             return;
@@ -191,8 +190,7 @@ impl GrpcScheduler {
                             match maybe_action_state {
                                 Ok(response) => {
                                     if let Err(err) = tx.send(Arc::new(response)) {
-                                        event!(
-                                            Level::INFO,
+                                        info!(
                                             ?err,
                                             "Client error in GrpcScheduler"
                                         );
@@ -200,8 +198,7 @@ impl GrpcScheduler {
                                     }
                                 }
                                 Err(err) => {
-                                    event!(
-                                        Level::ERROR,
+                                    error!(
                                         ?err,
                                         "Error converting response to ActionState in GrpcScheduler"
                                     );
@@ -270,8 +267,8 @@ impl GrpcScheduler {
             })
         };
         let skip_cache_lookup = match action_info.unique_qualifier {
-            ActionUniqueQualifier::Cachable(_) => false,
-            ActionUniqueQualifier::Uncachable(_) => true,
+            ActionUniqueQualifier::Cacheable(_) => false,
+            ActionUniqueQualifier::Uncacheable(_) => true,
         };
         let request = ExecuteRequest {
             instance_name: action_info.instance_name().clone(),
@@ -307,10 +304,14 @@ impl GrpcScheduler {
         &self,
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
-        error_if!(filter != OperationFilter {
-            client_operation_id: filter.client_operation_id.clone(),
-            ..Default::default()
-        }, "Unsupported filter in GrpcScheduler::filter_operations. Only client_operation_id is supported - {filter:?}");
+        error_if!(
+            filter
+                != OperationFilter {
+                    client_operation_id: filter.client_operation_id.clone(),
+                    ..Default::default()
+                },
+            "Unsupported filter in GrpcScheduler::filter_operations. Only client_operation_id is supported - {filter:?}"
+        );
         let client_operation_id = filter.client_operation_id.ok_or_else(|| {
             make_err!(Code::InvalidArgument, "`client_operation_id` is the only supported filter in GrpcScheduler::filter_operations")
         })?;
@@ -338,11 +339,7 @@ impl GrpcScheduler {
             )
             .boxed()),
             Err(err) => {
-                event!(
-                    Level::WARN,
-                    ?err,
-                    "Error looking up action with upstream scheduler"
-                );
+                warn!(?err, "Error looking up action with upstream scheduler");
                 Ok(futures::stream::empty().boxed())
             }
         }

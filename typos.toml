@@ -1,0 +1,15 @@
+[default.extend-words]
+# `conly_flags` in lre-cc
+conly = "conly"
+
+[files]
+extend-exclude = [
+  # Covered by Vale
+  "*.md",
+  ".git/*",
+  ".github/styles/*",
+  "kubernetes/vendor/olm/*",
+  "nativelink-proto/*",
+  "web/*",
+]
+ignore-hidden = false

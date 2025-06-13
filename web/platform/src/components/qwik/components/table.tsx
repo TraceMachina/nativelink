@@ -1,6 +1,6 @@
 import { component$ } from "@builder.io/qwik";
 
-import { Checkmark, Xmark } from "@qwik/components/icons";
+import { Checkmark, Xmark } from "./icons.tsx";
 
 const features = [
   {

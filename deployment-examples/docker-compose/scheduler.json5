@@ -30,7 +30,8 @@
           "cpu_count": "minimum",
           "OSFamily": "priority",
           "container-image": "priority",
-          "lre-rs": "priority"
+          "lre-rs": "priority",
+          "ISA": "exact",
         }
       }
     }
@@ -47,24 +48,18 @@
     // specified by the invoking tool (e.g. using
     // `--remote_instance_name=` for Bazel)
     "services": {
-      "ac": {
-        "": {
-          "ac_store": "GRPC_LOCAL_AC_STORE"
-        }
-      },
-      "execution": {
-        "": {
-          "cas_store": "GRPC_LOCAL_STORE",
+      "ac": [{
+        "ac_store": "GRPC_LOCAL_AC_STORE"
+      }],
+      "execution": [{
+        "cas_store": "GRPC_LOCAL_STORE",
+        "scheduler": "MAIN_SCHEDULER"
+      }],
+      "capabilities": [{
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER"
         }
-      },
-      "capabilities": {
-        "": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER"
-          }
-        }
-      }
+      }]
     }
   }, {
     "listener": {

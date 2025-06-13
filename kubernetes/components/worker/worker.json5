@@ -25,8 +25,8 @@
       "fast_slow": {
         "fast": {
           "filesystem": {
-            "content_path": "~/.cache/nativelink/data-worker-test/content_path-cas",
-            "temp_path": "~/.cache/nativelink/data-worker-test/tmp_path-cas",
+            "content_path": "/tmp/nativelink/content_path-cas",
+            "temp_path": "/tmp/nativelink/tmp_path-cas",
             "eviction_policy": {
               "max_bytes": "10Gb"
             }
@@ -49,7 +49,7 @@
       "upload_action_result": {
         "ac_store": "GRPC_LOCAL_AC_STORE"
       },
-      "work_directory": "~/.cache/nativelink/work",
+      "work_directory": "/tmp/nativelink/work",
       "platform_properties": {
         "cpu_count": {
           "query_cmd": "nproc"
@@ -79,7 +79,10 @@
           "values": [
             "${NATIVELINK_WORKER_LRE_RS:-undefined}"
           ]
-        }
+        },
+        "ISA": {
+          values: ["x86-64"]
+        },
       }
     }
   }],

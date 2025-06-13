@@ -12,19 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo};
 
-#[derive(Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct NoopStore;
 
 impl MetricsComponent for NoopStore {
@@ -39,7 +39,7 @@ impl MetricsComponent for NoopStore {
 
 impl NoopStore {
     pub fn new() -> Arc<Self> {
-        Arc::new(NoopStore {})
+        Arc::new(Self {})
     }
 }
 
@@ -85,11 +85,11 @@ impl StoreDriver for NoopStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

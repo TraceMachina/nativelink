@@ -4,10 +4,14 @@ name: Bazel Native
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
   pull_request:
     branches: [main]
     paths-ignore:
-      - 'docs/**'
+      - '.github/styles/**'
+      - 'web/**'
 
 permissions: read-all
 

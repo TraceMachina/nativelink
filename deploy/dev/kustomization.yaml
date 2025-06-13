@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
 - ../../kubernetes/resources/flux
+- ../../kubernetes/resources/flux-dev
 - ../../kubernetes/resources/nativelink-core
 - ../../kubernetes/resources/gateway-routes
 - ../../kubernetes/workers/resources/worker-init
@@ -25,7 +26,7 @@ patches:
       value: main
   target:
     kind: GitRepository
-    name: nativelink
+    name: nativelink-infra
 
 # Setting the flake outputs to `./src_root#xxx` causes the Tekton pipelines to
 # build nativelink from your local sources.

@@ -63,8 +63,7 @@ mod duration_tests {
             // Large numbers
             (r#"{"duration": 0}"#, 0),
             (r#"{"duration": 1000}"#, 1000),
-            // u32::MAX
-            (r#"{"duration": 4294967295}"#, 4_294_967_295),
+            (r#"{"duration": 4294967295}"#, u32::MAX as usize),
         ];
 
         for (input, expected) in examples {
@@ -78,10 +77,12 @@ mod duration_tests {
         let example = r#"{"duration": -10}"#;
         let result: Result<DurationEntity, _> = serde_json5::from_str(example);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Negative duration is not allowed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Negative duration is not allowed")
+        );
     }
 
     #[test]
@@ -91,10 +92,7 @@ mod duration_tests {
                 r#"{"duration": true}"#,
                 "expected either a number of seconds as an integer, or a string with a duration format (e.g., \"1h2m3s\", \"30m\", \"1d\")",
             ),
-            (
-                r#"{"duration": "invalid"}"#,
-                "expected number at 0",
-            ),
+            (r#"{"duration": "invalid"}"#, "expected number at 0"),
             (
                 r#"{"duration": "999999999999999999999s"}"#,
                 "number is too large",
@@ -119,8 +117,7 @@ mod duration_tests {
     #[test]
     fn test_large_duration_numbers() {
         let examples = [
-            // u32::MAX
-            (r#"{"duration": 4294967295}"#, 4_294_967_295),
+            (r#"{"duration": 4294967295}"#, u32::MAX as usize),
             // u64::MAX - this will fail to parse as usize on 64-bit systems
             // (r#"{"duration": 18446744073709551615}"#, 18_446_744_073_709_551_615),
         ];
@@ -140,10 +137,10 @@ mod data_size_tests {
         let examples = [
             // Basic size tests
             (r#"{"data_size": "1KiB"}"#, 1024),
-            (r#"{"data_size": "1MiB"}"#, 1_048_576),
+            (r#"{"data_size": "1MiB"}"#, 0x10_0000),
             (r#"{"data_size": "1MB"}"#, 1_000_000),
             (r#"{"data_size": "1M"}"#, 1_000_000),
-            (r#"{"data_size": "1Mi"}"#, 1_048_576),
+            (r#"{"data_size": "1Mi"}"#, 0x10_0000),
             // Large sizes
             (r#"{"data_size": "9EiB"}"#, 10_376_293_541_461_622_784),
             (r#"{"data_size": 10}"#, 10),
@@ -167,10 +164,12 @@ mod data_size_tests {
         let example = r#"{"data_size": -1024}"#;
         let result: Result<DataSizeEntity, _> = serde_json5::from_str(example);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Negative data size is not allowed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Negative data size is not allowed")
+        );
     }
 
     #[test]
@@ -236,7 +235,7 @@ mod optional_values_tests {
         // Test i64::MAX for optional numeric
         let input = r#"{"value": "9223372036854775807"}"#;
         let result: OptionalNumericEntity = serde_json5::from_str(input).unwrap();
-        assert_eq!(result.value, Some(9_223_372_036_854_775_807));
+        assert_eq!(result.value, Some(i64::MAX as usize));
     }
 
     #[test]
@@ -326,11 +325,16 @@ mod shellexpand_tests {
 
     #[test]
     fn test_shellexpand_functionality() {
-        std::env::set_var("TEST_DURATION", "5m");
-        std::env::set_var("TEST_SIZE", "1GB");
-        std::env::set_var("TEST_NUMBER", "42");
-        std::env::set_var("TEST_VAR", "test_value");
-        std::env::set_var("EMPTY_VAR", "");
+        // Safety: Neither Cargo nor any other test set any environment variables, so there should
+        // not be any code mutating the environment. While not foolproof, the worst case is that
+        // this changes in the future, causing the the test suite to fail and needing to be re-run.
+        unsafe {
+            std::env::set_var("TEST_DURATION", "5m");
+            std::env::set_var("TEST_SIZE", "1GB");
+            std::env::set_var("TEST_NUMBER", "42");
+            std::env::set_var("TEST_VAR", "test_value");
+            std::env::set_var("EMPTY_VAR", "");
+        };
 
         // Test duration with environment variable
         let duration_result =
@@ -361,9 +365,11 @@ mod shellexpand_tests {
         // Test undefined environment variable
         let undefined_result =
             serde_json5::from_str::<OptionalNumericEntity>(r#"{"value": "${UNDEFINED_VAR}"}"#);
-        assert!(undefined_result
-            .unwrap_err()
-            .to_string()
-            .contains("environment variable not found"));
+        assert!(
+            undefined_result
+                .unwrap_err()
+                .to_string()
+                .contains("environment variable not found")
+        );
     }
 }

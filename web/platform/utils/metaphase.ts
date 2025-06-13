@@ -10,7 +10,7 @@ import type {
   Type,
   TypeBinding,
   Variant,
-} from "./rustdoc_types";
+} from "./rustdoc_types.ts";
 
 type JsonExample =
   | string
@@ -73,10 +73,13 @@ const isEnumItem = (
   return "enum" in item.inner;
 };
 
-const removePrefix = (name: string): string => {
-  return name
-    .replace(/^(crate::)?stores::/, "")
-    .replace(/^std::collections::/, "");
+const CRATE_STORES_REGEX = /^(crate::)?stores::/;
+const STD_COLLECTIONS_REGEX = /^std::collections::/;
+
+const removePrefix = (path: string): string => {
+  return path
+    .replace(CRATE_STORES_REGEX, "")
+    .replace(STD_COLLECTIONS_REGEX, "");
 };
 
 const generatePrimitiveJsonExample = (type: {
@@ -146,8 +149,8 @@ const generateResolvedPathJsonExample = (
   crate: Crate,
   depth: number,
 ): JsonExample => {
-  const { name, id, args } = type.resolved_path;
-  const cleanName = removePrefix(name);
+  const { path, id, args } = type.resolved_path;
+  const cleanName = removePrefix(path);
   switch (cleanName) {
     case "Option":
       return null;
@@ -282,8 +285,10 @@ const escapeMarkdown = (text: string): string =>
 const transformUrls = (text: string): string =>
   text.replace(/<(https?:\/\/[^>]+)>/g, (_, url) => `[${url}](${url})`);
 
+const CODE_BLOCK_REGEX = /(```[\s\S]*?```)/;
+
 const processDocText = (text: string): string => {
-  const blocks = text.split(/(```[\s\S]*?```)/);
+  const blocks = text.split(CODE_BLOCK_REGEX);
 
   return blocks
     .map((block) => {
@@ -311,7 +316,7 @@ const generateTypeDescription = (type: Type): string => {
   }
 
   if (isResolvedPathType(type)) {
-    const { name, args } = type.resolved_path;
+    const { path, args } = type.resolved_path;
 
     const getInnerType = (index: number): string => {
       if (args && "angle_bracketed" in args) {
@@ -323,7 +328,7 @@ const generateTypeDescription = (type: Type): string => {
       return "Unknown";
     };
 
-    const finalTypeName = removePrefix(name.split("::").pop() || name);
+    const finalTypeName = removePrefix(path.split("::").pop() || path);
 
     switch (finalTypeName) {
       case "Option":

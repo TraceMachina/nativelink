@@ -1,4 +1,4 @@
-#!/nix/store/b0szb1r3cyih06nlzip0ywrxk33lqdsm-bash/bin/bash
+#!/nix/store/pwkixxwbpb4l70hxndaq74l8jp4r7dkw-bash/bin/bash
 #
 # Copyright 2015 The Bazel Authors. All rights reserved.
 #
@@ -22,9 +22,9 @@ OUTPUT=
 
 function parse_option() {
     local -r opt="$1"
-    if [[ "${OUTPUT}" = "1" ]]; then
+    if [[ ${OUTPUT} == "1" ]]; then
         OUTPUT=$opt
-    elif [[ "$opt" = "-o" ]]; then
+    elif [[ $opt == "-o" ]]; then
         # output is coming
         OUTPUT=1
     fi
@@ -32,9 +32,8 @@ function parse_option() {
 
 # let parse the option list
 for i in "$@"; do
-    if [[ "$i" = @* && -r "${i:1}" ]]; then
-        while IFS= read -r opt
-        do
+    if [[ $i == @* && -r ${i:1} ]]; then
+        while IFS= read -r opt; do
             parse_option "$opt"
         done < "${i:1}" || exit 1
     else
@@ -44,11 +43,10 @@ done
 
 # Set-up the environment
 
-
 # Call the C++ compiler
-/nix/store/yrw9cinlqgg9hfd22n0a5z596ir27v10-customClang/bin/customClang "$@"
+/nix/store/ldaam6d8vp6m7mb571nc7aw2n3472w38-customClang/bin/customClang "$@"
 
 # Generate an empty file if header processing succeeded.
-if [[ "${OUTPUT}" == *.h.processed ]]; then
-  echo -n > "${OUTPUT}"
+if [[ ${OUTPUT} == *.h.processed ]]; then
+    echo -n > "${OUTPUT}"
 fi

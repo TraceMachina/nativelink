@@ -1,6 +1,7 @@
+/** @jsxImportSource @builder.io/qwik */
 import { type JSXOutput, component$ } from "@builder.io/qwik";
 
-import { LinearGradient } from "./text";
+import { LinearGradient } from "./text.tsx";
 
 interface BorderlessCard {
   icon: JSXOutput;
@@ -59,8 +60,8 @@ const pricing = [
   {
     title: "Free Preview",
     items: [
-      "100GB of Cache Transfer",
-      "80 cores of remote builds",
+      "1 TB of Cache Transfer",
+      "100 cores of remote builds",
       "Community Support",
     ],
     cta: {

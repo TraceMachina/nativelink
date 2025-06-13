@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::{Debug, Formatter};
+use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
-use std::fmt::{Debug, Formatter};
-use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
@@ -26,13 +26,13 @@ use bytes::BytesMut;
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{
@@ -40,7 +40,7 @@ use nativelink_util::store_trait::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{event, Level};
+use tracing::{debug, error, warn};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -61,7 +61,7 @@ pub enum FileType {
 #[derive(Debug, MetricsComponent)]
 pub struct SharedContext {
     // Used in testing to know how many active drop() spawns are running.
-    // TODO(allada) It is probably a good idea to use a spin lock during
+    // TODO(aaronmondal) It is probably a good idea to use a spin lock during
     // destruction of the store to ensure that all files are actually
     // deleted (similar to how it is done in tests).
     #[metric(help = "Number of active drop spawns")]
@@ -84,6 +84,7 @@ enum PathType {
 /// The whole [`StoreKey`] is stored as opposed to solely
 /// the [`DigestInfo`] so that it is more usable for things
 /// such as BEP -see Issue #1108
+#[derive(Debug)]
 pub struct EncodedFilePath {
     shared_context: Arc<SharedContext>,
     path_type: PathType,
@@ -125,12 +126,12 @@ impl Drop for EncodedFilePath {
             .active_drop_spawns
             .fetch_add(1, Ordering::Relaxed);
         background_spawn!("filesystem_delete_file", async move {
-            event!(Level::INFO, ?file_path, "File deleted",);
+            debug!(?file_path, "File deleted",);
             let result = fs::remove_file(&file_path)
                 .await
-                .err_tip(|| format!("Failed to remove file {file_path:?}"));
+                .err_tip(|| format!("Failed to remove file {}", file_path.display()));
             if let Err(err) = result {
-                event!(Level::ERROR, ?file_path, ?err, "Failed to delete file",);
+                error!(?file_path, ?err, "Failed to delete file",);
             }
             shared_context
                 .active_drop_spawns
@@ -229,30 +230,31 @@ impl FileEntry for FileEntryImpl {
     async fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(FileEntryImpl, fs::FileSlot, OsString), Error> {
+    ) -> Result<(Self, fs::FileSlot, OsString), Error> {
         let temp_full_path = encoded_file_path.get_file_path().to_os_string();
         let temp_file_result = fs::create_file(temp_full_path.clone())
             .or_else(|mut err| async {
                 let remove_result = fs::remove_file(&temp_full_path).await.err_tip(|| {
-                    format!("Failed to remove file {temp_full_path:?} in filesystem store")
+                    format!(
+                        "Failed to remove file {} in filesystem store",
+                        temp_full_path.display()
+                    )
                 });
                 if let Err(remove_err) = remove_result {
                     err = err.merge(remove_err);
                 }
-                event!(
-                    Level::WARN,
-                    ?err,
-                    ?block_size,
-                    ?temp_full_path,
-                    "Failed to create file",
-                );
-                Err(err)
-                    .err_tip(|| format!("Failed to create {temp_full_path:?} in filesystem store"))
+                warn!(?err, ?block_size, ?temp_full_path, "Failed to create file",);
+                Err(err).err_tip(|| {
+                    format!(
+                        "Failed to create {} in filesystem store",
+                        temp_full_path.display()
+                    )
+                })
             })
             .await?;
 
         Ok((
-            <FileEntryImpl as FileEntry>::create(
+            <Self as FileEntry>::create(
                 0, /* Unknown yet, we will fill it in later */
                 block_size,
                 RwLock::new(encoded_file_path),
@@ -283,7 +285,10 @@ impl FileEntry for FileEntryImpl {
             let file = fs::open_file(&full_content_path, offset, length)
                 .await
                 .err_tip(|| {
-                    format!("Failed to open file in filesystem store {full_content_path:?}")
+                    format!(
+                        "Failed to open file in filesystem store {}",
+                        full_content_path.display()
+                    )
                 })?;
             Ok(file)
         })
@@ -303,7 +308,7 @@ impl FileEntry for FileEntryImpl {
 }
 
 impl Debug for FileEntryImpl {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), core::fmt::Error> {
         f.debug_struct("FileEntryImpl")
             .field("data_size", &self.data_size)
             .field("encoded_file_path", &"<behind mutex>")
@@ -357,8 +362,7 @@ impl LenEntry for FileEntryImpl {
                 to_full_path_from_key(&encoded_file_path.shared_context.temp_path, &new_key);
 
             if let Err(err) = fs::rename(&from_path, &to_path).await {
-                event!(
-                    Level::WARN,
+                warn!(
                     key = ?encoded_file_path.key,
                     ?from_path,
                     ?to_path,
@@ -366,8 +370,7 @@ impl LenEntry for FileEntryImpl {
                     "Failed to rename file",
                 );
             } else {
-                event!(
-                    Level::INFO,
+                debug!(
                     key = ?encoded_file_path.key,
                     ?from_path,
                     ?to_path,
@@ -449,11 +452,11 @@ async fn add_files_to_cache<Fe: FileEntry>(
         // folder regardless of the StoreKey type. This allows old versions of
         // nativelink file layout to be upgraded at startup time.
         // This logic can be removed once more time has passed.
-        let read_dir = if let Some(folder) = folder {
-            format!("{}/{folder}/", shared_context.content_path)
-        } else {
-            format!("{}/", shared_context.content_path)
-        };
+        let read_dir = folder.map_or_else(
+            || format!("{}/", shared_context.content_path),
+            |folder| format!("{}/{folder}/", shared_context.content_path),
+        );
+
         let (_permit, dir_handle) = fs::read_dir(read_dir)
             .await
             .err_tip(|| "Failed opening content directory for iterating in filesystem store")?
@@ -509,15 +512,9 @@ async fn add_files_to_cache<Fe: FileEntry>(
             let to_file: OsString = format!("{to_path}/{file_name}").into();
 
             if let Err(err) = rename_fn(&from_file, &to_file) {
-                event!(
-                    Level::WARN,
-                    ?from_file,
-                    ?to_file,
-                    ?err,
-                    "Failed to rename file",
-                );
+                warn!(?from_file, ?to_file, ?err, "Failed to rename file",);
             } else {
-                event!(Level::INFO, ?from_file, ?to_file, "Renamed file",);
+                debug!(?from_file, ?to_file, "Renamed file",);
             }
         }
         Ok(())
@@ -552,14 +549,9 @@ async fn add_files_to_cache<Fe: FileEntry>(
             )
             .await;
             if let Err(err) = result {
-                event!(
-                    Level::WARN,
-                    ?file_name,
-                    ?err,
-                    "Failed to add file to eviction cache",
-                );
+                warn!(?file_name, ?err, "Failed to add file to eviction cache",);
                 // Ignore result.
-                let _ = fs::remove_file(format!("{path_root}/{file_name}")).await;
+                drop(fs::remove_file(format!("{path_root}/{file_name}")).await);
             }
         }
         Ok(())
@@ -591,16 +583,16 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     async fn prune_temp_inner(temp_path: &str, subpath: &str) -> Result<(), Error> {
         let (_permit, dir_handle) = fs::read_dir(format!("{temp_path}/{subpath}"))
             .await
-            .err_tip(|| {
-                "Failed opening temp directory to prune partial downloads in filesystem store"
-            })?
+            .err_tip(
+                || "Failed opening temp directory to prune partial downloads in filesystem store",
+            )?
             .into_inner();
 
         let mut read_dir_stream = ReadDirStream::new(dir_handle);
         while let Some(dir_entry) = read_dir_stream.next().await {
             let path = dir_entry?.path();
             if let Err(err) = fs::remove_file(&path).await {
-                event!(Level::WARN, ?path, ?err, "Failed to delete file",);
+                warn!(?path, ?err, "Failed to delete file",);
             }
         }
         Ok(())
@@ -611,7 +603,7 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     Ok(())
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
     shared_context: Arc<SharedContext>,
@@ -701,8 +693,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store"))
     }
 
-    async fn update_file<'a>(
-        self: Pin<&'a Self>,
+    async fn update_file(
+        self: Pin<&Self>,
         mut entry: Fe,
         mut temp_file: fs::FileSlot,
         final_key: StoreKey<'static>,
@@ -743,10 +735,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // 1. Here will hold a write lock on any file operations of this FileEntry.
         // 2. Then insert the entry into the evicting map. This may trigger an eviction of other
         //    entries.
-        // 3. Eviction triggers `unref()`, which grabs a write lock on the evicted FileEntrys
+        // 3. Eviction triggers `unref()`, which grabs a write lock on the evicted FileEntry
         //    during the rename.
         // 4. It should be impossible for items to be added while eviction is happening, so there
-        //    should not be a deadlock possability. However, it is possible for the new FileEntry
+        //    should not be a deadlock possibility. However, it is possible for the new FileEntry
         //    to be evicted before the file is moved into place. Eviction of the newly inserted
         //    item is not possible within the `insert()` call because the write lock inside the
         //    eviction map. If an eviction of new item happens after `insert()` but before
@@ -754,7 +746,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         //    will be blocked on us because we currently have the lock.
         // 5. Move the file into place. Since we hold a write lock still anyone that gets our new
         //    FileEntry (which has not yet been placed on disk) will not be able to read the file's
-        //    contents until we relese the lock.
+        //    contents until we release the lock.
         let evicting_map = self.evicting_map.clone();
         let rename_fn = self.rename_fn;
 
@@ -776,21 +768,19 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             // Internally tokio spawns fs commands onto a blocking thread anyways.
             // Since we are already on a blocking thread, we just need the `fs` wrapper to manage
             // an open-file permit (ensure we don't open too many files at once).
-            let result = (rename_fn)(&from_path, &final_path)
-                .err_tip(|| format!("Failed to rename temp file to final path {final_path:?}"));
+            let result = (rename_fn)(&from_path, &final_path).err_tip(|| {
+                format!(
+                    "Failed to rename temp file to final path {}",
+                    final_path.display()
+                )
+            });
 
             // In the event our move from temp file to final file fails we need to ensure we remove
             // the entry from our map.
             // Remember: At this point it is possible for another thread to have a reference to
             // `entry`, so we can't delete the file, only drop() should ever delete files.
             if let Err(err) = result {
-                event!(
-                    Level::ERROR,
-                    ?err,
-                    ?from_path,
-                    ?final_path,
-                    "Failed to rename file",
-                );
+                error!(?err, ?from_path, ?final_path, "Failed to rename file",);
                 // Warning: To prevent deadlock we need to release our lock or during `remove_if()`
                 // it will call `unref()`, which triggers a write-lock on `encoded_file_path`.
                 drop(encoded_file_path);
@@ -866,7 +856,12 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
         self.update_file(entry, temp_file, key.into_owned(), reader)
             .await
-            .err_tip(|| format!("While processing with temp file {temp_full_path:?}"))
+            .err_tip(|| {
+                format!(
+                    "While processing with temp file {}",
+                    temp_full_path.display()
+                )
+            })
     }
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
@@ -886,7 +881,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .as_ref()
                 .metadata()
                 .await
-                .err_tip(|| format!("While reading metadata for {path:?}"))?
+                .err_tip(|| format!("While reading metadata for {}", path.display()))?
                 .len(),
         };
         let entry = Fe::create(
@@ -934,8 +929,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         let mut temp_file = entry.read_file_part(offset, read_limit).or_else(|err| async move {
             // If the file is not found, we need to remove it from the eviction map.
             if err.code == Code::NotFound {
-                event!(
-                    Level::ERROR,
+                error!(
                     ?err,
                     ?key,
                     "Entry was in our map, but not found on disk. Removing from map as a precaution, but process probably need restarted."
@@ -970,11 +964,11 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 

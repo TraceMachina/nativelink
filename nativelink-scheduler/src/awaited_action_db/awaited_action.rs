@@ -15,15 +15,17 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
-use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::origin_event::{OriginMetadata, ORIGIN_EVENT_COLLECTOR};
+use nativelink_util::origin_event::OriginMetadata;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::Context;
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use serde::{Deserialize, Serialize};
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 
@@ -90,13 +92,12 @@ pub struct AwaitedAction {
 
 impl AwaitedAction {
     pub fn new(operation_id: OperationId, action_info: Arc<ActionInfo>, now: SystemTime) -> Self {
-        let stage = ActionStage::Queued;
         let sort_key = AwaitedActionSortKey::new_with_unique_key(
             action_info.priority,
             &action_info.insert_timestamp,
         );
-        let state = Arc::new(ActionState {
-            stage,
+        let action_state = Arc::new(ActionState {
+            stage: ActionStage::Queued,
             // Note: We don't use the real client_operation_id here because
             // the only place AwaitedAction::new should ever be called is
             // when the action is first created and this struct will be stored
@@ -105,10 +106,21 @@ impl AwaitedAction {
             client_operation_id: operation_id.clone(),
             action_digest: action_info.unique_qualifier.digest(),
         });
-        let maybe_origin_metadata = ActiveOriginContext::get_value(&ORIGIN_EVENT_COLLECTOR)
-            .ok()
-            .flatten()
-            .map(|v| v.metadata.clone());
+
+        let ctx = Context::current();
+        let baggage = ctx.baggage();
+
+        let maybe_origin_metadata = if baggage.is_empty() {
+            None
+        } else {
+            Some(OriginMetadata {
+                identity: baggage
+                    .get(ENDUSER_ID)
+                    .map(|v| v.as_str().to_string())
+                    .unwrap_or_default(),
+                bazel_metadata: None, // TODO(aaronmondal): Implement conversion.
+            })
+        };
 
         Self {
             version: AwaitedActionVersion(0),
@@ -120,7 +132,7 @@ impl AwaitedAction {
             last_client_keepalive_timestamp: now,
             maybe_origin_metadata,
             worker_id: None,
-            state,
+            state: action_state,
         }
     }
 
@@ -128,11 +140,11 @@ impl AwaitedAction {
         self.version.0
     }
 
-    pub(crate) fn set_version(&mut self, version: u64) {
+    pub(crate) const fn set_version(&mut self, version: u64) {
         self.version = AwaitedActionVersion(version);
     }
 
-    pub(crate) fn increment_version(&mut self) {
+    pub(crate) const fn increment_version(&mut self) {
         self.version = AwaitedActionVersion(self.version.0 + 1);
     }
 
@@ -164,7 +176,7 @@ impl AwaitedAction {
         self.last_worker_updated_timestamp
     }
 
-    pub(crate) fn worker_keep_alive(&mut self, now: SystemTime) {
+    pub(crate) const fn worker_keep_alive(&mut self, now: SystemTime) {
         self.last_worker_updated_timestamp = now;
     }
 
@@ -172,7 +184,7 @@ impl AwaitedAction {
         self.last_client_keepalive_timestamp
     }
 
-    pub(crate) fn update_client_keep_alive(&mut self, now: SystemTime) {
+    pub(crate) const fn update_client_keep_alive(&mut self, now: SystemTime) {
         self.last_client_keepalive_timestamp = now;
     }
 
@@ -190,7 +202,7 @@ impl AwaitedAction {
 
     /// Sets the current state of the action and updates the last worker updated timestamp.
     pub fn worker_set_state(&mut self, mut state: Arc<ActionState>, now: SystemTime) {
-        std::mem::swap(&mut self.state, &mut state);
+        core::mem::swap(&mut self.state, &mut state);
         self.worker_keep_alive(now);
     }
 }
@@ -228,7 +240,7 @@ impl AwaitedActionSortKey {
     #[rustfmt::skip]
     const fn new(priority: i32, insert_timestamp: u32) -> Self {
         // Shift `new_priority` so [`i32::MIN`] is represented by zero.
-        // This makes it so any nagative values are positive, but
+        // This makes it so any negative values are positive, but
         // maintains ordering.
         const MIN_I32: i64 = (i32::MIN as i64).abs();
         let priority = ((priority as i64 + MIN_I32) as u32).to_be_bytes();
@@ -237,7 +249,7 @@ impl AwaitedActionSortKey {
         // This makes timestamp descending order instead of ascending.
         let timestamp = (insert_timestamp ^ u32::MAX).to_be_bytes();
 
-        AwaitedActionSortKey(u64::from_be_bytes([
+        Self(u64::from_be_bytes([
             priority[0], priority[1], priority[2], priority[3],
             timestamp[0], timestamp[1], timestamp[2], timestamp[3],
         ]))

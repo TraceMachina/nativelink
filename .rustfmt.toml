@@ -1,7 +1,7 @@
-reorder_imports = true
-imports_granularity = "Module"
 group_imports = "StdExternalCrate"
+imports_granularity = "Module"
+reorder_imports = true
 
 # Don't format out of line modules.
-unstable_features = true
 skip_children = true
+unstable_features = true

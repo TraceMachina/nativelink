@@ -7,16 +7,42 @@
       "name": "CAS_MAIN_STORE",
       "existence_cache": {
         "backend": {
-          "compression": {
-            "compression_algorithm": {
-              "lz4": {}
-            },
+          "verify": {
+            "verify_size": true,
+            "verify_hash": true,
             "backend": {
-              "filesystem": {
-                "content_path": "~/.cache/nativelink/content_path-cas",
-                "temp_path": "~/.cache/nativelink/tmp_path-cas",
-                "eviction_policy": {
-                  "max_bytes": "10Gb"
+              "fast_slow": {
+                "fast": {
+                  "size_partitioning":{
+                    "size": "64kb",
+                    "lower_store": {
+                      "memory": {
+                        "eviction_policy": {
+                          "max_bytes": "1gb",
+                          "max_count": 100000
+                        }
+                      }
+                    },
+                    "upper_store": {
+                      "noop": {} // Entries larger than 64kb in slow store.
+                    },
+                  }
+                },
+                "slow": {
+                  "compression": {
+                    "compression_algorithm": {
+                      "lz4": {}
+                    },
+                    "backend": {
+                      "filesystem": {
+                        "content_path": "/tmp/nativelink/data/content_path-cas",
+                        "temp_path": "/tmp/nativelink/data/tmp_path-cas",
+                        "eviction_policy": {
+                          "max_bytes": "10Gb"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -27,11 +53,31 @@
       "name": "AC_MAIN_STORE",
       "completeness_checking": {
         "backend": {
-          "filesystem": {
-            "content_path": "~/.cache/nativelink/content_path-ac",
-            "temp_path": "~/.cache/nativelink/tmp_path-ac",
-            "eviction_policy": {
-              "max_bytes": "500Mb"
+          "fast_slow": {
+            "fast": {
+              "size_partitioning":{
+                "size": "1kb",
+                "lower_store": {
+                  "memory": {
+                    "eviction_policy": {
+                      "max_bytes": "100mb",
+                      "max_count": 150000
+                    }
+                  }
+                },
+                "upper_store": {
+                  "noop": {} // Entries larger than 1kb in slow store.
+                }
+              }
+            },
+            "slow": {
+              "filesystem": {
+                "content_path": "/tmp/nativelink/data/content_path-ac",
+                "temp_path": "/tmp/nativelink/data/tmp_path-ac",
+                "eviction_policy": {
+                  "max_bytes": "1gb"
+                }
+              }
             }
           }
         },
@@ -46,8 +92,8 @@
   "schedulers": [
     {
       "name": "MAIN_SCHEDULER",
-      // TODO(adams): use the right scheduler because reclient doesn't use the cached results?
-      // TODO(adams): max_bytes_per_stream
+      // TODO(aaronmondal): use the right scheduler because reclient doesn't use the cached results?
+      // TODO(aaronmondal): max_bytes_per_stream
       "simple": {
         "supported_platform_properties": {
           "cpu_count": "priority",
@@ -66,54 +112,34 @@
           "kernel_version": "priority",
           "OSFamily": "priority",
           "container-image": "priority",
-          "lre-rs": "priority"
+          "lre-rs": "priority",
+          "ISA": "exact",
         }
       }
     }
   ],
   "servers": [{
-    // Only publish metrics on a private port.
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:9090"
-      }
-    },
-    "services": {
-      "experimental_prometheus": {
-        "path": "/metrics"
-      }
-    }
-  },
-  {
     "listener": {
       "http": {
         "socket_address": "0.0.0.0:50051"
       }
     },
     "services": {
-      "cas": {
-        "": {
-          "cas_store": "CAS_MAIN_STORE"
-        }
-      },
-      "ac": {
-        "": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "capabilities": {
-        "": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER"
-          }
-        }
-      },
-      "execution": {
-        "": {
-          "cas_store": "CAS_MAIN_STORE",
+      "cas": [{
+        "cas_store": "CAS_MAIN_STORE"
+      }],
+      "ac": [{
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "capabilities": [{
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER"
         }
-      },
+      }],
+      "execution": [{
+        "cas_store": "CAS_MAIN_STORE",
+        "scheduler": "MAIN_SCHEDULER"
+      }],
       "bytestream": {
         "cas_stores": {
           "": "CAS_MAIN_STORE"
@@ -132,29 +158,21 @@
       }
     },
     "services": {
-      "cas": {
-        "": {
-          "cas_store": "CAS_MAIN_STORE"
-        }
-      },
-      "ac": {
-        "": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "capabilities": {
-        "": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER"
-          }
-        }
-      },
-      "execution": {
-        "": {
-          "cas_store": "CAS_MAIN_STORE",
+      "cas": [{
+        "cas_store": "CAS_MAIN_STORE"
+      }],
+      "ac": [{
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "capabilities": [{
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER"
         }
-      },
+      }],
+      "execution": [{
+        "cas_store": "CAS_MAIN_STORE",
+        "scheduler": "MAIN_SCHEDULER"
+      }],
       "bytestream": {
         "cas_stores": {
           "": "CAS_MAIN_STORE"

@@ -45,19 +45,19 @@ async fn ensure_no_errors_if_only_first_message_has_resource_name_set() -> Resul
         ),
         write_offset: 0,
         finish_write: false,
-        data: Bytes::from_static(RAW_DATA[..4].as_bytes()),
+        data: Bytes::from_static(&RAW_DATA.as_bytes()[..4]),
     };
     let message2 = WriteRequest {
         resource_name: String::new(),
         write_offset: 4,
         finish_write: false,
-        data: Bytes::from_static(RAW_DATA[4..8].as_bytes()),
+        data: Bytes::from_static(&RAW_DATA.as_bytes()[4..8]),
     };
     let message3 = WriteRequest {
         resource_name: String::new(),
         write_offset: 8,
         finish_write: true,
-        data: Bytes::from_static(RAW_DATA[8..].as_bytes()),
+        data: Bytes::from_static(&RAW_DATA.as_bytes()[8..]),
     };
 
     {

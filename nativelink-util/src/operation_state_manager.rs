@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -66,7 +66,7 @@ pub enum OrderDirection {
 /// The filters used to query operations from the state manager.
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OperationFilter {
-    // TODO(adams): create rust builder pattern?
+    // TODO(aaronmondal): create rust builder pattern?
     /// The stage(s) that the operation must be in.
     pub stages: OperationStageFlags,
 
@@ -124,6 +124,10 @@ pub trait ClientStateManager: Sync + Send + Unpin + MetricsComponent + 'static {
 
 /// The type of update to perform on an operation.
 #[derive(Debug, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "TODO Fix this. Breaks on stable, but not on nightly"
+)]
 pub enum UpdateOperationType {
     /// Notification that the operation is still alive.
     KeepAlive,

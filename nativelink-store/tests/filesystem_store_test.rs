@@ -12,33 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::{Debug, Formatter};
+use core::marker::PhantomData;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::time::Duration;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fmt::{Debug, Formatter};
-use std::marker::PhantomData;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
 
 use async_lock::RwLock;
 use bytes::Bytes;
 use futures::executor::block_on;
 use futures::task::Poll;
-use futures::{poll, Future, FutureExt};
+use futures::{Future, FutureExt, poll};
 use nativelink_config::stores::FilesystemSpec;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
-    key_from_file, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
-    DIGEST_FOLDER, STR_FOLDER,
+    DIGEST_FOLDER, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
+    STR_FOLDER, key_from_file,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::LenEntry;
-use nativelink_util::origin_context::ContextAwareFuture;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
+use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
 use rand::Rng;
@@ -46,8 +46,8 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Take};
 use tokio::sync::Barrier;
 use tokio::time::sleep;
-use tokio_stream::wrappers::ReadDirStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReadDirStream;
 use tracing::Instrument;
 
 trait FileEntryHooks {
@@ -61,7 +61,7 @@ struct TestFileEntry<Hooks: FileEntryHooks + 'static + Sync + Send> {
 }
 
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> Debug for TestFileEntry<Hooks> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), core::fmt::Error> {
         f.debug_struct("TestFileEntry")
             .field("inner", &self.inner)
             .finish()
@@ -151,22 +151,24 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
     fn drop(&mut self) {
         let mut inner = self.inner.take().unwrap();
         let shared_context = inner.get_shared_context_for_test();
+        let current_context = Context::current();
+
         // We do this complicated bit here because tokio does not give a way to run a
         // command that will wait for all tasks and sub spawns to complete.
         // Sadly we need to rely on `active_drop_spawns` to hit zero to ensure that
         // all tasks have completed.
-        let fut = ContextAwareFuture::new_from_active(
-            async move {
-                // Drop the FileEntryImpl in a controlled setting then wait for the
-                // `active_drop_spawns` to hit zero.
-                drop(inner);
-                while shared_context.active_drop_spawns.load(Ordering::Acquire) > 0 {
-                    tokio::task::yield_now().await;
-                }
+        let fut = async move {
+            // Drop the FileEntryImpl in a controlled setting then wait for the
+            // `active_drop_spawns` to hit zero.
+            drop(inner);
+            while shared_context.active_drop_spawns.load(Ordering::Acquire) > 0 {
+                tokio::task::yield_now().await;
             }
-            .instrument(tracing::error_span!("test_file_entry_drop")),
-        );
-        #[allow(clippy::disallowed_methods)]
+        }
+        .instrument(tracing::error_span!("test_file_entry_drop"))
+        .with_context(current_context);
+
+        #[expect(clippy::disallowed_methods, reason = "testing implementation")]
         let thread_handle = {
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
@@ -186,7 +188,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
 fn make_temp_path(data: &str) -> String {
     format!(
         "{}/{}/{}",
-        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
         rand::rng().random::<u64>(),
         data
     )
@@ -195,7 +197,7 @@ fn make_temp_path(data: &str) -> String {
 async fn read_file_contents(file_name: &OsStr) -> Result<Vec<u8>, Error> {
     let mut file = fs::open_file(file_name, 0, u64::MAX)
         .await
-        .err_tip(|| format!("Failed to open file: {file_name:?}"))?;
+        .err_tip(|| format!("Failed to open file: {}", file_name.display()))?;
     let mut data = vec![];
     file.read_to_end(&mut data)
         .await
@@ -229,7 +231,10 @@ async fn check_temp_empty(temp_path: &str) -> Result<(), Error> {
 
     if let Some(temp_dir_entry) = read_dir_stream.next().await {
         let path = temp_dir_entry?.path();
-        panic!("No files should exist in temp directory, found: {path:?}");
+        panic!(
+            "No files should exist in temp directory, found: {}",
+            path.display()
+        );
     }
 
     let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{STR_FOLDER}"))
@@ -241,7 +246,10 @@ async fn check_temp_empty(temp_path: &str) -> Result<(), Error> {
 
     if let Some(temp_dir_entry) = read_dir_stream.next().await {
         let path = temp_dir_entry?.path();
-        panic!("No files should exist in temp directory, found: {path:?}");
+        panic!(
+            "No files should exist in temp directory, found: {}",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -454,7 +462,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
 
     assert_eq!(
         &remaining_file_data,
-        VALUE1[1..].as_bytes(),
+        &VALUE1.as_bytes()[1..],
         "Expected file content to match"
     );
 
@@ -667,7 +675,6 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-#[allow(clippy::await_holding_refcell_ref)]
 async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens() -> Result<(), Error>
 {
     const INITIAL_CONTENT: &str = "hello";
@@ -695,7 +702,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
                         .await
                         .err_tip(|| "Failed to open temp file")?;
                     // We don't care if it fails, this is only best attempt.
-                    let _ = file_handle.get_ref().as_ref().sync_all().await;
+                    drop(file_handle.get_ref().as_ref().sync_all().await);
                 }
                 // Ensure we have written to the file too. This ensures we have an open file handle.
                 // Failing to do this may result in the file existing, but the `update_fut` not actually
@@ -714,7 +721,10 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
     struct LocalHooks {}
     impl FileEntryHooks for LocalHooks {
         fn on_drop<Fe: FileEntry>(_file_entry: &Fe) {
-            background_spawn!("rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens_local_hooks_on_drop", FILE_DELETED_BARRIER.wait());
+            background_spawn!(
+                "rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens_local_hooks_on_drop",
+                FILE_DELETED_BARRIER.wait()
+            );
         }
     }
 
@@ -769,7 +779,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
         },
     );
 
-    // Now finish waiting on update(). This should reuslt in an error because we deleted our dest
+    // Now finish waiting on update(). This should result in an error because we deleted our dest
     // folder.
     let update_result = &mut *update_fut.lock().await;
     assert!(
@@ -863,10 +873,12 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     let (mut writer, mut reader) = make_buf_channel_pair();
 
     let _drop_guard = spawn!("get_part_is_zero_digest_get_part", async move {
-        let _ = store_clone
-            .get_part(digest, &mut writer, 0, None)
-            .await
-            .err_tip(|| "Failed to get_part");
+        drop(
+            store_clone
+                .get_part(digest, &mut writer, 0, None)
+                .await
+                .err_tip(|| "Failed to get_part"),
+        );
     });
 
     let file_data = reader
@@ -927,11 +939,13 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
 
     let keys = vec![digest.into()];
     let mut results = vec![None];
-    let _ = store
-        .has_with_results(&keys, &mut results)
-        .await
-        .err_tip(|| "Failed to get_part");
-    assert_eq!(results, vec!(Some(0)));
+    drop(
+        store
+            .has_with_results(&keys, &mut results)
+            .await
+            .err_tip(|| "Failed to get_part"),
+    );
+    assert_eq!(results, vec![Some(0)]);
 
     wait_for_empty_content_file(&content_path, digest, || async move {
         tokio::task::yield_now().await;
@@ -996,7 +1010,7 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
             // Try to advance our update future.
             assert_eq!(poll!(&mut update_fut), Poll::Pending);
 
-            // Once we are sure the rename fuction is paused break.
+            // Once we are sure the rename function is paused break.
             if RENAME_IS_PAUSED.load(Ordering::Acquire) {
                 break;
             }
@@ -1115,6 +1129,7 @@ async fn get_file_size_uses_block_size() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn update_with_whole_file_closes_file() -> Result<(), Error> {
+    #[expect(clippy::collection_is_never_read)] // TODO(jhpratt) investigate
     let mut permits = vec![];
     // Grab all permits to ensure only 1 permit is available.
     {

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use futures::{Future, FutureExt};
+use futures::Future;
 use nativelink_config::schedulers::SimpleSpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
@@ -28,14 +28,17 @@ use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
-use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::origin_event::{OriginEventCollector, OriginMetadata, ORIGIN_EVENT_COLLECTOR};
+use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::{mpsc, Notify};
+use opentelemetry::KeyValue;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
+use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
 use tokio_stream::StreamExt;
-use tracing::{event, info_span, Level};
+use tracing::{error, info_span};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
@@ -138,6 +141,20 @@ pub struct SimpleScheduler {
     _task_worker_matching_spawn: JoinHandleDropGuard<()>,
 }
 
+impl core::fmt::Debug for SimpleScheduler {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SimpleScheduler")
+            .field("platform_property_manager", &self.platform_property_manager)
+            .field("worker_scheduler", &self.worker_scheduler)
+            .field("maybe_origin_event_tx", &self.maybe_origin_event_tx)
+            .field(
+                "_task_worker_matching_spawn",
+                &self._task_worker_matching_spawn,
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 impl SimpleScheduler {
     /// Attempts to find a worker to execute an action and begins executing it.
     /// If an action is already running that is cacheable it may merge this
@@ -188,7 +205,7 @@ impl SimpleScheduler {
         self.do_try_match().await
     }
 
-    // TODO(blaise.bruer) This is an O(n*m) (aka n^2) algorithm. In theory we
+    // TODO(aaronmondal) This is an O(n*m) (aka n^2) algorithm. In theory we
     // can create a map of capabilities of each worker and then try and match
     // the actions to the worker using the map lookup (ie. map reduce).
     async fn do_try_match(&self) -> Result<(), Error> {
@@ -197,7 +214,6 @@ impl SimpleScheduler {
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             platform_property_manager: &PlatformPropertyManager,
-            maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
         ) -> Result<(), Error> {
             let (action_info, maybe_origin_metadata) =
                 action_state_result
@@ -205,13 +221,13 @@ impl SimpleScheduler {
                     .await
                     .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
 
-            // TODO(allada) We should not compute this every time and instead store
+            // TODO(aaronmondal) We should not compute this every time and instead store
             // it with the ActionInfo when we receive it.
             let platform_properties = platform_property_manager
                 .make_platform_properties(action_info.platform_properties.clone())
-                .err_tip(|| {
-                    "Failed to make platform properties in SimpleScheduler::do_try_match"
-                })?;
+                .err_tip(
+                    || "Failed to make platform properties in SimpleScheduler::do_try_match",
+                )?;
 
             let action_info = ActionInfoWithProps {
                 inner: action_info,
@@ -265,28 +281,17 @@ impl SimpleScheduler {
             };
             tokio::pin!(attach_operation_fut);
 
-            let attach_operation_fut = if let Some(origin_event_tx) = maybe_origin_event_tx {
-                let mut ctx = ActiveOriginContext::fork().unwrap_or_default();
+            let origin_metadata = maybe_origin_metadata.unwrap_or_default();
 
-                // Populate our origin event collector with the origin metadata
-                // associated with the action.
-                ctx.replace_value(&ORIGIN_EVENT_COLLECTOR, move |maybe_old_collector| {
-                    let origin_metadata = maybe_origin_metadata.unwrap_or_default();
-                    let Some(old_collector) = maybe_old_collector else {
-                        return Some(Arc::new(OriginEventCollector::new(
-                            origin_event_tx.clone(),
-                            origin_metadata,
-                        )));
-                    };
-                    Some(Arc::new(old_collector.clone_with_metadata(origin_metadata)))
-                });
-                Arc::new(ctx)
-                    .wrap_async(info_span!("do_try_match"), attach_operation_fut)
-                    .left_future()
-            } else {
-                attach_operation_fut.right_future()
-            };
-            attach_operation_fut.await
+            let ctx = Context::current_with_baggage(vec![KeyValue::new(
+                ENDUSER_ID,
+                origin_metadata.identity,
+            )]);
+
+            info_span!("do_try_match")
+                .in_scope(|| attach_operation_fut)
+                .with_context(ctx)
+                .await
         }
 
         let mut result = Ok(());
@@ -303,7 +308,6 @@ impl SimpleScheduler {
                     self.worker_scheduler.as_ref(),
                     self.matching_engine_state_manager.as_ref(),
                     self.platform_property_manager.as_ref(),
-                    self.maybe_origin_event_tx.as_ref(),
                 )
                 .await,
             );
@@ -329,7 +333,7 @@ impl SimpleScheduler {
                 // always yield to any other tasks that might want the lock. The
                 // easiest and most fair way to do this is to sleep for a small
                 // amount of time. Using something like tokio::task::yield_now()
-                // does not yield as aggresively as we'd like if new futures are
+                // does not yield as aggressively as we'd like if new futures are
                 // scheduled within a future.
                 tokio::time::sleep(Duration::from_millis(1))
             },
@@ -372,7 +376,11 @@ impl SimpleScheduler {
         // tasks are going to be dropped all over the place, this isn't a good
         // setting.
         if client_action_timeout_s <= CLIENT_KEEPALIVE_DURATION.as_secs() {
-            event!(Level::ERROR, client_action_timeout_s, "Setting client_action_timeout_s to less than the client keep alive interval is going to cause issues, please set above {}.", CLIENT_KEEPALIVE_DURATION.as_secs());
+            error!(
+                client_action_timeout_s,
+                "Setting client_action_timeout_s to less than the client keep alive interval is going to cause issues, please set above {}.",
+                CLIENT_KEEPALIVE_DURATION.as_secs()
+            );
         }
 
         let mut max_job_retries = spec.max_job_retries;
@@ -418,14 +426,14 @@ impl SimpleScheduler {
                             None => return,
                         };
                         if let Err(err) = result {
-                            event!(Level::ERROR, ?err, "Error while running do_try_match");
+                            error!(?err, "Error while running do_try_match");
                         }
 
                         on_matching_engine_run().await;
                     }
                     // Unreachable.
                 });
-            SimpleScheduler {
+            Self {
                 matching_engine_state_manager: state_manager.clone(),
                 client_state_manager: state_manager.clone(),
                 worker_scheduler,

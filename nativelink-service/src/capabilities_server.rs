@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nativelink_config::cas_server::{CapabilitiesConfig, InstanceName};
+use nativelink_config::cas_server::{CapabilitiesConfig, InstanceName, WithInstanceName};
 use nativelink_error::{Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::{
     Capabilities, CapabilitiesServer as Server,
@@ -30,9 +30,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_proto::build::bazel::semver::SemVer;
 use nativelink_util::digest_hasher::default_digest_hasher_func;
 use nativelink_util::operation_state_manager::ClientStateManager;
-use nativelink_util::origin_event::OriginEventContext;
 use tonic::{Request, Response, Status};
-use tracing::{event, instrument, Level};
+use tracing::{Level, instrument, warn};
 
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 
@@ -43,13 +42,13 @@ pub struct CapabilitiesServer {
 
 impl CapabilitiesServer {
     pub async fn new(
-        config: &HashMap<InstanceName, CapabilitiesConfig>,
+        configs: &[WithInstanceName<CapabilitiesConfig>],
         scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
     ) -> Result<Self, Error> {
         let mut supported_node_properties_for_instance = HashMap::new();
-        for (instance_name, cfg) in config {
+        for config in configs {
             let mut properties = Vec::new();
-            if let Some(remote_execution_cfg) = &cfg.remote_execution {
+            if let Some(remote_execution_cfg) = &config.remote_execution {
                 let scheduler =
                     scheduler_map
                         .get(&remote_execution_cfg.scheduler)
@@ -61,37 +60,38 @@ impl CapabilitiesServer {
                         })?;
                 if let Some(props_provider) = scheduler.as_known_platform_property_provider() {
                     for platform_key in props_provider
-                        .get_known_properties(instance_name)
+                        .get_known_properties(&config.instance_name)
                         .await
                         .err_tip(|| {
-                            format!("Failed to get platform properties for {instance_name}")
+                            format!(
+                                "Failed to get platform properties for {}",
+                                config.instance_name
+                            )
                         })?
                     {
                         properties.push(platform_key.clone());
                     }
                 } else {
-                    event!(
-                        Level::WARN,
+                    warn!(
                         "Scheduler '{}' does not implement KnownPlatformPropertyProvider",
                         remote_execution_cfg.scheduler
                     );
                 }
             }
-            supported_node_properties_for_instance.insert(instance_name.clone(), properties);
+            supported_node_properties_for_instance.insert(config.instance_name.clone(), properties);
         }
-        Ok(CapabilitiesServer {
+        Ok(Self {
             supported_node_properties_for_instance,
         })
     }
 
-    pub fn into_service(self) -> Server<CapabilitiesServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 }
 
 #[tonic::async_trait]
 impl Capabilities for CapabilitiesServer {
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -104,7 +104,6 @@ impl Capabilities for CapabilitiesServer {
         grpc_request: Request<GetCapabilitiesRequest>,
     ) -> Result<Response<ServerCapabilities>, Status> {
         let request = grpc_request.into_inner();
-        let ctx = OriginEventContext::new(|| &request).await;
 
         let instance_name = request.instance_name;
         let maybe_supported_node_properties = self
@@ -113,7 +112,7 @@ impl Capabilities for CapabilitiesServer {
         let execution_capabilities =
             maybe_supported_node_properties.map(|props_for_instance| ExecutionCapabilities {
                 digest_function: default_digest_hasher_func().proto_digest_func().into(),
-                exec_enabled: true, // TODO(blaise.bruer) Make this configurable.
+                exec_enabled: true, // TODO(aaronmondal) Make this configurable.
                 execution_priority_capabilities: Some(PriorityCapabilities {
                     priorities: vec![PriorityRange {
                         min_priority: 0,
@@ -157,7 +156,6 @@ impl Capabilities for CapabilitiesServer {
                 prerelease: String::new(),
             }),
         };
-        ctx.emit(|| &resp).await;
         Ok(Response::new(resp))
     }
 }

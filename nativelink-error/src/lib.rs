@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::convert::Into;
+use core::convert::Into;
 
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use prost_types::TimestampError;
 use serde::{Deserialize, Serialize};
+// Reexport of tonic's error codes which we use as "nativelink_error::Code".
+pub use tonic::Code;
 
 #[macro_export]
 macro_rules! make_err {
@@ -48,6 +50,7 @@ macro_rules! error_if {
 
 #[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Error {
+    #[serde(with = "CodeDef")]
     pub code: Code,
     pub messages: Vec<String>,
 }
@@ -105,7 +108,7 @@ impl Error {
     }
 
     pub fn to_std_err(self) -> std::io::Error {
-        std::io::Error::new(self.code.into(), self.messages.join(" : "))
+        std::io::Error::new(self.code.into_error_kind(), self.messages.join(" : "))
     }
 
     pub fn message_string(&self) -> String {
@@ -113,7 +116,7 @@ impl Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
 impl From<Error> for nativelink_proto::google::rpc::Status {
     fn from(val: Error) -> Self {
@@ -134,8 +137,8 @@ impl From<nativelink_proto::google::rpc::Status> for Error {
     }
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // A manual impl to reduce the noise of frequently empty fields.
         let mut builder = f.debug_struct("Error");
 
@@ -167,8 +170,8 @@ impl From<prost::UnknownEnumValue> for Error {
     }
 }
 
-impl From<std::num::TryFromIntError> for Error {
-    fn from(err: std::num::TryFromIntError) -> Self {
+impl From<core::num::TryFromIntError> for Error {
+    fn from(err: core::num::TryFromIntError) -> Self {
         make_err!(Code::InvalidArgument, "{}", err.to_string())
     }
 }
@@ -179,20 +182,20 @@ impl From<tokio::task::JoinError> for Error {
     }
 }
 
-impl From<std::num::ParseIntError> for Error {
-    fn from(err: std::num::ParseIntError) -> Self {
+impl From<serde_json5::Error> for Error {
+    fn from(err: serde_json5::Error) -> Self {
+        make_err!(Code::Internal, "{}", err.to_string())
+    }
+}
+
+impl From<core::num::ParseIntError> for Error {
+    fn from(err: core::num::ParseIntError) -> Self {
         make_err!(Code::InvalidArgument, "{}", err.to_string())
     }
 }
 
-impl From<hex::FromHexError> for Error {
-    fn from(err: hex::FromHexError) -> Self {
-        make_err!(Code::InvalidArgument, "{}", err.to_string())
-    }
-}
-
-impl From<std::convert::Infallible> for Error {
-    fn from(_err: std::convert::Infallible) -> Self {
+impl From<core::convert::Infallible> for Error {
+    fn from(_err: core::convert::Infallible) -> Self {
         // Infallible is an error type that can never happen.
         unreachable!();
     }
@@ -207,23 +210,17 @@ impl From<TimestampError> for Error {
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Self {
-            code: err.kind().into(),
+            code: err.kind().into_code(),
             messages: vec![err.to_string()],
         }
-    }
-}
-
-impl From<Code> for Error {
-    fn from(code: Code) -> Self {
-        make_err!(code, "")
     }
 }
 
 impl From<fred::error::Error> for Error {
     fn from(error: fred::error::Error) -> Self {
         use fred::error::ErrorKind::{
-            Auth, Backpressure, Canceled, Cluster, Config, InvalidArgument, InvalidCommand,
-            NotFound, Parse, Protocol, Routing, Sentinel, Timeout, Tls, Unknown, Url, IO,
+            Auth, Backpressure, Canceled, Cluster, Config, IO, InvalidArgument, InvalidCommand,
+            NotFound, Parse, Protocol, Routing, Sentinel, Timeout, Tls, Unknown, Url,
         };
 
         // Conversions here are based on https://grpc.github.io/grpc/core/md_doc_statuscodes.html.
@@ -242,21 +239,15 @@ impl From<fred::error::Error> for Error {
     }
 }
 
-impl From<tonic::transport::Error> for Error {
-    fn from(error: tonic::transport::Error) -> Self {
-        make_err!(Code::Internal, "{}", error.to_string())
-    }
-}
-
 impl From<tonic::Status> for Error {
     fn from(status: tonic::Status) -> Self {
-        make_err!(status.code().into(), "{}", status.to_string())
+        make_err!(status.code(), "{}", status.to_string())
     }
 }
 
 impl From<Error> for tonic::Status {
     fn from(val: Error) -> Self {
-        Self::new(val.code.into(), val.messages.join(" : "))
+        Self::new(val.code, val.messages.join(" : "))
     }
 }
 
@@ -264,15 +255,15 @@ pub trait ResultExt<T> {
     fn err_tip_with_code<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
-        S: std::string::ToString,
-        F: (std::ops::FnOnce(&Error) -> (Code, S)) + Sized;
+        S: ToString,
+        F: (FnOnce(&Error) -> (Code, S)) + Sized;
 
     #[inline]
     fn err_tip<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
-        S: std::string::ToString,
-        F: (std::ops::FnOnce() -> S) + Sized,
+        S: ToString,
+        F: (FnOnce() -> S) + Sized,
     {
         self.err_tip_with_code(|e| (e.code, tip_fn()))
     }
@@ -290,8 +281,8 @@ impl<T, E: Into<Error>> ResultExt<T> for Result<T, E> {
     fn err_tip_with_code<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
-        S: std::string::ToString,
-        F: (std::ops::FnOnce(&Error) -> (Code, S)) + Sized,
+        S: ToString,
+        F: (FnOnce(&Error) -> (Code, S)) + Sized,
     {
         self.map_err(|e| {
             let mut error: Error = e.into();
@@ -325,8 +316,8 @@ impl<T> ResultExt<T> for Option<T> {
     fn err_tip_with_code<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
-        S: std::string::ToString,
-        F: (std::ops::FnOnce(&Error) -> (Code, S)) + Sized,
+        S: ToString,
+        F: (FnOnce(&Error) -> (Code, S)) + Sized,
     {
         self.ok_or_else(|| {
             let mut error = Error {
@@ -341,9 +332,58 @@ impl<T> ResultExt<T> for Option<T> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive] // New Codes may be added in the future, so never exhaustively match!
-pub enum Code {
+trait CodeExt {
+    fn into_error_kind(self) -> std::io::ErrorKind;
+}
+
+impl CodeExt for Code {
+    fn into_error_kind(self) -> std::io::ErrorKind {
+        match self {
+            Self::Aborted => std::io::ErrorKind::Interrupted,
+            Self::AlreadyExists => std::io::ErrorKind::AlreadyExists,
+            Self::DeadlineExceeded => std::io::ErrorKind::TimedOut,
+            Self::InvalidArgument => std::io::ErrorKind::InvalidInput,
+            Self::NotFound => std::io::ErrorKind::NotFound,
+            Self::PermissionDenied => std::io::ErrorKind::PermissionDenied,
+            Self::Unavailable => std::io::ErrorKind::ConnectionRefused,
+            _ => std::io::ErrorKind::Other,
+        }
+    }
+}
+
+trait ErrorKindExt {
+    fn into_code(self) -> Code;
+}
+
+impl ErrorKindExt for std::io::ErrorKind {
+    fn into_code(self) -> Code {
+        match self {
+            Self::NotFound => Code::NotFound,
+            Self::PermissionDenied => Code::PermissionDenied,
+            Self::ConnectionRefused | Self::ConnectionReset | Self::ConnectionAborted => {
+                Code::Unavailable
+            }
+            Self::AlreadyExists => Code::AlreadyExists,
+            Self::InvalidInput | Self::InvalidData => Code::InvalidArgument,
+            Self::TimedOut => Code::DeadlineExceeded,
+            Self::Interrupted => Code::Aborted,
+            Self::NotConnected
+            | Self::AddrInUse
+            | Self::AddrNotAvailable
+            | Self::BrokenPipe
+            | Self::WouldBlock
+            | Self::WriteZero
+            | Self::Other
+            | Self::UnexpectedEof => Code::Internal,
+            _ => Code::Unknown,
+        }
+    }
+}
+
+// Serde definition for tonic::Code. See: https://serde.rs/remote-derive.html
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(remote = "Code")]
+pub enum CodeDef {
     Ok = 0,
     Cancelled = 1,
     Unknown = 2,
@@ -363,133 +403,4 @@ pub enum Code {
     Unauthenticated = 16,
     // NOTE: Additional codes must be added to stores.rs in ErrorCodes and also
     // in both match statements in retry.rs.
-}
-
-impl From<i32> for Code {
-    fn from(code: i32) -> Self {
-        match code {
-            x if x == Self::Ok as i32 => Self::Ok,
-            x if x == Self::Cancelled as i32 => Self::Cancelled,
-            x if x == Self::Unknown as i32 => Self::Unknown,
-            x if x == Self::InvalidArgument as i32 => Self::InvalidArgument,
-            x if x == Self::DeadlineExceeded as i32 => Self::DeadlineExceeded,
-            x if x == Self::NotFound as i32 => Self::NotFound,
-            x if x == Self::AlreadyExists as i32 => Self::AlreadyExists,
-            x if x == Self::PermissionDenied as i32 => Self::PermissionDenied,
-            x if x == Self::ResourceExhausted as i32 => Self::ResourceExhausted,
-            x if x == Self::FailedPrecondition as i32 => Self::FailedPrecondition,
-            x if x == Self::Aborted as i32 => Self::Aborted,
-            x if x == Self::OutOfRange as i32 => Self::OutOfRange,
-            x if x == Self::Unimplemented as i32 => Self::Unimplemented,
-            x if x == Self::Internal as i32 => Self::Internal,
-            x if x == Self::Unavailable as i32 => Self::Unavailable,
-            x if x == Self::DataLoss as i32 => Self::DataLoss,
-            x if x == Self::Unauthenticated as i32 => Self::Unauthenticated,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl From<tonic::Code> for Code {
-    fn from(code: tonic::Code) -> Self {
-        match code {
-            tonic::Code::Ok => Self::Ok,
-            tonic::Code::Cancelled => Self::Cancelled,
-            tonic::Code::Unknown => Self::Unknown,
-            tonic::Code::InvalidArgument => Self::InvalidArgument,
-            tonic::Code::DeadlineExceeded => Self::DeadlineExceeded,
-            tonic::Code::NotFound => Self::NotFound,
-            tonic::Code::AlreadyExists => Self::AlreadyExists,
-            tonic::Code::PermissionDenied => Self::PermissionDenied,
-            tonic::Code::ResourceExhausted => Self::ResourceExhausted,
-            tonic::Code::FailedPrecondition => Self::FailedPrecondition,
-            tonic::Code::Aborted => Self::Aborted,
-            tonic::Code::OutOfRange => Self::OutOfRange,
-            tonic::Code::Unimplemented => Self::Unimplemented,
-            tonic::Code::Internal => Self::Internal,
-            tonic::Code::Unavailable => Self::Unavailable,
-            tonic::Code::DataLoss => Self::DataLoss,
-            tonic::Code::Unauthenticated => Self::Unauthenticated,
-        }
-    }
-}
-
-impl From<Code> for tonic::Code {
-    fn from(val: Code) -> Self {
-        match val {
-            Code::Ok => Self::Ok,
-            Code::Cancelled => Self::Cancelled,
-            Code::Unknown => Self::Unknown,
-            Code::InvalidArgument => Self::InvalidArgument,
-            Code::DeadlineExceeded => Self::DeadlineExceeded,
-            Code::NotFound => Self::NotFound,
-            Code::AlreadyExists => Self::AlreadyExists,
-            Code::PermissionDenied => Self::PermissionDenied,
-            Code::ResourceExhausted => Self::ResourceExhausted,
-            Code::FailedPrecondition => Self::FailedPrecondition,
-            Code::Aborted => Self::Aborted,
-            Code::OutOfRange => Self::OutOfRange,
-            Code::Unimplemented => Self::Unimplemented,
-            Code::Internal => Self::Internal,
-            Code::Unavailable => Self::Unavailable,
-            Code::DataLoss => Self::DataLoss,
-            Code::Unauthenticated => Self::Unauthenticated,
-        }
-    }
-}
-
-impl From<std::io::ErrorKind> for Code {
-    fn from(kind: std::io::ErrorKind) -> Self {
-        match kind {
-            std::io::ErrorKind::NotFound => Self::NotFound,
-            std::io::ErrorKind::PermissionDenied => Self::PermissionDenied,
-            std::io::ErrorKind::ConnectionRefused
-            | std::io::ErrorKind::ConnectionReset
-            | std::io::ErrorKind::ConnectionAborted => Self::Unavailable,
-            std::io::ErrorKind::AlreadyExists => Self::AlreadyExists,
-            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
-                Self::InvalidArgument
-            }
-            std::io::ErrorKind::TimedOut => Self::DeadlineExceeded,
-            std::io::ErrorKind::Interrupted => Self::Aborted,
-            std::io::ErrorKind::NotConnected
-            | std::io::ErrorKind::AddrInUse
-            | std::io::ErrorKind::AddrNotAvailable
-            | std::io::ErrorKind::BrokenPipe
-            | std::io::ErrorKind::WouldBlock
-            | std::io::ErrorKind::WriteZero
-            | std::io::ErrorKind::Other
-            | std::io::ErrorKind::UnexpectedEof => Self::Internal,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl From<Code> for std::io::ErrorKind {
-    fn from(kind: Code) -> Self {
-        match kind {
-            Code::Aborted => Self::Interrupted,
-            Code::AlreadyExists => Self::AlreadyExists,
-            Code::DeadlineExceeded => Self::TimedOut,
-            Code::InvalidArgument => Self::InvalidInput,
-            Code::NotFound => Self::NotFound,
-            Code::PermissionDenied => Self::PermissionDenied,
-            Code::Unavailable => Self::ConnectionRefused,
-            _ => Self::Other,
-        }
-    }
-}
-
-// Allows for mapping this type into a generic serialization error.
-impl serde::ser::Error for Error {
-    fn custom<T: std::fmt::Display>(msg: T) -> Self {
-        Self::new(Code::InvalidArgument, msg.to_string())
-    }
-}
-
-// Allows for mapping this type into a generic deserialization error.
-impl serde::de::Error for Error {
-    fn custom<T: std::fmt::Display>(msg: T) -> Self {
-        Self::new(Code::InvalidArgument, msg.to_string())
-    }
 }

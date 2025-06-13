@@ -8,47 +8,19 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
-// Configuration to create a PV and PVC which mount a node-local directory via
+// Configuration to create a PV which mount a node-local directory via
 // `hostPath`.
-type LocalPVAndPVC struct {
+type LocalPV struct {
 	Size     string
 	HostPath string
 }
 
-// Install installs the PV and PVC from a `LocalPVAndPVC` config.
-func (component *LocalPVAndPVC) Install(
+// Install creates a PersistentVolume from a `LocalPV` config.
+func (component *LocalPV) Install(
 	ctx *pulumi.Context,
 	name string,
 ) ([]pulumi.Resource, error) {
 	pvName := name + "-pv"
-	pvcName := name + "-pvc"
-
-	persistentVolumeClaim, err := corev1.NewPersistentVolumeClaim(
-		ctx,
-		pvcName,
-		&corev1.PersistentVolumeClaimArgs{
-			ApiVersion: pulumi.String("v1"),
-			Kind:       pulumi.String("PersistentVolumeClaim"),
-			Metadata: &metav1.ObjectMetaArgs{
-				Name: pulumi.String(pvcName),
-			},
-			Spec: &corev1.PersistentVolumeClaimSpecArgs{
-				StorageClassName: pulumi.String("manual"),
-				VolumeName:       pulumi.String(pvName),
-				AccessModes: pulumi.StringArray{
-					pulumi.String("ReadWriteMany"),
-				},
-				Resources: &corev1.VolumeResourceRequirementsArgs{
-					Requests: pulumi.StringMap{
-						"storage": pulumi.String(component.Size),
-					},
-				},
-			},
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errPulumi, err)
-	}
 
 	persistentVolume, err := corev1.NewPersistentVolume(
 		ctx,
@@ -76,5 +48,5 @@ func (component *LocalPVAndPVC) Install(
 		return nil, fmt.Errorf("%w: %w", errPulumi, err)
 	}
 
-	return []pulumi.Resource{persistentVolume, persistentVolumeClaim}, nil
+	return []pulumi.Resource{persistentVolume}, nil
 }

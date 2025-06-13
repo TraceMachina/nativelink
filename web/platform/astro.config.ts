@@ -45,7 +45,15 @@ export default defineConfig({
     }),
     starlight(starlightConfig),
     sitemap(),
-    partytown(),
+    partytown({
+      config: {
+        loadScriptsOnMainThread: [
+          "www.youtube-nocookie.com",
+          "www.youtube.com",
+        ],
+        forward: ["dataLayer.push"],
+      },
+    }),
   ],
   markdown: {
     rehypePlugins: [
@@ -59,8 +67,8 @@ export default defineConfig({
       [
         rehypeMermaid,
         {
-          class: "not-content",
-          strategy: "img-class-dark-mode",
+          darkScheme: "class",
+          strategy: "data-url",
         },
       ],
     ],

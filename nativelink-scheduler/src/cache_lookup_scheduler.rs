@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, GetActionResultRequest,
@@ -33,14 +33,16 @@ use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProv
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
-use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::origin_event::{OriginMetadata, ORIGIN_EVENT_COLLECTOR};
+use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::store_trait::Store;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::Context;
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
 use tokio::sync::oneshot;
 use tonic::{Request, Response};
-use tracing::{event, Level};
+use tracing::error;
 
 /// Actions that are having their cache checked or failed cache lookup and are
 /// being forwarded upstream.  Missing the `skip_cache_check` actions which are
@@ -65,6 +67,14 @@ pub struct CacheLookupScheduler {
     action_scheduler: Arc<dyn ClientStateManager>,
     /// Actions that are currently performing a `CacheCheck`.
     inflight_cache_checks: Arc<Mutex<CheckActions>>,
+}
+
+impl core::fmt::Debug for CacheLookupScheduler {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CacheLookupScheduler")
+            .field("ac_store", &self.ac_store)
+            .finish_non_exhaustive()
+    }
 }
 
 async fn get_action_from_store(
@@ -139,7 +149,7 @@ impl ActionStateResult for CacheLookupActionStateResult {
     }
 
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
-        // TODO(allada) We should probably remove as_action_info()
+        // TODO(aaronmondal) We should probably remove as_action_info()
         // or implement it properly.
         return Err(make_err!(
             Code::Unimplemented,
@@ -166,8 +176,8 @@ impl CacheLookupScheduler {
         action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
         let unique_key = match &action_info.unique_qualifier {
-            ActionUniqueQualifier::Cachable(unique_key) => unique_key.clone(),
-            ActionUniqueQualifier::Uncachable(_) => {
+            ActionUniqueQualifier::Cacheable(unique_key) => unique_key.clone(),
+            ActionUniqueQualifier::Uncacheable(_) => {
                 // Cache lookup skipped, forward to the upstream.
                 return self
                     .action_scheduler
@@ -223,12 +233,11 @@ impl CacheLookupScheduler {
             let _scope_guard = scope_guard;
 
             let unique_key = match &action_info.unique_qualifier {
-                ActionUniqueQualifier::Cachable(unique_key) => unique_key,
-                ActionUniqueQualifier::Uncachable(unique_key) => {
-                    event!(
-                        Level::ERROR,
+                ActionUniqueQualifier::Cacheable(unique_key) => unique_key,
+                ActionUniqueQualifier::Uncacheable(unique_key) => {
+                    error!(
                         ?action_info,
-                        "ActionInfo::unique_qualifier should be ActionUniqueQualifier::Cachable()"
+                        "ActionInfo::unique_qualifier should be ActionUniqueQualifier::Cacheable()"
                     );
                     unique_key
                 }
@@ -260,19 +269,29 @@ impl CacheLookupScheduler {
                         action_digest: action_info.unique_qualifier.digest(),
                     };
 
-                    let maybe_origin_metadata =
-                        ActiveOriginContext::get_value(&ORIGIN_EVENT_COLLECTOR)
-                            .ok()
-                            .flatten()
-                            .map(|v| v.metadata.clone());
+                    let ctx = Context::current();
+                    let baggage = ctx.baggage();
+
+                    let maybe_origin_metadata = if baggage.is_empty() {
+                        None
+                    } else {
+                        Some(OriginMetadata {
+                            identity: baggage
+                                .get(ENDUSER_ID)
+                                .map(|v| v.as_str().to_string())
+                                .unwrap_or_default(),
+                            bazel_metadata: None, // TODO(aaronmondal): Implement conversion.
+                        })
+                    };
+
                     for (client_operation_id, pending_tx) in pending_txs {
                         action_state.client_operation_id = client_operation_id;
                         // Ignore errors here, as the other end may have hung up.
-                        let _ = pending_tx.send(Ok(Box::new(CacheLookupActionStateResult {
+                        drop(pending_tx.send(Ok(Box::new(CacheLookupActionStateResult {
                             action_state: Arc::new(action_state.clone()),
                             maybe_origin_metadata: maybe_origin_metadata.clone(),
                             change_called: false,
-                        })));
+                        }))));
                     }
                     return;
                 }
@@ -291,7 +310,7 @@ impl CacheLookupScheduler {
                         };
                         for (_client_operation_id, pending_tx) in pending_txs {
                             // Ignore errors here, as the other end may have hung up.
-                            let _ = pending_tx.send(Err(err.clone()));
+                            drop(pending_tx.send(Err(err.clone())));
                         }
                         return;
                     }
@@ -308,10 +327,12 @@ impl CacheLookupScheduler {
 
             for (client_operation_id, pending_tx) in pending_txs {
                 // Ignore errors here, as the other end may have hung up.
-                let _ = pending_tx.send(
-                    action_scheduler
-                        .add_action(client_operation_id, action_info.clone())
-                        .await,
+                drop(
+                    pending_tx.send(
+                        action_scheduler
+                            .add_action(client_operation_id, action_info.clone())
+                            .await,
+                    ),
                 );
             }
         });

@@ -290,7 +290,7 @@ export type Type =
     };
 
 export interface Path {
-  name: string;
+  path: string;
   id: Id;
   args: GenericArgs | null;
 }

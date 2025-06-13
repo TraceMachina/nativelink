@@ -2,7 +2,7 @@
 import "@styles/global.css";
 import "@styles/tailwind.css";
 
-import ViewTransitions from "astro/components/ViewTransitions.astro";
+import ClientRouter from "astro/components/ClientRouter.astro";
 import { ScrollTracker } from "@qwik/components/scroll";
 import { Header } from "@qwik/components/header";
 import { Footer } from "@qwik/components/footer";
@@ -19,6 +19,8 @@ const scrolled = false;
     <meta charset="UTF-8" />
     <GoogleTagManager measurementId={"GTM-NNLLRWGB"} />
     <link rel="sitemap" href="/sitemap-index.xml" />
+    <link rel="preconnect" href="https://sc.lfeeder.com" crossorigin>
+    <link rel="preconnect" href="https://lf.lfeeder.com" crossorigin>
     <link
       rel="icon"
       sizes="192x192"
@@ -63,7 +65,7 @@ const scrolled = false;
         })(document, "script");
       })("lAxoEaKMQGd7OYGd");
     </script>
-    <ViewTransitions />
+    <ClientRouter />
   </head>
   <body class="bg-black w-screen">
     <ScrollTracker scrolled={scrolled} />

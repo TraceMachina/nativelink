@@ -12,39 +12,39 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::str;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use std::process::Stdio;
-use std::str;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
-use futures::{select, Future, FutureExt, StreamExt, TryFutureExt};
+use futures::{Future, FutureExt, StreamExt, TryFutureExt, select};
 use nativelink_config::cas_server::LocalWorkerConfig;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
+    ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
 use nativelink_util::common::fs;
-use nativelink_util::digest_hasher::{DigestHasherFunc, ACTIVE_HASHER_FUNC};
+use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
-use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
+use opentelemetry::context::Context;
 use tokio::process;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
-use tracing::{event, info_span, instrument, Level};
+use tracing::{Level, debug, error, info, info_span, instrument, warn};
 
 use crate::running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
@@ -167,7 +167,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
     }
 
     async fn run(
-        &mut self,
+        &self,
         update_for_worker_stream: Streaming<UpdateForWorker>,
         shutdown_rx: &mut broadcast::Receiver<ShutdownGuard>,
     ) -> Result<(), Error> {
@@ -205,7 +205,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 "Got ConnectionResult in LocalWorker::run which should never happen"
                             ));
                         }
-                        // TODO(allada) We should possibly do something with this notification.
+                        // TODO(aaronmondal) We should possibly do something with this notification.
                         Update::Disconnect(()) => {
                             self.metrics.disconnects_received.inc();
                         }
@@ -215,13 +215,12 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                         Update::KillOperationRequest(kill_operation_request) => {
                             let operation_id = OperationId::from(kill_operation_request.operation_id);
                             if let Err(err) = self.running_actions_manager.kill_operation(&operation_id).await {
-                                event!(
-                                    Level::ERROR,
+                                error!(
                                     ?operation_id,
                                     ?err,
                                     "Failed to send kill request for operation"
                                 );
-                            };
+                            }
                         }
                         Update::StartAction(start_execute) => {
                             self.metrics.start_actions_received.inc();
@@ -231,7 +230,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let maybe_instance_name = execute_request.map(|v| v.instance_name.clone());
                             let action_digest = execute_request.and_then(|v| v.action_digest.clone());
                             let digest_hasher = execute_request
-                                .ok_or(make_input_err!("Expected execute_request to be set"))
+                                .ok_or_else(|| make_input_err!("Expected execute_request to be set"))
                                 .and_then(|v| DigestHasherFunc::try_from(v.digest_function))
                                 .err_tip(|| "In LocalWorkerImpl::new()")?;
 
@@ -250,8 +249,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         r
                                     })
                                     .and_then(|action| {
-                                        event!(
-                                            Level::INFO,
+                                        debug!(
                                             operation_id = ?action.get_operation_id(),
                                             "Received request to run action"
                                         );
@@ -285,8 +283,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                             // Save in the action cache before notifying the scheduler that we've completed.
                                             if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
                                                 if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
-                                                    event!(
-                                                        Level::ERROR,
+                                                    error!(
                                                         ?err,
                                                         ?action_digest,
                                                         "Error saving action in store",
@@ -322,18 +319,19 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let futures_ref = &futures;
 
                             let add_future_channel = add_future_channel.clone();
-                            let mut ctx = ActiveOriginContext::fork().err_tip(|| "Expected ActiveOriginContext to be set in local_worker::run")?;
-                            ctx.set_value(&ACTIVE_HASHER_FUNC, Arc::new(digest_hasher));
-                            ctx.run(info_span!("worker_start_action_ctx"), move || {
+
+                            info_span!(
+                                "worker_start_action_ctx",
+                                digest_function = %digest_hasher.to_string(),
+                            ).in_scope(|| {
+                                let _guard = Context::current_with_value(digest_hasher)
+                                    .attach();
+
                                 futures_ref.push(
                                     spawn!("worker_start_action", start_action_fut).map(move |res| {
                                         let res = res.err_tip(|| "Failed to launch spawn")?;
                                         if let Err(err) = &res {
-                                            event!(
-                                                Level::ERROR,
-                                                ?err,
-                                                "Error executing action",
-                                            );
+                                            error!(?err, "Error executing action");
                                         }
                                         add_future_channel
                                             .send(make_publish_future(res).boxed())
@@ -344,7 +342,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 );
                             });
                         }
-                    };
+                    }
                 },
                 res = add_future_rx.next() => {
                     let fut = res.err_tip(|| "New future stream receives should never be closed")?;
@@ -352,14 +350,14 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                 },
                 res = futures.next() => res.err_tip(|| "Keep-alive should always pending. Likely unable to send data to scheduler")??,
                 complete_msg = shutdown_rx.recv().fuse() => {
-                    event!(Level::WARN, "Worker loop reveiced shutdown signal. Shutting down worker...",);
+                    warn!("Worker loop reveiced shutdown signal. Shutting down worker...",);
                     let mut grpc_client = self.grpc_client.clone();
                     let worker_id = self.worker_id.clone();
                     let running_actions_manager = self.running_actions_manager.clone();
                     let complete_msg_clone = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?.clone();
                     let shutdown_future = async move {
                         if let Err(e) = grpc_client.going_away(GoingAwayRequest { worker_id }).await {
-                            event!(Level::ERROR, "Failed to send GoingAwayRequest: {e}",);
+                            error!("Failed to send GoingAwayRequest: {e}",);
                             return Err(e.into());
                         }
                         running_actions_manager.complete_actions(complete_msg_clone).await;
@@ -383,6 +381,18 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
     metrics: Arc<Metrics>,
 }
 
+impl<T: WorkerApiClientTrait + core::fmt::Debug, U: RunningActionsManager + core::fmt::Debug>
+    core::fmt::Debug for LocalWorker<T, U>
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LocalWorker")
+            .field("config", &self.config)
+            .field("running_actions_manager", &self.running_actions_manager)
+            .field("metrics", &self.metrics)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Creates a new `LocalWorker`. The `cas_store` must be an instance of
 /// `FastSlowStore` and will be checked at runtime.
 pub async fn new_local_worker(
@@ -390,13 +400,7 @@ pub async fn new_local_worker(
     cas_store: Store,
     ac_store: Option<Store>,
     historical_store: Store,
-) -> Result<
-    (
-        LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>,
-        Arc<Metrics>,
-    ),
-    Error,
-> {
+) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
     let fast_slow_store = cas_store
         .downcast_ref::<FastSlowStore>(None)
         .err_tip(|| "Expected store for LocalWorker's store to be a FastSlowStore")?
@@ -468,8 +472,7 @@ pub async fn new_local_worker(
         }),
         Box::new(move |d| Box::pin(sleep(d))),
     );
-    let metrics = local_worker.metrics.clone();
-    Ok((local_worker, metrics))
+    Ok(local_worker)
 }
 
 impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
@@ -491,6 +494,10 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         }
     }
 
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "False positive on stable, but not on nightly"
+    )]
     pub fn name(&self) -> &String {
         &self.config.name
     }
@@ -521,7 +528,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                 return Err(make_input_err!(
                     "Expected first response from scheduler to be a ConnectResult got : {:?}",
                     other
-                ))
+                ));
             }
         };
         Ok((worker_id, update_for_worker_stream))
@@ -538,7 +545,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             .err_tip(|| "Could not unwrap sleep_fn in LocalWorker::run")?;
         let sleep_fn_pin = Pin::new(&sleep_fn);
         let error_handler = Box::pin(move |err| async move {
-            event!(Level::ERROR, ?err, "Error");
+            error!(?err, "Error");
             (sleep_fn_pin)(Duration::from_secs_f32(CONNECTION_RETRY_DELAY_S)).await;
         });
 
@@ -553,25 +560,23 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             };
 
             // Next register our worker with the scheduler.
-            let (mut inner, update_for_worker_stream) =
-                match self.register_worker(&mut client).await {
-                    Err(e) => {
-                        (error_handler)(e).await;
-                        continue; // Try to connect again.
-                    }
-                    Ok((worker_id, update_for_worker_stream)) => (
-                        LocalWorkerImpl::new(
-                            &self.config,
-                            client,
-                            worker_id,
-                            self.running_actions_manager.clone(),
-                            self.metrics.clone(),
-                        ),
-                        update_for_worker_stream,
+            let (inner, update_for_worker_stream) = match self.register_worker(&mut client).await {
+                Err(e) => {
+                    (error_handler)(e).await;
+                    continue; // Try to connect again.
+                }
+                Ok((worker_id, update_for_worker_stream)) => (
+                    LocalWorkerImpl::new(
+                        &self.config,
+                        client,
+                        worker_id,
+                        self.running_actions_manager.clone(),
+                        self.metrics.clone(),
                     ),
-                };
-            event!(
-                Level::WARN,
+                    update_for_worker_stream,
+                ),
+            };
+            info!(
                 worker_id = %inner.worker_id,
                 "Worker registered with scheduler"
             );
@@ -592,10 +597,10 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                         }
                         (sleep_fn_pin)(Duration::from_secs_f32(sleep_duration)).await;
                     }
-                    event!(Level::ERROR, ERROR_MSG);
+                    error!(ERROR_MSG);
                     return Err(err.append(ERROR_MSG));
                 }
-                event!(Level::ERROR, ?err, "Worker disconnected from scheduler");
+                error!(?err, "Worker disconnected from scheduler");
                 // Kill off any existing actions because if we re-connect, we'll
                 // get some more and it might resource lock us.
                 self.running_actions_manager.kill_all().await;
@@ -607,7 +612,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct Metrics {
     #[metric(
         help = "Total number of actions sent to this worker to process. This does not mean it started them, it just means it received a request to execute it."
@@ -622,6 +627,10 @@ pub struct Metrics {
     )]
     preconditions: AsyncCounterWrapper,
     #[metric]
+    #[allow(
+        clippy::struct_field_names,
+        reason = "TODO Fix this. Triggers on nightly"
+    )]
     running_actions_manager_metrics: Weak<RunningActionManagerMetrics>,
 }
 

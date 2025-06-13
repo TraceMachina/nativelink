@@ -1,14 +1,15 @@
 ---
 name: Create OCI image
 on:
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - main
     paths-ignore:
-      - 'docs/**'
-  push:
-    branches:
-      - main
+      - '.github/styles/**'
+      - 'web/**'
 
 permissions: read-all
 

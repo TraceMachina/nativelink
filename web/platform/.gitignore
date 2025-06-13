@@ -8,12 +8,12 @@ dist/
 node_modules/
 
 # logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
 bun-debug.log*
 bun-error.log*
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # tests
 test-results
@@ -35,11 +35,16 @@ stats.html
 deno.json
 utils/deno.d.ts
 
+# Generated Lighthouse data
+.lighthouseci/
+
 # Generated files
+src/content/docs/docs/config/configuration-intro.mdx
 src/content/docs/docs/contribute/docs.mdx
 src/content/docs/docs/contribute/guidelines.mdx
 src/content/docs/docs/explanations/lre.mdx
-src/content/docs/docs/config/configuration-intro.mdx
 src/content/docs/docs/introduction/setup.mdx
+src/content/docs/docs/rbe/templates-bazel.mdx
+src/content/docs/docs/rbe/templates.mdx
 src/content/docs/docs/reference/changelog.mdx
 src/content/docs/docs/reference/nativelink-config.mdx
