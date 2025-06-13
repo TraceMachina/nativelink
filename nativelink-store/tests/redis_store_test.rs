@@ -403,6 +403,122 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn test_has_with_prefix() -> Result<(), Error> {
+    let prefix = "has_pfx:";
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{prefix}{digest}");
+
+    let real_key = RedisValue::Bytes(packed_hash_hex.into());
+
+    let mocks = Arc::new(MockRedisBackend::new());
+
+    mocks
+        .expect(
+            MockCommand {
+                cmd: Str::from_static("STRLEN"),
+                subcommand: None,
+                args: vec![real_key.clone()],
+            },
+            Ok(RedisValue::Integer(2)),
+        )
+        .expect(
+            MockCommand {
+                cmd: Str::from_static("EXISTS"),
+                subcommand: None,
+                args: vec![real_key],
+            },
+            Ok(RedisValue::Integer(1)),
+        );
+
+    let store = {
+        let mut builder = Builder::default_centralized();
+        builder.set_config(RedisConfig {
+            mocks: Some(mocks),
+            ..Default::default()
+        });
+        let (client_pool, subscriber_client) = make_clients(builder);
+
+        RedisStore::new_from_builder_and_parts(
+            client_pool,
+            subscriber_client,
+            None,
+            mock_uuid_generator,
+            prefix.to_string(),
+            DEFAULT_READ_CHUNK_SIZE,
+            DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+            DEFAULT_SCAN_COUNT,
+        )
+        .unwrap()
+    };
+
+    let result = store.has(digest).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Expected has() to return Some when mock indicates existence"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_has_without_prefix() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+
+    let packed_hash_hex = format!("{digest}");
+    let real_key = RedisValue::Bytes(packed_hash_hex.into());
+
+    let mocks = Arc::new(MockRedisBackend::new());
+
+    mocks
+        .expect(
+            MockCommand {
+                cmd: Str::from_static("STRLEN"),
+                subcommand: None,
+                args: vec![real_key.clone()],
+            },
+            Ok(RedisValue::Integer(2)),
+        )
+        .expect(
+            MockCommand {
+                cmd: Str::from_static("EXISTS"),
+                subcommand: None,
+                args: vec![real_key],
+            },
+            Ok(RedisValue::Integer(1)),
+        );
+
+    let store = {
+        let mut builder = Builder::default_centralized();
+        builder.set_config(RedisConfig {
+            mocks: Some(mocks),
+            ..Default::default()
+        });
+        let (client_pool, subscriber_client) = make_clients(builder);
+
+        RedisStore::new_from_builder_and_parts(
+            client_pool,
+            subscriber_client,
+            None,
+            mock_uuid_generator,
+            String::new(),
+            DEFAULT_READ_CHUNK_SIZE,
+            DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+            DEFAULT_SCAN_COUNT,
+        )
+        .unwrap()
+    };
+
+    let result = store.has(digest).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Expected has() to return Some when mock indicates existence (no prefix)"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn upload_empty_data() -> Result<(), Error> {
     let data = Bytes::from_static(b"");
     let digest = ZERO_BYTE_DIGESTS[0];
