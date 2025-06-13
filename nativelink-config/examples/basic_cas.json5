@@ -128,11 +128,10 @@
           "scheduler": "MAIN_SCHEDULER"
         }
       }],
-      "bytestream": {
-        "cas_stores": {
-          "main": "WORKER_FAST_SLOW_STORE"
-        }
-      }
+      "bytestream": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE"
+      }]
     }
   }, {
     "name": "private_workers_servers",
