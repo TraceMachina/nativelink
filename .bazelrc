@@ -133,7 +133,6 @@ build --@rules_rust//:clippy_flag=-Aclippy::unused_self
 build --@rules_rust//:clippy_flag=-Aclippy::unwrap_in_result
 build --@rules_rust//:clippy_flag=-Aclippy::unwrap_used
 build --@rules_rust//:clippy_flag=-Wclippy::use_debug
-build --@rules_rust//:clippy_flag=-Aclippy::used_underscore_binding
 
 ## END CARGO LINTS ##
 

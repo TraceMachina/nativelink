@@ -174,4 +174,3 @@ ref_option = { level = "allow", priority = 1 }
 too_many_lines = { level = "allow", priority = 1 }
 unused_async = { level = "allow", priority = 1 }
 unused_self = { level = "allow", priority = 1 }
-used_underscore_binding = { level = "allow", priority = 1 }
