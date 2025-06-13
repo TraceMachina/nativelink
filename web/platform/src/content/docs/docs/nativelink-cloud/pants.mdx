@@ -42,8 +42,10 @@ import { FileTree } from "@astrojs/starlight/components";
 3. Run a pants build with the following flags:
 
    ```bash
-   pants --no-pantsd --level=trace --no-local-cache test ::
+   pants --no-pantsd --no-local-cache test ::
    ```
+
+   `--no-pantsd` and `--no-local-cache` aren't how you’d normally want to run Pants. They’re just there to prevent the daemon and the local cache from preempting the remote cache, so you can see the latter in action.
 
 4. You'll see remote cache use on the [Dashboard](https://app.nativelink.com)
    page.
