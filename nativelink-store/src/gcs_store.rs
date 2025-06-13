@@ -29,7 +29,6 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
-use rand::Rng;
 use tokio::time::sleep;
 
 use crate::cas_utils::is_zero_digest;
@@ -81,14 +80,6 @@ where
             .multipart_max_concurrent_uploads
             .unwrap_or(DEFAULT_CONCURRENT_UPLOADS);
 
-        let jitter_amt = spec.common.retry.jitter;
-        let jitter_fn = Arc::new(move |delay: tokio::time::Duration| {
-            if jitter_amt == 0.0 {
-                return delay;
-            }
-            delay.mul_f32(jitter_amt.mul_add(rand::rng().random::<f32>() - 0.5, 1.))
-        });
-
         Ok(Arc::new(Self {
             client,
             now_fn,
@@ -101,7 +92,7 @@ where
                 .clone(),
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
-                jitter_fn,
+                spec.common.retry.make_jitter_fn(),
                 spec.common.retry.clone(),
             ),
             consider_expired_after_s: i64::from(spec.common.consider_expired_after_s),
