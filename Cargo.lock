@@ -1241,9 +1241,9 @@ dependencies = [
 
 [[package]]
 name = "formatx"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa6f3b9014e23925937fbf4d05f27a6f4efe42545f98690b94f193bdb3f1959e"
+checksum = "d8866fac38f53fc87fa3ae1b09ddd723e0482f8fa74323518b4c59df2c55a00a"
 
 [[package]]
 name = "fred"
