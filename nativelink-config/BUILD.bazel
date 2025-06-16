@@ -25,6 +25,7 @@ rust_library(
         "//nativelink-error",
         "@crates//:byte-unit",
         "@crates//:humantime",
+        "@crates//:rand",
         "@crates//:serde",
         "@crates//:serde_json5",
         "@crates//:shellexpand",
