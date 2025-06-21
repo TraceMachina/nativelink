@@ -11,7 +11,7 @@
 </div>
 
 <div id="description" align="center">
-  enter into the shipstorm
+  enter not into the shipstorm
 </div>
 
 <br />
