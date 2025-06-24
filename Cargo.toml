@@ -153,6 +153,7 @@ use-debug = "warn"
 missing-const-for-fn = "deny"
 
 # Nursery overrides that are either buggy or we want to fix
+cognitive-complexity = { level = "allow", priority = 1 }        # TODO(palfrey) Flip
 iter-with-drain = { level = "allow", priority = 1 }             # TODO(jhpratt) Flip
 option-if-let-else = { level = "allow", priority = 1 }          # rust-lang/rust-clippy#8829
 redundant-pub-crate = { level = "allow", priority = 1 }         # rust-lang/rust-clippy#5369
