@@ -1233,6 +1233,9 @@ pub struct ExperimentalMongoSpec {
 
     /// Write concern timeout in milliseconds.
     /// Default: None (uses MongoDB default)
-    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub write_concern_timeout_ms: Option<u32>,
 }

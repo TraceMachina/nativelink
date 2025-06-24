@@ -22,14 +22,14 @@ use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt, TryStreamExt};
-use mongodb::bson::{doc, Bson, Document};
+use mongodb::bson::{Bson, Document, doc};
 use mongodb::options::{
     ClientOptions, FindOneAndUpdateOptions, FindOptions, IndexOptions, ReturnDocument,
     UpdateOptions, WriteConcern,
 };
 use mongodb::{Client as MongoClient, Collection, Database, IndexModel};
 use nativelink_config::stores::ExperimentalMongoSpec;
-use nativelink_error::{make_err, make_input_err, Code, Error};
+use nativelink_error::{Code, Error, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
@@ -81,7 +81,6 @@ const VERSION_FIELD: &str = "version";
 
 /// The name of the field in MongoDB documents that stores the size.
 const SIZE_FIELD: &str = "size";
-
 
 /// A [`StoreDriver`] implementation that uses MongoDB as a backing store.
 #[derive(Debug, MetricsComponent)]
@@ -163,9 +162,15 @@ impl ExperimentalMongoStore {
         // Configure client options
         let mut client_options = ClientOptions::parse(&spec.connection_string)
             .await
-            .map_err(|e| make_err!(Code::InvalidArgument, "Failed to parse MongoDB connection string: {e}"))?;
+            .map_err(|e| {
+                make_err!(
+                    Code::InvalidArgument,
+                    "Failed to parse MongoDB connection string: {e}"
+                )
+            })?;
 
-        client_options.server_selection_timeout = Some(Duration::from_millis(spec.connection_timeout_ms));
+        client_options.server_selection_timeout =
+            Some(Duration::from_millis(spec.connection_timeout_ms));
         client_options.connect_timeout = Some(Duration::from_millis(spec.connection_timeout_ms));
 
         // Set write concern if specified
@@ -178,31 +183,19 @@ impl ExperimentalMongoStore {
             };
 
             // Build write concern based on which options are set
-            let write_concern = match (w_value, spec.write_concern_j, spec.write_concern_timeout_ms) {
-                (Some(w), Some(j), Some(timeout)) => {
-                    WriteConcern::builder()
-                        .w(Some(w))
-                        .journal(j)
-                        .w_timeout(Some(Duration::from_millis(timeout as u64)))
-                        .build()
-                }
-                (Some(w), Some(j), None) => {
-                    WriteConcern::builder()
-                        .w(Some(w))
-                        .journal(j)
-                        .build()
-                }
-                (Some(w), None, Some(timeout)) => {
-                    WriteConcern::builder()
-                        .w(Some(w))
-                        .w_timeout(Some(Duration::from_millis(timeout as u64)))
-                        .build()
-                }
-                (Some(w), None, None) => {
-                    WriteConcern::builder()
-                        .w(Some(w))
-                        .build()
-                }
+            let write_concern = match (w_value, spec.write_concern_j, spec.write_concern_timeout_ms)
+            {
+                (Some(w), Some(j), Some(timeout)) => WriteConcern::builder()
+                    .w(Some(w))
+                    .journal(j)
+                    .w_timeout(Some(Duration::from_millis(timeout as u64)))
+                    .build(),
+                (Some(w), Some(j), None) => WriteConcern::builder().w(Some(w)).journal(j).build(),
+                (Some(w), None, Some(timeout)) => WriteConcern::builder()
+                    .w(Some(w))
+                    .w_timeout(Some(Duration::from_millis(timeout as u64)))
+                    .build(),
+                (Some(w), None, None) => WriteConcern::builder().w(Some(w)).build(),
                 _ => unreachable!(), // We know w is Some because we're in the if let Some(w) block
             };
 
@@ -210,8 +203,12 @@ impl ExperimentalMongoStore {
         }
 
         // Create client
-        let client = MongoClient::with_options(client_options)
-            .map_err(|e| make_err!(Code::InvalidArgument, "Failed to create MongoDB client: {e}"))?;
+        let client = MongoClient::with_options(client_options).map_err(|e| {
+            make_err!(
+                Code::InvalidArgument,
+                "Failed to create MongoDB client: {e}"
+            )
+        })?;
 
         // Get database and collections
         let database = client.database(&spec.database);
@@ -245,13 +242,16 @@ impl ExperimentalMongoStore {
         // CAS collection indexes
         cas_collection
             .create_index(
-                IndexModel::builder()
-                    .keys(doc! { SIZE_FIELD: 1 })
-                    .build(),
+                IndexModel::builder().keys(doc! { SIZE_FIELD: 1 }).build(),
                 None,
             )
             .await
-            .map_err(|e| make_err!(Code::Internal, "Failed to create size index on CAS collection: {e}"))?;
+            .map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to create size index on CAS collection: {e}"
+                )
+            })?;
 
         // Scheduler collection will have dynamic indexes created as needed
 
@@ -308,10 +308,7 @@ impl StoreDriver for ExperimentalMongoStore {
 
             match self.cas_collection.find_one(filter, None).await {
                 Ok(Some(doc)) => {
-                    *result = doc
-                        .get_i64(SIZE_FIELD)
-                        .ok()
-                        .map(|v| v as u64);
+                    *result = doc.get_i64(SIZE_FIELD).ok().map(|v| v as u64);
                 }
                 Ok(None) => {
                     *result = None;
@@ -382,12 +379,18 @@ impl StoreDriver for ExperimentalMongoStore {
             .projection(doc! { KEY_FIELD: 1 })
             .build();
 
-        let mut cursor = self.cas_collection.find(filter, find_options).await
+        let mut cursor = self
+            .cas_collection
+            .find(filter, find_options)
+            .await
             .map_err(|e| make_err!(Code::Internal, "Failed to create cursor in list: {e}"))?;
 
         let mut count = 0u64;
-        while let Some(doc) = cursor.try_next().await
-            .map_err(|e| make_err!(Code::Internal, "Failed to get next document in list: {e}"))? {
+        while let Some(doc) = cursor
+            .try_next()
+            .await
+            .map_err(|e| make_err!(Code::Internal, "Failed to get next document in list: {e}"))?
+        {
             if let Ok(key) = doc.get_str(KEY_FIELD) {
                 if let Some(decoded_key) = self.decode_key(key) {
                     let store_key = StoreKey::new_str(&decoded_key);
@@ -412,15 +415,19 @@ impl StoreDriver for ExperimentalMongoStore {
 
         // Handle zero digest
         if is_zero_digest(key.borrow()) {
-            let chunk = reader
-                .peek()
-                .await
-                .map_err(|e| make_err!(Code::Internal, "Failed to peek in ExperimentalMongoStore::update: {e}"))?;
+            let chunk = reader.peek().await.map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to peek in ExperimentalMongoStore::update: {e}"
+                )
+            })?;
             if chunk.is_empty() {
-                reader
-                    .drain()
-                    .await
-                    .map_err(|e| make_err!(Code::Internal, "Failed to drain in ExperimentalMongoStore::update: {e}"))?;
+                reader.drain().await.map_err(|e| {
+                    make_err!(
+                        Code::Internal,
+                        "Failed to drain in ExperimentalMongoStore::update: {e}"
+                    )
+                })?;
                 return Ok(());
             }
         }
@@ -466,15 +473,19 @@ impl StoreDriver for ExperimentalMongoStore {
     ) -> Result<(), Error> {
         // Handle zero digest
         if is_zero_digest(key.borrow()) {
-            return writer
-                .send_eof()
-                .map_err(|e| make_err!(Code::Internal, "Failed to send zero EOF in mongo store get_part: {e}"));
+            return writer.send_eof().map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to send zero EOF in mongo store get_part: {e}"
+                )
+            });
         }
 
         let encoded_key = self.encode_key(&key);
         let filter = doc! { KEY_FIELD: encoded_key.as_ref() };
 
-        let doc = self.cas_collection
+        let doc = self
+            .cas_collection
             .find_one(filter, None)
             .await
             .map_err(|e| make_err!(Code::Internal, "Failed to find document in get_part: {e}"))?
@@ -499,9 +510,12 @@ impl StoreDriver for ExperimentalMongoStore {
         let data_len = data.len();
 
         if offset > data_len {
-            return writer
-                .send_eof()
-                .map_err(|e| make_err!(Code::Internal, "Failed to send EOF in mongo store get_part: {e}"));
+            return writer.send_eof().map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to send EOF in mongo store get_part: {e}"
+                )
+            });
         }
 
         let end = if let Some(len) = length {
@@ -515,16 +529,21 @@ impl StoreDriver for ExperimentalMongoStore {
 
             // Send data in chunks
             for chunk_data in chunk.chunks(self.read_chunk_size) {
-                writer
-                    .send(chunk_data.to_vec().into())
-                    .await
-                    .map_err(|e| make_err!(Code::Internal, "Failed to write data in ExperimentalMongoStore::get_part: {e}"))?;
+                writer.send(chunk_data.to_vec().into()).await.map_err(|e| {
+                    make_err!(
+                        Code::Internal,
+                        "Failed to write data in ExperimentalMongoStore::get_part: {e}"
+                    )
+                })?;
             }
         }
 
-        writer
-            .send_eof()
-            .map_err(|e| make_err!(Code::Internal, "Failed to write EOF in mongo store get_part: {e}"))
+        writer.send_eof().map_err(|e| {
+            make_err!(
+                Code::Internal,
+                "Failed to write EOF in mongo store get_part: {e}"
+            )
+        })
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
@@ -553,7 +572,10 @@ impl HealthStatusIndicator for ExperimentalMongoStore {
     async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
         match self.database.run_command(doc! { "ping": 1 }, None).await {
             Ok(_) => HealthStatus::new_ok(self, "Connection healthy".into()),
-            Err(e) => HealthStatus::new_failed(self, format!("{namespace} - MongoDB connection error: {e}").into()),
+            Err(e) => HealthStatus::new_failed(
+                self,
+                format!("{namespace} - MongoDB connection error: {e}").into(),
+            ),
         }
     }
 }
@@ -572,14 +594,18 @@ pub struct ExperimentalMongoSubscription {
 
 impl SchedulerSubscription for ExperimentalMongoSubscription {
     async fn changed(&mut self) -> Result<(), Error> {
-        let receiver = self
-            .receiver
-            .as_mut()
-            .ok_or_else(|| make_err!(Code::Internal, "In ExperimentalMongoSubscription::changed::as_mut"))?;
-        receiver
-            .changed()
-            .await
-            .map_err(|_| make_err!(Code::Internal, "In ExperimentalMongoSubscription::changed::changed"))
+        let receiver = self.receiver.as_mut().ok_or_else(|| {
+            make_err!(
+                Code::Internal,
+                "In ExperimentalMongoSubscription::changed::as_mut"
+            )
+        })?;
+        receiver.changed().await.map_err(|_| {
+            make_err!(
+                Code::Internal,
+                "In ExperimentalMongoSubscription::changed::changed"
+            )
+        })
     }
 }
 
@@ -680,30 +706,37 @@ impl ExperimentalMongoSubscriptionManager {
                                     Ok(event) => {
                                         use mongodb::change_stream::event::OperationType;
                                         match event.operation_type {
-                                            OperationType::Insert | OperationType::Update
-                                            | OperationType::Replace | OperationType::Delete => {
-                                                    if let Some(doc_key) = event.document_key {
-                                                        if let Ok(key) = doc_key.get_str(KEY_FIELD) {
-                                                            // Remove prefix if present
-                                                            let key = if !key_prefix.is_empty() {
-                                                                key.strip_prefix(&key_prefix)
-                                                                    .unwrap_or(key)
-                                                            } else {
-                                                                key
-                                                            };
+                                            OperationType::Insert
+                                            | OperationType::Update
+                                            | OperationType::Replace
+                                            | OperationType::Delete => {
+                                                if let Some(doc_key) = event.document_key {
+                                                    if let Ok(key) = doc_key.get_str(KEY_FIELD) {
+                                                        // Remove prefix if present
+                                                        let key = if !key_prefix.is_empty() {
+                                                            key.strip_prefix(&key_prefix)
+                                                                .unwrap_or(key)
+                                                        } else {
+                                                            key
+                                                        };
 
-                                                            let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
-                                                                warn!("Parent dropped, exiting ExperimentalMongoSubscriptionManager");
-                                                                return;
-                                                            };
+                                                        let Some(subscribed_keys) =
+                                                            subscribed_keys_weak.upgrade()
+                                                        else {
+                                                            warn!(
+                                                                "Parent dropped, exiting ExperimentalMongoSubscriptionManager"
+                                                            );
+                                                            return;
+                                                        };
 
-                                                            let subscribed_keys_mux = subscribed_keys.read();
-                                                            subscribed_keys_mux
+                                                        let subscribed_keys_mux =
+                                                            subscribed_keys.read();
+                                                        subscribed_keys_mux
                                                                 .common_prefix_values(key)
                                                                 .for_each(ExperimentalMongoSubscriptionPublisher::notify);
-                                                        }
                                                     }
                                                 }
+                                            }
                                             _ => {}
                                         }
                                     }
@@ -763,8 +796,10 @@ impl SchedulerSubscriptionManager for ExperimentalMongoSubscriptionManager {
         let mut subscription = if let Some(publisher) = subscribed_keys.get(&key_str) {
             publisher.subscribe(weak_subscribed_keys)
         } else {
-            let (publisher, subscription) =
-                ExperimentalMongoSubscriptionPublisher::new(key_str.to_string(), weak_subscribed_keys);
+            let (publisher, subscription) = ExperimentalMongoSubscriptionPublisher::new(
+                key_str.to_string(),
+                weak_subscribed_keys,
+            );
             subscribed_keys.insert(key_str, publisher);
             subscription
         };
@@ -817,13 +852,21 @@ impl SchedulerStore for ExperimentalMongoStore {
     {
         let key = data.get_key();
         let encoded_key = self.encode_key(&key);
-        let maybe_index = data.get_indexes()
-            .map_err(|e| make_err!(Code::Internal, "Error getting indexes in ExperimentalMongoStore::update_data: {e}"))?;
+        let maybe_index = data.get_indexes().map_err(|e| {
+            make_err!(
+                Code::Internal,
+                "Error getting indexes in ExperimentalMongoStore::update_data: {e}"
+            )
+        })?;
 
         if <T as SchedulerStoreKeyProvider>::Versioned::VALUE {
             let current_version = data.current_version();
-            let data_bytes = data.try_into_bytes()
-                .map_err(|e| make_err!(Code::Internal, "Could not convert value to bytes in ExperimentalMongoStore::update_data: {e}"))?;
+            let data_bytes = data.try_into_bytes().map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Could not convert value to bytes in ExperimentalMongoStore::update_data: {e}"
+                )
+            })?;
 
             let mut update_doc = doc! {
                 "$set": {
@@ -839,13 +882,13 @@ impl SchedulerStore for ExperimentalMongoStore {
 
             // Add indexes
             for (name, value) in maybe_index {
-                update_doc
-                    .get_document_mut("$set")
-                    .unwrap()
-                    .insert(name, Bson::Binary(mongodb::bson::Binary {
+                update_doc.get_document_mut("$set").unwrap().insert(
+                    name,
+                    Bson::Binary(mongodb::bson::Binary {
                         subtype: mongodb::bson::spec::BinarySubtype::Generic,
                         bytes: value.to_vec(),
-                    }));
+                    }),
+                );
             }
 
             let filter = doc! {
@@ -858,7 +901,8 @@ impl SchedulerStore for ExperimentalMongoStore {
                 .return_document(ReturnDocument::After)
                 .build();
 
-            match self.scheduler_collection
+            match self
+                .scheduler_collection
                 .find_one_and_update(filter, update_doc, options)
                 .await
             {
@@ -873,8 +917,12 @@ impl SchedulerStore for ExperimentalMongoStore {
                 )),
             }
         } else {
-            let data_bytes = data.try_into_bytes()
-                .map_err(|e| make_err!(Code::Internal, "Could not convert value to bytes in ExperimentalMongoStore::update_data: {e}"))?;
+            let data_bytes = data.try_into_bytes().map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Could not convert value to bytes in ExperimentalMongoStore::update_data: {e}"
+                )
+            })?;
 
             let mut doc = doc! {
                 KEY_FIELD: encoded_key.as_ref(),
@@ -886,10 +934,13 @@ impl SchedulerStore for ExperimentalMongoStore {
 
             // Add indexes
             for (name, value) in maybe_index {
-                doc.insert(name, Bson::Binary(mongodb::bson::Binary {
-                    subtype: mongodb::bson::spec::BinarySubtype::Generic,
-                    bytes: value.to_vec(),
-                }));
+                doc.insert(
+                    name,
+                    Bson::Binary(mongodb::bson::Binary {
+                        subtype: mongodb::bson::spec::BinarySubtype::Generic,
+                        bytes: value.to_vec(),
+                    }),
+                );
             }
 
             let options = UpdateOptions::builder().upsert(true).build();
@@ -900,7 +951,9 @@ impl SchedulerStore for ExperimentalMongoStore {
                     options,
                 )
                 .await
-                .map_err(|e| make_err!(Code::Internal, "Failed to update scheduler document: {e}"))?;
+                .map_err(|e| {
+                    make_err!(Code::Internal, "Failed to update scheduler document: {e}")
+                })?;
 
             Ok(Some(0))
         }
@@ -940,27 +993,38 @@ impl SchedulerStore for ExperimentalMongoStore {
 
         // Add sort if specified
         let find_options = if let Some(sort_key) = K::MAYBE_SORT_KEY {
-            FindOptions::builder()
-                .sort(doc! { sort_key: 1 })
-                .build()
+            FindOptions::builder().sort(doc! { sort_key: 1 }).build()
         } else {
             FindOptions::default()
         };
 
-        let cursor = self.scheduler_collection
+        let cursor = self
+            .scheduler_collection
             .find(filter, find_options)
             .await
-            .map_err(|e| make_err!(Code::Internal, "Failed to create cursor in search_by_index_prefix: {e}"))?;
+            .map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to create cursor in search_by_index_prefix: {e}"
+                )
+            })?;
 
         Ok(cursor.map(move |result| {
-            let doc = result.map_err(|e| make_err!(Code::Internal, "Error reading document in search_by_index_prefix: {e}"))?;
+            let doc = result.map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Error reading document in search_by_index_prefix: {e}"
+                )
+            })?;
 
             let data = match doc.get(DATA_FIELD) {
                 Some(Bson::Binary(binary)) => Bytes::from(binary.bytes.clone()),
-                _ => return Err(make_err!(
-                    Code::Internal,
-                    "Missing or invalid data field in search_by_index_prefix"
-                )),
+                _ => {
+                    return Err(make_err!(
+                        Code::Internal,
+                        "Missing or invalid data field in search_by_index_prefix"
+                    ));
+                }
             };
 
             let version = if <K as SchedulerIndexProvider>::Versioned::VALUE {
@@ -969,8 +1033,12 @@ impl SchedulerStore for ExperimentalMongoStore {
                 0
             };
 
-            K::decode(version, data)
-                .map_err(|e| make_err!(Code::Internal, "Failed to decode in search_by_index_prefix: {e}"))
+            K::decode(version, data).map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to decode in search_by_index_prefix: {e}"
+                )
+            })
         }))
     }
 
@@ -985,10 +1053,16 @@ impl SchedulerStore for ExperimentalMongoStore {
         let encoded_key = self.encode_key(&key);
         let filter = doc! { KEY_FIELD: encoded_key.as_ref() };
 
-        let doc = self.scheduler_collection
+        let doc = self
+            .scheduler_collection
             .find_one(filter, None)
             .await
-            .map_err(|e| make_err!(Code::Internal, "Failed to find document in get_and_decode: {e}"))?;
+            .map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to find document in get_and_decode: {e}"
+                )
+            })?;
 
         let Some(doc) = doc else {
             return Ok(None);
@@ -1005,7 +1079,8 @@ impl SchedulerStore for ExperimentalMongoStore {
             0
         };
 
-        Ok(Some(K::decode(version, data)
-            .map_err(|e| make_err!(Code::Internal, "Failed to decode in get_and_decode: {e}"))?))
+        Ok(Some(K::decode(version, data).map_err(|e| {
+            make_err!(Code::Internal, "Failed to decode in get_and_decode: {e}")
+        })?))
     }
 }
