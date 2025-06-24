@@ -35,9 +35,6 @@ const VALID_HASH1: &str = "30313233343536373839616263646566303030303030303030303
 /// Note: These tests are designed to work with a real `MongoDB` instance.
 /// For CI/local development, ensure `MongoDB` is available or skip these tests.
 fn create_test_spec() -> ExperimentalMongoSpec {
-    // Check if running in CI environment
-    let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
-
     // Default connection string for CI - empty string will require env var
     let default_connection = String::new();
 

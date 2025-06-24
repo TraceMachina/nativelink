@@ -86,6 +86,7 @@ const SIZE_FIELD: &str = "size";
 #[derive(Debug, MetricsComponent)]
 pub struct ExperimentalMongoStore {
     /// The MongoDB client.
+    #[allow(dead_code)]
     client: MongoClient,
 
     /// The database to use.
@@ -98,6 +99,7 @@ pub struct ExperimentalMongoStore {
     scheduler_collection: Collection<Document>,
 
     /// A function used to generate names for temporary keys.
+    #[allow(dead_code)]
     temp_name_generator_fn: fn() -> String,
 
     /// A common prefix to append to all keys before they are sent to MongoDB.
