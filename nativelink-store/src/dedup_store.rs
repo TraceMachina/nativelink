@@ -17,8 +17,7 @@ use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bincode::config::{FixintEncoding, WithOtherIntEncoding};
-use bincode::{DefaultOptions, Options};
+use bincode::serde::{decode_from_slice, encode_to_vec};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use nativelink_config::stores::DedupSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -47,6 +46,12 @@ pub struct DedupIndex {
     pub entries: Vec<DigestInfo>,
 }
 
+type LegacyBincodeConfig = bincode::config::Configuration<
+    bincode::config::LittleEndian,
+    bincode::config::Fixint,
+    bincode::config::NoLimit,
+>;
+
 #[derive(MetricsComponent)]
 pub struct DedupStore {
     #[metric(group = "index_store")]
@@ -56,7 +61,7 @@ pub struct DedupStore {
     fast_cdc_decoder: FastCDC,
     #[metric(help = "Maximum number of concurrent fetches per get")]
     max_concurrent_fetch_per_get: usize,
-    bincode_options: WithOtherIntEncoding<DefaultOptions, FixintEncoding>,
+    bincode_config: LegacyBincodeConfig,
 }
 
 impl core::fmt::Debug for DedupStore {
@@ -109,7 +114,7 @@ impl DedupStore {
                 usize::try_from(max_size).err_tip(|| "Could not convert max_size to usize")?,
             ),
             max_concurrent_fetch_per_get,
-            bincode_options: DefaultOptions::new().with_fixint_encoding(),
+            bincode_config: bincode::config::legacy(),
         }))
     }
 
@@ -132,13 +137,13 @@ impl DedupStore {
                 Ok(data) => data,
             };
 
-            match self.bincode_options.deserialize::<DedupIndex>(&data) {
+            match decode_from_slice::<DedupIndex, _>(&data, self.bincode_config) {
+                Ok((dedup_index, _)) => dedup_index,
                 Err(err) => {
                     warn!(?key, ?err, "Failed to deserialize index in dedup store",);
                     // We return the equivalent of NotFound here so the client is happy.
                     return Ok(None);
                 }
-                Ok(v) => v,
             }
         };
 
@@ -222,18 +227,19 @@ impl StoreDriver for DedupStore {
             .try_collect()
             .await?;
 
-        let serialized_index = self
-            .bincode_options
-            .serialize(&DedupIndex {
+        let serialized_index = encode_to_vec(
+            &DedupIndex {
                 entries: index_entries,
-            })
-            .map_err(|e| {
-                make_err!(
-                    Code::Internal,
-                    "Failed to serialize index in dedup_store : {:?}",
-                    e
-                )
-            })?;
+            },
+            self.bincode_config,
+        )
+        .map_err(|e| {
+            make_err!(
+                Code::Internal,
+                "Failed to serialize index in dedup_store : {:?}",
+                e
+            )
+        })?;
 
         self.index_store
             .update_oneshot(key, serialized_index.into())
@@ -265,16 +271,15 @@ impl StoreDriver for DedupStore {
                 .get_part_unchunked(key, 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store")?;
-
-            self.bincode_options
-                .deserialize::<DedupIndex>(&data)
+            let (dedup_index, _) = decode_from_slice::<DedupIndex, _>(&data, self.bincode_config)
                 .map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Failed to deserialize index in dedup_store::get_part : {:?}",
-                        e
-                    )
-                })?
+                make_err!(
+                    Code::Internal,
+                    "Failed to deserialize index in dedup_store::get_part : {:?}",
+                    e
+                )
+            })?;
+            dedup_index
         };
 
         let mut start_byte_in_stream: u64 = 0;

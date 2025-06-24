@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 
+use nativelink_error::{Error, ResultExt};
 use serde::Deserialize;
 
 use crate::schedulers::SchedulerSpec;
@@ -152,13 +153,28 @@ pub struct ExecutionConfig {
     pub scheduler: SchedulerRefName,
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct FetchConfig {}
+pub struct FetchConfig {
+    /// The store name referenced in the `stores` map in the main config.
+    /// This store name referenced here may be reused multiple times.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub fetch_store: StoreRefName,
+}
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct PushConfig {}
+pub struct PushConfig {
+    /// The store name referenced in the `stores` map in the main config.
+    /// This store name referenced here may be reused multiple times.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub push_store: StoreRefName,
+
+    /// Whether the Action Cache store may be written to, this if set to false
+    /// it is only possible to read from the Action Cache.
+    #[serde(default)]
+    pub read_only: bool,
+}
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
@@ -310,8 +326,17 @@ pub struct ServicesConfig {
 
     /// These two are collectively the Remote Asset protocol, but it's
     /// defined as two separate services
-    pub fetch: Option<FetchConfig>,
-    pub push: Option<PushConfig>,
+    #[serde(
+        default,
+        deserialize_with = "super::backcompat::opt_vec_with_instance_name"
+    )]
+    pub fetch: Option<Vec<WithInstanceName<FetchConfig>>>,
+
+    #[serde(
+        default,
+        deserialize_with = "super::backcompat::opt_vec_with_instance_name"
+    )]
+    pub push: Option<Vec<WithInstanceName<PushConfig>>>,
 
     /// This is the service used for workers to connect and communicate
     /// through.
@@ -796,4 +821,12 @@ pub struct CasConfig {
 
     /// Any global configurations that apply to all modules live here.
     pub global: Option<GlobalConfig>,
+}
+
+impl CasConfig {
+    pub fn try_from_json5_file(config_file: &str) -> Result<Self, Error> {
+        let json_contents = std::fs::read_to_string(config_file)
+            .err_tip(|| format!("Could not open config file {config_file}"))?;
+        Ok(serde_json5::from_str(&json_contents)?)
+    }
 }
