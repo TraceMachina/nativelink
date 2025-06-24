@@ -87,7 +87,7 @@
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
           filter = path: type:
-            (builtins.match "^.*(data/SekienAkashita\.jpg|nativelink-config/README\.md)" path != null)
+            (builtins.match "^.*(examples/.+\.json5|data/SekienAkashita\.jpg|nativelink-config/README\.md)" path != null)
             || ((craneLibFor pkgs).filterCargoSources path type);
         };
 
@@ -108,9 +108,9 @@
                   "aarch64-linux" = "aarch64-unknown-linux-musl";
                   "x86_64-darwin" = "x86_64-apple-darwin";
                   "aarch64-darwin" = "aarch64-apple-darwin";
-                }
-                .${nixSystem}
-                or (throw "Unsupported Nix host platform: ${nixSystem}")
+                }.${
+                  nixSystem
+                } or (throw "Unsupported Nix host platform: ${nixSystem}")
             )
             p.stdenv.targetPlatform.system;
 
@@ -361,14 +361,11 @@
             nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
-            pyroaring = pkgs.callPackage ./tools/buildstream/pyroaring.nix {pythonPkgs = pkgs.python312Packages;};
-            bst = pkgs.callPackage ./tools/buildstream/bst.nix {
-              inherit pkgs pyroaring;
-              pythonPkgs = pkgs.python312Packages;
-            };
+            inherit (pkgs) buildstream buildbox;
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
-              inherit nativelink bst;
+              inherit nativelink buildstream buildbox;
             };
+            generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
           }
           // (
             # It's not possible to crosscompile to darwin, not even between
@@ -397,6 +394,7 @@
         pre-commit.settings = {
           hooks = import ./tools/pre-commit-hooks.nix {
             inherit pkgs;
+            inherit (packages) generate-bazel-rc;
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };

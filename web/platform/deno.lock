@@ -80,7 +80,7 @@
         "npm:framer-motion@^12.9.4",
         "npm:mdast@3",
         "npm:motion@^12.9.4",
-        "npm:playwright@1.50.1",
+        "npm:playwright@1.52.0",
         "npm:react-dom@^19.1.0",
         "npm:react@^19.1.0",
         "npm:rehype-autolink-headings@^7.1.0",

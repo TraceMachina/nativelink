@@ -212,11 +212,11 @@ pub async fn open_file(
     let path = path.as_ref().to_owned();
     let (permit, os_file) = call_with_permit(move |permit| {
         let mut os_file =
-            std::fs::File::open(&path).err_tip(|| format!("Could not open {path:?}"))?;
+            std::fs::File::open(&path).err_tip(|| format!("Could not open {}", path.display()))?;
         if start > 0 {
             os_file
                 .seek(SeekFrom::Start(start))
-                .err_tip(|| format!("Could not seek to {start} in {path:?}"))?;
+                .err_tip(|| format!("Could not seek to {start} in {}", path.display()))?;
         }
         Ok((permit, os_file))
     })
@@ -239,7 +239,7 @@ pub async fn create_file(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
                 .create(true)
                 .truncate(true)
                 .open(&path)
-                .err_tip(|| format!("Could not open {path:?}"))?,
+                .err_tip(|| format!("Could not open {}", path.display()))?,
         ))
     })
     .await?;

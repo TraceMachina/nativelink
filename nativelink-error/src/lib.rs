@@ -182,6 +182,12 @@ impl From<tokio::task::JoinError> for Error {
     }
 }
 
+impl From<serde_json5::Error> for Error {
+    fn from(err: serde_json5::Error) -> Self {
+        make_err!(Code::Internal, "{}", err.to_string())
+    }
+}
+
 impl From<core::num::ParseIntError> for Error {
     fn from(err: core::num::ParseIntError) -> Self {
         make_err!(Code::InvalidArgument, "{}", err.to_string())

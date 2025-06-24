@@ -1,10 +1,11 @@
 [workspace]
+exclude = ["tools/generate-bazel-rc"]
 resolver = "2"
 
 [package]
 edition = "2024"
 name = "nativelink"
-rust-version = "1.86.0"
+rust-version = "1.87.0"
 version = "0.6.0"
 
 [profile.release]
@@ -175,4 +176,3 @@ ref_option = { level = "allow", priority = 1 }
 too_many_lines = { level = "allow", priority = 1 }
 unused_async = { level = "allow", priority = 1 }
 unused_self = { level = "allow", priority = 1 }
-used_underscore_binding = { level = "allow", priority = 1 }

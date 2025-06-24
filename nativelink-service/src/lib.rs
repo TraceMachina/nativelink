@@ -21,4 +21,5 @@ pub mod execution_server;
 pub mod fetch_server;
 pub mod health_server;
 pub mod push_server;
+pub mod remote_asset_proto;
 pub mod worker_api_server;
