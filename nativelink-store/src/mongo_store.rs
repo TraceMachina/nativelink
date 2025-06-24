@@ -409,7 +409,7 @@ impl StoreDriver for ExperimentalMongoStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
-        _upload_size: UploadSizeInfo,
+        upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
         let encoded_key = self.encode_key(&key);
 
@@ -432,10 +432,38 @@ impl StoreDriver for ExperimentalMongoStore {
             }
         }
 
-        // Read all data into memory
+        // Special handling for MaxSize(0) - this should error if stream is closed
+        if let UploadSizeInfo::MaxSize(0) = upload_size {
+            // Try to read from the stream - if it's closed immediately, this should error
+            match reader.recv().await {
+                Ok(_chunk) => {
+                    return Err(make_input_err!(
+                        "Received data when MaxSize is 0 in MongoDB store"
+                    ));
+                }
+                Err(e) => {
+                    return Err(make_err!(
+                        Code::InvalidArgument,
+                        "Stream closed for MaxSize(0) upload: {e}"
+                    ));
+                }
+            }
+        }
+
+        // Read all data into memory with proper EOF handling
         let mut data = Vec::new();
-        while let Ok(chunk) = reader.recv().await {
-            data.extend_from_slice(&chunk);
+        loop {
+            match reader.recv().await {
+                Ok(chunk) => {
+                    if chunk.is_empty() {
+                        break; // Empty chunk signals EOF
+                    }
+                    data.extend_from_slice(&chunk);
+                }
+                Err(_) => {
+                    break; // Error or stream closed, stop reading
+                }
+            }
         }
 
         let size = data.len() as i64;
