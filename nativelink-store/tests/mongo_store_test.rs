@@ -13,19 +13,26 @@
 // limitations under the License.
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
+use futures::TryStreamExt;
 use mongodb::Client as MongoClient;
+use mongodb::bson::{Document, doc};
 use mongodb::options::ClientOptions;
 use nativelink_config::stores::ExperimentalMongoSpec;
-use nativelink_error::{Code, Error, make_err};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::mongo_store::ExperimentalMongoStore;
-use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+use nativelink_util::store_trait::{
+    SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
+    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider, StoreKey,
+    StoreLike, TrueValue, UploadSizeInfo,
+};
 use pretty_assertions::assert_eq;
 use uuid::Uuid;
 
@@ -38,9 +45,19 @@ fn create_test_spec() -> ExperimentalMongoSpec {
     // Default connection string for CI - empty string will require env var
     let default_connection = String::new();
 
+    // Create database name with timestamp for uniqueness
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+
     ExperimentalMongoSpec {
         connection_string: std::env::var("NATIVELINK_TEST_MONGO_URL").unwrap_or(default_connection),
-        database: format!("nltest{}", &Uuid::new_v4().simple().to_string()[..8]),
+        database: format!(
+            "nltest_{}_{}",
+            timestamp,
+            &Uuid::new_v4().simple().to_string()[..8]
+        ),
         cas_collection: "test_cas".to_string(),
         scheduler_collection: "test_scheduler".to_string(),
         key_prefix: Some("test:".to_string()),
@@ -60,7 +77,6 @@ fn create_test_spec() -> ExperimentalMongoSpec {
 pub struct TestMongoHelper {
     pub store: Arc<ExperimentalMongoStore>,
     pub database_name: String,
-    connection_string: String,
 }
 
 impl TestMongoHelper {
@@ -77,14 +93,12 @@ impl TestMongoHelper {
         }
 
         let database_name = spec.database.clone();
-        let connection_string = spec.connection_string.clone();
 
         let store = ExperimentalMongoStore::new(spec).await?;
 
         Ok(Self {
             store,
             database_name,
-            connection_string,
         })
     }
 
@@ -129,35 +143,12 @@ impl TestMongoHelper {
 
 impl Drop for TestMongoHelper {
     fn drop(&mut self) {
-        // Schedule database cleanup in the background
-        let database_name = self.database_name.clone();
-        let connection_string = self.connection_string.clone();
-
-        // Spawn cleanup task
-        let _cleanup_task = background_spawn!("mongo_test_cleanup", async move {
-            if let Err(e) = cleanup_test_database(&connection_string, &database_name).await {
-                eprintln!("Failed to cleanup test database {database_name}: {e}");
-            }
-        });
+        // No longer cleaning up databases - we want to keep them for inspection
+        eprintln!(
+            "Test database '{}' retained for inspection",
+            self.database_name
+        );
     }
-}
-
-/// Clean up test database
-async fn cleanup_test_database(connection_string: &str, database_name: &str) -> Result<(), Error> {
-    let client_options = ClientOptions::parse(connection_string)
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Failed to parse connection string: {e}"))?;
-
-    let client = MongoClient::with_options(client_options)
-        .map_err(|e| make_err!(Code::Internal, "Failed to create MongoDB client: {e}"))?;
-
-    client
-        .database(database_name)
-        .drop(None)
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Failed to drop test database: {e}"))?;
-
-    Ok(())
 }
 
 /// Creates a test `MongoDB` store with a unique database name to avoid conflicts.
@@ -551,7 +542,7 @@ async fn test_partial_reads() -> Result<(), Error> {
     Ok(())
 }
 
-/// Test that verifies database creation and cleanup lifecycle
+/// Test that verifies database creation (cleanup disabled for inspection)
 #[nativelink_test]
 async fn test_database_lifecycle() -> Result<(), Error> {
     let spec = create_test_spec();
@@ -591,7 +582,6 @@ async fn test_database_lifecycle() -> Result<(), Error> {
         let helper = TestMongoHelper {
             store,
             database_name: database_name.clone(),
-            connection_string: connection_string.clone(),
         };
 
         // Upload some data to ensure database is created
@@ -628,21 +618,472 @@ async fn test_database_lifecycle() -> Result<(), Error> {
             "Data should be accessible in the database"
         );
 
-        // helper goes out of scope here, triggering cleanup
+        // helper goes out of scope here, but NO cleanup happens anymore
     }
 
-    // Give cleanup task time to complete
-    tokio::time::sleep(core::time::Duration::from_millis(1000)).await;
-
-    // Verify database is cleaned up
+    // Database should still exist after helper is dropped
     let db_names = client
         .list_database_names(None, None)
         .await
         .map_err(|e| make_err!(Code::Internal, "Failed to list databases: {e}"))?;
     assert!(
-        !db_names.contains(&database_name),
-        "Test database should be cleaned up after drop"
+        db_names.contains(&database_name),
+        "Test database should still exist after drop (cleanup disabled)"
     );
 
+    eprintln!("Database '{}' retained for inspection", database_name);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn create_ten_cas_entries() -> Result<(), Error> {
+    // Create test helper with automatic cleanup
+    let helper = match TestMongoHelper::new_or_skip().await {
+        Ok(h) => h,
+        Err(_) => {
+            eprintln!("Skipping MongoDB test - MongoDB not available");
+            return Ok(());
+        }
+    };
+
+    eprintln!(
+        "Creating 10 CAS entries in database: {}",
+        helper.database_name
+    );
+    eprintln!("CAS Collection: {}", "test_cas");
+    eprintln!("Key prefix: {:?}", "test:");
+
+    // Create 10 different CAS entries with unique content and proper digests
+    for i in 0..10 {
+        // Create unique data for each entry
+        let unique_content = format!(
+            "Test CAS Entry #{} - Unique content with timestamp {} and random data: {}",
+            i,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            Uuid::new_v4()
+        );
+        let data = Bytes::from(unique_content);
+
+        // Calculate the actual SHA256 digest of the data
+        let mut hasher = DigestHasherFunc::Sha256.hasher();
+        hasher.update(&data);
+        let digest = hasher.finalize_digest();
+
+        eprintln!("Entry #{}: Creating with digest: {}", i, digest);
+        eprintln!("  Content: {} bytes", data.len());
+        eprintln!("  First 50 chars: {:?}", &data[..data.len().min(50)]);
+
+        // Upload the data
+        helper.store.update_oneshot(digest, data.clone()).await?;
+
+        // Verify the data exists
+        let result = helper.store.has(digest).await?;
+        assert!(
+            result.is_some(),
+            "Expected mongo store to have hash for entry #{}: {}",
+            i,
+            digest
+        );
+
+        // Verify we can retrieve the data
+        let retrieved = helper
+            .store
+            .get_part_unchunked(digest, 0, Some(data.len() as u64))
+            .await?;
+
+        assert_eq!(retrieved, data, "Data mismatch for entry #{}", i);
+
+        eprintln!(
+            "Successfully created CAS entry #{} with digest: {}",
+            i, digest
+        );
+    }
+
+    // Query MongoDB directly to verify entries were written
+    let spec = create_test_spec();
+    let client_options = ClientOptions::parse(&spec.connection_string)
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Failed to parse connection string: {e}"))?;
+
+    let client = MongoClient::with_options(client_options)
+        .map_err(|e| make_err!(Code::Internal, "Failed to create MongoDB client: {e}"))?;
+
+    let db = client.database(&helper.database_name);
+    let collection = db.collection::<Document>("test_cas");
+
+    // Count documents in collection
+    let count = collection
+        .count_documents(None, None)
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Failed to count documents: {e}"))?;
+
+    eprintln!("Total documents in CAS collection: {}", count);
+
+    // List first few documents
+    let mut cursor = collection
+        .find(None, None)
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Failed to find documents: {e}"))?;
+
+    eprintln!("Sample documents in collection:");
+    let mut doc_count = 0;
+    while let Some(doc) = cursor
+        .try_next()
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Failed to get next document: {e}"))?
+    {
+        if doc_count < 3 {
+            if let Ok(key) = doc.get_str("_id") {
+                eprintln!("  - Key: {}", key);
+                if let Some(size) = doc.get_i64("size").ok() {
+                    eprintln!("    Size: {} bytes", size);
+                }
+            }
+        }
+        doc_count += 1;
+    }
+
+    eprintln!(
+        "All 10 CAS entries created successfully in database: {}",
+        helper.database_name
+    );
+    eprintln!("Collections: {} and {}", "test_cas", "test_scheduler");
+
+    // Database will NOT be cleaned up - it's retained for inspection
+    Ok(())
+}
+
+// Define test structures that implement the scheduler traits
+#[derive(Debug, Clone, PartialEq)]
+struct TestSchedulerData {
+    key: String,
+    content: String,
+    version: u64,
+}
+
+impl SchedulerStoreKeyProvider for TestSchedulerData {
+    type Versioned = TrueValue; // Using versioned storage
+
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(std::borrow::Cow::Owned(self.key.clone()))
+    }
+}
+
+impl SchedulerStoreDataProvider for TestSchedulerData {
+    fn try_into_bytes(self) -> Result<Bytes, Error> {
+        Ok(Bytes::from(self.content.into_bytes()))
+    }
+
+    fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
+        // Add some test indexes - need to use 'static strings
+        Ok(vec![
+            ("test_index", Bytes::from("test_value")),
+            (
+                "content_prefix",
+                Bytes::from(self.content.chars().take(10).collect::<String>()),
+            ),
+        ])
+    }
+}
+
+impl SchedulerCurrentVersionProvider for TestSchedulerData {
+    fn current_version(&self) -> u64 {
+        self.version
+    }
+}
+
+impl SchedulerStoreDecodeTo for TestSchedulerData {
+    type DecodeOutput = Self;
+
+    fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+        let content = String::from_utf8(data.to_vec())
+            .map_err(|e| make_err!(Code::InvalidArgument, "Invalid UTF-8 data: {e}"))?;
+        // We don't have the key in the data, so we'll use a placeholder
+        Ok(TestSchedulerData {
+            key: "decoded".to_string(),
+            content,
+            version,
+        })
+    }
+}
+
+// Separate key type for lookups
+#[derive(Debug, Clone)]
+struct TestSchedulerKey(String);
+
+impl SchedulerStoreKeyProvider for TestSchedulerKey {
+    type Versioned = TrueValue;
+
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(std::borrow::Cow::Owned(self.0.clone()))
+    }
+}
+
+impl SchedulerStoreDecodeTo for TestSchedulerKey {
+    type DecodeOutput = TestSchedulerData;
+
+    fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+        TestSchedulerData::decode(version, data)
+    }
+}
+
+// Define test index provider
+#[derive(Debug, Clone)]
+struct TestIndexProvider {
+    index_name: &'static str,
+    value: String,
+}
+
+impl SchedulerIndexProvider for TestIndexProvider {
+    const KEY_PREFIX: &'static str = "test:";
+    const INDEX_NAME: &'static str = "test_index";
+    type Versioned = TrueValue;
+
+    fn index_value(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.value)
+    }
+}
+
+impl SchedulerStoreKeyProvider for TestIndexProvider {
+    type Versioned = TrueValue;
+
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(std::borrow::Cow::Owned(format!(
+            "{}indexed_key",
+            Self::KEY_PREFIX
+        )))
+    }
+}
+
+impl SchedulerStoreDecodeTo for TestIndexProvider {
+    type DecodeOutput = (StoreKey<'static>, Bytes);
+
+    fn decode(_version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+        // For search results, we just return the key and data
+        Ok((
+            StoreKey::Str(std::borrow::Cow::Owned("decoded_key".to_string())),
+            data,
+        ))
+    }
+}
+
+#[nativelink_test]
+async fn test_scheduler_store_operations() -> Result<(), Error> {
+    // Create test helper
+    let helper = match TestMongoHelper::new_or_skip().await {
+        Ok(h) => h,
+        Err(_) => {
+            eprintln!("Skipping MongoDB test - MongoDB not available");
+            return Ok(());
+        }
+    };
+
+    eprintln!(
+        "Testing scheduler store operations in database: {}",
+        helper.database_name
+    );
+    eprintln!("Scheduler Collection: {}", "test_scheduler");
+
+    // Test 1: Basic update and retrieval
+    {
+        let data = TestSchedulerData {
+            key: "test:scheduler_key_1".to_string(),
+            content: "Test scheduler data #1".to_string(),
+            version: 0,
+        };
+
+        // Update data in the scheduler store
+        let version = helper
+            .store
+            .update_data(data.clone())
+            .await
+            .err_tip(|| "Failed to update scheduler data")?
+            .ok_or_else(|| make_err!(Code::Internal, "Expected version from update"))?;
+
+        eprintln!("Created scheduler entry with version: {}", version);
+
+        // Retrieve and decode the data using a key lookup
+        let key = TestSchedulerKey("test:scheduler_key_1".to_string());
+        let retrieved = helper
+            .store
+            .get_and_decode(key)
+            .await
+            .err_tip(|| "Failed to get and decode scheduler data")?
+            .ok_or_else(|| make_err!(Code::NotFound, "Scheduler data not found"))?;
+
+        assert_eq!(retrieved.content, data.content);
+        assert_eq!(retrieved.version, version);
+        eprintln!(
+            "Successfully retrieved scheduler data with version {}",
+            version
+        );
+    }
+
+    // Test 2: Versioned updates
+    {
+        let mut data = TestSchedulerData {
+            key: "test:scheduler_key_2".to_string(),
+            content: "Initial content".to_string(),
+            version: 0,
+        };
+
+        // First update
+        let version1 = helper
+            .store
+            .update_data(data.clone())
+            .await?
+            .ok_or_else(|| make_err!(Code::Internal, "Expected version"))?;
+
+        // Update with correct version
+        data.content = "Updated content".to_string();
+        data.version = version1;
+        let version2 = helper
+            .store
+            .update_data(data.clone())
+            .await?
+            .ok_or_else(|| make_err!(Code::Internal, "Expected version"))?;
+
+        assert!(version2 > version1, "Version should increment");
+        eprintln!("Version updated from {} to {}", version1, version2);
+
+        // Try update with wrong version (should fail)
+        data.content = "This should fail".to_string();
+        data.version = version1; // Using old version
+        let result = helper.store.update_data(data.clone()).await;
+
+        assert!(result.is_err(), "Update with old version should fail");
+        eprintln!("Correctly rejected update with stale version");
+    }
+
+    // Test 3: Search by index
+    {
+        // Create multiple entries with indexed data
+        for i in 0..5 {
+            let data = TestSchedulerData {
+                key: format!("test:search_key_{}", i),
+                content: format!("Searchable content #{}", i),
+                version: 0,
+            };
+
+            helper.store.update_data(data).await?;
+        }
+
+        // Define a custom search index provider
+        struct SearchByContentPrefix {
+            prefix: String,
+        }
+
+        impl SchedulerIndexProvider for SearchByContentPrefix {
+            const KEY_PREFIX: &'static str = "test:";
+            const INDEX_NAME: &'static str = "content_prefix";
+            type Versioned = TrueValue;
+
+            fn index_value(&self) -> std::borrow::Cow<'_, str> {
+                std::borrow::Cow::Borrowed(&self.prefix)
+            }
+        }
+
+        impl SchedulerStoreKeyProvider for SearchByContentPrefix {
+            type Versioned = TrueValue;
+
+            fn get_key(&self) -> StoreKey<'static> {
+                StoreKey::Str(std::borrow::Cow::Owned("dummy_key".to_string()))
+            }
+        }
+
+        impl SchedulerStoreDecodeTo for SearchByContentPrefix {
+            type DecodeOutput = TestSchedulerData;
+
+            fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+                TestSchedulerKey::decode(version, data)
+            }
+        }
+
+        // Search by index prefix
+        let search_provider = SearchByContentPrefix {
+            prefix: "Searchable".to_string(),
+        };
+
+        let search_results: Vec<TestSchedulerData> = helper
+            .store
+            .search_by_index_prefix(search_provider)
+            .await
+            .err_tip(|| "Failed to search by index")?
+            .try_collect()
+            .await?;
+
+        eprintln!("Found {} entries matching search", search_results.len());
+        assert!(
+            search_results.len() >= 5,
+            "Should find at least 5 matching entries"
+        );
+
+        // Verify search results
+        for result in &search_results {
+            assert!(
+                result.content.starts_with("Searchable"),
+                "Content should match search pattern"
+            );
+        }
+    }
+
+    // Test 4: Test a different index search
+    {
+        struct SearchByTestIndex;
+
+        impl SchedulerIndexProvider for SearchByTestIndex {
+            const KEY_PREFIX: &'static str = "test:";
+            const INDEX_NAME: &'static str = "test_index";
+            type Versioned = TrueValue;
+
+            fn index_value(&self) -> std::borrow::Cow<'_, str> {
+                std::borrow::Cow::Borrowed("test_value")
+            }
+        }
+
+        impl SchedulerStoreKeyProvider for SearchByTestIndex {
+            type Versioned = TrueValue;
+
+            fn get_key(&self) -> StoreKey<'static> {
+                StoreKey::Str(std::borrow::Cow::Owned("dummy_key".to_string()))
+            }
+        }
+
+        impl SchedulerStoreDecodeTo for SearchByTestIndex {
+            type DecodeOutput = TestSchedulerData;
+
+            fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+                TestSchedulerKey::decode(version, data)
+            }
+        }
+
+        let test_index_results: Vec<TestSchedulerData> = helper
+            .store
+            .search_by_index_prefix(SearchByTestIndex)
+            .await?
+            .try_collect()
+            .await?;
+
+        // All entries should have test_index = "test_value"
+        assert!(
+            !test_index_results.is_empty(),
+            "Should find entries with test_index"
+        );
+        eprintln!(
+            "Found {} entries with test_index='test_value'",
+            test_index_results.len()
+        );
+    }
+
+    eprintln!(
+        "Scheduler store test completed successfully in database: {}",
+        helper.database_name
+    );
+
+    // Database will NOT be cleaned up - it's retained for inspection
     Ok(())
 }
