@@ -13,4 +13,4 @@ archive_override(
     urls = ["https://github.com/TraceMachina/nativelink/archive/f9ff630e09a3c22d6a3abea68d1bacc775eac6bb.zip"],
 )
 
-bazel_dep(name = "rules_cc", version = "0.1.1")
+bazel_dep(name = "rules_cc", version = "0.1.2")
