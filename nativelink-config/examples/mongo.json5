@@ -1,83 +1,32 @@
 {
   stores: [
     {
-      // MongoDB store for CAS data
-      name: "MONGO_CAS",
-      experimental_mongo: {
-        connection_string: "mongodb://localhost:27017",
-        database: "nativelink",
-        cas_collection: "cas",
-        key_prefix: "cas:",
-        read_chunk_size: 65536,
-        max_concurrent_uploads: 10,
-        connection_timeout_ms: 3000,
-        command_timeout_ms: 10000,
-        write_concern_w: "majority",
-        write_concern_j: true,
+      name: "MEMORY_CAS",
+      memory: {
+        eviction_policy: {
+          max_bytes: 1000000000,
+        },
       },
     },
     {
-      // MongoDB store for scheduler with change streams
+      name: "MEMORY_AC",
+      memory: {
+        eviction_policy: {
+          max_count: 5000,
+        },
+      },
+    },
+    {
       name: "MONGO_SCHEDULER",
       experimental_mongo: {
         connection_string: "mongodb://localhost:27017",
         database: "nativelink",
+        cas_collection: "cas",
         scheduler_collection: "scheduler",
         key_prefix: "sched:",
         enable_change_streams: true,
         write_concern_w: "majority",
-      },
-    },
-    {
-      // Production example with MongoDB Atlas
-      name: "MONGO_PRODUCTION",
-      experimental_mongo: {
-        connection_string: "mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority",
-        database: "nativelink_prod",
-        cas_collection: "cas_data",
-        scheduler_collection: "scheduler_data",
-        key_prefix: "prod:",
-        read_chunk_size: 131072, // 128KB chunks
-        max_concurrent_uploads: 20,
-        enable_change_streams: true,
-        write_concern_w: "majority",
         write_concern_j: true,
-        write_concern_timeout_ms: 5000,
-      },
-    },
-    {
-      // Example of chaining stores with MongoDB
-      name: "PRODUCTION_CAS",
-      fast_slow: {
-        fast: {
-          memory: {
-            eviction_policy: {
-              max_bytes: 1073741824, // 1GB
-            },
-          },
-        },
-        slow: {
-          size_partitioning: {
-            size: 65536, // 64KB
-            lower_store: {
-              ref_store: {
-                name: "MONGO_CAS", // Small objects
-              },
-            },
-            upper_store: {
-              compression: {
-                compression_algorithm: {
-                  lz4: {},
-                },
-                backend: {
-                  ref_store: {
-                    name: "MONGO_CAS", // Large objects, compressed
-                  },
-                },
-              },
-            },
-          },
-        },
       },
     },
   ],
@@ -86,11 +35,16 @@
       name: "MAIN_SCHEDULER",
       simple: {
         supported_platform_properties: {
-          cpu_arch: "minimum",
-          OS: "exact",
+          cpu_arch: "exact",
+          OSFamily: "priority",
         },
-        max_job_retries: 3,
-        worker_timeout_s: 300,
+        retain_completed_for_s: 60,
+        worker_timeout_s: 10,
+        experimental_backend: {
+          mongo: {
+            mongo_store: "MONGO_SCHEDULER",
+          },
+        },
       },
     },
   ],
@@ -102,37 +56,45 @@
         },
       },
       services: {
-        cas: [
-          {
-            instance_name: "main",
-            cas_store: "PRODUCTION_CAS",
+        cas: {
+          main: {
+            cas_store: "MEMORY_CAS",
           },
-        ],
-        ac: [
-          {
-            instance_name: "main",
-            ac_store: "MONGO_CAS",
+        },
+        ac: {
+          main: {
+            ac_store: "MEMORY_AC",
           },
-        ],
-        execution: [
-          {
-            instance_name: "main",
-            cas_store: "PRODUCTION_CAS",
+        },
+        execution: {
+          main: {
+            cas_store: "MEMORY_CAS",
             scheduler: "MAIN_SCHEDULER",
           },
-        ],
-        capabilities: [
-          {
-            instance_name: "main",
+        },
+        capabilities: {
+          main: {
             remote_execution: {
               scheduler: "MAIN_SCHEDULER",
             },
           },
-        ],
+        },
         bytestream: {
           cas_stores: {
-            main: "PRODUCTION_CAS",
+            main: "MEMORY_CAS",
           },
+        },
+      },
+    },
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
         },
       },
     },
