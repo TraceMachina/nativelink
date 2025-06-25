@@ -193,4 +193,13 @@ in {
     args = ["-r" "--indent" "2"];
     types = ["json5"];
   };
+
+  # Renovate config validator
+  renovate = {
+    description = "Validate renovate config";
+    enable = true;
+    entry = "${pkgs.renovate}/bin/renovate-config-validator";
+    args = ["--strict"];
+    files = "renovate.json5";
+  };
 }
