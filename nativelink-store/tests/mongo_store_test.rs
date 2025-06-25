@@ -834,7 +834,6 @@ impl SchedulerStoreDecodeTo for TestSchedulerKey {
 // Define test index provider
 #[derive(Debug, Clone)]
 struct TestIndexProvider {
-    index_name: &'static str,
     value: String,
 }
 
