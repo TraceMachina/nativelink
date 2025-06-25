@@ -12,15 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
 use std::sync::Arc;
-use std::time::Duration;
 
 use aws_sdk_s3::config::{BehaviorVersion, Builder, Region};
 use aws_smithy_runtime::client::http::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
 use bytes::Bytes;
 use http::status::StatusCode;
-use nativelink_config::stores::{OntapS3ExistenceCacheSpec, OntapS3Spec, Retry, StoreSpec};
+use nativelink_config::stores::{
+    CommonObjectSpec, ExperimentalOntapS3Spec, OntapS3ExistenceCacheSpec, Retry, StoreSpec,
+};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_store::default_store_factory::store_factory;
@@ -51,34 +53,36 @@ async fn create_test_store(mock_client: StaticReplayClient) -> Result<Store, Err
         .to_string();
 
     let _test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
 
-    let ontap_s3_spec = OntapS3Spec {
+    let ontap_s3_spec = ExperimentalOntapS3Spec {
         endpoint: "https://example.com".to_string(),
         vserver_name: VSERVER_NAME.to_string(),
         bucket: BUCKET_NAME.to_string(),
         root_certificates: None,
-        key_prefix: None,
-        retry: Retry::default(),
-        consider_expired_after_s: 0,
-        max_retry_buffer_per_request: None,
-        multipart_max_concurrent_uploads: None,
-        insecure_allow_http: false,
-        disable_http2: false,
+        common: CommonObjectSpec {
+            key_prefix: None,
+            retry: Retry::default(),
+            consider_expired_after_s: 0,
+            max_retry_buffer_per_request: None,
+            multipart_max_concurrent_uploads: None,
+            insecure_allow_http: false,
+            disable_http2: false,
+        },
     };
 
     let cache_spec = OntapS3ExistenceCacheSpec {
         index_path: cache_path,
         sync_interval_seconds: 10,
-        backend: Box::new(StoreSpec::ontap_s3_store(ontap_s3_spec)),
+        backend: Box::new(ontap_s3_spec),
     };
 
     let store_manager = Arc::new(StoreManager::new());
     store_factory(
-        &StoreSpec::ontap_s3_existence_cache(Box::new(cache_spec)),
+        &StoreSpec::OntapS3ExistenceCache(Box::new(cache_spec)),
         &store_manager,
         None,
     )
@@ -255,14 +259,14 @@ async fn test_cache_population() -> Result<(), Error> {
         .to_string();
 
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client.clone())
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
 
     let ontap_s3_store = OntapS3Store::new_with_client_and_jitter(
-        &(OntapS3Spec {
+        &(ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
@@ -426,14 +430,14 @@ async fn test_cache_sync_multiple_objects() -> Result<(), Error> {
         .to_string();
 
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client.clone())
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
 
     let ontap_s3_store = OntapS3Store::new_with_client_and_jitter(
-        &(OntapS3Spec {
+        &(ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),

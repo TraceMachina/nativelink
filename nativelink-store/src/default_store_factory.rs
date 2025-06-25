@@ -53,13 +53,12 @@ pub fn store_factory<'a>(
     Box::pin(async move {
         let store: Arc<dyn StoreDriver> = match backend {
             StoreSpec::Memory(spec) => MemoryStore::new(spec),
-            StoreSpec::ontap_s3_store(spec) => OntapS3Store::new(spec, SystemTime::now).await?,
-            StoreSpec::ontap_s3_existence_cache(spec) => {
-                OntapS3ExistenceCache::new(spec, SystemTime::now).await?
-            }
             StoreSpec::ExperimentalCloudObjectStore(spec) => match spec {
                 ExperimentalCloudObjectSpec::Aws(aws_config) => {
                     S3Store::new(aws_config, SystemTime::now).await?
+                }
+                ExperimentalCloudObjectSpec::Ontap(ontap_config) => {
+                    OntapS3Store::new(ontap_config, SystemTime::now).await?
                 }
                 ExperimentalCloudObjectSpec::Gcs(gcs_config) => {
                     GcsStore::new(gcs_config, SystemTime::now).await?
@@ -83,6 +82,9 @@ pub fn store_factory<'a>(
                 spec,
                 store_factory(&spec.backend, store_manager, None).await?,
             ),
+            StoreSpec::OntapS3ExistenceCache(spec) => {
+                OntapS3ExistenceCache::new(spec, SystemTime::now).await?
+            }
             StoreSpec::CompletenessChecking(spec) => CompletenessCheckingStore::new(
                 store_factory(&spec.backend, store_manager, None).await?,
                 store_factory(&spec.cas_store, store_manager, None).await?,
