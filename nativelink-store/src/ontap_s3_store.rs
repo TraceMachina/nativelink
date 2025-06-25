@@ -12,57 +12,50 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::cmp;
+use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
-use std::cmp;
 use std::fs::File;
-use std::future::Future;
 use std::io::BufReader;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::Duration;
 
 use async_trait::async_trait;
-use aws_config::default_provider::credentials::DefaultCredentialsChain;
 use aws_config::BehaviorVersion;
+use aws_config::default_provider::credentials::DefaultCredentialsChain;
+use aws_config::provider_config::ProviderConfig;
+use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
 use aws_sdk_s3::operation::get_object::GetObjectError;
 use aws_sdk_s3::operation::head_object::HeadObjectError;
 use aws_sdk_s3::primitives::{ByteStream, SdkBody};
 use aws_sdk_s3::types::builders::{CompletedMultipartUploadBuilder, CompletedPartBuilder};
-use aws_sdk_s3::Client;
-use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
-use bytes::Bytes;
-use futures::future::FusedFuture;
-use futures::stream::{unfold, FuturesUnordered};
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
-use http_body::{Frame, SizeHint};
-use hyper::client::connect::{Connected, Connection, HttpConnector};
-use hyper::service::Service;
-use hyper::Uri;
-use hyper_rustls::{ConfigBuilderExt, HttpsConnector, MaybeHttpsStream};
-use nativelink_config::stores::OntapS3Spec;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD_NO_PAD;
+use bytes::BytesMut;
+use futures::future::{Either, FusedFuture};
+use futures::stream::{FuturesUnordered, unfold};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+use hyper_rustls::ConfigBuilderExt;
+use nativelink_config::stores::ExperimentalOntapS3Spec;
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
-use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
-use rand::Rng;
-use rustls::{Certificate, ClientConfig, RootCertStore};
+use rustls::{ClientConfig, RootCertStore};
 use rustls_pemfile::certs;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::TcpStream;
-use tokio::sync::SemaphorePermit;
+use sha2::{Digest, Sha256};
 use tokio::time::sleep;
-use tracing::{event, Level};
+use tracing::{Level, event, warn};
 
 use crate::cas_utils::is_zero_digest;
+use crate::common_s3_utils::TlsClient;
 
 // S3 parts cannot be smaller than this number
 const MIN_MULTIPART_SIZE: u64 = 5 * 1024 * 1024; // 5MB
@@ -79,161 +72,7 @@ const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 20 * 1024 * 1024; // 20MB
 // Default limit for concurrent part uploads per multipart upload
 const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: usize = 10;
 
-pub struct ConnectionWithPermit<T: Connection + AsyncRead + AsyncWrite + Unpin> {
-    connection: T,
-    _permit: SemaphorePermit<'static>,
-}
-
-impl<T: Connection + AsyncRead + AsyncWrite + Unpin> Connection for ConnectionWithPermit<T> {
-    fn connected(&self) -> Connected {
-        self.connection.connected()
-    }
-}
-
-impl<T: Connection + AsyncRead + AsyncWrite + Unpin> AsyncRead for ConnectionWithPermit<T> {
-    #[inline]
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<Result<(), tokio::io::Error>> {
-        Pin::new(&mut Pin::get_mut(self).connection).poll_read(cx, buf)
-    }
-}
-
-impl<T: Connection + AsyncWrite + AsyncRead + Unpin> AsyncWrite for ConnectionWithPermit<T> {
-    #[inline]
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, tokio::io::Error>> {
-        Pin::new(&mut Pin::get_mut(self).connection).poll_write(cx, buf)
-    }
-
-    #[inline]
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), tokio::io::Error>> {
-        Pin::new(&mut Pin::get_mut(self).connection).poll_flush(cx)
-    }
-
-    #[inline]
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), tokio::io::Error>> {
-        Pin::new(&mut Pin::get_mut(self).connection).poll_shutdown(cx)
-    }
-}
-
-#[derive(Clone)]
-pub struct TlsConnector {
-    connector: HttpsConnector<HttpConnector>,
-    retrier: Retrier,
-}
-
-impl TlsConnector {
-    #[must_use]
-    pub fn new(
-        spec: &OntapS3Spec,
-        jitter_fn: Arc<dyn (Fn(Duration) -> Duration) + Send + Sync>,
-    ) -> Self {
-        let connector_with_roots = hyper_rustls::HttpsConnectorBuilder::new().with_webpki_roots();
-
-        let connector_with_schemes = if spec.insecure_allow_http {
-            connector_with_roots.https_or_http()
-        } else {
-            connector_with_roots.https_only()
-        };
-
-        let connector = if spec.disable_http2 {
-            connector_with_schemes.enable_http1().build()
-        } else {
-            connector_with_schemes.enable_http1().enable_http2().build()
-        };
-
-        Self {
-            connector,
-            retrier: Retrier::new(
-                Arc::new(|duration| Box::pin(sleep(duration))),
-                jitter_fn,
-                spec.retry.clone(),
-            ),
-        }
-    }
-
-    async fn call_with_retry(
-        &self,
-        req: &Uri,
-    ) -> Result<ConnectionWithPermit<MaybeHttpsStream<TcpStream>>, Error> {
-        let retry_stream_fn = unfold(self.connector.clone(), move |mut connector| async move {
-            let _permit = fs::get_permit().await.unwrap();
-            match connector.call(req.clone()).await {
-                Ok(connection) => Some((
-                    RetryResult::Ok(ConnectionWithPermit {
-                        connection,
-                        _permit,
-                    }),
-                    connector,
-                )),
-                Err(e) => Some((
-                    RetryResult::Retry(make_err!(
-                        Code::Unavailable,
-                        "Failed to call ONTAP S3 connector: {e:?}"
-                    )),
-                    connector,
-                )),
-            }
-        });
-        self.retrier.retry(retry_stream_fn).await
-    }
-}
-
-impl Service<Uri> for TlsConnector {
-    type Response = ConnectionWithPermit<MaybeHttpsStream<TcpStream>>;
-    type Error = Error;
-    type Future =
-        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.connector
-            .poll_ready(cx)
-            .map_err(|e| make_err!(Code::Unavailable, "Failed poll in ONTAP S3: {e}"))
-    }
-
-    fn call(&mut self, req: Uri) -> Self::Future {
-        let connector_clone = self.clone();
-        Box::pin(async move { connector_clone.call_with_retry(&req).await })
-    }
-}
-
-pub struct BodyWrapper {
-    reader: DropCloserReadHalf,
-    size: u64,
-}
-
-impl http_body::Body for BodyWrapper {
-    type Data = Bytes;
-    type Error = std::io::Error;
-
-    fn poll_frame(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let reader = Pin::new(&mut Pin::get_mut(self).reader);
-        reader
-            .poll_next(cx)
-            .map(|maybe_bytes_res| maybe_bytes_res.map(|res| res.map(Frame::data)))
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        SizeHint::with_exact(self.size)
-    }
-}
-
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct OntapS3Store<NowFn> {
     s3_client: Arc<Client>,
     now_fn: NowFn,
@@ -266,7 +105,7 @@ pub fn load_custom_certs(cert_path: &str) -> Result<Arc<ClientConfig>, Error> {
 
     // Add each certificate to the root store
     for cert in certs {
-        root_store.add(&Certificate(cert.to_vec())).map_err(|e| {
+        root_store.add(cert).map_err(|e| {
             make_err!(
                 Code::Internal,
                 "Failed to add certificate to root store: {e:?}"
@@ -276,7 +115,6 @@ pub fn load_custom_certs(cert_path: &str) -> Result<Arc<ClientConfig>, Error> {
 
     // Build the client config with the root store
     let config = ClientConfig::builder()
-        .with_safe_defaults()
         .with_root_certificates(root_store)
         .with_no_client_auth();
 
@@ -288,25 +126,14 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
-    pub async fn new(spec: &OntapS3Spec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
-        let jitter_amt = spec.retry.jitter;
-        let jitter_fn = Arc::new(move |delay: Duration| {
-            if jitter_amt == 0.0 {
-                return delay;
-            }
-            let min = 1.0 - jitter_amt / 2.0;
-            let max = 1.0 + jitter_amt / 2.0;
-            delay.mul_f32(rand::rng().random_range(min..max))
-        });
-
+    pub async fn new(spec: &ExperimentalOntapS3Spec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
         // Load custom CA config
         let ca_config = if let Some(cert_path) = &spec.root_certificates {
             load_custom_certs(cert_path)?
         } else {
             Arc::new(
                 ClientConfig::builder()
-                    .with_safe_defaults()
-                    .with_native_roots()
+                    .with_native_roots()?
                     .with_no_client_auth(),
             )
         };
@@ -318,9 +145,16 @@ where
             .enable_http2()
             .build();
 
-        let http_client = HyperClientBuilder::new().build(https_connector);
+        let http_client = TlsClient::with_https_connector(&spec.common, https_connector);
 
-        let credentials_provider = DefaultCredentialsChain::builder().build().await;
+        let credentials_provider = DefaultCredentialsChain::builder()
+            .configure(
+                ProviderConfig::without_region()
+                    .with_region(Some(Region::new(Cow::Owned(spec.vserver_name.clone()))))
+                    .with_http_client(http_client.clone()),
+            )
+            .build()
+            .await;
 
         let config = aws_sdk_s3::Config::builder()
             .credentials_provider(credentials_provider)
@@ -329,7 +163,7 @@ where
             .app_name(aws_config::AppName::new("nativelink").expect("valid app name"))
             .http_client(http_client)
             .force_path_style(true)
-            .behavior_version(BehaviorVersion::v2024_03_28())
+            .behavior_version(BehaviorVersion::v2025_01_17())
             .timeout_config(
                 aws_config::timeout::TimeoutConfig::builder()
                     .connect_timeout(Duration::from_secs(30))
@@ -338,29 +172,18 @@ where
             )
             .build();
 
-        let s3_client = aws_sdk_s3::Client::from_conf(config);
+        let s3_client = Client::from_conf(config);
 
-        Ok(Arc::new(Self {
-            s3_client: Arc::new(s3_client),
+        Self::new_with_client_and_jitter(
+            spec,
+            s3_client,
+            spec.common.retry.make_jitter_fn(),
             now_fn,
-            bucket: spec.bucket.clone(),
-            key_prefix: spec.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
-            retrier: Retrier::new(
-                Arc::new(|duration| Box::pin(sleep(duration))),
-                jitter_fn,
-                spec.retry.clone(),
-            ),
-            consider_expired_after_s: i64::from(spec.consider_expired_after_s),
-            max_retry_buffer_per_request: spec
-                .max_retry_buffer_per_request
-                .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST),
-            multipart_max_concurrent_uploads: spec
-                .multipart_max_concurrent_uploads
-                .unwrap_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS),
-        }))
+        )
     }
+
     pub fn new_with_client_and_jitter(
-        spec: &OntapS3Spec,
+        spec: &ExperimentalOntapS3Spec,
         s3_client: Client,
         jitter_fn: Arc<dyn (Fn(Duration) -> Duration) + Send + Sync>,
         now_fn: NowFn,
@@ -369,17 +192,24 @@ where
             s3_client: Arc::new(s3_client),
             now_fn,
             bucket: spec.bucket.clone(),
-            key_prefix: spec.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
+            key_prefix: spec
+                .common
+                .key_prefix
+                .as_ref()
+                .unwrap_or(&String::new())
+                .clone(),
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn,
-                spec.retry.clone(),
+                spec.common.retry.clone(),
             ),
-            consider_expired_after_s: i64::from(spec.consider_expired_after_s),
+            consider_expired_after_s: i64::from(spec.common.consider_expired_after_s),
             max_retry_buffer_per_request: spec
+                .common
                 .max_retry_buffer_per_request
                 .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST),
             multipart_max_concurrent_uploads: spec
+                .common
                 .multipart_max_concurrent_uploads
                 .unwrap_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS),
         }))
@@ -510,27 +340,59 @@ where
             );
             return self.retrier.retry(
                 unfold(reader, move |mut reader| async move {
-                    let (mut tx, rx) = make_buf_channel_pair();
+                    let (mut tx, mut rx) = make_buf_channel_pair();
 
                     let result = {
                         let reader_ref = &mut reader;
-                        let (upload_res, bind_res) = tokio::join!(
-                            self.s3_client
-                                .put_object()
-                                .bucket(&self.bucket)
-                                .key(s3_path.clone())
-                                .content_length(sz as i64)
-                                .body(
-                                    ByteStream::from_body_1_x(BodyWrapper {
-                                        reader: rx,
-                                        size: sz,
-                                    })
-                                )
-                                .send()
-                                .map_ok_or_else(
-                                    |e| Err(make_err!(Code::Aborted, "{e:?}")),
-                                    |_| Ok(())
-                                ),
+                        let (upload_res, bind_res): (Result<(), Error>, Result<(), Error>) = tokio::join!(async move {
+                            let raw_body_bytes = {
+                                let mut raw_body_chunks = BytesMut::new();
+                                loop {
+                                    match rx.recv().await {
+                                        Ok(chunk) => {
+                                            if chunk.is_empty() {
+                                                break Ok(raw_body_chunks.freeze());
+                                            }
+                                            raw_body_chunks.extend_from_slice(&chunk);
+                                        }
+                                        Err(err) => {
+                                            break Err(err);
+                                        }
+                                    }
+                                }
+                            };
+                            let internal_res = match raw_body_bytes {
+                                Ok(body_bytes) => {
+                                    let hash = Sha256::digest(&body_bytes);
+                                    let send_res = self.s3_client
+                                        .put_object()
+                                        .bucket(&self.bucket)
+                                        .key(s3_path.clone())
+                                        .content_length(sz as i64)
+                                        .body(
+                                            ByteStream::from(body_bytes)
+                                        )
+                                        .set_checksum_algorithm(Some(aws_sdk_s3::types::ChecksumAlgorithm::Sha256))
+                                        .set_checksum_sha256(Some(BASE64_STANDARD_NO_PAD.encode(hash)))
+                                        .customize()
+                                        .mutate_request(|req| {req.headers_mut().insert("x-amz-content-sha256", "UNSIGNED-PAYLOAD");})
+                                        .send();
+                                    Either::Left(send_res.map_ok_or_else(|e| Err(make_err!(Code::Aborted, "{e:?}")), |_| Ok(())))
+                                    }
+                                Err(collect_err) => {
+                                    async fn make_collect_err(collect_err: Error) -> Result<(), Error> {
+                                        Err(collect_err)
+                                    }
+
+                                    warn!(
+                                        ?collect_err,
+                                        "Failed to get body");
+                                    let future_err = make_collect_err(collect_err);
+                                    Either::Right(future_err)
+                                }
+                            };
+                            internal_res.await
+                        },
                             tx.bind_buffered(reader_ref)
                         );
                         upload_res
@@ -878,11 +740,11 @@ where
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

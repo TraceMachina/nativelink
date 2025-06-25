@@ -14,6 +14,7 @@
 
 pub mod ac_utils;
 pub mod cas_utils;
+pub mod common_s3_utils;
 pub mod completeness_checking_store;
 pub mod compression_store;
 pub mod dedup_store;

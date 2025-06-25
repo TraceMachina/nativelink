@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
 use std::sync::Arc;
-use std::time::Duration;
 
 use aws_sdk_s3::config::{BehaviorVersion, Builder, Region};
 use aws_smithy_runtime::client::http::test_util::{ReplayEvent, StaticReplayClient};
@@ -22,13 +22,14 @@ use bytes::{BufMut, Bytes, BytesMut};
 use futures::join;
 use http::header;
 use http::status::StatusCode;
-use hyper::Body;
+use http_body::Frame;
 use mock_instant::thread_local::MockClock;
-use nativelink_config::stores::OntapS3Spec;
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_config::stores::{CommonObjectSpec, ExperimentalOntapS3Spec};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::ontap_s3_store::OntapS3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::spawn;
@@ -50,13 +51,13 @@ async fn simple_has_object_not_found() -> Result<(), Error> {
             .unwrap(),
     )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = OntapS3Store::new_with_client_and_jitter(
-        &(OntapS3Spec {
+        &(ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
@@ -110,20 +111,23 @@ async fn simple_has_retries() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = OntapS3Store::new_with_client_and_jitter(
-        &(OntapS3Spec {
+        &(ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
-            retry: nativelink_config::stores::Retry {
-                max_retries: 1024,
-                delay: 0.0,
-                jitter: 0.0,
+            common: CommonObjectSpec {
+                retry: nativelink_config::stores::Retry {
+                    max_retries: 1024,
+                    delay: 0.0,
+                    jitter: 0.0,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             ..Default::default()
@@ -164,17 +168,20 @@ async fn has_with_expired_result() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = OntapS3Store::new_with_client_and_jitter(
-        &(OntapS3Spec {
+        &(ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
-            consider_expired_after_s: 2 * 24 * 60 * 60, // 2 days.
+            common: CommonObjectSpec {
+                consider_expired_after_s: 2 * 24 * 60 * 60, // 2 days.
+                ..Default::default()
+            },
             ..Default::default()
         }),
         s3_client,
@@ -186,7 +193,7 @@ async fn has_with_expired_result() -> Result<(), Error> {
     let digest = DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE).unwrap();
     {
         MockClock::advance(Duration::from_secs(24 * 60 * 60)); // 1 day.
-                                                               // Date is now 1970-01-02 00:00:00.
+        // Date is now 1970-01-02 00:00:00.
         let mut results = vec![None];
         store
             .has_with_results(&[digest.into()], &mut results)
@@ -196,7 +203,7 @@ async fn has_with_expired_result() -> Result<(), Error> {
     }
     {
         MockClock::advance(Duration::from_secs(24 * 60 * 60)); // 1 day.
-                                                               // Date is now 1970-01-03 00:00:00.
+        // Date is now 1970-01-03 00:00:00.
         let mut results = vec![None];
         store
             .has_with_results(&[digest.into()], &mut results)
@@ -214,7 +221,7 @@ async fn simple_update_ac() -> Result<(), Error> {
     const AC_ENTRY_SIZE: u64 = 199;
     const CONTENT_LENGTH: usize = 50;
 
-    let mut send_data = BytesMut::new();
+    let mut send_data = BytesMut::with_capacity(CONTENT_LENGTH);
     for i in 0..CONTENT_LENGTH {
         send_data.put_u8(((i % 93) + 33) as u8); // Printable characters only.
     }
@@ -231,7 +238,7 @@ async fn simple_update_ac() -> Result<(), Error> {
         ));
 
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
@@ -239,7 +246,7 @@ async fn simple_update_ac() -> Result<(), Error> {
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
 
     let store = OntapS3Store::new_with_client_and_jitter(
-        &(OntapS3Spec {
+        &(ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
@@ -254,7 +261,7 @@ async fn simple_update_ac() -> Result<(), Error> {
 
     // Make future responsible for processing the datastream
     // and forwarding it to the s3 backend/server.
-    let mut update_fut = Box::pin(async move {
+    let update_fut = Box::pin(async move {
         store
             .update(
                 DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
@@ -264,11 +271,28 @@ async fn simple_update_ac() -> Result<(), Error> {
             .await
     });
 
+    let send_data_copy = send_data.clone();
+    // Create spawn that is responsible for sending the stream of data
+    // to the S3Store and processing/forwarding to the S3 backend.
+    let sender_fut = spawn!("sender", async move {
+        for i in 0..CONTENT_LENGTH {
+            tx.send(send_data_copy.slice(i..=i)).await?;
+        }
+        tx.send_eof()
+    });
+
     // Extract out the body stream sent by the s3 store.
     let body_stream = {
         // We need to poll here to get the request sent, but future
         // wont be done until we send all the data (which we do later).
-        assert_eq!(futures::poll!(&mut update_fut), std::task::Poll::Pending);
+
+        update_fut.await.err_tip(|| "Error in update function")?;
+        // Collect our spawn future to ensure it completes without error.
+        sender_fut
+            .await
+            .err_tip(|| "Failed to launch spawn")?
+            .err_tip(|| "In spawn")?;
+
         let sent_request = request_receiver.expect_request();
         assert_eq!(sent_request.method(), "PUT");
         assert_eq!(
@@ -277,26 +301,17 @@ async fn simple_update_ac() -> Result<(), Error> {
                 "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=PutObject"
             )
         );
+        let headers = sent_request.headers();
+        assert_eq!(
+            headers.get("x-amz-content-sha256"),
+            Some("UNSIGNED-PAYLOAD")
+        );
+        assert_eq!(
+            headers.get("x-amz-checksum-sha256"),
+            Some("ZAbm15cMyBMkq2sUXRgXHNb3az8dLCm3tnyixpdxF+o")
+        );
         aws_sdk_s3::primitives::ByteStream::from_body_0_4(sent_request.into_body())
     };
-
-    let send_data_copy = send_data.clone();
-    // Create spawn that is responsible for sending the stream of data
-    // to the S3Store and processing/forwarding to the S3 backend.
-    let spawn_fut = spawn!("simple_update_ac", async move {
-        tokio::try_join!(update_fut, async move {
-            for i in 0..CONTENT_LENGTH {
-                tx.send(send_data_copy.slice(i..=i)).await?;
-            }
-            tx.send_eof()
-        })
-        .or_else(|e| {
-            // Printing error to make it easier to debug, since ordering
-            // of futures is not guaranteed.
-            eprintln!("Error updating or sending in spawn: {e:?}");
-            Err(e)
-        })
-    });
 
     // Wait for all the data to be received by the s3 backend server.
     let data_sent_to_s3 = body_stream
@@ -319,12 +334,6 @@ async fn simple_update_ac() -> Result<(), Error> {
     };
     assert_eq!(send_data, data_content, "Expected content data to match");
 
-    // Collect our spawn future to ensure it completes without error.
-    spawn_fut
-        .await
-        .err_tip(|| "Failed to launch spawn")?
-        .err_tip(|| "In spawn")?;
-
     Ok(())
 }
 
@@ -342,7 +351,7 @@ async fn simple_get_ac() -> Result<(), Error> {
     )]);
 
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
@@ -350,7 +359,7 @@ async fn simple_get_ac() -> Result<(), Error> {
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
 
     let store = OntapS3Store::new_with_client_and_jitter(
-        &(OntapS3Spec {
+        &(ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
@@ -399,7 +408,7 @@ async fn smoke_test_get_part() -> Result<(), Error> {
     );
 
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client.clone())
         .build();
@@ -407,7 +416,7 @@ async fn smoke_test_get_part() -> Result<(), Error> {
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
 
     let store = OntapS3Store::new_with_client_and_jitter(
-        &(OntapS3Spec {
+        &(ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
@@ -435,13 +444,13 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
     let mock_client = StaticReplayClient::new(vec![]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = Arc::new(OntapS3Store::new_with_client_and_jitter(
-        &(OntapS3Spec {
+        &(ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
@@ -471,7 +480,7 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
 #[nativelink_test]
 async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
     const CAS_ENTRY_SIZE: usize = 10; // Length of "helloworld".
-    let (mut tx, channel_body) = Body::channel();
+    let (tx, channel_body) = ChannelBody::new();
     let mock_client = StaticReplayClient::new(
         vec![
             ReplayEvent::new(
@@ -488,19 +497,19 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
                 http::Response
                     ::builder()
                     .status(StatusCode::OK)
-                    .body(SdkBody::from_body_0_4(channel_body))
+                    .body(SdkBody::from_body_1_x(channel_body))
                     .unwrap()
             )
         ]
     );
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client.clone())
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = OntapS3Store::new_with_client_and_jitter(
-        &(OntapS3Spec {
+        &(ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
@@ -512,10 +521,16 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
     )?;
     let (_, get_part_result) = join!(
         async move {
-            tx.send_data(Bytes::from_static(b"hello")).await?;
-            tx.send_data(Bytes::from_static(b"")).await?;
-            tx.send_data(Bytes::from_static(b"world")).await?;
-            Result::<(), hyper::Error>::Ok(())
+            tx.send(Frame::data(Bytes::from_static(b"hello")))
+                .await
+                .map_err(|_| "send error")?;
+            tx.send(Frame::data(Bytes::from_static(b"")))
+                .await
+                .map_err(|_| "send error")?;
+            tx.send(Frame::data(Bytes::from_static(b"world")))
+                .await
+                .map_err(|_| "send error")?;
+            Result::<(), &'static str>::Ok(())
         },
         store.get_part_unchunked(
             DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE)?,
@@ -524,8 +539,8 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
         )
     );
     assert_eq!(
-        get_part_result.err_tip(|| "Expected get_part_result to pass")?,
-        "helloworld".as_bytes()
+        &*get_part_result.err_tip(|| "Expected get_part_result to pass")?,
+        b"helloworld"
     );
     mock_client.assert_requests_match(&[]);
     Ok(())
@@ -539,13 +554,13 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
 
     let mock_client = StaticReplayClient::new(vec![]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = OntapS3Store::new_with_client_and_jitter(
-        &(OntapS3Spec {
+        &(ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
@@ -692,14 +707,14 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
     );
 
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client.clone())
         .build();
 
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = OntapS3Store::new_with_client_and_jitter(
-        &(OntapS3Spec {
+        &(ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),

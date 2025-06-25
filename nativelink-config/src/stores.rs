@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
+use std::sync::Arc;
+
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
@@ -102,35 +106,35 @@ pub enum StoreSpec {
     ///   }
     ///   ```
     ///
+    /// 3. **`NetApp` ONTAP S3**
+    ///    `NetApp` ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
+    ///    to store files. This store is specifically configured for ONTAP's S3 requirements
+    ///    including custom TLS configuration, credentials management, and proper vserver
+    ///    configuration.
+    ///
+    ///    This store uses AWS environment variables for credentials:
+    ///    - `AWS_ACCESS_KEY_ID`
+    ///    - `AWS_SECRET_ACCESS_KEY`
+    ///    - `AWS_DEFAULT_REGION`
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "ontap"
+    ///      "endpoint": "https://ontap-s3-endpoint:443",
+    ///      "vserver_name": "your-vserver",
+    ///      "bucket": "your-bucket",
+    ///      "root_certificates": "/path/to/certs.pem",  // Optional
+    ///      "key_prefix": "test-prefix/",               // Optional
+    ///      "retry": {
+    ///        "max_retries": 6,
+    ///        "delay": 0.3,
+    ///        "jitter": 0.5
+    ///      },
+    ///      "multipart_max_concurrent_uploads": 10
+    ///    }
+    ///    ```
     ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
-
-    /// `NetApp` ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
-    /// to store files. This store is specifically configured for ONTAP's S3 requirements
-    /// including custom TLS configuration, credentials management, and proper vserver
-    /// configuration.
-    ///
-    /// This store uses AWS environment variables for credentials:
-    /// - `AWS_ACCESS_KEY_ID`
-    /// - `AWS_SECRET_ACCESS_KEY`
-    /// - `AWS_DEFAULT_REGION`
-    ///
-    /// Example JSON Config:
-    /// ```json
-    /// "ontap_s3_store": {
-    ///   "endpoint": "https://ontap-s3-endpoint:443",
-    ///   "vserver_name": "your-vserver",
-    ///   "bucket": "your-bucket",
-    ///   "root_certificates": "/path/to/certs.pem",  // Optional
-    ///   "key_prefix": "test-prefix/",               // Optional
-    ///   "retry": {
-    ///     "max_retries": 6,
-    ///     "delay": 0.3,
-    ///     "jitter": 0.5
-    ///   },
-    ///   "multipart_max_concurrent_uploads": 10
-    /// }
-    /// ```
-    ontap_s3_store(OntapS3Spec),
 
     /// ONTAP S3 Existence Cache provides a caching layer on top of the ONTAP S3 store
     /// to optimize repeated existence checks. It maintains an in-memory cache of object
@@ -145,17 +149,15 @@ pub enum StoreSpec {
     ///   "index_path": "/path/to/cache/index.json",
     ///   "sync_interval_seconds": 300,
     ///   "backend": {
-    ///     "ontap_s3_store": {
-    ///       "endpoint": "https://ontap-s3-endpoint:443",
-    ///       "vserver_name": "your-vserver",
-    ///       "bucket": "your-bucket",
-    ///       "key_prefix": "test-prefix/"
-    ///     }
+    ///     "endpoint": "https://ontap-s3-endpoint:443",
+    ///     "vserver_name": "your-vserver",
+    ///     "bucket": "your-bucket",
+    ///     "key_prefix": "test-prefix/"
     ///   }
     /// }
     /// ```
     ///
-    ontap_s3_existence_cache(Box<OntapS3ExistenceCacheSpec>),
+    OntapS3ExistenceCache(Box<OntapS3ExistenceCacheSpec>),
 
     /// Verify store is used to apply verifications to an underlying
     /// store implementation. It is strongly encouraged to validate
@@ -615,7 +617,7 @@ pub struct FilesystemSpec {
 // NetApp ONTAP S3 Spec
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct OntapS3Spec {
+pub struct ExperimentalOntapS3Spec {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub endpoint: String,
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -624,18 +626,10 @@ pub struct OntapS3Spec {
     pub bucket: String,
     #[serde(default)]
     pub root_certificates: Option<String>,
-    #[serde(default)]
-    pub key_prefix: Option<String>,
-    #[serde(default)]
-    pub retry: Retry,
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub consider_expired_after_s: u32,
-    pub max_retry_buffer_per_request: Option<usize>,
-    pub multipart_max_concurrent_uploads: Option<usize>,
-    #[serde(default)]
-    pub insecure_allow_http: bool,
-    #[serde(default)]
-    pub disable_http2: bool,
+
+    /// Common retry and upload configuration
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -645,7 +639,7 @@ pub struct OntapS3ExistenceCacheSpec {
     pub index_path: String,
     #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
     pub sync_interval_seconds: u32,
-    pub backend: Box<StoreSpec>,
+    pub backend: Box<ExperimentalOntapS3Spec>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -863,6 +857,7 @@ pub struct EvictionPolicy {
 pub enum ExperimentalCloudObjectSpec {
     Aws(ExperimentalAwsSpec),
     Gcs(ExperimentalGcsSpec),
+    Ontap(ExperimentalOntapS3Spec),
 }
 
 impl Default for ExperimentalCloudObjectSpec {
@@ -1327,4 +1322,17 @@ pub struct ExperimentalMongoSpec {
         deserialize_with = "convert_optional_numeric_with_shellexpand"
     )]
     pub write_concern_timeout_ms: Option<u32>,
+}
+
+impl Retry {
+    pub fn make_jitter_fn(&self) -> Arc<dyn Fn(Duration) -> Duration + Send + Sync> {
+        if self.jitter == 0f32 {
+            Arc::new(move |delay: Duration| delay)
+        } else {
+            let local_jitter = self.jitter;
+            Arc::new(move |delay: Duration| {
+                delay.mul_f32(local_jitter.mul_add(rand::rng().random::<f32>() - 0.5, 1.))
+            })
+        }
+    }
 }

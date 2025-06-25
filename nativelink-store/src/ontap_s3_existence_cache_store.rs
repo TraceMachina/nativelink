@@ -12,19 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
-use aws_sdk_s3::config::Region;
+use aws_config::default_provider::credentials::DefaultCredentialsChain;
+use aws_config::provider_config::ProviderConfig;
 use aws_sdk_s3::Client;
-use nativelink_config::stores::{OntapS3ExistenceCacheSpec, OntapS3Spec, StoreSpec};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use aws_sdk_s3::config::Region;
+use nativelink_config::stores::{ExperimentalOntapS3Spec, OntapS3ExistenceCacheSpec};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
@@ -37,9 +39,10 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::time::{interval, sleep};
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 use crate::cas_utils::is_zero_digest;
+use crate::common_s3_utils::TlsClient;
 use crate::ontap_s3_store::OntapS3Store;
 
 #[derive(Serialize, Deserialize)]
@@ -48,7 +51,7 @@ struct CacheFile {
     timestamp: u64,
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct OntapS3ExistenceCache<I, NowFn>
 where
     I: InstantWrapper,
@@ -90,9 +93,9 @@ where
             bucket: "test-bucket".to_string(),
             key_prefix: None,
             index_path: cache_file_path,
-            digests: Arc::new(tokio::sync::RwLock::new(digests)),
+            digests: Arc::new(RwLock::new(digests)),
             sync_interval_seconds,
-            last_sync: Arc::new(std::sync::atomic::AtomicU64::new(
+            last_sync: Arc::new(AtomicU64::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -100,8 +103,8 @@ where
             )),
             sync_in_progress: Arc::new(AtomicBool::new(false)),
             now_fn,
-            cache_hits: nativelink_util::metrics_utils::CounterWithTime::default(),
-            cache_misses: nativelink_util::metrics_utils::CounterWithTime::default(),
+            cache_hits: CounterWithTime::default(),
+            cache_misses: CounterWithTime::default(),
         })
     }
 
@@ -123,12 +126,7 @@ where
             }
 
             // Add a timeout to avoid hanging indefinitely
-            let result = match tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                request.send(),
-            )
-            .await
-            {
+            let result = match tokio::time::timeout(Duration::from_secs(30), request.send()).await {
                 Ok(Ok(response)) => response,
                 Ok(Err(e)) => {
                     // Log the error but continue
@@ -186,7 +184,7 @@ where
             (Ok(hash), Ok(size)) => {
                 if hash.len() == 32 {
                     // Clone the hash before converting
-                    let hash_array: [u8; 32] = hash.clone().try_into().unwrap();
+                    let hash_array: [u8; 32] = hash.try_into().unwrap();
                     let digest = DigestInfo::new(hash_array, size);
 
                     Some(digest)
@@ -276,12 +274,7 @@ where
     }
 
     pub async fn new(spec: &OntapS3ExistenceCacheSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
-        let StoreSpec::ontap_s3_store(inner_spec) = &*spec.backend else {
-            return Err(make_err!(
-                Code::InvalidArgument,
-                "Backend must be ontap_s3_store"
-            ));
-        };
+        let inner_spec = &spec.backend;
         let inner_store = Arc::new(OntapS3Store::new(inner_spec, now_fn.clone()).await?);
         let inner_store = Store::new((*inner_store).clone());
         let s3_client = create_s3_client(inner_spec).await?;
@@ -295,7 +288,7 @@ where
             inner_store,
             s3_client: Arc::new(s3_client),
             bucket: inner_spec.bucket.clone(),
-            key_prefix: inner_spec.key_prefix.clone(),
+            key_prefix: inner_spec.common.key_prefix.clone(),
             index_path: spec.index_path.clone(),
             digests: digests.clone(),
             sync_interval_seconds: spec.sync_interval_seconds,
@@ -349,21 +342,26 @@ where
     }
 }
 
-async fn create_s3_client(spec: &OntapS3Spec) -> Result<Client, Error> {
-    let credentials_provider =
-        aws_config::default_provider::credentials::DefaultCredentialsChain::builder()
-            .build()
-            .await;
+async fn create_s3_client(spec: &ExperimentalOntapS3Spec) -> Result<Client, Error> {
+    let http_client = TlsClient::new(&spec.common);
+    let credentials_provider = DefaultCredentialsChain::builder()
+        .configure(
+            ProviderConfig::without_region()
+                .with_region(Some(Region::new(Cow::Owned(spec.vserver_name.clone()))))
+                .with_http_client(http_client.clone()),
+        )
+        .build()
+        .await;
 
     let config = aws_sdk_s3::Config::builder()
         .credentials_provider(credentials_provider)
         .endpoint_url(&spec.endpoint)
         .region(Region::new(spec.vserver_name.clone()))
         .force_path_style(true)
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::v2025_01_17())
         .build();
 
-    Ok(aws_sdk_s3::Client::from_conf(config))
+    Ok(Client::from_conf(config))
 }
 
 #[async_trait]
@@ -456,11 +454,11 @@ where
         self
     }
 
-    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync + 'static) {
+    fn as_any(&self) -> &(dyn core::any::Any + Send + Sync + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync + 'static> {
         self
     }
 }
