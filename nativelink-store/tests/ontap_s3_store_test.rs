@@ -25,7 +25,7 @@ use http::status::StatusCode;
 use hyper::Body;
 use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::OntapS3Spec;
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::ontap_s3_store::OntapS3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
@@ -186,7 +186,7 @@ async fn has_with_expired_result() -> Result<(), Error> {
     let digest = DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE).unwrap();
     {
         MockClock::advance(Duration::from_secs(24 * 60 * 60)); // 1 day.
-                                                               // Date is now 1970-01-02 00:00:00.
+        // Date is now 1970-01-02 00:00:00.
         let mut results = vec![None];
         store
             .has_with_results(&[digest.into()], &mut results)
@@ -196,7 +196,7 @@ async fn has_with_expired_result() -> Result<(), Error> {
     }
     {
         MockClock::advance(Duration::from_secs(24 * 60 * 60)); // 1 day.
-                                                               // Date is now 1970-01-03 00:00:00.
+        // Date is now 1970-01-03 00:00:00.
         let mut results = vec![None];
         store
             .has_with_results(&[digest.into()], &mut results)

@@ -12,25 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::task::{Context, Poll};
+use core::time::Duration;
 use std::collections::VecDeque;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::Duration;
 
-use futures::stream::{unfold, FuturesUnordered, StreamExt};
 use futures::Future;
+use futures::stream::{FuturesUnordered, StreamExt, unfold};
 use nativelink_config::stores::Retry;
-use nativelink_error::{make_err, Code, Error};
+use nativelink_error::{Code, Error, make_err};
 use tokio::sync::{mpsc, oneshot};
-use tonic::transport::{channel, Channel, Endpoint};
-use tracing::{event, Level};
+use tonic::transport::{Channel, Endpoint, channel};
+use tracing::{debug, error, info, warn};
 
 use crate::background_spawn;
 use crate::retry::{self, Retrier, RetryResult};
 
 /// A helper utility that enables management of a suite of connections to an
 /// upstream gRPC endpoint using Tonic.
+#[derive(Debug)]
 pub struct ConnectionManager {
     // The channel to request connections from the worker.
     worker_tx: mpsc::Sender<oneshot::Sender<Connection>>,
@@ -42,7 +43,7 @@ type EndpointIndex = usize;
 /// when a particular connection has failed or becomes available.
 type ConnectionIndex = usize;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ChannelIdentifier {
     /// The index into `ConnectionManagerWorker::endpoints` that established this
     /// Channel.
@@ -77,7 +78,7 @@ type IndexedChannel = Result<EstablishedChannel, (ChannelIdentifier, Error)>;
 /// A channel that has been established to an endpoint with some metadata around
 /// it to allow identification of the Channel if it errors in order to correctly
 /// remove it.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct EstablishedChannel {
     /// The Channel itself that the meta data relates to.
     channel: Channel,
@@ -129,7 +130,11 @@ impl ConnectionManager {
         // which defeats the object since there would be no backpressure
         // applied. Therefore it makes sense for this to be unbounded.
         let (connection_tx, connection_rx) = mpsc::unbounded_channel();
-        let endpoints = Vec::from_iter(endpoints.into_iter().map(|endpoint| (0, endpoint)));
+        let endpoints = endpoints
+            .into_iter()
+            .map(|endpoint| (0, endpoint))
+            .collect();
+
         if max_concurrent_requests == 0 {
             max_concurrent_requests = usize::MAX;
         }
@@ -245,11 +250,7 @@ impl ConnectionManagerWorker {
         let Some((current_connection_index, endpoint)) = self.endpoints.get_mut(endpoint_index)
         else {
             // Unknown endpoint, this should never happen.
-            event!(
-                Level::ERROR,
-                ?endpoint_index,
-                "Connection to unknown endpoint requested"
-            );
+            error!(?endpoint_index, "Connection to unknown endpoint requested");
             return;
         };
         let is_backoff = connection_index.is_some();
@@ -258,15 +259,13 @@ impl ConnectionManagerWorker {
             *current_connection_index
         });
         if is_backoff {
-            event!(
-                Level::WARN,
+            warn!(
                 ?connection_index,
                 endpoint = ?endpoint.uri(),
                 "Connection failed, reconnecting"
             );
         } else {
-            event!(
-                Level::INFO,
+            info!(
                 ?connection_index,
                 endpoint = ?endpoint.uri(),
                 "Creating new connection"
@@ -324,11 +323,11 @@ impl ConnectionManagerWorker {
         // We decrement here because we create Connection, this will signal when
         // it is Dropped and therefore increment this again.
         self.available_connections -= 1;
-        let _ = tx.send(Connection {
-            connection_tx: self.connection_tx.clone(),
+        drop(tx.send(Connection {
+            tx: self.connection_tx.clone(),
             pending_channel: Some(channel.channel.clone()),
             channel,
-        });
+        }));
     }
 
     fn maybe_available_connection(&mut self) {
@@ -387,15 +386,16 @@ impl ConnectionManagerWorker {
 /// reporting all errors.
 /// NOTE: This should never be cloneable because its lifetime is linked to the
 ///       `ConnectionManagerWorker::available_connections`.
+#[derive(Debug)]
 pub struct Connection {
     /// Communication with `ConnectionManagerWorker` to inform about transport
     /// errors and when the Connection is dropped.
-    connection_tx: mpsc::UnboundedSender<ConnectionRequest>,
+    tx: mpsc::UnboundedSender<ConnectionRequest>,
     /// If set, the Channel that will be returned to the worker when connection
     /// completes (success or failure) or when the Connection is dropped if that
     /// happens before connection completes.
     pending_channel: Option<Channel>,
-    /// The identifier to send to `connection_tx`.
+    /// The identifier to send to `tx`.
     channel: EstablishedChannel,
 }
 
@@ -408,14 +408,11 @@ impl Drop for Connection {
                 channel,
                 identifier: self.channel.identifier,
             });
-        let _ = self
-            .connection_tx
-            .send(ConnectionRequest::Dropped(pending_channel));
+        drop(self.tx.send(ConnectionRequest::Dropped(pending_channel)));
     }
 }
 
-/// A wrapper around the `channel::ResponseFuture` that forwards errors to the
-/// `connection_tx`.
+/// A wrapper around the `channel::ResponseFuture` that forwards errors to the `tx`.
 pub struct ResponseFuture {
     /// The wrapped future that actually does the work.
     inner: channel::ResponseFuture,
@@ -426,10 +423,20 @@ pub struct ResponseFuture {
     identifier: ChannelIdentifier,
 }
 
+impl core::fmt::Debug for ResponseFuture {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ResponseFuture")
+            .field("inner", &self.inner)
+            .field("connection_tx", &self.connection_tx)
+            .field("identifier", &self.identifier)
+            .finish()
+    }
+}
+
 /// This is mostly copied from `tonic::transport::channel` except it wraps it
 /// to allow messaging about connection success and failure.
-impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>> for Connection {
-    type Response = tonic::codegen::http::Response<tonic::body::BoxBody>;
+impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> for Connection {
+    type Response = tonic::codegen::http::Response<tonic::body::Body>;
     type Error = tonic::transport::Error;
     type Future = ResponseFuture;
 
@@ -439,37 +446,31 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>
             match result {
                 Ok(()) => {
                     if let Some(pending_channel) = self.pending_channel.take() {
-                        let _ = self.connection_tx.send(ConnectionRequest::Connected(
-                            EstablishedChannel {
-                                channel: pending_channel,
-                                identifier: self.channel.identifier,
-                            },
-                        ));
+                        drop(
+                            self.tx
+                                .send(ConnectionRequest::Connected(EstablishedChannel {
+                                    channel: pending_channel,
+                                    identifier: self.channel.identifier,
+                                })),
+                        );
                     }
                 }
                 Err(err) => {
-                    event!(
-                        Level::DEBUG,
-                        ?err,
-                        "Error while creating connection on channel"
-                    );
-                    let _ = self.connection_tx.send(ConnectionRequest::Error((
+                    debug!(?err, "Error while creating connection on channel");
+                    drop(self.tx.send(ConnectionRequest::Error((
                         self.channel.identifier,
                         self.pending_channel.take().is_some(),
-                    )));
+                    ))));
                 }
             }
         }
         result
     }
 
-    fn call(
-        &mut self,
-        request: tonic::codegen::http::Request<tonic::body::BoxBody>,
-    ) -> Self::Future {
+    fn call(&mut self, request: tonic::codegen::http::Request<tonic::body::Body>) -> Self::Future {
         ResponseFuture {
             inner: self.channel.channel.call(request),
-            connection_tx: self.connection_tx.clone(),
+            connection_tx: self.tx.clone(),
             identifier: self.channel.identifier,
         }
     }
@@ -479,14 +480,15 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>
 /// to allow messaging about connection failure.
 impl Future for ResponseFuture {
     type Output =
-        Result<tonic::codegen::http::Response<tonic::body::BoxBody>, tonic::transport::Error>;
+        Result<tonic::codegen::http::Response<tonic::body::Body>, tonic::transport::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let result = Pin::new(&mut self.inner).poll(cx);
         if let Poll::Ready(Err(_)) = &result {
-            let _ = self
-                .connection_tx
-                .send(ConnectionRequest::Error((self.identifier, false)));
+            drop(
+                self.connection_tx
+                    .send(ConnectionRequest::Error((self.identifier, false))),
+            );
         }
         result
     }

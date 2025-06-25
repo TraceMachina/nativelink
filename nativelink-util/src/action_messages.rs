@@ -12,26 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::Ordering;
+use core::cmp::Ordering;
+use core::convert::Into;
+use core::hash::Hash;
+use core::time::Duration;
 use std::collections::HashMap;
-use std::convert::Into;
-use std::hash::Hash;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
-use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 use nativelink_metric::{
-    publish, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, publish,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata,
-    ExecuteRequest, ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory,
-    OutputFile, OutputSymlink, SymlinkNode,
+    Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata, ExecuteRequest,
+    ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory, OutputFile,
+    OutputSymlink, SymlinkNode, execution_stage,
 };
-use nativelink_proto::google::longrunning::operation::Result as LongRunningResult;
 use nativelink_proto::google::longrunning::Operation;
+use nativelink_proto::google::longrunning::operation::Result as LongRunningResult;
 use nativelink_proto::google::rpc::Status;
-use prost::bytes::Bytes;
 use prost::Message;
+use prost::bytes::Bytes;
 use prost_types::Any;
 use serde::ser::Error as SerdeError;
 use serde::{Deserialize, Serialize};
@@ -68,8 +69,8 @@ impl Default for OperationId {
     }
 }
 
-impl std::fmt::Display for OperationId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for OperationId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Uuid(uuid) => uuid.fmt(f),
             Self::String(name) => f.write_str(name),
@@ -89,19 +90,13 @@ impl MetricsComponent for OperationId {
 
 impl From<&str> for OperationId {
     fn from(value: &str) -> Self {
-        match Uuid::parse_str(value) {
-            Ok(uuid) => Self::Uuid(uuid),
-            Err(_) => Self::String(value.to_string()),
-        }
+        Uuid::parse_str(value).map_or_else(|_| Self::String(value.to_string()), Self::Uuid)
     }
 }
 
 impl From<String> for OperationId {
     fn from(value: String) -> Self {
-        match Uuid::parse_str(&value) {
-            Ok(uuid) => Self::Uuid(uuid),
-            Err(_) => Self::String(value),
-        }
+        Uuid::parse_str(&value).map_or(Self::String(value), Self::Uuid)
     }
 }
 
@@ -124,7 +119,7 @@ impl TryFrom<Bytes> for OperationId {
             }
             // We could not take ownership of the Bytes, so we may need to copy our data.
             Err(value) => {
-                let value = std::str::from_utf8(&value).map_err(|e| {
+                let value = core::str::from_utf8(&value).map_err(|e| {
                     make_input_err!(
                         "Failed to convert bytes to string in try_from<Bytes> for OperationId : {e:?}"
                     )
@@ -149,15 +144,15 @@ impl MetricsComponent for WorkerId {
     }
 }
 
-impl std::fmt::Display for WorkerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for WorkerId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("{}", self.0))
     }
 }
 
-impl std::fmt::Debug for WorkerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self, f)
+impl core::fmt::Debug for WorkerId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self, f)
     }
 }
 
@@ -169,18 +164,18 @@ impl From<WorkerId> for String {
 
 impl From<String> for WorkerId {
     fn from(s: String) -> Self {
-        WorkerId(s)
+        Self(s)
     }
 }
 
 /// Holds the information needed to uniquely identify an action
-/// and if it is cachable or not.
+/// and if it is cacheable or not.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionUniqueQualifier {
-    /// The action is cachable.
-    Cachable(ActionUniqueKey),
-    /// The action is uncachable.
-    Uncachable(ActionUniqueKey),
+    /// The action is cacheable.
+    Cacheable(ActionUniqueKey),
+    /// The action is uncacheable.
+    Uncacheable(ActionUniqueKey),
 }
 
 impl MetricsComponent for ActionUniqueQualifier {
@@ -189,15 +184,15 @@ impl MetricsComponent for ActionUniqueQualifier {
         _kind: MetricKind,
         field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
-        let (cachable, action) = match self {
-            Self::Cachable(action) => (true, action),
-            Self::Uncachable(action) => (false, action),
+        let (cacheable, action) = match self {
+            Self::Cacheable(action) => (true, action),
+            Self::Uncacheable(action) => (false, action),
         };
         publish!(
-            cachable,
-            &cachable,
+            cacheable,
+            &cacheable,
             MetricKind::Default,
-            "If the action is cachable.",
+            "If the action is cacheable.",
             ""
         );
         action.publish(MetricKind::Component, field_metadata)?;
@@ -209,30 +204,30 @@ impl ActionUniqueQualifier {
     /// Get the `instance_name` of the action.
     pub const fn instance_name(&self) -> &String {
         match self {
-            Self::Cachable(action) | Self::Uncachable(action) => &action.instance_name,
+            Self::Cacheable(action) | Self::Uncacheable(action) => &action.instance_name,
         }
     }
 
     /// Get the digest function of the action.
     pub const fn digest_function(&self) -> DigestHasherFunc {
         match self {
-            Self::Cachable(action) | Self::Uncachable(action) => action.digest_function,
+            Self::Cacheable(action) | Self::Uncacheable(action) => action.digest_function,
         }
     }
 
     /// Get the digest of the action.
     pub const fn digest(&self) -> DigestInfo {
         match self {
-            Self::Cachable(action) | Self::Uncachable(action) => action.digest,
+            Self::Cacheable(action) | Self::Uncacheable(action) => action.digest,
         }
     }
 }
 
-impl std::fmt::Display for ActionUniqueQualifier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (cachable, unique_key) = match self {
-            Self::Cachable(action) => (true, action),
-            Self::Uncachable(action) => (false, action),
+impl core::fmt::Display for ActionUniqueQualifier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let (cacheable, unique_key) = match self {
+            Self::Cacheable(action) => (true, action),
+            Self::Uncacheable(action) => (false, action),
         };
         f.write_fmt(format_args!(
             // Note: We use underscores because it makes escaping easier
@@ -242,7 +237,7 @@ impl std::fmt::Display for ActionUniqueQualifier {
             unique_key.digest_function,
             unique_key.digest.packed_hash(),
             unique_key.digest.size_bytes(),
-            if cachable { 'c' } else { 'u' },
+            if cacheable { 'c' } else { 'u' },
         ))
     }
 }
@@ -262,8 +257,8 @@ pub struct ActionUniqueKey {
     pub digest: DigestInfo,
 }
 
-impl std::fmt::Display for ActionUniqueKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ActionUniqueKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!(
             "{}/{}/{}",
             self.instance_name, self.digest_function, self.digest,
@@ -299,9 +294,9 @@ pub struct ActionInfo {
     /// When this action was created.
     #[metric(help = "When this action was created.")]
     pub insert_timestamp: SystemTime,
-    /// Info used to uniquely identify this `ActionInfo` and if it is cachable.
+    /// Info used to uniquely identify this `ActionInfo` and if it is cacheable.
     /// This is primarily used to join actions/operations together using this key.
-    #[metric(help = "Info used to uniquely identify this ActionInfo and if it is cachable.")]
+    #[metric(help = "Info used to uniquely identify this ActionInfo and if it is cacheable.")]
     pub unique_qualifier: ActionUniqueQualifier,
 }
 
@@ -333,9 +328,9 @@ impl ActionInfo {
                 .try_into()?,
         };
         let unique_qualifier = if execute_request.skip_cache_lookup {
-            ActionUniqueQualifier::Uncachable(unique_key)
+            ActionUniqueQualifier::Uncacheable(unique_key)
         } else {
-            ActionUniqueQualifier::Cachable(unique_key)
+            ActionUniqueQualifier::Cacheable(unique_key)
         };
 
         let proto_properties = action.platform.unwrap_or_default();
@@ -374,8 +369,8 @@ impl From<&ActionInfo> for ExecuteRequest {
     fn from(val: &ActionInfo) -> Self {
         let digest = val.digest().into();
         let (skip_cache_lookup, unique_qualifier) = match &val.unique_qualifier {
-            ActionUniqueQualifier::Cachable(unique_qualifier) => (false, unique_qualifier),
-            ActionUniqueQualifier::Uncachable(unique_qualifier) => (true, unique_qualifier),
+            ActionUniqueQualifier::Cacheable(unique_qualifier) => (false, unique_qualifier),
+            ActionUniqueQualifier::Uncacheable(unique_qualifier) => (true, unique_qualifier),
         };
         Self {
             instance_name: unique_qualifier.instance_name.clone(),
@@ -429,17 +424,20 @@ pub struct FileInfo {
     pub is_executable: bool,
 }
 
-//TODO: Make this TryFrom.
-impl From<FileInfo> for FileNode {
-    fn from(val: FileInfo) -> Self {
-        let NameOrPath::Name(name) = val.name_or_path else {
-            panic!("Cannot return a FileInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
-        };
-        Self {
-            name,
-            digest: Some((&val.digest).into()),
-            is_executable: val.is_executable,
-            node_properties: Option::default(), // Not supported.
+impl TryFrom<FileInfo> for FileNode {
+    type Error = Error;
+
+    fn try_from(val: FileInfo) -> Result<Self, Error> {
+        match val.name_or_path {
+            NameOrPath::Path(_) => Err(make_input_err!(
+                "Cannot return a FileInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()"
+            )),
+            NameOrPath::Name(name) => Ok(Self {
+                name,
+                digest: Some((&val.digest).into()),
+                is_executable: val.is_executable,
+                node_properties: None, // Not supported.
+            }),
         }
     }
 }
@@ -459,18 +457,21 @@ impl TryFrom<OutputFile> for FileInfo {
     }
 }
 
-//TODO: Make this TryFrom.
-impl From<FileInfo> for OutputFile {
-    fn from(val: FileInfo) -> Self {
-        let NameOrPath::Path(path) = val.name_or_path else {
-            panic!("Cannot return a FileInfo that uses a NameOrPath::Name(), it must be a NameOrPath::Path()");
-        };
-        Self {
-            path,
-            digest: Some((&val.digest).into()),
-            is_executable: val.is_executable,
-            contents: Bytes::default(),
-            node_properties: Option::default(), // Not supported.
+impl TryFrom<FileInfo> for OutputFile {
+    type Error = Error;
+
+    fn try_from(val: FileInfo) -> Result<Self, Error> {
+        match val.name_or_path {
+            NameOrPath::Name(_) => Err(make_input_err!(
+                "Cannot return a FileInfo that uses a NameOrPath::Name(), it must be a NameOrPath::Path()"
+            )),
+            NameOrPath::Path(path) => Ok(Self {
+                path,
+                digest: Some((&val.digest).into()),
+                is_executable: val.is_executable,
+                contents: Bytes::default(),
+                node_properties: None, // Not supported.
+            }),
         }
     }
 }
@@ -494,16 +495,19 @@ impl TryFrom<SymlinkNode> for SymlinkInfo {
     }
 }
 
-// TODO: Make this TryFrom.
-impl From<SymlinkInfo> for SymlinkNode {
-    fn from(val: SymlinkInfo) -> Self {
-        let NameOrPath::Name(name) = val.name_or_path else {
-            panic!("Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
-        };
-        Self {
-            name,
-            target: val.target,
-            node_properties: Option::default(), // Not supported.
+impl TryFrom<SymlinkInfo> for SymlinkNode {
+    type Error = Error;
+
+    fn try_from(val: SymlinkInfo) -> Result<Self, Error> {
+        match val.name_or_path {
+            NameOrPath::Path(_) => Err(make_input_err!(
+                "Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()"
+            )),
+            NameOrPath::Name(name) => Ok(Self {
+                name,
+                target: val.target,
+                node_properties: None, // Not supported.
+            }),
         }
     }
 }
@@ -519,16 +523,21 @@ impl TryFrom<OutputSymlink> for SymlinkInfo {
     }
 }
 
-// TODO: Make this TryFrom.
-impl From<SymlinkInfo> for OutputSymlink {
-    fn from(val: SymlinkInfo) -> Self {
-        let NameOrPath::Path(path) = val.name_or_path else {
-            panic!("Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
-        };
-        Self {
-            path,
-            target: val.target,
-            node_properties: Option::default(), // Not supported.
+impl TryFrom<SymlinkInfo> for OutputSymlink {
+    type Error = Error;
+
+    fn try_from(val: SymlinkInfo) -> Result<Self, Error> {
+        match val.name_or_path {
+            NameOrPath::Path(path) => {
+                Ok(Self {
+                    path,
+                    target: val.target,
+                    node_properties: None, // Not supported.
+                })
+            }
+            NameOrPath::Name(_) => Err(make_input_err!(
+                "Cannot return a SymlinkInfo that uses a NameOrPath::Name(), it must be a NameOrPath::Path()"
+            )),
         }
     }
 }
@@ -700,7 +709,7 @@ pub struct ActionResult {
 
 impl Default for ActionResult {
     fn default() -> Self {
-        ActionResult {
+        Self {
             output_files: Vec::default(),
             output_folders: Vec::default(),
             output_directory_symlinks: Vec::default(),
@@ -727,11 +736,12 @@ impl Default for ActionResult {
     }
 }
 
-// TODO(allada) Remove the need for clippy argument by making the ActionResult and ProtoActionResult
-// a Box.
 /// The execution status/stage. This should match `ExecutionStage::Value` in `remote_execution.proto`.
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "TODO box the two relevant variants in a breaking release. Unfulfilled on nightly"
+)]
 pub enum ActionStage {
     /// Stage is unknown.
     Unknown,
@@ -739,7 +749,7 @@ pub enum ActionStage {
     CacheCheck,
     /// Action has been accepted and waiting for worker to take it.
     Queued,
-    // TODO(allada) We need a way to know if the job was sent to a worker, but hasn't begun
+    // TODO(aaronmondal) We need a way to know if the job was sent to a worker, but hasn't begun
     // execution yet.
     /// Worker is executing the action.
     Executing,
@@ -799,12 +809,12 @@ impl MetricsComponent for ActionStage {
         _field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
         let value = match self {
-            ActionStage::Unknown => "Unknown".to_string(),
-            ActionStage::CacheCheck => "CacheCheck".to_string(),
-            ActionStage::Queued => "Queued".to_string(),
-            ActionStage::Executing => "Executing".to_string(),
-            ActionStage::Completed(_) => "Completed".to_string(),
-            ActionStage::CompletedFromCache(_) => "CompletedFromCache".to_string(),
+            Self::Unknown => "Unknown".to_string(),
+            Self::CacheCheck => "CacheCheck".to_string(),
+            Self::Queued => "Queued".to_string(),
+            Self::Executing => "Executing".to_string(),
+            Self::Completed(_) => "Completed".to_string(),
+            Self::CompletedFromCache(_) => "CompletedFromCache".to_string(),
         };
         Ok(MetricPublishKnownKindData::String(value))
     }
@@ -846,7 +856,7 @@ pub fn to_execute_response(action_result: ActionResult) -> ExecuteResponse {
     let message = action_result.message.clone();
     ExecuteResponse {
         server_logs: logs_from(action_result.server_logs.clone()),
-        result: Some(action_result.into()),
+        result: action_result.try_into().ok(),
         cached_result: false,
         status,
         message,
@@ -876,35 +886,48 @@ impl From<ActionStage> for ExecuteResponse {
     }
 }
 
-impl From<ActionResult> for ProtoActionResult {
-    fn from(val: ActionResult) -> Self {
+impl TryFrom<ActionResult> for ProtoActionResult {
+    type Error = Error;
+
+    fn try_from(val: ActionResult) -> Result<Self, Error> {
         let mut output_symlinks = Vec::with_capacity(
             val.output_file_symlinks.len() + val.output_directory_symlinks.len(),
         );
         output_symlinks.extend_from_slice(val.output_file_symlinks.as_slice());
         output_symlinks.extend_from_slice(val.output_directory_symlinks.as_slice());
 
-        Self {
-            output_files: val.output_files.into_iter().map(Into::into).collect(),
+        Ok(Self {
+            output_files: val
+                .output_files
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
             output_file_symlinks: val
                 .output_file_symlinks
                 .into_iter()
-                .map(Into::into)
-                .collect(),
-            output_symlinks: output_symlinks.into_iter().map(Into::into).collect(),
-            output_directories: val.output_folders.into_iter().map(Into::into).collect(),
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            output_symlinks: output_symlinks
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            output_directories: val
+                .output_folders
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
             output_directory_symlinks: val
                 .output_directory_symlinks
                 .into_iter()
-                .map(Into::into)
-                .collect(),
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
             exit_code: val.exit_code,
             stdout_raw: Bytes::default(),
             stdout_digest: Some(val.stdout_digest.into()),
             stderr_raw: Bytes::default(),
             stderr_digest: Some(val.stderr_digest.into()),
             execution_metadata: Some(val.execution_metadata.into()),
-        }
+        })
     }
 }
 
@@ -1014,18 +1037,15 @@ impl TryFrom<ExecuteResponse> for ActionStage {
                     .err_tip(|| "Expected digest to be set on LogFile msg")?
                     .try_into()
             })?,
-            error: execute_response.status.clone().and_then(|v| {
-                if v.code == 0 {
-                    None
-                } else {
-                    Some(v.into())
-                }
-            }),
+            error: execute_response
+                .status
+                .clone()
+                .and_then(|v| if v.code == 0 { None } else { Some(v.into()) }),
             message: execute_response.message,
         };
 
         if execute_response.cached_result {
-            return Ok(Self::CompletedFromCache(action_result.into()));
+            return Ok(Self::CompletedFromCache(action_result.try_into()?));
         }
         Ok(Self::Completed(action_result))
     }
@@ -1152,7 +1172,7 @@ impl ActionState {
         let metadata = ExecuteOperationMetadata {
             stage,
             action_digest: digest,
-            // TODO(blaise.bruer) We should support stderr/stdout streaming.
+            // TODO(aaronmondal) We should support stderr/stdout streaming.
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
             partial_execution_metadata: None,

@@ -12,20 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::hash::BuildHasher;
+use core::str::from_utf8;
 use std::collections::HashMap;
-use std::hash::BuildHasher;
 use std::io::{BufRead, BufReader, Cursor};
 use std::process::Stdio;
-use std::str::from_utf8;
 
 use futures::future::try_join_all;
 use nativelink_config::cas_server::WorkerProperty;
-use nativelink_error::{make_err, make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::ConnectWorkerRequest;
 use tokio::process;
-use tracing::{event, Level};
+use tracing::info;
 
+#[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
 pub async fn make_connect_worker_request<S: BuildHasher>(
     worker_id_prefix: String,
     worker_properties: &HashMap<String, WorkerProperty, S>,
@@ -34,7 +35,7 @@ pub async fn make_connect_worker_request<S: BuildHasher>(
     for (property_name, worker_property) in worker_properties {
         futures.push(async move {
             match worker_property {
-                WorkerProperty::values(values) => {
+                WorkerProperty::Values(values) => {
                     let mut props = Vec::with_capacity(values.len());
                     for value in values {
                         props.push(Property {
@@ -44,7 +45,7 @@ pub async fn make_connect_worker_request<S: BuildHasher>(
                     }
                     Ok(props)
                 }
-                WorkerProperty::query_cmd(cmd) => {
+                WorkerProperty::QueryCmd(cmd) => {
                     let maybe_split_cmd = shlex::split(cmd);
                     let (command, args) = match &maybe_split_cmd {
                         Some(split_cmd) => (&split_cmd[0], &split_cmd[1..]),
@@ -53,7 +54,7 @@ pub async fn make_connect_worker_request<S: BuildHasher>(
                                 "Could not parse the value of worker property: {}: '{}'",
                                 property_name,
                                 cmd
-                            ))
+                            ));
                         }
                     };
                     let mut process = process::Command::new(command);
@@ -62,7 +63,7 @@ pub async fn make_connect_worker_request<S: BuildHasher>(
                     process.stdin(Stdio::null());
                     let err_fn =
                         || format!("Error executing property_name {property_name} command");
-                    event!(Level::INFO, cmd, property_name, "Spawning process",);
+                    info!(cmd, property_name, "Spawning process",);
                     let process_output = process.output().await.err_tip(err_fn)?;
                     if !process_output.status.success() {
                         return Err(make_err!(

@@ -1,0 +1,197 @@
+name: CI
+
+# Controls when the workflow will run.
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  nativelink-dot-com-cloud-rbe-main-legacy-dockerfile-test:
+    runs-on: ubuntu-24.04
+    environment: production
+    name: NativeLink.com Cloud / RBE on Main (Legacy Dockerfile Test)
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Checkout
+      uses: >- # v4.2.2
+        actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+    - name: Set up AWS CLI
+      uses: >- # v4.1.0
+        aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722
+      with:
+        aws-access-key-id: ${{ secrets.RBE_ECR_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.RBE_ECR_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.RBE_ECR_AWS_ACCOUNT_REGION }}
+
+    - name: Calculate Dockerfile hash and Retrieve Image URI for RBE
+      run: |
+        DOCKERFILE_HASH=$(sha256sum "$GITHUB_WORKSPACE/tools/toolchain-nativelink/Dockerfile" | awk '{print $1}')
+        IMAGE_DETAILS=$(aws ecr describe-images --repository-name ${{ secrets.RBE_ECR_REPOSITORY_NAME }} --image-ids imageTag=$DOCKERFILE_HASH)
+        if [ $? -ne 0 ]; then
+          exit 1;
+        fi
+        echo "RBE_IMAGE=${{ secrets.RBE_ECR_AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.RBE_ECR_AWS_ACCOUNT_REGION }}.amazonaws.com/${{ secrets.RBE_ECR_REPOSITORY_NAME }}:$DOCKERFILE_HASH" >> $GITHUB_ENV
+
+    - name: Setup Bazel
+      uses: >- # v0.13.0
+        bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
+      with:
+        bazelisk-cache: true
+        repository-cache: true
+
+    - name: Run Bazel tests
+      shell: bash
+      # remove digest_function when #1325 is resolved
+      run: |
+        bazel --digest_function=sha256 test \
+          --remote_cache=grpcs://tm-ci-cas.build-faster.nativelink.net \
+          --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+          --bes_backend=grpcs://tm-ci-bep.build-faster.nativelink.net \
+          --bes_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+          --bes_results_url=https://tm-ci-web.build-faster.nativelink.net/ \
+          --remote_header=x-nativelink-project=nativelink-ci \
+          --remote_executor=grpcs://tm-ci-cas.build-faster.nativelink.net \
+          --remote_default_exec_properties="container-image=docker://$RBE_IMAGE" \
+          --jobs=200 \
+          //...
+
+  nativelink-dot-com-cloud-cache-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    environment: production
+    name: NativeLink.com Cloud / Remote Cache / ${{ matrix.os }}
+    env:
+      NL_COM_API_KEY: ${{ secrets.NATIVELINK_COM_API_HEADER || '065f02f53f26a12331d5cfd00a778fb243bfb4e857b8fcd4c99273edfb15deae' }}
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+
+      - name: Run Bazel tests
+        run: >
+          nix develop --impure --command
+          bash -c "bazel test \
+            --remote_header=x-nativelink-api-key=$NL_COM_API_KEY \
+            --bes_backend=grpcs://tm-ci-bep.build-faster.nativelink.net \
+            --bes_header=x-nativelink-api-key=$NL_COM_API_KEY \
+            --bes_results_url=https://tm-ci-web.build-faster.nativelink.net/ \
+            ${{ github.ref == 'refs/heads/main' && '--remote_upload_local_results=true' || '--nogenerate_json_trace_profile --remote_upload_local_results=false' }} \
+            //..."
+
+  # TODO(aaronmondal): Flaky. Fix.
+  # docker-compose-compiles-nativelink:
+  #   # The type of runner that the job will run on.
+  #   runs-on: ubuntu-24.04
+  #   strategy:
+  #     matrix:
+  #       # Which OS versions we will test on.
+  #       os_version: [ 24.04 ]
+  #   steps:
+  #   - name: Checkout
+  #     uses: >- # v4.2.2
+  #       actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+  #   - name: Set up Docker Buildx
+  #     uses: >- # v3.9.0
+  #       docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca
+
+  #   - name: Build Nativelink image
+  #     uses: >- # v6.13.0
+  #       docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991
+  #     with:
+  #       context: .
+  #       file: ./deployment-examples/docker-compose/Dockerfile
+  #       build-args: |
+  #         OPT_LEVEL=opt
+  #         OS_VERSION=${{ matrix.os_version }}
+  #         ADDITIONAL_SETUP_WORKER_CMD=apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y gcc g++ lld pkg-config python3
+  #       load: true # This brings the build into `docker images` from buildx.
+  #       tags: trace_machina/nativelink:latest
+
+  #   - name: Build builder image
+  #     uses: >- # v6.13.0
+  #       docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991
+  #     with:
+  #       context: .
+  #       file: ./deployment-examples/docker-compose/Dockerfile
+  #       build-args: |
+  #         OPT_LEVEL=opt
+  #         OS_VERSION=${{ matrix.os_version }}
+  #       load: true # This brings the build into `docker images` from buildx.
+  #       tags: trace_machina/nativelink:builder
+  #       target: builder
+
+  #   - name: Compile NativeLink with NativeLink
+  #     run: |
+  #       mkdir -p ~/.cache && \
+  #       cd deployment-examples/docker-compose && \
+  #       (docker-compose up -d || docker compose up -d) && \
+  #       cd ../../ && \
+  #       docker run --rm --net=host -w /root/nativelink -v $PWD:/root/nativelink trace_machina/nativelink:builder sh -c ' \
+  #         bazel clean && \
+  #         bazel test //... \
+  #         --extra_toolchains=@rust_toolchains//:all \
+  #         --remote_cache=grpc://127.0.0.1:50051 \
+  #         --remote_executor=grpc://127.0.0.1:50052 \
+  #         --remote_default_exec_properties=cpu_count=2 \
+  #       ' && \
+  #       docker run --rm --net=host -w /root/nativelink -v $PWD:/root/nativelink trace_machina/nativelink:builder sh -c ' \
+  #         bazel clean && \
+  #         bazel test //... \
+  #         --extra_toolchains=@rust_toolchains//:all \
+  #         --remote_cache=grpc://127.0.0.1:50051 \
+  #         --remote_executor=grpc://127.0.0.1:50052 \
+  #         --remote_default_exec_properties=cpu_count=2 \
+  #       ' 2>&1 | ( ! grep '         PASSED in ' ) # If we get PASSED without (cache) it means there's a cache issue.
+
+  integration-tests:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        # Which OS versions we will test on.
+        os_version: [ 24.04 ]
+    steps:
+    - name: Checkout
+      uses: >- # v4.2.2
+        actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+    - name: Set up Docker Buildx
+      uses: >- # v3.9.0
+        docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca
+
+    - name: Build image
+      uses: >- # v6.13.0
+        docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991
+      with:
+        context: .
+        file: ./deployment-examples/docker-compose/Dockerfile
+        build-args: |
+          OPT_LEVEL=fastbuild
+          OS_VERSION=${{ matrix.os_version }}
+          ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
+        load: true # This brings the build into `docker images` from buildx.
+        tags: trace_machina/nativelink:latest
+
+    - name: Run tests
+      run: ./run_integration_tests.sh

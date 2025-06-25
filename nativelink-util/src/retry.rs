@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::time::Duration;
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures::future::Future;
 use futures::stream::StreamExt;
 use nativelink_config::stores::{ErrorCode, Retry};
-use nativelink_error::{make_err, Code, Error};
-use tracing::{event, Level};
+use nativelink_error::{Code, Error, make_err};
+use tracing::error;
 
 struct ExponentialBackoff {
     current: Duration,
@@ -28,7 +28,7 @@ struct ExponentialBackoff {
 
 impl ExponentialBackoff {
     const fn new(base: Duration) -> Self {
-        ExponentialBackoff { current: base }
+        Self { current: base }
     }
 }
 
@@ -59,6 +59,14 @@ pub struct Retrier {
     config: Retry,
 }
 
+impl core::fmt::Debug for Retrier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Retrier")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
 const fn to_error_code(code: Code) -> ErrorCode {
     match code {
         Code::Cancelled => ErrorCode::Cancelled,
@@ -82,7 +90,7 @@ const fn to_error_code(code: Code) -> ErrorCode {
 
 impl Retrier {
     pub fn new(sleep_fn: SleepFn, jitter_fn: JitterFn, config: Retry) -> Self {
-        Retrier {
+        Self {
             sleep_fn,
             jitter_fn,
             config,
@@ -127,13 +135,11 @@ impl Retrier {
             .take(self.config.max_retries) // Remember this is number of retries, so will run max_retries + 1.
     }
 
-    // Clippy complains that this function can be `async fn`, but this is not true.
-    // If we use `async fn`, other places in our code will fail to compile stating
-    // something about the async blocks not matching.
-    // This appears to happen due to a compiler bug while inlining, because the
-    // function that it complained about was calling another function that called
-    // this one.
-    #[allow(clippy::manual_async_fn)]
+    #[expect(
+        clippy::manual_async_fn,
+        reason = "making an `async fn` results in a potential compiler bug in seemingly unrelated \
+            code"
+    )]
     pub fn retry<'a, T: Send>(
         &'a self,
         operation: impl futures::stream::Stream<Item = RetryResult<T>> + Send + 'a,
@@ -149,7 +155,7 @@ impl Retrier {
                         return Err(make_err!(
                             Code::Internal,
                             "Retry stream ended abruptly on attempt {attempt}",
-                        ))
+                        ));
                     }
                     Some(RetryResult::Ok(value)) => return Ok(value),
                     Some(RetryResult::Err(e)) => {
@@ -157,12 +163,12 @@ impl Retrier {
                     }
                     Some(RetryResult::Retry(err)) => {
                         if !self.should_retry(err.code) {
-                            event!(Level::ERROR, ?attempt, ?err, "Not retrying permanent error");
+                            error!(?attempt, ?err, "Not retrying permanent error");
                             return Err(err);
                         }
                         (self.sleep_fn)(
                             iter.next()
-                                .ok_or(err.append(format!("On attempt {attempt}")))?,
+                                .ok_or_else(|| err.append(format!("On attempt {attempt}")))?,
                         )
                         .await;
                     }

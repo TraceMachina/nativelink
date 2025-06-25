@@ -4,7 +4,7 @@
     "globals": ["Bun", "Deno", "Timer", "React"]
   },
   "files": {
-    "ignore": ["*.astro", "dist", "node_modules", "deno.d.ts"]
+    "ignore": ["*.astro", "dist", "node_modules", "deno.d.ts", ".lighthouseci"]
   },
   "organizeImports": {
     "enabled": true
@@ -19,6 +19,10 @@
         "noShoutyConstants": "warn",
         "noDefaultExport": "off",
         "useNamingConvention": "off"
+      },
+      "suspicious": {
+        "noConsole": "off",
+        "noReactSpecificProps": "off"
       }
     }
   },

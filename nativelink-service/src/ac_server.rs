@@ -12,31 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::Into;
+use core::fmt::Debug;
 use std::collections::HashMap;
-use std::convert::Into;
-use std::fmt::Debug;
 
 use bytes::BytesMut;
-use nativelink_config::cas_server::{AcStoreConfig, InstanceName};
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_config::cas_server::{AcStoreConfig, WithInstanceName};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::{
     ActionCache, ActionCacheServer as Server,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult, GetActionResultRequest, UpdateActionResultRequest,
 };
-use nativelink_store::ac_utils::{get_and_decode_digest, ESTIMATED_DIGEST_SIZE};
+use nativelink_store::ac_utils::{ESTIMATED_DIGEST_SIZE, get_and_decode_digest};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
-use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::store_trait::{Store, StoreLike};
+use opentelemetry::context::FutureExt;
 use prost::Message;
 use tonic::{Request, Response, Status};
-use tracing::{error_span, event, instrument, Level};
+use tracing::{Instrument, Level, error, error_span, instrument};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AcStoreInfo {
     store: Store,
     read_only: bool,
@@ -47,35 +47,35 @@ pub struct AcServer {
 }
 
 impl Debug for AcServer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AcServer").finish()
     }
 }
 
 impl AcServer {
     pub fn new(
-        config: &HashMap<InstanceName, AcStoreConfig>,
+        configs: &[WithInstanceName<AcStoreConfig>],
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
-        let mut stores = HashMap::with_capacity(config.len());
-        for (instance_name, ac_cfg) in config {
-            let store = store_manager.get_store(&ac_cfg.ac_store).ok_or_else(|| {
-                make_input_err!("'ac_store': '{}' does not exist", ac_cfg.ac_store)
+        let mut stores = HashMap::with_capacity(configs.len());
+        for config in configs {
+            let store = store_manager.get_store(&config.ac_store).ok_or_else(|| {
+                make_input_err!("'ac_store': '{}' does not exist", config.ac_store)
             })?;
             stores.insert(
-                instance_name.to_string(),
+                config.instance_name.to_string(),
                 AcStoreInfo {
                     store,
-                    read_only: ac_cfg.read_only,
+                    read_only: config.read_only,
                 },
             );
         }
-        Ok(AcServer {
+        Ok(Self {
             stores: stores.clone(),
         })
     }
 
-    pub fn into_service(self) -> Server<AcServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 
@@ -89,7 +89,7 @@ impl AcServer {
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
 
-        // TODO(blaise.bruer) We should write a test for these errors.
+        // TODO(aaronmondal) We should write a test for these errors.
         let digest: DigestInfo = request
             .action_digest
             .clone()
@@ -169,9 +169,8 @@ impl AcServer {
 
 #[tonic::async_trait]
 impl ActionCache for AcServer {
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
-        ret(level = Level::INFO),
+        ret(level = Level::DEBUG),
         level = Level::ERROR,
         skip_all,
         fields(request = ?grpc_request.get_ref())
@@ -181,25 +180,25 @@ impl ActionCache for AcServer {
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
         let request = grpc_request.into_inner();
-        let ctx = OriginEventContext::new(|| &request).await;
-
-        let resp = make_ctx_for_hash_func(request.digest_function)
-            .err_tip(|| "In AcServer::get_action_result")?
-            .wrap_async(
-                error_span!("ac_server_get_action_result"),
-                self.inner_get_action_result(request),
+        let digest_function = request.digest_function;
+        let result = self
+            .inner_get_action_result(request)
+            .instrument(error_span!("ac_server_get_action_result"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function)
+                    .err_tip(|| "In AcServer::get_action_result")?,
             )
             .await;
 
-        if resp.is_err() && resp.as_ref().err().unwrap().code != Code::NotFound {
-            event!(Level::ERROR, return = ?resp);
+        if let Err(ref err) = result {
+            if err.code != Code::NotFound {
+                error!(error = ?err, "Error in get_action_result");
+            }
         }
-        let resp = resp.map_err(Into::into);
-        ctx.emit(|| &resp).await;
-        resp
+
+        result.map_err(Into::into)
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -212,16 +211,14 @@ impl ActionCache for AcServer {
         grpc_request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
         let request = grpc_request.into_inner();
-        let ctx = OriginEventContext::new(|| &request).await;
-        let resp = make_ctx_for_hash_func(request.digest_function)
-            .err_tip(|| "In AcServer::update_action_result")?
-            .wrap_async(
-                error_span!("ac_server_update_action_result"),
-                self.inner_update_action_result(request),
+        let digest_function = request.digest_function;
+        self.inner_update_action_result(request)
+            .instrument(error_span!("ac_server_update_action_result"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function)
+                    .err_tip(|| "In AcServer::update_action_result")?,
             )
             .await
-            .map_err(Into::into);
-        ctx.emit(|| &resp).await;
-        resp
+            .map_err(Into::into)
     }
 }

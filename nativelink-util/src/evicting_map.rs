@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::Borrow;
-use std::cmp::Eq;
+use core::borrow::Borrow;
+use core::cmp::Eq;
+use core::fmt::Debug;
+use core::future::Future;
+use core::hash::Hash;
+use core::ops::RangeBounds;
 use std::collections::BTreeSet;
-use std::fmt::Debug;
-use std::future::Future;
-use std::hash::Hash;
-use std::ops::RangeBounds;
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -26,12 +26,12 @@ use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_metric::MetricsComponent;
 use serde::{Deserialize, Serialize};
-use tracing::{event, Level};
+use tracing::{debug, info};
 
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics_utils::{Counter, CounterWithTime};
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 pub struct SerializedLRU<K> {
     pub data: Vec<(K, i32)>,
     pub anchor_time: u64,
@@ -64,7 +64,7 @@ pub trait LenEntry: 'static {
     /// the `EvictionMap` globally (including inside `unref()`).
     #[inline]
     fn unref(&self) -> impl Future<Output = ()> + Send {
-        std::future::ready(())
+        core::future::ready(())
     }
 }
 
@@ -85,7 +85,7 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 struct State<K: Ord + Hash + Eq + Clone + Debug + Send, T: LenEntry + Debug + Send> {
     lru: LruCache<K, EvictionItem<T>>,
     btree: Option<BTreeSet<K>>,
@@ -124,7 +124,7 @@ impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Syn
             self.evicted_items.inc();
             self.evicted_bytes.add(eviction_item.data.len());
         }
-        // Note: See comment in `unref()` requring global lock of insert/remove.
+        // Note: See comment in `unref()` requiring global lock of insert/remove.
         eviction_item.data.unref().await;
     }
 
@@ -142,7 +142,7 @@ impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Syn
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct EvictingMap<
     K: Ord + Hash + Eq + Clone + Debug + Send,
     T: LenEntry + Debug + Send,
@@ -168,7 +168,7 @@ where
     I: InstantWrapper,
 {
     pub fn new(config: &EvictionPolicy, anchor_time: I) -> Self {
-        EvictingMap {
+        Self {
             // We use unbounded because if we use the bounded version we can't call the delete
             // function on the LenEntry properly.
             state: Mutex::new(State {
@@ -267,11 +267,7 @@ where
                 state.sum_store_size,
                 self.max_bytes,
             ) {
-            if self.max_bytes > self.evict_bytes {
-                self.max_bytes - self.evict_bytes
-            } else {
-                0
-            }
+            self.max_bytes.saturating_sub(self.evict_bytes)
         } else {
             self.max_bytes
         };
@@ -281,7 +277,7 @@ where
                 .lru
                 .pop_lru()
                 .expect("Tried to peek() then pop() but failed");
-            event!(Level::INFO, ?key, "Evicting",);
+            debug!(?key, "Evicting",);
             state.remove(&key, &eviction_item, false).await;
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
@@ -341,7 +337,7 @@ where
                     if self.should_evict(lru_len, entry, 0, u64::MAX) {
                         *result = None;
                         if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
-                            event!(Level::INFO, ?key, "Item expired, evicting");
+                            info!(?key, "Item expired, evicting");
                             state.remove(key.borrow(), &eviction_item, false).await;
                         }
                     } else {

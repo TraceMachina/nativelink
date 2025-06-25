@@ -30,7 +30,7 @@ const MEGABYTE_SZ: usize = 1024 * 1024;
 
 fn make_stores(weights: &[u32]) -> (Arc<ShardStore>, Vec<Arc<MemoryStore>>) {
     let memory_store_config = MemorySpec::default();
-    let store_config = StoreSpec::memory(memory_store_config.clone());
+    let store_config = StoreSpec::Memory(memory_store_config);
     let stores: Vec<_> = weights
         .iter()
         .map(|_| MemoryStore::new(&memory_store_config))
@@ -82,6 +82,7 @@ async fn verify_weights(
 
     for (index, (store, expected_hit)) in stores.iter().zip(expected_hits.iter()).enumerate() {
         let total_hits = store.len_for_test().await;
+        #[expect(clippy::print_stdout, reason = "improves debugging")]
         if print_results {
             println!("expected_hit: {expected_hit} - total_hits: {total_hits}");
         } else {

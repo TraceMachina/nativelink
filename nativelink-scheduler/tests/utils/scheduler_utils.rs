@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use nativelink_error::{make_err, Code, Error};
+use nativelink_error::{Code, Error, make_err};
 use nativelink_util::action_messages::{
     ActionInfo, ActionState, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };
@@ -27,9 +28,9 @@ use nativelink_util::operation_state_manager::ActionStateResult;
 use nativelink_util::origin_event::OriginMetadata;
 use tokio::sync::watch;
 
-pub const INSTANCE_NAME: &str = "foobar_instance_name";
+pub(crate) const INSTANCE_NAME: &str = "foobar_instance_name";
 
-pub fn make_base_action_info(
+pub(crate) fn make_base_action_info(
     insert_timestamp: SystemTime,
     action_digest: DigestInfo,
 ) -> Arc<ActionInfo> {
@@ -41,7 +42,7 @@ pub fn make_base_action_info(
         priority: 0,
         load_timestamp: UNIX_EPOCH,
         insert_timestamp,
-        unique_qualifier: ActionUniqueQualifier::Cachable(ActionUniqueKey {
+        unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -49,17 +50,15 @@ pub fn make_base_action_info(
     })
 }
 
-pub struct TokioWatchActionStateResult {
+pub(crate) struct TokioWatchActionStateResult {
     client_operation_id: OperationId,
     action_info: Arc<ActionInfo>,
     rx: watch::Receiver<Arc<ActionState>>,
 }
 
 impl TokioWatchActionStateResult {
-    // Note: This function is only used in tests, but for some reason
-    // rust doesn't detect it as used.
-    #[allow(dead_code)]
-    pub const fn new(
+    #[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
+    pub(crate) const fn new(
         client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
         rx: watch::Receiver<Arc<ActionState>>,

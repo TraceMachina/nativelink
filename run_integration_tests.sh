@@ -16,11 +16,11 @@
 set -euo pipefail
 
 if [[ $EUID -eq 0 ]]; then
-  echo "This script should not be run as root."
-  exit 1
+    echo "This script should not be run as root."
+    exit 1
 fi
 
-if which bazel >/dev/null; then
+if which bazel > /dev/null; then
     echo "Bazel is installed."
 else
     echo "Bazel is not installed."
@@ -31,9 +31,9 @@ fi
 TEST_PATTERNS=()
 
 while [[ $# -gt 0 ]]; do
-  case $1 in
+    case $1 in
     --help)
-      echo <<'EOT'
+        cat << 'EOT'
 Runner for integration tests
 
 Usage:
@@ -42,28 +42,28 @@ Usage:
 TEST_PATTERNS: Name of test you wish to execute. Wildcard (*) supported.
                Default: '*'
 EOT
-      ;;
-    -*|--*)
-      echo "Unknown option $1"
-      exit 1
-      ;;
+        ;;
+    -*)
+        echo "Unknown option $1"
+        exit 1
+        ;;
     *)
-      TEST_PATTERNS+=("$1")
-      shift # past argument
-      ;;
-  esac
+        TEST_PATTERNS+=("$1")
+        shift # past argument
+        ;;
+    esac
 done
 
 if ! docker --version; then
-  echo "This script must be run as root due to docker permission issues (try with 'sudo')"
-  exit 1
+    echo "This script must be run as root due to docker permission issues (try with 'sudo')"
+    exit 1
 fi
 
-if [[ "${#TEST_PATTERNS[@]}" -eq 0 ]]; then
-  TEST_PATTERNS=("*")
+if [[ ${#TEST_PATTERNS[@]} -eq 0 ]]; then
+    TEST_PATTERNS=("*")
 fi
 
-SELF_DIR=$(realpath $(dirname $0))
+SELF_DIR=$(realpath "$(dirname "$0")")
 cd "$SELF_DIR/deployment-examples/docker-compose"
 
 export UNDER_TEST_RUNNER=1
@@ -78,58 +78,57 @@ sudo docker compose rm --stop -f
 export TMPDIR=$HOME/.cache/nativelink/
 mkdir -p "$TMPDIR"
 
-if [[ "$OSTYPE" == "darwin"* ]]; then
-  export CACHE_DIR=$(mktemp -d "${TMPDIR}nativelink-integration-test")
+if [[ $OSTYPE == "darwin"* ]]; then
+    CACHE_DIR=$(mktemp -d "${TMPDIR}nativelink-integration-test")
+    export CACHE_DIR
 else
-  echo "Assumes Linux/WSL"
-  export CACHE_DIR=$(mktemp -d --tmpdir="$TMPDIR" --suffix="-nativelink-integration-test")
+    echo "Assumes Linux/WSL"
+    CACHE_DIR=$(mktemp -d --tmpdir="$TMPDIR" --suffix="-nativelink-integration-test")
+    export CACHE_DIR
 fi
 
 export BAZEL_CACHE_DIR="$CACHE_DIR/bazel"
-trap "sudo rm -rf $CACHE_DIR; sudo docker compose rm --stop -f" EXIT
+trap 'sudo rm -rf $CACHE_DIR; sudo docker compose rm --stop -f' EXIT
 
 echo "" # New line.
-
-DID_FAIL=0
 
 export NATIVELINK_DIR="$CACHE_DIR/nativelink"
 mkdir -p "$NATIVELINK_DIR"
 
 for pattern in "${TEST_PATTERNS[@]}"; do
-  find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | while IFS= read -r -d $'\0' fullpath; do
-    # Cleanup.
-    echo "Cleaning up cache directories NATIVELINK_DIR: $NATIVELINK_DIR"
-    echo "Checking for existince of the NATIVELINK_DIR"
-    if [ -d "$NATIVELINK_DIR" ]; then
-      sudo find "$NATIVELINK_DIR" -delete
-    else
-      echo "Directory $NATIVELINK_DIR does not exist."
-    fi
+    find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | grep -v buildstream | while IFS= read -r -d $'\0' fullpath; do
+        # Cleanup.
+        echo "Cleaning up cache directories NATIVELINK_DIR: $NATIVELINK_DIR"
+        echo "Checking for existence of the NATIVELINK_DIR"
+        if [ -d "$NATIVELINK_DIR" ]; then
+            sudo find "$NATIVELINK_DIR" -delete
+        else
+            echo "Directory $NATIVELINK_DIR does not exist."
+        fi
 
-    bazel --output_base="$BAZEL_CACHE_DIR" clean
-    FILENAME=$(basename $fullpath)
-    echo "Running test $FILENAME"
-    sudo docker compose up -d
-    if perl -e 'alarm shift; exec @ARGV' 30 bash -c 'until sudo docker compose logs | grep -q "Ready, listening on"; do sleep 1; done'
-    then
-      echo "String 'Ready, listening on' found in the logs."
-    else
-      echo "String 'Ready, listening on' not found in the logs within the given time."
-    fi
-    set +e
-    bash -euo pipefail "$fullpath"
-    EXIT_CODE="$?"
-    set -e
-    if [[ $EXIT_CODE -eq 0 ]]; then
-      echo "$FILENAME passed"
-    else
-      echo "$FILENAME failed with exit code $EXIT_CODE"
-      sudo docker compose logs
-      exit $EXIT_CODE
-    fi
-    sudo docker compose rm --stop -f
-    echo "" # New line.
-  done
+        bazel --output_base="$BAZEL_CACHE_DIR" clean
+        FILENAME=$(basename "$fullpath")
+        echo "Running test $FILENAME"
+        sudo docker compose up -d
+        if perl -e 'alarm shift; exec @ARGV' 30 bash -c 'until sudo docker compose logs | grep -q "Ready, listening on"; do sleep 1; done'; then
+            echo "String 'Ready, listening on' found in the logs."
+        else
+            echo "String 'Ready, listening on' not found in the logs within the given time."
+        fi
+        set +e
+        bash -euo pipefail "$fullpath"
+        EXIT_CODE="$?"
+        set -e
+        if [[ $EXIT_CODE -eq 0 ]]; then
+            echo "$FILENAME passed"
+        else
+            echo "$FILENAME failed with exit code $EXIT_CODE"
+            sudo docker compose logs
+            exit $EXIT_CODE
+        fi
+        sudo docker compose rm --stop -f
+        echo "" # New line.
+    done
 done
 
 echo "All tests passed!"

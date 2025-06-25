@@ -1,0 +1,19 @@
+---
+title: "Nix templates"
+description: "Nix templates"
+pagefind: true
+---
+
+import Templates from './templates.mdx';
+import TemplatesBazel from './templates-bazel.mdx';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+<Templates />
+
+# Configuration
+
+<Tabs syncKey="tooling">
+  <TabItem label="Bazel">
+    <TemplatesBazel />
+  </TabItem>
+</Tabs>

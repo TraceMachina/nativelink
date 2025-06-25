@@ -21,7 +21,7 @@ mod utils {
     pub(crate) mod scheduler_utils;
 }
 
-use futures::{join, StreamExt};
+use futures::{StreamExt, join};
 use nativelink_config::schedulers::{
     PlatformPropertyAddition, PropertyModification, PropertyModifierSpec, SchedulerSpec, SimpleSpec,
 };
@@ -35,7 +35,7 @@ use nativelink_util::operation_state_manager::{ClientStateManager, OperationFilt
 use pretty_assertions::assert_eq;
 use tokio::sync::watch;
 use utils::mock_scheduler::MockActionScheduler;
-use utils::scheduler_utils::{make_base_action_info, TokioWatchActionStateResult, INSTANCE_NAME};
+use utils::scheduler_utils::{INSTANCE_NAME, TokioWatchActionStateResult, make_base_action_info};
 
 struct TestContext {
     mock_scheduler: Arc<MockActionScheduler>,
@@ -46,7 +46,7 @@ fn make_modifier_scheduler(modifications: Vec<PropertyModification>) -> TestCont
     let mock_scheduler = Arc::new(MockActionScheduler::new());
     let config = PropertyModifierSpec {
         modifications,
-        scheduler: Box::new(SchedulerSpec::simple(SimpleSpec::default())),
+        scheduler: Box::new(SchedulerSpec::Simple(SimpleSpec::default())),
     };
     let modifier_scheduler = PropertyModifierScheduler::new(&config, mock_scheduler.clone());
     TestContext {
@@ -60,7 +60,7 @@ async fn add_action_adds_property() -> Result<(), Error> {
     let name = "name".to_string();
     let value = "value".to_string();
     let context =
-        make_modifier_scheduler(vec![PropertyModification::add(PlatformPropertyAddition {
+        make_modifier_scheduler(vec![PropertyModification::Add(PlatformPropertyAddition {
             name: name.clone(),
             value: value.clone(),
         })]);
@@ -98,7 +98,7 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
     let original_value = "value".to_string();
     let replaced_value = "replaced".to_string();
     let context =
-        make_modifier_scheduler(vec![PropertyModification::add(PlatformPropertyAddition {
+        make_modifier_scheduler(vec![PropertyModification::Add(PlatformPropertyAddition {
             name: name.clone(),
             value: replaced_value.clone(),
         })]);
@@ -141,8 +141,8 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
     let name = "name".to_string();
     let value = "value".to_string();
     let context = make_modifier_scheduler(vec![
-        PropertyModification::remove(name.clone()),
-        PropertyModification::add(PlatformPropertyAddition {
+        PropertyModification::Remove(name.clone()),
+        PropertyModification::Add(PlatformPropertyAddition {
             name: name.clone(),
             value: value.clone(),
         }),
@@ -180,11 +180,11 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
     let name = "name".to_string();
     let value = "value".to_string();
     let context = make_modifier_scheduler(vec![
-        PropertyModification::add(PlatformPropertyAddition {
+        PropertyModification::Add(PlatformPropertyAddition {
             name: name.clone(),
             value: value.clone(),
         }),
-        PropertyModification::remove(name.clone()),
+        PropertyModification::Remove(name.clone()),
     ]);
     let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
@@ -215,7 +215,7 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
 async fn add_action_property_remove() -> Result<(), Error> {
     let name = "name".to_string();
     let value = "value".to_string();
-    let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
+    let context = make_modifier_scheduler(vec![PropertyModification::Remove(name.clone())]);
     let mut action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest())
         .as_ref()
         .clone();
@@ -275,7 +275,7 @@ async fn find_by_client_operation_id_call_passed() -> Result<(), Error> {
 #[nativelink_test]
 async fn remove_adds_to_underlying_manager() -> Result<(), Error> {
     let name = "name".to_string();
-    let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
+    let context = make_modifier_scheduler(vec![PropertyModification::Remove(name.clone())]);
     let known_properties = Vec::new();
     let instance_name_fut = context
         .mock_scheduler
@@ -292,7 +292,7 @@ async fn remove_adds_to_underlying_manager() -> Result<(), Error> {
 #[nativelink_test]
 async fn remove_retains_type_in_underlying_manager() -> Result<(), Error> {
     let name = "name".to_string();
-    let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
+    let context = make_modifier_scheduler(vec![PropertyModification::Remove(name.clone())]);
     let known_properties = vec![name.clone()];
     let instance_name_fut = context
         .mock_scheduler

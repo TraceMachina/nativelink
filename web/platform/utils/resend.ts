@@ -3,7 +3,7 @@ import {
   type EmailData,
   subscription,
   thanks,
-} from "../src/content/mails/template";
+} from "../src/content/mails/template.ts";
 
 const isDeno = typeof Deno !== "undefined";
 

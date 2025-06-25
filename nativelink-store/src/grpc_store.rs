@@ -12,17 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::BytesMut;
-use futures::stream::{unfold, FuturesUnordered};
-use futures::{future, Future, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::stream::{FuturesUnordered, unfold};
+use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
 use nativelink_config::stores::GrpcSpec;
-use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
@@ -39,9 +39,8 @@ use nativelink_proto::google::bytestream::{
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
-use nativelink_util::digest_hasher::{default_digest_hasher_func, ACTIVE_HASHER_FUNC};
+use nativelink_util::digest_hasher::{DigestHasherFunc, default_digest_hasher_func};
 use nativelink_util::health_utils::HealthStatusIndicator;
-use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::proto_stream_utils::{
     FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
 };
@@ -49,18 +48,19 @@ use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::{default_health_status_indicator, tls_utils};
+use opentelemetry::context::Context;
 use parking_lot::Mutex;
 use prost::Message;
 use rand::Rng;
 use tokio::time::sleep;
 use tonic::{IntoRequest, Request, Response, Status, Streaming};
-use tracing::{event, Level};
+use tracing::error;
 use uuid::Uuid;
 
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct GrpcStore {
     #[metric(help = "Instance name for the store")]
     instance_name: String,
@@ -102,7 +102,7 @@ impl GrpcStore {
         }
 
         let jitter_fn = Arc::new(jitter_fn);
-        Ok(Arc::new(GrpcStore {
+        Ok(Arc::new(Self {
             instance_name: spec.instance_name.clone(),
             store_type: spec.store_type,
             retrier: Retrier::new(
@@ -145,7 +145,7 @@ impl GrpcStore {
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -170,7 +170,7 @@ impl GrpcStore {
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -195,7 +195,7 @@ impl GrpcStore {
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -220,7 +220,7 @@ impl GrpcStore {
         grpc_request: Request<GetTreeRequest>,
     ) -> Result<Response<Streaming<GetTreeResponse>>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -253,7 +253,7 @@ impl GrpcStore {
     async fn read_internal(
         &self,
         request: ReadRequest,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<>, Error> {
         let channel = self
             .connection_manager
             .connection()
@@ -271,12 +271,15 @@ impl GrpcStore {
         Ok(FirstStream::new(first_response, response))
     }
 
-    pub async fn read(
+    pub async fn read<R>(
         &self,
-        grpc_request: impl IntoRequest<ReadRequest>,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
+        grpc_request: R,
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<R>, Error>
+    where
+        R: IntoRequest<ReadRequest>,
+    {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -296,7 +299,7 @@ impl GrpcStore {
         E: Into<Error> + 'static,
     {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -328,23 +331,23 @@ impl GrpcStore {
                 // uncontended since write has returned.
                 let mut local_state_locked = local_state.lock();
 
-                let result = if let Some(err) = local_state_locked.take_read_stream_error() {
-                    // If there was an error with the stream, then don't retry.
-                    RetryResult::Err(err.append("Where read_stream_error was set"))
-                } else {
-                    // On error determine whether it is possible to retry.
-                    match result {
-                        Err(err) => {
-                            if local_state_locked.can_resume() {
-                                local_state_locked.resume();
-                                RetryResult::Retry(err)
-                            } else {
-                                RetryResult::Err(err.append("Retry is not possible"))
+                let result = local_state_locked
+                    .take_read_stream_error()
+                    .map(|err| RetryResult::Err(err.append("Where read_stream_error was set")))
+                    .unwrap_or_else(|| {
+                        // No stream error, handle the original result
+                        match result {
+                            Ok(response) => RetryResult::Ok(response),
+                            Err(err) => {
+                                if local_state_locked.can_resume() {
+                                    local_state_locked.resume();
+                                    RetryResult::Retry(err)
+                                } else {
+                                    RetryResult::Err(err.append("Retry is not possible"))
+                                }
                             }
                         }
-                        Ok(response) => RetryResult::Ok(response),
-                    }
-                };
+                    });
 
                 drop(local_state_locked);
                 Some((result, local_state))
@@ -360,7 +363,7 @@ impl GrpcStore {
         const IS_UPLOAD_TRUE: bool = true;
 
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -436,8 +439,8 @@ impl GrpcStore {
             inline_stdout: false,
             inline_stderr: false,
             inline_output_files: Vec::new(),
-            digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-                .err_tip(|| "In get_action_from_store")?
+            digest_function: Context::current()
+                .get::<DigestHasherFunc>()
                 .map_or_else(default_digest_hasher_func, |v| *v)
                 .proto_digest_func()
                 .into(),
@@ -492,8 +495,8 @@ impl GrpcStore {
             action_digest: Some(digest.into()),
             action_result: Some(action_result),
             results_cache_policy: None,
-            digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-                .err_tip(|| "In get_action_from_store")?
+            digest_function: Context::current()
+                .get::<DigestHasherFunc>()
                 .map_or_else(default_digest_hasher_func, |v| *v)
                 .proto_digest_func()
                 .into(),
@@ -513,7 +516,7 @@ impl StoreDriver for GrpcStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             keys.iter()
                 .zip(results.iter_mut())
                 .map(|(key, result)| async move {
@@ -539,8 +542,8 @@ impl StoreDriver for GrpcStore {
                     .iter()
                     .map(|k| k.borrow().into_digest().into())
                     .collect(),
-                digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-                    .err_tip(|| "In GrpcStore::has_with_results")?
+                digest_function: Context::current()
+                    .get::<DigestHasherFunc>()
                     .map_or_else(default_digest_hasher_func, |v| *v)
                     .proto_digest_func()
                     .into(),
@@ -580,12 +583,12 @@ impl StoreDriver for GrpcStore {
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
-        if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
 
-        let digest_function = ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-            .err_tip(|| "In GrpcStore::update()")?
+        let digest_function = Context::current()
+            .get::<DigestHasherFunc>()
             .map_or_else(default_digest_hasher_func, |v| *v)
             .proto_digest_func()
             .as_str_name()
@@ -615,10 +618,7 @@ impl StoreDriver for GrpcStore {
 
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
             if local_state.did_error {
-                event!(
-                    Level::ERROR,
-                    "GrpcStore::update() polled stream after error was returned"
-                );
+                error!("GrpcStore::update() polled stream after error was returned");
                 return None;
             }
             let data = match local_state
@@ -667,7 +667,7 @@ impl StoreDriver for GrpcStore {
         length: Option<u64>,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
-        if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
             let length = length
                 .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
@@ -682,8 +682,9 @@ impl StoreDriver for GrpcStore {
         if digest.size_bytes() == 0 {
             return writer.send_eof();
         }
-        let digest_function = ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-            .err_tip(|| "In GrpcStore::update()")?
+
+        let digest_function = Context::current()
+            .get::<DigestHasherFunc>()
             .map_or_else(default_digest_hasher_func, |v| *v)
             .proto_digest_func()
             .as_str_name()
@@ -739,7 +740,7 @@ impl StoreDriver for GrpcStore {
                                         .append("While fetching message in GrpcStore::get_part()"),
                                 ),
                                 local_state,
-                            ))
+                            ));
                         }
                     };
                     let length = data.len() as i64;
@@ -771,11 +772,11 @@ impl StoreDriver for GrpcStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

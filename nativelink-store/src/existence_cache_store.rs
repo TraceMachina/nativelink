@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
 use std::borrow::Cow;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use nativelink_config::stores::{EvictionPolicy, ExistenceCacheSpec};
-use nativelink_error::{error_if, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
@@ -29,9 +29,9 @@ use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
 #[derive(Clone, Debug)]
-struct ExistanceItem(u64);
+struct ExistenceItem(u64);
 
-impl LenEntry for ExistanceItem {
+impl LenEntry for ExistenceItem {
     #[inline]
     fn len(&self) -> u64 {
         self.0
@@ -43,11 +43,11 @@ impl LenEntry for ExistanceItem {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct ExistenceCacheStore<I: InstantWrapper> {
     #[metric(group = "inner_store")]
     inner_store: Store,
-    existence_cache: EvictingMap<DigestInfo, ExistanceItem, I>,
+    existence_cache: EvictingMap<DigestInfo, ExistenceItem, I>,
 }
 
 impl ExistenceCacheStore<SystemTime> {
@@ -117,10 +117,10 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
                 .iter()
                 .zip(inner_results.iter())
                 .filter_map(|(key, result)| {
-                    result.map(|size| (key.borrow().into_digest(), ExistanceItem(size)))
+                    result.map(|size| (key.borrow().into_digest(), ExistenceItem(size)))
                 })
                 .collect::<Vec<_>>();
-            let _ = self.existence_cache.insert_many(inserts).await;
+            drop(self.existence_cache.insert_many(inserts).await);
         }
 
         // Merge the results from the cache and the query.
@@ -153,7 +153,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
+        // TODO(aaronmondal) This is a bit of a hack to get around the lifetime issues with the
         // existence_cache. We need to convert the digests to owned values to be able to
         // insert them into the cache. In theory it should be able to elide this conversion
         // but it seems to be a bit tricky to get right.
@@ -189,7 +189,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             if let UploadSizeInfo::ExactSize(size) = size_info {
                 let _ = self
                     .existence_cache
-                    .insert(digest, ExistanceItem(size))
+                    .insert(digest, ExistenceItem(size))
                     .await;
             }
         }
@@ -211,7 +211,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         if result.is_ok() {
             let _ = self
                 .existence_cache
-                .insert(digest, ExistanceItem(digest.size_bytes()))
+                .insert(digest, ExistenceItem(digest.size_bytes()))
                 .await;
         }
         result
@@ -221,11 +221,11 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

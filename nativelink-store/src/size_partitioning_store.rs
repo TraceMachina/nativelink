@@ -12,19 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_config::stores::SizePartitioningSpec;
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use tokio::join;
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct SizePartitioningStore {
     #[metric(help = "Size to partition our data")]
     partition_size: u64,
@@ -36,7 +36,7 @@ pub struct SizePartitioningStore {
 
 impl SizePartitioningStore {
     pub fn new(spec: &SizePartitioningSpec, lower_store: Store, upper_store: Store) -> Arc<Self> {
-        Arc::new(SizePartitioningStore {
+        Arc::new(Self {
             partition_size: spec.size,
             lower_store,
             upper_store,
@@ -104,7 +104,7 @@ impl StoreDriver for SizePartitioningStore {
             other @ StoreKey::Str(_) => {
                 return Err(make_input_err!(
                     "SizePartitioningStore only supports Digest keys, got {other:?}"
-                ))
+                ));
             }
         };
         if digest.size_bytes() < self.partition_size {
@@ -125,7 +125,7 @@ impl StoreDriver for SizePartitioningStore {
             other @ StoreKey::Str(_) => {
                 return Err(make_input_err!(
                     "SizePartitioningStore only supports Digest keys, got {other:?}"
-                ))
+                ));
             }
         };
         if digest.size_bytes() < self.partition_size {
@@ -152,11 +152,11 @@ impl StoreDriver for SizePartitioningStore {
         self.upper_store.inner_store(Some(digest))
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
 }

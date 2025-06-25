@@ -30,7 +30,7 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
         .sort((a, b) => new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime())
         .map((post) => (
           <a
-            href={"/resources/blog/" + post.slug}
+            href={"/resources/blog/" + post.id}
             class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-white snap-center"
           >
             {post.data.image && (
@@ -50,10 +50,11 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
     <div class="flex justify-start w-full md:w-9/12 px-8 md:px-0 flex justify-center items-center pt-4 pb-12">
       <div class="w-full max-w-4xl aspect-video">
         <iframe
+          title="Hermetic Toolchain Creation with Local Remote Execution (LRE) & Nix - Aaron Mondal, NativeLink"
           class="w-full h-full"
-          src="https://www.youtube.com/embed/uokjTev8myk?rel=0"
+          src="https://www.youtube-nocookie.com/embed/uokjTev8myk?rel=0"
+          referrerpolicy="strict-origin-when-cross-origin"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-          allowfullscreen
         ></iframe>
       </div>
     </div>
@@ -63,7 +64,7 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
         .sort((a, b) => new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime())
         .map((post) => (
           <a
-            href={"/resources/blog/" + post.slug}
+            href={"/resources/blog/" + post.id}
             class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-white snap-center"
           >
             {post.data.image && (
@@ -84,7 +85,7 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
         .sort((a, b) => new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime())
         .map((post) => (
           <a
-            href={"/resources/blog/" + post.slug}
+            href={"/resources/blog/" + post.id}
             class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-white snap-center"
           >
             {post.data.image && (

@@ -43,7 +43,7 @@ The value of `stores` is an array where each element defines a store. Each shoul
 ### Store Type
 
 Once the store has been named and its object exists,
-the next key to add is the type of store. The options are `filesystem`, `memory`, `compression`, `dedup`, `fast_slow`, `verify`, and `experimental_s3_store`.
+the next key to add is the type of store. The options are `filesystem`, `memory`, `compression`, `dedup`, `fast_slow`, `verify`, and `experimental_cloud_object_store`.
 
 ```json5
 {
@@ -272,29 +272,25 @@ The `public` server consists of a `listener` object and a `services` object. The
       }
     },
     "services": {
-      "cas": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE"
-        }
-      },
-      "ac": {
-        "main": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "execution": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE",
+      "cas": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE"
+      }],
+      "ac": [{
+        "instance_name": "main",
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "execution": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+        "scheduler": "MAIN_SCHEDULER",
+      }],
+      "capabilities": [{
+        "instance_name": "main",
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER",
         }
-      },
-      "capabilities": {
-        "main": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
-          }
-        }
-      },
+      }],
       "bytestream": {
         "cas_stores": {
           "main": "WORKER_FAST_SLOW_STORE",
@@ -312,7 +308,7 @@ The `public` server consists of a `listener` object and a `services` object. The
 
 > ⚠️ _WARNING_: A private server shouldn't be exposed to the public. ⚠️
 
-The `private` server consists of a `listener` object and a `services` object. The `listener` object is one level and includes an `http` with a `socket address`. The `services` server consists of an `experimental_prometheus` object with a `path` field, a `worker_api` object with `scheduler_field`, and an `admin` object.
+The `private` server consists of a `listener` object and a `services` object. The `listener` object is one level and includes an `http` with a `socket address`. The `services` server consists of a `worker_api` object with `scheduler_field` and an `admin` object.
 
 ```json5
  {
@@ -327,29 +323,25 @@ The `private` server consists of a `listener` object and a `services` object. Th
       }
     },
     "services": {
-      "cas": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE"
-        }
-      },
-      "ac": {
-        "main": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "execution": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE",
+      "cas": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE"
+      }],
+      "ac": [{
+        "instance_name": "main",
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "execution": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+        "scheduler": "MAIN_SCHEDULER",
+      }],
+      "capabilities": [{
+        "instance_name": "main",
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER",
         }
-      },
-      "capabilities": {
-        "main": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
-          }
-        }
-      },
+      }],
       "bytestream": {
         "cas_stores": {
           "main": "WORKER_FAST_SLOW_STORE",
@@ -364,9 +356,6 @@ The `private` server consists of a `listener` object and a `services` object. Th
       }
     },
     "services": {
-      "experimental_prometheus": {
-        "path": "/metrics"
-      },
       // Note: This should be served on a different port, because it has
       // a different permission set than the other services.
       // In other words, this service is a backend api. The ones above
@@ -386,7 +375,7 @@ The `private` server consists of a `listener` object and a `services` object. Th
 
 ```json5
  "global": {
-    "max_open_files": 512
+    "max_open_files": 24576
   }
 ```
 
@@ -511,29 +500,25 @@ Below, you will find a fully tested example that you can also find in [basic_cas
       }
     },
     "services": {
-      "cas": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE"
-        }
-      },
-      "ac": {
-        "main": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "execution": {
-        "main": {
-          "cas_store": "WORKER_FAST_SLOW_STORE",
+      "cas": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE"
+      }],
+      "ac": [{
+        "instance_name": "main",
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "execution": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+        "scheduler": "MAIN_SCHEDULER",
+      }],
+      "capabilities": [{
+        "instance_name": "main",
+        "remote_execution": {
           "scheduler": "MAIN_SCHEDULER",
         }
-      },
-      "capabilities": {
-        "main": {
-          "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
-          }
-        }
-      },
+      }],
       "bytestream": {
         "cas_stores": {
           "main": "WORKER_FAST_SLOW_STORE",
@@ -548,9 +533,6 @@ Below, you will find a fully tested example that you can also find in [basic_cas
       }
     },
     "services": {
-      "experimental_prometheus": {
-        "path": "/metrics"
-      },
       // Note: This should be served on a different port, because it has
       // a different permission set than the other services.
       // In other words, this service is a backend api. The ones above
@@ -562,7 +544,7 @@ Below, you will find a fully tested example that you can also find in [basic_cas
     }
   }],
   "global": {
-    "max_open_files": 512
+    "max_open_files": 24576
   }
 }
 ```

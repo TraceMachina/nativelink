@@ -12,19 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::hash::{Hash, Hasher};
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
+    ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
-use nativelink_util::origin_event::OriginEventContext;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -45,6 +44,7 @@ pub struct ActionInfoWithProps {
 }
 
 /// Notifications to send worker about a requested state change.
+#[derive(Debug)]
 pub enum WorkerUpdate {
     /// Requests that the worker begin executing this action.
     RunAction((OperationId, ActionInfoWithProps)),
@@ -53,16 +53,15 @@ pub enum WorkerUpdate {
     Disconnect,
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct PendingActionInfoData {
     #[metric]
     pub action_info: ActionInfoWithProps,
-    ctx: OriginEventContext<StartExecute>,
 }
 
 /// Represents a connection to a worker and used as the medium to
 /// interact with the worker from the client/scheduler.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct Worker {
     /// Unique identifier of the worker.
     #[metric(help = "The unique identifier of the worker.")]
@@ -99,7 +98,7 @@ pub struct Worker {
 }
 
 fn send_msg_to_worker(
-    tx: &mut UnboundedSender<UpdateForWorker>,
+    tx: &UnboundedSender<UpdateForWorker>,
     msg: update_for_worker::Update,
 ) -> Result<(), Error> {
     tx.send(UpdateForWorker { update: Some(msg) })
@@ -158,7 +157,7 @@ impl Worker {
     /// This should only be sent once and should always be the first item in the stream.
     pub fn send_initial_connection_result(&mut self) -> Result<(), Error> {
         send_msg_to_worker(
-            &mut self.tx,
+            &self.tx,
             update_for_worker::Update::ConnectionResult(ConnectionResult {
                 worker_id: self.id.clone().into(),
             }),
@@ -174,7 +173,7 @@ impl Worker {
             }
             WorkerUpdate::Disconnect => {
                 self.metrics.notify_disconnect.inc();
-                send_msg_to_worker(&mut self.tx, update_for_worker::Update::Disconnect(()))
+                send_msg_to_worker(&self.tx, update_for_worker::Update::Disconnect(()))
             }
         }
     }
@@ -213,10 +212,7 @@ impl Worker {
                     worker_platform_properties,
                     &action_info.platform_properties,
                 );
-
-                let ctx = OriginEventContext::new(|| &start_execute).await;
-                running_action_infos
-                    .insert(operation_id, PendingActionInfoData { action_info, ctx });
+                running_action_infos.insert(operation_id, PendingActionInfoData { action_info });
 
                 send_msg_to_worker(tx, update_for_worker::Update::StartAction(start_execute))
             })
@@ -233,7 +229,6 @@ impl Worker {
                 self.id, operation_id
             )
         })?;
-        pending_action_info.ctx.emit(|| &()).await;
         self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
         self.is_paused = false;
         self.metrics.actions_completed.inc();
@@ -276,7 +271,7 @@ impl Hash for Worker {
     }
 }
 
-#[derive(Default, MetricsComponent)]
+#[derive(Debug, Default, MetricsComponent)]
 struct Metrics {
     #[metric(help = "The timestamp of when this worker connected.")]
     connected_timestamp: u64,

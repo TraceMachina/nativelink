@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::ops::RangeBounds;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::panicking;
 
@@ -23,29 +24,24 @@ use fred::clients::SubscriberClient;
 use fred::error::Error as RedisError;
 use fred::mocks::{MockCommand, Mocks};
 use fred::prelude::{Builder, Pool as RedisPool};
-use fred::types::config::{Config as RedisConfig, PerformanceConfig};
 use fred::types::Value as RedisValue;
+use fred::types::config::{Config as RedisConfig, PerformanceConfig};
 use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
-use nativelink_metric::{MetricFieldData, MetricKind, MetricsComponent, RootMetricsComponent};
-use nativelink_metric_collector::MetricsCollectorLayer;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::RedisStore;
-use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
-use parking_lot::RwLock;
+use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
-use serde_json::{from_str, to_string, Value};
 use tokio::sync::watch;
-use tracing_subscriber::layer::SubscriberExt;
 
 const VALID_HASH1: &str = "3031323334353637383961626364656630303030303030303030303030303030";
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
 const DEFAULT_READ_CHUNK_SIZE: usize = 1024;
 const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
+const DEFAULT_SCAN_COUNT: u32 = 10_000;
 
 fn mock_uuid_generator() -> String {
     uuid::Uuid::parse_str(TEMP_UUID).unwrap().to_string()
@@ -120,7 +116,7 @@ impl Mocks for MockRedisBackend {
                 actual, expected,
                 "mismatched command, received (left) but expected (right)"
             );
-        };
+        }
 
         result
     }
@@ -137,7 +133,7 @@ impl Mocks for MockRedisBackend {
             args: Vec::new(),
         };
 
-        let results = std::iter::once(MULTI.clone())
+        let results = core::iter::once(MULTI.clone())
             .chain(commands)
             .chain([EXEC.clone()])
             .map(|command| self.process_command(command))
@@ -263,8 +259,9 @@ async fn upload_and_get_data() -> Result<(), Error> {
 
     let store = {
         let mut builder = Builder::default_centralized();
+        let mocks = Arc::clone(&mocks);
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
         let (client_pool, subscriber_client) = make_clients(builder);
@@ -276,6 +273,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
             String::new(),
             DEFAULT_READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+            DEFAULT_SCAN_COUNT,
         )
         .unwrap()
     };
@@ -366,8 +364,9 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
 
     let store = {
         let mut builder = Builder::default_centralized();
+        let mocks = Arc::clone(&mocks);
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
 
@@ -380,6 +379,7 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
             prefix.to_string(),
             DEFAULT_READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+            DEFAULT_SCAN_COUNT,
         )
         .unwrap()
     };
@@ -417,6 +417,7 @@ async fn upload_empty_data() -> Result<(), Error> {
         String::new(),
         DEFAULT_READ_CHUNK_SIZE,
         DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+        DEFAULT_SCAN_COUNT,
     )
     .unwrap();
 
@@ -446,6 +447,7 @@ async fn upload_empty_data_with_prefix() -> Result<(), Error> {
         prefix.to_string(),
         DEFAULT_READ_CHUNK_SIZE,
         DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+        DEFAULT_SCAN_COUNT,
     )
     .unwrap();
 
@@ -547,7 +549,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
     let store = {
         let mut builder = Builder::default_centralized();
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
 
@@ -560,6 +562,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
             String::new(),
             READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+            DEFAULT_SCAN_COUNT,
         )
         .unwrap()
     };
@@ -699,8 +702,9 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
 
     let store = {
         let mut builder = Builder::default_centralized();
+        let mocks = Arc::clone(&mocks);
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
 
@@ -713,6 +717,7 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
             String::new(),
             DEFAULT_READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+            DEFAULT_SCAN_COUNT,
         )
         .unwrap()
     };
@@ -790,7 +795,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
     let store = {
         let mut builder = Builder::default_centralized();
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::clone(&mocks) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
 
@@ -803,6 +808,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
             String::new(),
             DEFAULT_READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+            DEFAULT_SCAN_COUNT,
         )
         .unwrap()
     };
@@ -813,13 +819,73 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
     Ok(())
 }
 
-// Prevent regressions to https://reviewable.io/reviews/TraceMachina/nativelink/1188#-O2pu9LV5ux4ILuT6MND
 #[nativelink_test]
-async fn dont_loop_forever_on_empty() -> Result<(), Error> {
+async fn list_test() -> Result<(), Error> {
+    async fn get_list(
+        store: &RedisStore,
+        range: impl RangeBounds<StoreKey<'static>> + Send + Sync + 'static,
+    ) -> Vec<StoreKey<'static>> {
+        let mut found_keys = vec![];
+        store
+            .list(range, |key| {
+                found_keys.push(key.borrow().into_owned());
+                true
+            })
+            .await
+            .unwrap();
+        found_keys
+    }
+
+    const KEY1: StoreKey = StoreKey::new_str("key1");
+    const KEY2: StoreKey = StoreKey::new_str("key2");
+    const KEY3: StoreKey = StoreKey::new_str("key3");
+
+    let command = MockCommand {
+        cmd: Str::from_static("SCAN"),
+        subcommand: None,
+        args: vec![
+            RedisValue::String(Str::from_static("0")),
+            RedisValue::String(Str::from_static("MATCH")),
+            RedisValue::String(Str::from_static("key*")),
+            RedisValue::String(Str::from_static("COUNT")),
+            RedisValue::Integer(10000),
+        ],
+    };
+    let command_open = MockCommand {
+        cmd: Str::from_static("SCAN"),
+        subcommand: None,
+        args: vec![
+            RedisValue::String(Str::from_static("0")),
+            RedisValue::String(Str::from_static("MATCH")),
+            RedisValue::String(Str::from_static("*")),
+            RedisValue::String(Str::from_static("COUNT")),
+            RedisValue::Integer(10000),
+        ],
+    };
+    let result = Ok(RedisValue::Array(vec![
+        RedisValue::String(Str::from_static("0")),
+        RedisValue::Array(vec![
+            RedisValue::String(Str::from_static("key1")),
+            RedisValue::String(Str::from_static("key2")),
+            RedisValue::String(Str::from_static("key3")),
+        ]),
+    ]));
+
+    let mocks = Arc::new(MockRedisBackend::new());
+    mocks
+        .expect(command_open.clone(), result.clone())
+        .expect(command_open.clone(), result.clone())
+        .expect(command.clone(), result.clone())
+        .expect(command.clone(), result.clone())
+        .expect(command.clone(), result.clone())
+        .expect(command_open.clone(), result.clone())
+        .expect(command.clone(), result.clone())
+        .expect(command_open, result);
+
     let store = {
         let mut builder = Builder::default_centralized();
         builder.set_config(RedisConfig {
-            mocks: Some(Arc::new(MockRedisBackend::new()) as Arc<dyn Mocks>),
+            mocks: Some(mocks),
             ..Default::default()
         });
 
@@ -832,6 +898,67 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
             String::new(),
             DEFAULT_READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+            DEFAULT_SCAN_COUNT,
+        )
+        .unwrap()
+    };
+
+    // Test listing all keys.
+    let keys = get_list(&store, ..).await;
+    assert_eq!(keys, vec![KEY1, KEY2, KEY3]);
+
+    // Test listing from key1 to all.
+    let keys = get_list(&store, KEY1..).await;
+    assert_eq!(keys, vec![KEY1, KEY2, KEY3]);
+
+    // Test listing from key1 to key2.
+    let keys = get_list(&store, KEY1..KEY2).await;
+    assert_eq!(keys, vec![KEY1]);
+
+    // Test listing from key1 including key2.
+    let keys = get_list(&store, KEY1..=KEY2).await;
+    assert_eq!(keys, vec![KEY1, KEY2]);
+
+    // Test listing from key1 to key3.
+    let keys = get_list(&store, KEY1..KEY3).await;
+    assert_eq!(keys, vec![KEY1, KEY2]);
+
+    // Test listing from all to key2.
+    let keys = get_list(&store, ..KEY2).await;
+    assert_eq!(keys, vec![KEY1]);
+
+    // Test listing from key2 to key3.
+    let keys = get_list(&store, KEY2..KEY3).await;
+    assert_eq!(keys, vec![KEY2]);
+
+    // Test listing with reversed bounds.
+    let keys = get_list(&store, KEY3..=KEY1).await;
+    assert_eq!(keys, vec![]);
+
+    Ok(())
+}
+
+// Prevent regressions to https://reviewable.io/reviews/TraceMachina/nativelink/1188#-O2pu9LV5ux4ILuT6MND
+#[nativelink_test]
+async fn dont_loop_forever_on_empty() -> Result<(), Error> {
+    let store = {
+        let mut builder = Builder::default_centralized();
+        let mocks = Arc::new(MockRedisBackend::new());
+        builder.set_config(RedisConfig {
+            mocks: Some(mocks),
+            ..Default::default()
+        });
+
+        let (client_pool, subscriber_client) = make_clients(builder);
+        RedisStore::new_from_builder_and_parts(
+            client_pool,
+            subscriber_client,
+            None,
+            mock_uuid_generator,
+            String::new(),
+            DEFAULT_READ_CHUNK_SIZE,
+            DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+            DEFAULT_SCAN_COUNT,
         )
         .unwrap()
     };
@@ -853,73 +980,3 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
 
     Ok(())
 }
-
-#[nativelink_test]
-async fn test_redis_fingerprint_metric() -> Result<(), Error> {
-    let expected_fingerprint_value: String = String::from("3e762c15");
-
-    let store_manager = Arc::new(StoreManager::new());
-
-    {
-        let store = {
-            let mut builder = Builder::default_centralized();
-            builder.set_config(RedisConfig {
-                mocks: Some(Arc::new(MockRedisBackend::new()) as Arc<dyn Mocks>),
-                ..Default::default()
-            });
-
-            let (client_pool, subscriber_client) = make_clients(builder);
-            Store::new(Arc::new(
-                RedisStore::new_from_builder_and_parts(
-                    client_pool,
-                    subscriber_client,
-                    None,
-                    mock_uuid_generator,
-                    String::new(),
-                    DEFAULT_READ_CHUNK_SIZE,
-                    DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
-                )
-                .unwrap(),
-            ))
-        };
-
-        store_manager.add_store("redis_store", store);
-    };
-
-    let root_metrics = Arc::new(RwLock::new(RootMetricsTest {
-        stores: store_manager.clone(),
-    }));
-
-    let (layer, output_metrics) = MetricsCollectorLayer::new();
-
-    tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
-        let metrics_component = root_metrics.read();
-        MetricsComponent::publish(
-            &*metrics_component,
-            MetricKind::Component,
-            MetricFieldData::default(),
-        )
-    })
-    .unwrap();
-
-    let output_json_data = to_string(&*output_metrics.lock()).unwrap();
-
-    let parsed_output: Value = from_str(&output_json_data).unwrap();
-
-    let fingerprint_create_index = parsed_output["stores"]["redis_store"]
-        ["fingerprint_create_index"]
-        .as_str()
-        .expect("fingerprint_create_index should be a hex string");
-
-    assert_eq!(fingerprint_create_index, expected_fingerprint_value);
-
-    Ok(())
-}
-
-#[derive(MetricsComponent)]
-struct RootMetricsTest {
-    #[metric(group = "stores")]
-    stores: Arc<dyn RootMetricsComponent>,
-}
-
-impl RootMetricsComponent for RootMetricsTest {}

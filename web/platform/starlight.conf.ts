@@ -13,11 +13,18 @@ export const starlightConfig = {
     dark: "/src/assets/logo-dark.svg",
     replacesTitle: true,
   },
-  social: {
-    github: "https://github.com/TraceMachina/nativelink",
-    slack:
-      "https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A",
-  },
+  social: [
+    {
+      icon: "github",
+      label: "GitHub",
+      href: "https://github.com/TraceMachina/nativelink",
+    },
+    {
+      icon: "slack",
+      label: "Slack",
+      href: "https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A",
+    },
+  ],
   customCss: [
     "/styles/tailwind.css",
     "/styles/landing.css",
@@ -30,6 +37,7 @@ export const starlightConfig = {
       },
     }),
   ],
+  routeMiddleware: "./src/routeData.ts",
   sidebar: [
     // The documentation structure follows the Diátaxis framework.
     // See https://diataxis.fr/ for details.
@@ -91,6 +99,10 @@ export const starlightConfig = {
         {
           label: "Classic RBE Examples",
           link: `${docsRoot}/rbe/remote-execution-examples`,
+        },
+        {
+          label: "Nix templates",
+          link: `${docsRoot}/rbe/nix-templates`,
         },
       ],
     },
@@ -212,6 +224,10 @@ export const starlightConfig = {
         {
           label: "Working on documentation",
           link: `${docsRoot}/contribute/docs`,
+        },
+        {
+          label: "Working on the native CLI",
+          link: `${docsRoot}/contribute/native-cli`,
         },
         {
           label: "Develop with Nix",

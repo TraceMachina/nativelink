@@ -12,27 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::future::Future;
+use core::ops::Bound;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use std::collections::HashMap;
-use std::future::Future;
-use std::ops::Bound;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex;
 use futures::task::Poll;
-use futures::{poll, Stream, StreamExt};
+use futures::{Stream, StreamExt, poll};
 use mock_instant::thread_local::{MockClock, SystemTime as MockSystemTime};
 use nativelink_config::schedulers::{PropertyType, SimpleSpec};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function, ExecuteRequest, Platform,
+    ExecuteRequest, Platform, digest_function,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
+    ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
 };
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
@@ -44,7 +45,7 @@ use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
-    NameOrPath, OperationId, SymlinkInfo, WorkerId, INTERNAL_ERROR_EXIT_CODE,
+    INTERNAL_ERROR_EXIT_CODE, NameOrPath, OperationId, SymlinkInfo, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
@@ -54,8 +55,8 @@ use nativelink_util::operation_state_manager::{
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
-use tokio::sync::{mpsc, Notify};
-use utils::scheduler_utils::{make_base_action_info, INSTANCE_NAME};
+use tokio::sync::{Notify, mpsc};
+use utils::scheduler_utils::{INSTANCE_NAME, make_base_action_info};
 
 mod utils {
     pub(crate) mod scheduler_utils;
@@ -508,7 +509,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     }
 
     // Now remove worker.
-    let _ = scheduler.remove_worker(&worker_id1).await;
+    drop(scheduler.remove_worker(&worker_id1).await);
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
 
     {
@@ -656,7 +657,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
     let worker_id2 = WorkerId("worker2".to_string());
 
     let mut prop_defs = HashMap::new();
-    prop_defs.insert("prop".to_string(), PropertyType::exact);
+    prop_defs.insert("prop".to_string(), PropertyType::Exact);
 
     let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
@@ -853,7 +854,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         let mut client3_action_listener =
             setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp3).await?;
         let (action_state, _maybe_origin_metadata) =
-            client3_action_listener.changed().await.unwrap().clone();
+            client3_action_listener.changed().await.unwrap();
         expected_action_state.client_operation_id = action_state.client_operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -903,8 +904,8 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
     Ok(())
 }
 
-// TODO(allada) These should be gneralized and expanded for more tests.
-pub struct MockAwaitedActionSubscriber {}
+// TODO(aaronmondal) These should be gneralized and expanded for more tests.
+struct MockAwaitedActionSubscriber {}
 impl AwaitedActionSubscriber for MockAwaitedActionSubscriber {
     async fn changed(&mut self) -> Result<AwaitedAction, Error> {
         unreachable!();
@@ -1515,12 +1516,14 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
             ActionStage::Executing
         );
     }
-    let _ = setup_new_worker(
-        &scheduler,
-        rogue_worker_id.clone(),
-        PlatformProperties::default(),
-    )
-    .await?;
+    drop(
+        setup_new_worker(
+            &scheduler,
+            rogue_worker_id.clone(),
+            PlatformProperties::default(),
+        )
+        .await?,
+    );
 
     let action_result = ActionResult {
         output_files: Vec::default(),
@@ -1729,7 +1732,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     let worker_id = WorkerId("worker_id".to_string());
 
     let mut supported_props = HashMap::new();
-    supported_props.insert("prop1".to_string(), PropertyType::minimum);
+    supported_props.insert("prop1".to_string(), PropertyType::Minimum);
     let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &SimpleSpec {
@@ -1895,7 +1898,7 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());
 
     let mut supported_props = HashMap::new();
-    supported_props.insert("prop1".to_string(), PropertyType::minimum);
+    supported_props.insert("prop1".to_string(), PropertyType::Minimum);
     let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &SimpleSpec {
@@ -2002,13 +2005,15 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         OperationId::from(operation_id.as_str())
     };
 
-    let _ = scheduler
-        .update_action(
-            &worker_id,
-            &operation_id,
-            UpdateOperationType::UpdateWithError(make_err!(Code::Internal, "Some error")),
-        )
-        .await;
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(Code::Internal, "Some error")),
+            )
+            .await,
+    );
 
     {
         // Client should get notification saying it has been queued again.
@@ -2040,13 +2045,15 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
 
     let err = make_err!(Code::Internal, "Some error");
     // Send internal error from worker again.
-    let _ = scheduler
-        .update_action(
-            &worker_id,
-            &operation_id,
-            UpdateOperationType::UpdateWithError(err.clone()),
-        )
-        .await;
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(err.clone()),
+            )
+            .await,
+    );
 
     {
         // Client should get notification saying it has been queued again.
@@ -2084,14 +2091,16 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         if let ActionStage::Completed(stage) = &mut received_state.stage {
             if let Some(real_err) = &mut stage.error {
                 assert!(
-                    real_err.to_string().contains("Job cancelled because it attempted to execute too many times"),
+                    real_err
+                        .to_string()
+                        .contains("Job cancelled because it attempted to execute too many times"),
                     "{real_err} did not contain 'Job cancelled because it attempted to execute too many times'",
                 );
                 *real_err = err;
             }
         } else {
             panic!("Expected Completed, got : {:?}", action_state.stage);
-        };
+        }
         assert_eq!(received_state, expected_action_state);
     }
 
@@ -2201,13 +2210,15 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         OperationId::from(operation_id.as_str())
     };
 
-    let _ = scheduler
-        .update_action(
-            &worker_id1,
-            &operation_id,
-            UpdateOperationType::UpdateWithError(make_err!(Code::NotFound, "Some error")),
-        )
-        .await;
+    drop(
+        scheduler
+            .update_action(
+                &worker_id1,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(Code::NotFound, "Some error")),
+            )
+            .await,
+    );
 
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
 

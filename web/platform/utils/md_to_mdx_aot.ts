@@ -1,4 +1,4 @@
-import { transformMarkdownToMdx } from "./md_to_mdx";
+import { transformMarkdownToMdx } from "./md_to_mdx.ts";
 
 async function readMarkdownFile(filePath: string): Promise<string> {
   try {
@@ -99,6 +99,22 @@ const filesToConvert: ConvertFileType[] = [
       description: "Get started with NativeLink",
       pagefind: true,
       assets: [`${assetsDir}/logo-dark.svg`, `${assetsDir}/logo-light.svg`],
+    },
+  },
+  {
+    input: `${rootDir}/templates/README.md`,
+    output: `${docsDir}/rbe/templates.mdx`,
+    docs: {
+      title: "Templates",
+      description: "Templates",
+    },
+  },
+  {
+    input: `${rootDir}/templates/bazel/README.md`,
+    output: `${docsDir}/rbe/templates-bazel.mdx`,
+    docs: {
+      title: "Bazel Config",
+      description: "Bazel Config",
     },
   },
 ];
