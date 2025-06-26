@@ -42,7 +42,6 @@ futures = { version = "0.3.31", default-features = false }
 hyper = "1.6.0"
 hyper-util = "0.1.11"
 mimalloc = "0.1.44"
-mongodb = { version = "2.8", features = ["tokio-runtime"] }
 opentelemetry = { version = "0.29.1", default-features = false }
 opentelemetry_sdk = { version = "0.29.0", default-features = false }
 parking_lot = "0.12.3"
