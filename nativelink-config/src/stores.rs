@@ -1196,7 +1196,7 @@ pub struct ExperimentalMongoSpec {
 
     /// The maximum amount of data to read from MongoDB in a single chunk (in bytes).
     /// Default: 65536 (64KB)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub read_chunk_size: usize,
 
     /// Maximum number of concurrent uploads allowed.
