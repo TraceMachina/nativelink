@@ -202,4 +202,13 @@ in {
     args = ["--strict"];
     files = "renovate.json5";
   };
+
+  # Detect unused cargo deps
+  machete = {
+    description = "Detect unused cargo deps";
+    enable = true;
+    entry = "${pkgs.cargo-machete}/bin/cargo-machete";
+    args = ["."];
+    pass_filenames = false;
+  };
 }
