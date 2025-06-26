@@ -37,7 +37,7 @@
         cas_collection: "cas_data",
         scheduler_collection: "scheduler_data",
         key_prefix: "prod:",
-        read_chunk_size: 131072, // 128KB chunks
+        read_chunk_size: "128kb",
         max_concurrent_uploads: 20,
         enable_change_streams: true,
         write_concern_w: "majority",
