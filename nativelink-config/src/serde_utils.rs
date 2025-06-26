@@ -23,6 +23,10 @@ use serde::{Deserialize, Deserializer, de};
 
 /// Helper for serde macro so you can use shellexpand variables in the json configuration
 /// files when the number is a numeric type.
+///
+/// # Errors
+///
+/// Will return `Err` if deserialization fails.
 pub fn convert_numeric_with_shellexpand<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
@@ -63,6 +67,10 @@ where
 }
 
 /// Same as `convert_numeric_with_shellexpand`, but supports `Option<T>`.
+///
+/// # Errors
+///
+/// Will return `Err` if deserialization fails.
 pub fn convert_optional_numeric_with_shellexpand<'de, D, T>(
     deserializer: D,
 ) -> Result<Option<T>, D::Error>
@@ -133,6 +141,10 @@ where
 /// - `null` becomes `None`
 /// - Missing field becomes `None`
 /// - Whitespace is preserved
+///
+/// # Errors
+///
+/// Will return `Err` if deserialization fails.
 pub fn convert_string_with_shellexpand<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<String, D::Error> {
@@ -141,6 +153,10 @@ pub fn convert_string_with_shellexpand<'de, D: Deserializer<'de>>(
 }
 
 /// Same as `convert_string_with_shellexpand`, but supports `Vec<String>`.
+///
+/// # Errors
+///
+/// Will return `Err` if deserialization fails.
 pub fn convert_vec_string_with_shellexpand<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<String>, D::Error> {
@@ -155,6 +171,10 @@ pub fn convert_vec_string_with_shellexpand<'de, D: Deserializer<'de>>(
 }
 
 /// Same as `convert_string_with_shellexpand`, but supports `Option<String>`.
+///
+/// # Errors
+///
+/// Will return `Err` if deserialization fails.
 pub fn convert_optional_string_with_shellexpand<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
@@ -168,6 +188,9 @@ pub fn convert_optional_string_with_shellexpand<'de, D: Deserializer<'de>>(
     }
 }
 
+/// # Errors
+///
+/// Will return `Err` if deserialization fails.
 pub fn convert_data_size_with_shellexpand<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
@@ -195,7 +218,8 @@ where
             if v < 0 {
                 return Err(de::Error::custom("Negative data size is not allowed"));
             }
-            T::try_from(v as u128).map_err(de::Error::custom)
+            let v_u128 = u128::try_from(v).map_err(de::Error::custom)?;
+            T::try_from(v_u128).map_err(de::Error::custom)
         }
 
         fn visit_u128<E: de::Error>(self, v: u128) -> Result<Self::Value, E> {
@@ -206,7 +230,8 @@ where
             if v < 0 {
                 return Err(de::Error::custom("Negative data size is not allowed"));
             }
-            T::try_from(v as u128).map_err(de::Error::custom)
+            let v_u128 = u128::try_from(v).map_err(de::Error::custom)?;
+            T::try_from(v_u128).map_err(de::Error::custom)
         }
 
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
@@ -221,6 +246,9 @@ where
     deserializer.deserialize_any(DataSizeVisitor::<T>(PhantomData))
 }
 
+/// # Errors
+///
+/// Will return `Err` if deserialization fails.
 pub fn convert_duration_with_shellexpand<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
@@ -248,7 +276,8 @@ where
             if v < 0 {
                 return Err(de::Error::custom("Negative duration is not allowed"));
             }
-            T::try_from(v as u64).map_err(de::Error::custom)
+            let v_u64 = u64::try_from(v).map_err(de::Error::custom)?;
+            T::try_from(v_u64).map_err(de::Error::custom)
         }
 
         fn visit_u128<E: de::Error>(self, v: u128) -> Result<Self::Value, E> {

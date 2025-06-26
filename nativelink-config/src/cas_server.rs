@@ -824,6 +824,9 @@ pub struct CasConfig {
 }
 
 impl CasConfig {
+    /// # Errors
+    ///
+    /// Will return `Err` if we can't load the file.
     pub fn try_from_json5_file(config_file: &str) -> Result<Self, Error> {
         let json_contents = std::fs::read_to_string(config_file)
             .err_tip(|| format!("Could not open config file {config_file}"))?;

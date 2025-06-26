@@ -3,7 +3,7 @@ disallowed-methods = [
   { path = "std::thread::spawn", reason = "use one of the `nativelink-util::task` functions instead" },
   { path = "tokio::runtime::Builder::new_current_thread", reason = "use one of the `nativelink-util::task` functions instead" },
   { path = "tokio::runtime::Builder::new_multi_thread", reason = "use one of the `nativelink-util::task` functions instead" },
-  { path = "tokio::runtime::Builder::new_multi_thread_alt", reason = "use one of the `nativelink-util::task` functions instead" },
+  { path = "tokio::runtime::Builder::new_multi_thread_alt", reason = "use one of the `nativelink-util::task` functions instead", allow-invalid = true }, # Can be invalid because depends on feature flags
   { path = "tokio::runtime::Runtime::block_on", reason = "use one of the `nativelink-util::task` functions instead" },
   { path = "tokio::runtime::Runtime::new", reason = "use one of the `nativelink-util::task` functions instead" },
   { path = "tokio::runtime::Runtime::spawn", reason = "use one of the `nativelink-util::task` functions instead" },
@@ -14,3 +14,4 @@ disallowed-methods = [
   { path = "tokio::task::spawn_blocking", reason = "use `nativelink-util::task::spawn_blocking` instead" },
   { path = "tokio::task::spawn_local", reason = "use one of the `nativelink-util::task` functions instead" },
 ]
+msrv = "1.87.0"

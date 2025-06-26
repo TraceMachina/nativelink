@@ -231,6 +231,7 @@ mod optional_values_tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn test_optional_numeric_large_numbers() {
         // Test i64::MAX for optional numeric
         let input = r#"{"value": "9223372036854775807"}"#;

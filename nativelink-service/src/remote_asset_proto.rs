@@ -17,14 +17,14 @@ impl RemoteAssetQuery {
         Self { uri, qualifiers }
     }
 
-    pub fn digest(self: &Self) -> DigestInfo {
+    pub fn digest(&self) -> DigestInfo {
         let mut hasher = DigestHasherFunc::Blake3.hasher();
         hasher.update(self.uri.as_bytes());
         for qualifier in &self.qualifiers {
             hasher.update(qualifier.name.as_bytes());
             hasher.update(qualifier.value.as_bytes());
         }
-        return hasher.finalize_digest();
+        hasher.finalize_digest()
     }
 }
 
@@ -66,18 +66,18 @@ impl RemoteAssetArtifact {
         }
     }
 
-    pub fn digest(self: &Self) -> DigestInfo {
+    pub fn digest(&self) -> DigestInfo {
         let mut hasher = DigestHasherFunc::Blake3.hasher();
         hasher.update(self.uri.as_bytes());
         for qualifier in &self.qualifiers {
             hasher.update(qualifier.name.as_bytes());
             hasher.update(qualifier.value.as_bytes());
         }
-        return hasher.finalize_digest();
+        hasher.finalize_digest()
     }
 
-    pub fn as_bytes(self: &Self) -> Bytes {
+    pub fn as_bytes(&self) -> Bytes {
         let encoded_asset = self.encode_to_vec();
-        return Bytes::from_owner(encoded_asset);
+        Bytes::from_owner(encoded_asset)
     }
 }
