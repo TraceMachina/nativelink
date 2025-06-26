@@ -51,7 +51,6 @@ use nativelink_util::{default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
 use parking_lot::Mutex;
 use prost::Message;
-use rand::Rng;
 use tokio::time::sleep;
 use tonic::{IntoRequest, Request, Response, Status, Streaming};
 use tracing::error;
@@ -71,24 +70,12 @@ pub struct GrpcStore {
 
 impl GrpcStore {
     pub async fn new(spec: &GrpcSpec) -> Result<Arc<Self>, Error> {
-        let jitter_amt = spec.retry.jitter;
-        Self::new_with_jitter(
-            spec,
-            Box::new(move |delay: Duration| {
-                if jitter_amt == 0. {
-                    return delay;
-                }
-                let min = 1. - (jitter_amt / 2.);
-                let max = 1. + (jitter_amt / 2.);
-                delay.mul_f32(rand::rng().random_range(min..max))
-            }),
-        )
-        .await
+        Self::new_with_jitter(spec, spec.retry.make_jitter_fn()).await
     }
 
     pub async fn new_with_jitter(
         spec: &GrpcSpec,
-        jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
+        jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Arc<Self>, Error> {
         error_if!(
             spec.endpoints.is_empty(),
@@ -101,7 +88,6 @@ impl GrpcStore {
             endpoints.push(endpoint);
         }
 
-        let jitter_fn = Arc::new(jitter_fn);
         Ok(Arc::new(Self {
             instance_name: spec.instance_name.clone(),
             store_type: spec.store_type,
