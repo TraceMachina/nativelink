@@ -58,7 +58,7 @@
         },
         slow: {
           size_partitioning: {
-            size: 65536, // 64KB
+            size: "64kb",
             lower_store: {
               ref_store: {
                 name: "MONGO_CAS", // Small objects
