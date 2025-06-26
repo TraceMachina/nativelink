@@ -28,7 +28,6 @@ nix = ["nativelink-worker/nix"]
 [dependencies]
 nativelink-config = { path = "nativelink-config" }
 nativelink-error = { path = "nativelink-error" }
-nativelink-metric = { path = "nativelink-metric" }
 nativelink-scheduler = { path = "nativelink-scheduler" }
 nativelink-service = { path = "nativelink-service" }
 nativelink-store = { path = "nativelink-store" }
@@ -42,14 +41,9 @@ futures = { version = "0.3.31", default-features = false }
 hyper = "1.6.0"
 hyper-util = "0.1.11"
 mimalloc = "0.1.44"
-opentelemetry = { version = "0.29.1", default-features = false }
-opentelemetry_sdk = { version = "0.29.0", default-features = false }
-parking_lot = "0.12.3"
 rustls-pemfile = { version = "2.2.0", features = [
   "std",
 ], default-features = false }
-scopeguard = { version = "1.2.0", default-features = false }
-serde_json5 = "0.2.1"
 tokio = { version = "1.44.1", features = [
   "fs",
   "io-util",
@@ -65,7 +59,6 @@ tonic = { version = "0.13.0", features = [
 ], default-features = false }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
-tracing-subscriber = { version = "0.3.19", default-features = false }
 
 [workspace.cargo-features-manager.keep]
 async-lock = ["std"]
