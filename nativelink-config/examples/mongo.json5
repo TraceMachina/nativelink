@@ -93,6 +93,23 @@
         worker_timeout_s: 300,
       },
     },
+    {
+      // Example of a scheduler using MongoDB backend for state management
+      name: "MONGO_BACKED_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_arch: "minimum",
+          OS: "exact",
+        },
+        max_job_retries: 3,
+        worker_timeout_s: 300,
+        experimental_backend: {
+          mongo: {
+            mongo_store: "MONGO_SCHEDULER",
+          },
+        },
+      },
+    },
   ],
   servers: [
     {

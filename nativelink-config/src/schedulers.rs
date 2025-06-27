@@ -138,6 +138,8 @@ pub enum ExperimentalSimpleSchedulerBackend {
     Memory,
     /// Use a redis store for the scheduler.
     Redis(ExperimentalRedisSchedulerBackend),
+    /// Use a mongodb store for the scheduler.
+    Mongo(ExperimentalMongoSchedulerBackend),
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -146,6 +148,14 @@ pub struct ExperimentalRedisSchedulerBackend {
     /// A reference to the redis store to use for the scheduler.
     /// Note: This MUST resolve to a `RedisSpec`.
     pub redis_store: StoreRefName,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalMongoSchedulerBackend {
+    /// A reference to the mongo store to use for the scheduler.
+    /// Note: This MUST resolve to a `ExperimentalMongoSpec`.
+    pub mongo_store: StoreRefName,
 }
 
 /// A scheduler that simply forwards requests to an upstream scheduler.  This
