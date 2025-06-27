@@ -636,7 +636,7 @@ pub trait StoreDriver:
         let inner_store = self.inner_store(Some(key.borrow()));
         if inner_store.optimized_for(StoreOptimizations::FileUpdates) {
             error_if!(
-                addr_eq(inner_store, &*self),
+                addr_eq(inner_store, &raw const *self),
                 "Store::inner_store() returned self when optimization present"
             );
             return Pin::new(inner_store)
