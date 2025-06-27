@@ -386,12 +386,7 @@ async fn inner_main(
                         .capabilities
                         .as_ref()
                         // Borrow checker fighting here...
-                        .map(|_| {
-                            CapabilitiesServer::new(
-                                services.capabilities.as_ref().unwrap(),
-                                &action_schedulers,
-                            )
-                        }),
+                        .map(|cfg| CapabilitiesServer::new(cfg, &action_schedulers)),
                 )
                 .await
                 .map_or(Ok::<Option<CapabilitiesServer>, Error>(None), |server| {
