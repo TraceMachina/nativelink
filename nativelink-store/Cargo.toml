@@ -67,7 +67,9 @@ hyper-rustls = { version = "0.27.5", default-features = false, features = [
 ] }
 hyper-util = { version = "0.1.11", default-features = false }
 lz4_flex = { version = "0.11.3", default-features = false }
-mongodb = { version = "2.8", features = ["tokio-runtime"] }
+mongodb = { version = "2.8", features = [
+  "tokio-runtime",
+], default-features = false }
 opentelemetry = { version = "0.29.1", default-features = false }
 parking_lot = "0.12.3"
 patricia_tree = { version = "0.9.0", default-features = false }

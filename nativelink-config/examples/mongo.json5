@@ -8,7 +8,7 @@
         database: "nativelink",
         cas_collection: "cas",
         key_prefix: "cas:",
-        read_chunk_size: 65536,
+        read_chunk_size: "64kb",
         max_concurrent_uploads: 10,
         connection_timeout_ms: 3000,
         command_timeout_ms: 10000,
@@ -52,7 +52,7 @@
         fast: {
           memory: {
             eviction_policy: {
-              max_bytes: 1073741824, // 1GB
+              max_bytes: "1gb",
             },
           },
         },

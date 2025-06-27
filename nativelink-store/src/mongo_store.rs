@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2025 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -45,7 +45,6 @@ use patricia_tree::StringPatriciaMap;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
 
@@ -97,10 +96,6 @@ pub struct ExperimentalMongoStore {
 
     /// The collection for scheduler data.
     scheduler_collection: Collection<Document>,
-
-    /// A function used to generate names for temporary keys.
-    #[allow(dead_code)]
-    temp_name_generator_fn: fn() -> String,
 
     /// A common prefix to append to all keys before they are sent to `MongoDB`.
     #[metric(help = "Prefix to append to all keys before sending to MongoDB")]
@@ -202,6 +197,11 @@ impl ExperimentalMongoStore {
             };
 
             client_options.write_concern = Some(write_concern);
+        } else if spec.write_concern_j.is_some() || spec.write_concern_timeout_ms.is_some() {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "write_concern_w not set, but j and/or timeout set. Please set 'write_concern_w' to a non-default value. See https://www.mongodb.com/docs/manual/reference/write-concern/#w-option for options."
+            ));
         }
 
         // Create client
@@ -225,7 +225,6 @@ impl ExperimentalMongoStore {
             database,
             cas_collection,
             scheduler_collection,
-            temp_name_generator_fn: || Uuid::new_v4().to_string(),
             key_prefix: spec.key_prefix.clone().unwrap_or_default(),
             read_chunk_size: spec.read_chunk_size,
             max_concurrent_uploads: spec.max_concurrent_uploads,

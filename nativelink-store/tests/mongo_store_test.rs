@@ -41,7 +41,7 @@ const VALID_HASH1: &str = "30313233343536373839616263646566303030303030303030303
 /// Creates a test `MongoDB` specification.
 /// Note: These tests are designed to work with a real `MongoDB` instance.
 /// For CI/local development, ensure `MongoDB` is available or skip these tests.
-fn create_test_spec() -> ExperimentalMongoSpec {
+fn create_test_spec_with_key_prefix(key_prefix: Option<String>) -> ExperimentalMongoSpec {
     // Default connection string for CI - empty string will require env var
     let default_connection = String::new();
 
@@ -60,7 +60,7 @@ fn create_test_spec() -> ExperimentalMongoSpec {
         ),
         cas_collection: "test_cas".to_string(),
         scheduler_collection: "test_scheduler".to_string(),
-        key_prefix: Some("test:".to_string()),
+        key_prefix,
         read_chunk_size: 1024,
         max_concurrent_uploads: 10,
         connection_timeout_ms: 10000, // Longer timeout for remote DB
@@ -72,6 +72,10 @@ fn create_test_spec() -> ExperimentalMongoSpec {
     }
 }
 
+fn create_test_spec() -> ExperimentalMongoSpec {
+    create_test_spec_with_key_prefix(Some("test:".to_string()))
+}
+
 /// Test helper that manages `MongoDB` database lifecycle
 #[derive(Debug)]
 pub struct TestMongoHelper {
@@ -79,10 +83,25 @@ pub struct TestMongoHelper {
     pub database_name: String,
 }
 
+fn non_ci_test_store_access() {
+    // Check if this is a local development environment without credentials
+    let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
+
+    if !is_ci {
+        eprintln!("\n🔒 MongoDB tests require access to the NativeLink test database.");
+        eprintln!("   For local development access, please email: marcus@tracemachina.com");
+        eprintln!("   ");
+        eprintln!("   Alternatively, you can set NATIVELINK_TEST_MONGO_URL environment variable");
+        eprintln!("   with your own MongoDB connection string.");
+        eprintln!("   ");
+        eprintln!("   Skipping MongoDB tests for now...\n");
+    }
+}
+
 impl TestMongoHelper {
     /// Creates a new test store and database
-    async fn new() -> Result<Self, Error> {
-        let spec = create_test_spec();
+    async fn new(key_prefix: Option<String>) -> Result<Self, Error> {
+        let spec = create_test_spec_with_key_prefix(key_prefix);
 
         // Check if we have a connection string
         if spec.connection_string.is_empty() {
@@ -103,28 +122,14 @@ impl TestMongoHelper {
     }
 
     /// Creates a test helper, skipping if `MongoDB` is not available
-    async fn new_or_skip() -> Result<Self, Error> {
-        match Self::new().await {
+    async fn new_or_skip_with_key_prefix(key_prefix: Option<String>) -> Result<Self, Error> {
+        match Self::new(key_prefix).await {
             Ok(helper) => Ok(helper),
             Err(e) => {
-                // Check if this is a local development environment without credentials
-                let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
-
-                if !is_ci
-                    && e.code == Code::Unavailable
+                if e.code == Code::Unavailable
                     && e.messages[0].contains("connection string not provided")
                 {
-                    eprintln!("\n🔒 MongoDB tests require access to the NativeLink test database.");
-                    eprintln!(
-                        "   For local development access, please email: marcus@tracemachina.com"
-                    );
-                    eprintln!("   ");
-                    eprintln!(
-                        "   Alternatively, you can set NATIVELINK_TEST_MONGO_URL environment variable"
-                    );
-                    eprintln!("   with your own MongoDB connection string.");
-                    eprintln!("   ");
-                    eprintln!("   Skipping MongoDB tests for now...\n");
+                    non_ci_test_store_access();
                 }
 
                 // Convert to a test skip-friendly error
@@ -138,6 +143,10 @@ impl TestMongoHelper {
                 }
             }
         }
+    }
+
+    async fn new_or_skip() -> Result<Self, Error> {
+        Self::new_or_skip_with_key_prefix(Some("test:".to_string())).await
     }
 }
 
@@ -157,20 +166,7 @@ async fn create_test_store() -> Result<Arc<ExperimentalMongoStore>, Error> {
 
     // Check if we have a connection string
     if spec.connection_string.is_empty() {
-        // Check if this is a local development environment without credentials
-        let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
-
-        if !is_ci {
-            eprintln!("\n🔒 MongoDB tests require access to the NativeLink test database.");
-            eprintln!("   For local development access, please email: marcus@tracemachina.com");
-            eprintln!("   ");
-            eprintln!(
-                "   Alternatively, you can set NATIVELINK_TEST_MONGO_URL environment variable"
-            );
-            eprintln!("   with your own MongoDB connection string.");
-            eprintln!("   ");
-            eprintln!("   Skipping MongoDB tests for now...\n");
-        }
+        non_ci_test_store_access();
 
         return Err(Error::new(
             Code::Unavailable,
@@ -224,9 +220,9 @@ async fn upload_and_get_data() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
+async fn upload_and_get_data_without_prefix() -> Result<(), Error> {
     // Create test helper with automatic cleanup
-    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
+    let Ok(helper) = TestMongoHelper::new_or_skip_with_key_prefix(None).await else {
         eprintln!("Skipping MongoDB test - MongoDB not available");
         return Ok(());
     };
@@ -1058,5 +1054,30 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
     );
 
     // Database will NOT be cleaned up - it's retained for inspection
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_non_w_config() -> Result<(), Error> {
+    assert_eq!(
+        Error::new(Code::InvalidArgument, "write_concern_w not set, but j and/or timeout set. Please set 'write_concern_w' to a non-default value. See https://www.mongodb.com/docs/manual/reference/write-concern/#w-option for options.".to_string()),
+        ExperimentalMongoStore::new(ExperimentalMongoSpec {
+            connection_string: "mongodb://dummy".to_string(),
+            database: "dummy".to_string(),
+            cas_collection: "test_cas".to_string(),
+            scheduler_collection: "test_scheduler".to_string(),
+            key_prefix: None,
+            read_chunk_size: 1024,
+            max_concurrent_uploads: 10,
+            connection_timeout_ms: 10000,
+            command_timeout_ms: 15000,
+            enable_change_streams: false,
+            write_concern_w: None,
+            write_concern_j: Some(true),
+            write_concern_timeout_ms: Some(1),
+        })
+        .await
+        .unwrap_err()
+    );
     Ok(())
 }
