@@ -190,12 +190,9 @@ async fn check_mongodb_available() -> Result<(), Error> {
 #[nativelink_test]
 async fn upload_and_get_data() -> Result<(), Error> {
     // Create test helper with automatic cleanup
-    let helper = match TestMongoHelper::new_or_skip().await {
-        Ok(h) => h,
-        Err(_) => {
-            eprintln!("Skipping MongoDB test - MongoDB not available");
-            return Ok(());
-        }
+    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
+        eprintln!("Skipping MongoDB test - MongoDB not available");
+        return Ok(());
     };
 
     // Construct the data we want to send.
@@ -229,12 +226,9 @@ async fn upload_and_get_data() -> Result<(), Error> {
 #[nativelink_test]
 async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
     // Create test helper with automatic cleanup
-    let helper = match TestMongoHelper::new_or_skip().await {
-        Ok(h) => h,
-        Err(_) => {
-            eprintln!("Skipping MongoDB test - MongoDB not available");
-            return Ok(());
-        }
+    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
+        eprintln!("Skipping MongoDB test - MongoDB not available");
+        return Ok(());
     };
 
     let data = Bytes::from_static(b"14");
@@ -284,6 +278,7 @@ async fn upload_empty_data() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+#[allow(clippy::items_after_statements)]
 async fn test_large_downloads_are_chunked() -> Result<(), Error> {
     // Skip test if MongoDB is not available
     if check_mongodb_available().await.is_err() {
@@ -322,6 +317,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+#[allow(clippy::items_after_statements)]
 async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
     // Skip test if MongoDB is not available
     if check_mongodb_available().await.is_err() {
@@ -510,12 +506,9 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
 #[nativelink_test]
 async fn test_partial_reads() -> Result<(), Error> {
     // Create test helper with automatic cleanup
-    let helper = match TestMongoHelper::new_or_skip().await {
-        Ok(h) => h,
-        Err(_) => {
-            eprintln!("Skipping MongoDB test - MongoDB not available");
-            return Ok(());
-        }
+    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
+        eprintln!("Skipping MongoDB test - MongoDB not available");
+        return Ok(());
     };
 
     let data = Bytes::from_static(b"Hello, MongoDB World!");
@@ -550,20 +543,14 @@ async fn test_database_lifecycle() -> Result<(), Error> {
     let database_name = spec.database.clone();
 
     // Skip if MongoDB is not available
-    let client_options = match ClientOptions::parse(&connection_string).await {
-        Ok(opts) => opts,
-        Err(_) => {
-            eprintln!("Skipping MongoDB test - MongoDB not available");
-            return Ok(());
-        }
+    let Ok(client_options) = ClientOptions::parse(&connection_string).await else {
+        eprintln!("Skipping MongoDB test - MongoDB not available");
+        return Ok(());
     };
 
-    let client = match MongoClient::with_options(client_options) {
-        Ok(c) => c,
-        Err(_) => {
-            eprintln!("Skipping MongoDB test - MongoDB not available");
-            return Ok(());
-        }
+    let Ok(client) = MongoClient::with_options(client_options) else {
+        eprintln!("Skipping MongoDB test - MongoDB not available");
+        return Ok(());
     };
 
     // Verify database doesn't exist initially
@@ -631,28 +618,26 @@ async fn test_database_lifecycle() -> Result<(), Error> {
         "Test database should still exist after drop (cleanup disabled)"
     );
 
-    eprintln!("Database '{}' retained for inspection", database_name);
+    eprintln!("Database '{database_name}' retained for inspection");
 
     Ok(())
 }
 
 #[nativelink_test]
+#[allow(clippy::use_debug)]
 async fn create_ten_cas_entries() -> Result<(), Error> {
     // Create test helper with automatic cleanup
-    let helper = match TestMongoHelper::new_or_skip().await {
-        Ok(h) => h,
-        Err(_) => {
-            eprintln!("Skipping MongoDB test - MongoDB not available");
-            return Ok(());
-        }
+    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
+        eprintln!("Skipping MongoDB test - MongoDB not available");
+        return Ok(());
     };
 
     eprintln!(
         "Creating 10 CAS entries in database: {}",
         helper.database_name
     );
-    eprintln!("CAS Collection: {}", "test_cas");
-    eprintln!("Key prefix: {:?}", "test:");
+    eprintln!("CAS Collection: test_cas");
+    eprintln!("Key prefix: test:");
 
     // Create 10 different CAS entries with unique content and proper digests
     for i in 0..10 {
@@ -673,7 +658,7 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
         hasher.update(&data);
         let digest = hasher.finalize_digest();
 
-        eprintln!("Entry #{}: Creating with digest: {}", i, digest);
+        eprintln!("Entry #{i}: Creating with digest: {digest}");
         eprintln!("  Content: {} bytes", data.len());
         eprintln!("  First 50 chars: {:?}", &data[..data.len().min(50)]);
 
@@ -684,9 +669,7 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
         let result = helper.store.has(digest).await?;
         assert!(
             result.is_some(),
-            "Expected mongo store to have hash for entry #{}: {}",
-            i,
-            digest
+            "Expected mongo store to have hash for entry #{i}: {digest}"
         );
 
         // Verify we can retrieve the data
@@ -695,12 +678,9 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
             .get_part_unchunked(digest, 0, Some(data.len() as u64))
             .await?;
 
-        assert_eq!(retrieved, data, "Data mismatch for entry #{}", i);
+        assert_eq!(retrieved, data, "Data mismatch for entry #{i}");
 
-        eprintln!(
-            "Successfully created CAS entry #{} with digest: {}",
-            i, digest
-        );
+        eprintln!("Successfully created CAS entry #{i} with digest: {digest}");
     }
 
     // Query MongoDB directly to verify entries were written
@@ -721,7 +701,7 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
         .await
         .map_err(|e| make_err!(Code::Internal, "Failed to count documents: {e}"))?;
 
-    eprintln!("Total documents in CAS collection: {}", count);
+    eprintln!("Total documents in CAS collection: {count}");
 
     // List first few documents
     let mut cursor = collection
@@ -738,9 +718,9 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
     {
         if doc_count < 3 {
             if let Ok(key) = doc.get_str("_id") {
-                eprintln!("  - Key: {}", key);
-                if let Some(size) = doc.get_i64("size").ok() {
-                    eprintln!("    Size: {} bytes", size);
+                eprintln!("  - Key: {key}");
+                if let Ok(size) = doc.get_i64("size") {
+                    eprintln!("    Size: {size} bytes");
                 }
             }
         }
@@ -751,7 +731,7 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
         "All 10 CAS entries created successfully in database: {}",
         helper.database_name
     );
-    eprintln!("Collections: {} and {}", "test_cas", "test_scheduler");
+    eprintln!("Collections: test_cas and test_scheduler");
 
     // Database will NOT be cleaned up - it's retained for inspection
     Ok(())
@@ -803,7 +783,7 @@ impl SchedulerStoreDecodeTo for TestSchedulerData {
         let content = String::from_utf8(data.to_vec())
             .map_err(|e| make_err!(Code::InvalidArgument, "Invalid UTF-8 data: {e}"))?;
         // We don't have the key in the data, so we'll use a placeholder
-        Ok(TestSchedulerData {
+        Ok(Self {
             key: "decoded".to_string(),
             content,
             version,
@@ -873,19 +853,16 @@ impl SchedulerStoreDecodeTo for TestIndexProvider {
 #[nativelink_test]
 async fn test_scheduler_store_operations() -> Result<(), Error> {
     // Create test helper
-    let helper = match TestMongoHelper::new_or_skip().await {
-        Ok(h) => h,
-        Err(_) => {
-            eprintln!("Skipping MongoDB test - MongoDB not available");
-            return Ok(());
-        }
+    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
+        eprintln!("Skipping MongoDB test - MongoDB not available");
+        return Ok(());
     };
 
     eprintln!(
         "Testing scheduler store operations in database: {}",
         helper.database_name
     );
-    eprintln!("Scheduler Collection: {}", "test_scheduler");
+    eprintln!("Scheduler Collection: test_scheduler");
 
     // Test 1: Basic update and retrieval
     {
@@ -903,7 +880,7 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
             .err_tip(|| "Failed to update scheduler data")?
             .ok_or_else(|| make_err!(Code::Internal, "Expected version from update"))?;
 
-        eprintln!("Created scheduler entry with version: {}", version);
+        eprintln!("Created scheduler entry with version: {version}");
 
         // Retrieve and decode the data using a key lookup
         let key = TestSchedulerKey("test:scheduler_key_1".to_string());
@@ -916,10 +893,7 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
 
         assert_eq!(retrieved.content, data.content);
         assert_eq!(retrieved.version, version);
-        eprintln!(
-            "Successfully retrieved scheduler data with version {}",
-            version
-        );
+        eprintln!("Successfully retrieved scheduler data with version {version}");
     }
 
     // Test 2: Versioned updates
@@ -947,7 +921,7 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
             .ok_or_else(|| make_err!(Code::Internal, "Expected version"))?;
 
         assert!(version2 > version1, "Version should increment");
-        eprintln!("Version updated from {} to {}", version1, version2);
+        eprintln!("Version updated from {version1} to {version2}");
 
         // Try update with wrong version (should fail)
         data.content = "This should fail".to_string();
@@ -960,17 +934,6 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
 
     // Test 3: Search by index
     {
-        // Create multiple entries with indexed data
-        for i in 0..5 {
-            let data = TestSchedulerData {
-                key: format!("test:search_key_{}", i),
-                content: format!("Searchable content #{}", i),
-                version: 0,
-            };
-
-            helper.store.update_data(data).await?;
-        }
-
         // Define a custom search index provider
         struct SearchByContentPrefix {
             prefix: String,
@@ -1000,6 +963,17 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
             fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
                 TestSchedulerKey::decode(version, data)
             }
+        }
+
+        // Create multiple entries with indexed data
+        for i in 0..5 {
+            let data = TestSchedulerData {
+                key: format!("test:search_key_{i}"),
+                content: format!("Searchable content #{i}"),
+                version: 0,
+            };
+
+            helper.store.update_data(data).await?;
         }
 
         // Search by index prefix

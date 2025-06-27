@@ -455,9 +455,9 @@ pub enum StoreSpec {
     ///
     Noop(NoopSpec),
 
-    /// Experimental MongoDB store implementation.
+    /// Experimental `MongoDB` store implementation.
     ///
-    /// This store uses MongoDB as a backend for storing data. It supports
+    /// This store uses `MongoDB` as a backend for storing data. It supports
     /// both CAS (Content Addressable Storage) and scheduler data with
     /// optional change streams for real-time updates.
     ///
@@ -1165,12 +1165,12 @@ pub struct Retry {
     pub retry_on_errors: Option<Vec<ErrorCode>>,
 }
 
-/// Configuration for ExperimentalMongoDB store.
+/// Configuration for `ExperimentalMongoDB` store.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ExperimentalMongoSpec {
-    /// ExperimentalMongoDB connection string.
-    /// Example: "mongodb://localhost:27017" or "mongodb+srv://cluster.mongodb.net"
+    /// `ExperimentalMongoDB` connection string.
+    /// Example: <mongodb://localhost:27017> or <mongodb+srv://cluster.mongodb.net>
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub connection_string: String,
 
@@ -1189,12 +1189,12 @@ pub struct ExperimentalMongoSpec {
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub scheduler_collection: String,
 
-    /// Prefix to prepend to all keys stored in MongoDB.
+    /// Prefix to prepend to all keys stored in `MongoDB`.
     /// Default: ""
     #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     pub key_prefix: Option<String>,
 
-    /// The maximum amount of data to read from MongoDB in a single chunk (in bytes).
+    /// The maximum amount of data to read from `MongoDB` in a single chunk (in bytes).
     /// Default: 65536 (64KB)
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub read_chunk_size: usize,
@@ -1214,7 +1214,7 @@ pub struct ExperimentalMongoSpec {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub command_timeout_ms: u64,
 
-    /// Enable MongoDB change streams for real-time updates.
+    /// Enable `MongoDB` change streams for real-time updates.
     /// Required for scheduler subscriptions.
     /// Default: false
     #[serde(default)]
@@ -1222,17 +1222,17 @@ pub struct ExperimentalMongoSpec {
 
     /// Write concern 'w' parameter.
     /// Can be a number (e.g., 1) or string (e.g., "majority").
-    /// Default: None (uses MongoDB default)
+    /// Default: None (uses `MongoDB` default)
     #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     pub write_concern_w: Option<String>,
 
     /// Write concern 'j' parameter (journal acknowledgment).
-    /// Default: None (uses MongoDB default)
+    /// Default: None (uses `MongoDB` default)
     #[serde(default)]
     pub write_concern_j: Option<bool>,
 
     /// Write concern timeout in milliseconds.
-    /// Default: None (uses MongoDB default)
+    /// Default: None (uses `MongoDB` default)
     #[serde(
         default,
         deserialize_with = "convert_optional_numeric_with_shellexpand"

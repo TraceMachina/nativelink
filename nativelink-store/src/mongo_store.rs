@@ -58,7 +58,7 @@ const DEFAULT_COLLECTION_NAME: &str = "cas";
 /// The default scheduler collection name if not specified.
 const DEFAULT_SCHEDULER_COLLECTION_NAME: &str = "scheduler";
 
-/// The default size of the read chunk when reading data from MongoDB.
+/// The default size of the read chunk when reading data from `MongoDB`.
 const DEFAULT_READ_CHUNK_SIZE: usize = 64 * 1024;
 
 /// The default connection timeout in milliseconds if not specified.
@@ -70,22 +70,22 @@ const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 10_000;
 /// The default maximum number of concurrent uploads.
 const DEFAULT_MAX_CONCURRENT_UPLOADS: usize = 10;
 
-/// The name of the field in MongoDB documents that stores the key.
+/// The name of the field in `MongoDB` documents that stores the key.
 const KEY_FIELD: &str = "_id";
 
-/// The name of the field in MongoDB documents that stores the data.
+/// The name of the field in `MongoDB` documents that stores the data.
 const DATA_FIELD: &str = "data";
 
-/// The name of the field in MongoDB documents that stores the version.
+/// The name of the field in `MongoDB` documents that stores the version.
 const VERSION_FIELD: &str = "version";
 
-/// The name of the field in MongoDB documents that stores the size.
+/// The name of the field in `MongoDB` documents that stores the size.
 const SIZE_FIELD: &str = "size";
 
-/// A [`StoreDriver`] implementation that uses MongoDB as a backing store.
+/// A [`StoreDriver`] implementation that uses `MongoDB` as a backing store.
 #[derive(Debug, MetricsComponent)]
 pub struct ExperimentalMongoStore {
-    /// The MongoDB client.
+    /// The `MongoDB` client.
     #[allow(dead_code)]
     client: MongoClient,
 
@@ -102,11 +102,11 @@ pub struct ExperimentalMongoStore {
     #[allow(dead_code)]
     temp_name_generator_fn: fn() -> String,
 
-    /// A common prefix to append to all keys before they are sent to MongoDB.
+    /// A common prefix to append to all keys before they are sent to `MongoDB`.
     #[metric(help = "Prefix to append to all keys before sending to MongoDB")]
     key_prefix: String,
 
-    /// The amount of data to read from MongoDB at a time.
+    /// The amount of data to read from `MongoDB` at a time.
     #[metric(help = "The amount of data to read from MongoDB at a time")]
     read_chunk_size: usize,
 
@@ -118,7 +118,7 @@ pub struct ExperimentalMongoStore {
     #[metric(help = "Whether change streams are enabled")]
     enable_change_streams: bool,
 
-    /// A manager for subscriptions to keys in MongoDB.
+    /// A manager for subscriptions to keys in `MongoDB`.
     subscription_manager: Mutex<Option<Arc<ExperimentalMongoSubscriptionManager>>>,
 }
 
@@ -190,12 +190,12 @@ impl ExperimentalMongoStore {
                 (Some(w), Some(j), Some(timeout)) => WriteConcern::builder()
                     .w(Some(w))
                     .journal(j)
-                    .w_timeout(Some(Duration::from_millis(timeout as u64)))
+                    .w_timeout(Some(Duration::from_millis(u64::from(timeout))))
                     .build(),
                 (Some(w), Some(j), None) => WriteConcern::builder().w(Some(w)).journal(j).build(),
                 (Some(w), None, Some(timeout)) => WriteConcern::builder()
                     .w(Some(w))
-                    .w_timeout(Some(Duration::from_millis(timeout as u64)))
+                    .w_timeout(Some(Duration::from_millis(u64::from(timeout))))
                     .build(),
                 (Some(w), None, None) => WriteConcern::builder().w(Some(w)).build(),
                 _ => unreachable!(), // We know w is Some because we're in the if let Some(w) block
@@ -260,7 +260,7 @@ impl ExperimentalMongoStore {
         Ok(())
     }
 
-    /// Encode a [`StoreKey`] so it can be sent to MongoDB.
+    /// Encode a [`StoreKey`] so it can be sent to `MongoDB`.
     fn encode_key<'a>(&self, key: &'a StoreKey<'a>) -> Cow<'a, str> {
         let key_body = key.as_str();
         if self.key_prefix.is_empty() {
@@ -281,12 +281,12 @@ impl ExperimentalMongoStore {
         }
     }
 
-    /// Decode a key from MongoDB by removing the prefix.
+    /// Decode a key from `MongoDB` by removing the prefix.
     fn decode_key(&self, key: &str) -> Option<String> {
         if self.key_prefix.is_empty() {
             Some(key.to_string())
         } else {
-            key.strip_prefix(&self.key_prefix).map(|s| s.to_string())
+            key.strip_prefix(&self.key_prefix).map(ToString::to_string)
         }
     }
 }
@@ -435,7 +435,7 @@ impl StoreDriver for ExperimentalMongoStore {
         }
 
         // Special handling for MaxSize(0) - this should error if stream is closed
-        if let UploadSizeInfo::MaxSize(0) = upload_size {
+        if upload_size == UploadSizeInfo::MaxSize(0) {
             // Try to read from the stream - if it's closed immediately, this should error
             match reader.recv().await {
                 Ok(_chunk) => {
@@ -454,18 +454,11 @@ impl StoreDriver for ExperimentalMongoStore {
 
         // Read all data into memory with proper EOF handling
         let mut data = Vec::new();
-        loop {
-            match reader.recv().await {
-                Ok(chunk) => {
-                    if chunk.is_empty() {
-                        break; // Empty chunk signals EOF
-                    }
-                    data.extend_from_slice(&chunk);
-                }
-                Err(_) => {
-                    break; // Error or stream closed, stop reading
-                }
+        while let Ok(chunk) = reader.recv().await {
+            if chunk.is_empty() {
+                break; // Empty chunk signals EOF
             }
+            data.extend_from_slice(&chunk);
         }
 
         let size = data.len() as i64;
@@ -612,10 +605,10 @@ impl HealthStatusIndicator for ExperimentalMongoStore {
 
 // -------------------------------------------------------------------
 //
-// ExperimentalMongoDB scheduler implementation. Likely to change
+// `ExperimentalMongoDB` scheduler implementation. Likely to change
 // -------------------------------------------------------------------
 
-/// An individual subscription to a key in ExperimentalMongoDB.
+/// An individual subscription to a key in `ExperimentalMongoDB`.
 #[derive(Debug)]
 pub struct ExperimentalMongoSubscription {
     receiver: Option<watch::Receiver<String>>,
@@ -665,7 +658,7 @@ impl Drop for ExperimentalMongoSubscription {
     }
 }
 
-/// A publisher for a key in ExperimentalMongoDB.
+/// A publisher for a key in `ExperimentalMongoDB`.
 #[derive(Debug)]
 struct ExperimentalMongoSubscriptionPublisher {
     sender: Mutex<watch::Sender<String>>,
@@ -743,11 +736,11 @@ impl ExperimentalMongoSubscriptionManager {
                                                 if let Some(doc_key) = event.document_key {
                                                     if let Ok(key) = doc_key.get_str(KEY_FIELD) {
                                                         // Remove prefix if present
-                                                        let key = if !key_prefix.is_empty() {
+                                                        let key = if key_prefix.is_empty() {
+                                                            key
+                                                        } else {
                                                             key.strip_prefix(&key_prefix)
                                                                 .unwrap_or(key)
-                                                        } else {
-                                                            key
                                                         };
 
                                                         let Some(subscribed_keys) =
