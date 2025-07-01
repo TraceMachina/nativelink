@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures::Stream;
 use nativelink_error::{Code, Error, make_err};
 use nativelink_util::buf_channel::DropCloserReadHalf;
 use tokio::sync::RwLock;
@@ -82,8 +84,8 @@ pub enum MockRequest {
     },
     ReadContent {
         object_path: ObjectPath,
-        start: i64,
-        end: Option<i64>,
+        start: u64,
+        end: Option<u64>,
     },
     Write {
         object_path: ObjectPath,
@@ -96,14 +98,14 @@ pub enum MockRequest {
         upload_url: String,
         object_path: ObjectPath,
         data_len: usize,
-        offset: i64,
-        end_offset: i64,
+        offset: u64,
+        end_offset: u64,
         is_final: bool,
     },
     UploadFromReader {
         object_path: ObjectPath,
         upload_id: String,
-        max_size: i64,
+        max_size: u64,
     },
     ObjectExists {
         object_path: ObjectPath,
@@ -295,9 +297,30 @@ impl GcsOperations for MockGcsOperations {
     async fn read_object_content(
         &self,
         object_path: &ObjectPath,
-        start: i64,
-        end: Option<i64>,
-    ) -> Result<Vec<u8>, Error> {
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + Unpin>, Error> {
+        struct OnceStream {
+            content: Option<Bytes>,
+        }
+        impl Stream for OnceStream {
+            type Item = Result<Bytes, Error>;
+
+            fn poll_next(
+                mut self: core::pin::Pin<&mut Self>,
+                _cx: &mut core::task::Context<'_>,
+            ) -> core::task::Poll<Option<Self::Item>> {
+                core::task::Poll::Ready(self.content.take().map(Ok))
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                match &self.content {
+                    Some(bytes) => (bytes.len(), Some(bytes.len())),
+                    None => (0, Some(0)),
+                }
+            }
+        }
+
         self.call_counts.read_calls.fetch_add(1, Ordering::Relaxed);
         self.requests.write().await.push(MockRequest::ReadContent {
             object_path: object_path.clone(),
@@ -312,13 +335,6 @@ impl GcsOperations for MockGcsOperations {
 
         if let Some(obj) = objects.get(&object_key) {
             let content = &obj.content;
-            if start < 0 {
-                return Err(make_err!(
-                    Code::InvalidArgument,
-                    "Start index {} must be non-negative",
-                    start
-                ));
-            }
 
             let start_idx = start as usize;
             if start_idx > content.len() {
@@ -345,7 +361,9 @@ impl GcsOperations for MockGcsOperations {
                 content.len()
             };
 
-            Ok(content[start_idx..end_idx].to_vec())
+            Ok(Box::new(OnceStream {
+                content: Some(Bytes::copy_from_slice(&content[start_idx..end_idx])),
+            }))
         } else {
             Err(make_err!(Code::NotFound, "Object not found"))
         }
@@ -383,9 +401,9 @@ impl GcsOperations for MockGcsOperations {
         &self,
         upload_url: &str,
         object_path: &ObjectPath,
-        data: Vec<u8>,
-        offset: i64,
-        end_offset: i64,
+        data: Bytes,
+        offset: u64,
+        end_offset: u64,
         is_final: bool,
     ) -> Result<(), Error> {
         self.call_counts
@@ -449,7 +467,7 @@ impl GcsOperations for MockGcsOperations {
         object_path: &ObjectPath,
         reader: &mut DropCloserReadHalf,
         upload_id: &str,
-        max_size: i64,
+        max_size: u64,
     ) -> Result<(), Error> {
         self.call_counts
             .upload_from_reader_calls
@@ -467,10 +485,11 @@ impl GcsOperations for MockGcsOperations {
 
         // Read all data from the reader
         let mut buffer = Vec::new();
-        let mut total_read = 0i64;
+        let max_size = max_size as usize;
+        let mut total_read = 0usize;
 
         while total_read < max_size {
-            let to_read = core::cmp::min((max_size - total_read) as usize, 8192); // 8KB chunks
+            let to_read = core::cmp::min(max_size - total_read, 8192); // 8KB chunks
             let chunk = reader.consume(Some(to_read)).await?;
 
             if chunk.is_empty() {
@@ -478,7 +497,7 @@ impl GcsOperations for MockGcsOperations {
             }
 
             buffer.extend_from_slice(&chunk);
-            total_read += chunk.len() as i64;
+            total_read += chunk.len();
         }
 
         self.write_object(object_path, buffer).await?;
