@@ -34,7 +34,6 @@ rust_library(
         "@crates//:axum",
         "@crates//:bytes",
         "@crates//:futures",
-        "@crates//:http-body",
         "@crates//:http-body-util",
         "@crates//:hyper-1.6.0",
         "@crates//:opentelemetry",
