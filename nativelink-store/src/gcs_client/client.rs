@@ -20,6 +20,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures::Stream;
 use google_cloud_auth::credentials::CredentialsFile;
 use google_cloud_storage::client::{Client, ClientConfig};
 use google_cloud_storage::http::Error as GcsError;
@@ -33,7 +35,7 @@ use nativelink_error::{Code, Error, make_err};
 use nativelink_util::buf_channel::DropCloserReadHalf;
 use rand::Rng;
 use tokio::fs;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 
 use crate::gcs_client::types::{
@@ -53,9 +55,9 @@ pub trait GcsOperations: Send + Sync + Debug {
     async fn read_object_content(
         &self,
         object_path: &ObjectPath,
-        start: i64,
-        end: Option<i64>,
-    ) -> Result<Vec<u8>, Error>;
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + Unpin>, Error>;
 
     /// Write object with simple upload (for smaller objects)
     async fn write_object(&self, object_path: &ObjectPath, content: Vec<u8>) -> Result<(), Error>;
@@ -68,10 +70,10 @@ pub trait GcsOperations: Send + Sync + Debug {
         &self,
         upload_url: &str,
         object_path: &ObjectPath,
-        data: Vec<u8>,
-        offset: i64,
-        end_offset: i64,
-        is_final: bool,
+        data: Bytes,
+        offset: u64,
+        end_offset: u64,
+        total_size: Option<u64>,
     ) -> Result<(), Error>;
 
     /// Complete high-level operation to upload data from a reader
@@ -80,7 +82,7 @@ pub trait GcsOperations: Send + Sync + Debug {
         object_path: &ObjectPath,
         reader: &mut DropCloserReadHalf,
         upload_id: &str,
-        max_size: i64,
+        max_size: u64,
     ) -> Result<(), Error>;
 
     /// Check if an object exists
@@ -98,7 +100,7 @@ impl GcsClient {
     /// Create a new GCS client from the provided spec
     pub async fn new(spec: &ExperimentalGcsSpec) -> Result<Self, Error> {
         // Creating default config without authentication initially
-        let mut client_config = ClientConfig::default();
+        let mut client_config = ClientConfig::default().anonymous();
         let mut auth_success = false;
 
         // Trying authentication with credentials file path from environment variable.
@@ -240,7 +242,7 @@ impl GcsClient {
     }
 
     /// Handle error from GCS operations
-    fn handle_gcs_error(&self, err: &GcsError) -> Error {
+    fn handle_gcs_error(err: &GcsError) -> Error {
         let code = match &err {
             GcsError::Response(resp) => match resp.code {
                 404 => Code::NotFound,
@@ -260,15 +262,15 @@ impl GcsClient {
         &self,
         object_path: &ObjectPath,
         reader: &mut DropCloserReadHalf,
-        max_size: i64,
+        max_size: u64,
     ) -> Result<(), Error> {
         let initial_capacity = core::cmp::min(max_size as usize, 10 * 1024 * 1024);
         let mut data = Vec::with_capacity(initial_capacity);
-        let mut total_size: i64 = 0;
+        let max_size = max_size as usize;
+        let mut total_size = 0usize;
 
         while total_size < max_size {
-            let to_read =
-                core::cmp::min(self.resumable_chunk_size, (max_size - total_size) as usize);
+            let to_read = core::cmp::min(self.resumable_chunk_size, max_size - total_size);
             let chunk = reader.consume(Some(to_read)).await?;
 
             if chunk.is_empty() {
@@ -276,7 +278,7 @@ impl GcsClient {
             }
 
             data.extend_from_slice(&chunk);
-            total_size += chunk.len() as i64;
+            total_size += chunk.len();
         }
 
         self.write_object(object_path, data).await
@@ -287,7 +289,7 @@ impl GcsClient {
         &self,
         object_path: &ObjectPath,
         reader: &mut DropCloserReadHalf,
-        max_size: i64,
+        max_size: u64,
     ) -> Result<(), Error> {
         self.with_connection(|| async {
             let request = UploadObjectRequest {
@@ -311,17 +313,15 @@ impl GcsClient {
                 .client
                 .prepare_resumable_upload(&request, &upload_type)
                 .await
-                .map_err(|e| self.handle_gcs_error(&e))?;
+                .map_err(|e| Self::handle_gcs_error(&e))?;
 
             // Upload data in chunks
             let mut offset: u64 = 0;
-            let mut total_uploaded: i64 = 0;
+            let max_size = max_size as usize;
+            let mut total_uploaded = 0usize;
 
             while total_uploaded < max_size {
-                let to_read = core::cmp::min(
-                    self.resumable_chunk_size,
-                    (max_size - total_uploaded) as usize,
-                );
+                let to_read = core::cmp::min(self.resumable_chunk_size, max_size - total_uploaded);
                 let chunk = reader.consume(Some(to_read)).await?;
 
                 if chunk.is_empty() {
@@ -329,7 +329,7 @@ impl GcsClient {
                 }
 
                 let chunk_size = chunk.len() as u64;
-                total_uploaded += chunk.len() as i64;
+                total_uploaded += chunk.len();
 
                 let is_final = total_uploaded >= max_size || chunk.len() < to_read;
                 let total_size = if is_final {
@@ -344,7 +344,7 @@ impl GcsClient {
                 let status = uploader
                     .upload_multiple_chunk(chunk, &chunk_def)
                     .await
-                    .map_err(|e| self.handle_gcs_error(&e))?;
+                    .map_err(|e| Self::handle_gcs_error(&e))?;
 
                 // Update offset for next chunk
                 offset += chunk_size;
@@ -360,7 +360,7 @@ impl GcsClient {
                 uploader
                     .upload_multiple_chunk(Vec::new(), &chunk_def)
                     .await
-                    .map_err(|e| self.handle_gcs_error(&e))?;
+                    .map_err(|e| Self::handle_gcs_error(&e))?;
             }
 
             // Check if the object exists
@@ -406,7 +406,7 @@ impl GcsOperations for GcsClient {
                             return Ok(None);
                         }
                     }
-                    Err(self.handle_gcs_error(&err))
+                    Err(Self::handle_gcs_error(&err))
                 }
             }
         })
@@ -416,35 +416,63 @@ impl GcsOperations for GcsClient {
     async fn read_object_content(
         &self,
         object_path: &ObjectPath,
-        start: i64,
-        end: Option<i64>,
-    ) -> Result<Vec<u8>, Error> {
-        self.with_connection(|| async {
-            let request = GetObjectRequest {
-                bucket: object_path.bucket.clone(),
-                object: object_path.path.clone(),
-                ..Default::default()
-            };
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + Unpin>, Error> {
+        type StreamItem = Result<Bytes, google_cloud_storage::http::Error>;
+        struct ReadStream {
+            stream: Box<dyn Stream<Item = StreamItem> + Send + Unpin>,
+            _permit: OwnedSemaphorePermit,
+        }
 
-            let range = if start > 0 || end.is_some() {
-                Range(
-                    if start > 0 { Some(start as u64) } else { None },
-                    end.map(|e| e as u64),
-                )
-            } else {
-                Range(None, None)
-            };
+        impl Stream for ReadStream {
+            type Item = Result<Bytes, Error>;
 
-            // Download the object
-            let content = self
-                .client
-                .download_object(&request, &range)
-                .await
-                .map_err(|e| self.handle_gcs_error(&e))?;
+            fn poll_next(
+                mut self: core::pin::Pin<&mut Self>,
+                cx: &mut core::task::Context<'_>,
+            ) -> core::task::Poll<Option<Self::Item>> {
+                match std::pin::pin!(&mut *self.stream).poll_next(cx) {
+                    core::task::Poll::Ready(Some(Ok(bytes))) => {
+                        core::task::Poll::Ready(Some(Ok(bytes)))
+                    }
+                    core::task::Poll::Ready(Some(Err(err))) => {
+                        core::task::Poll::Ready(Some(Err(GcsClient::handle_gcs_error(&err))))
+                    }
+                    core::task::Poll::Ready(None) => core::task::Poll::Ready(None),
+                    core::task::Poll::Pending => core::task::Poll::Pending,
+                }
+            }
 
-            Ok(content)
-        })
-        .await
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                self.stream.size_hint()
+            }
+        }
+
+        let permit =
+            self.semaphore.clone().acquire_owned().await.map_err(|e| {
+                make_err!(Code::Internal, "Failed to acquire connection permit: {}", e)
+            })?;
+        let request = GetObjectRequest {
+            bucket: object_path.bucket.clone(),
+            object: object_path.path.clone(),
+            ..Default::default()
+        };
+
+        let start = (start > 0).then_some(start);
+        let range = Range(start, end);
+
+        // Download the object
+        let stream = self
+            .client
+            .download_streamed_object(&request, &range)
+            .await
+            .map_err(|e| Self::handle_gcs_error(&e))?;
+
+        Ok(Box::new(ReadStream {
+            stream: Box::new(stream),
+            _permit: permit,
+        }))
     }
 
     async fn write_object(&self, object_path: &ObjectPath, content: Vec<u8>) -> Result<(), Error> {
@@ -460,7 +488,7 @@ impl GcsOperations for GcsClient {
             self.client
                 .upload_object(&request, content, &upload_type)
                 .await
-                .map_err(|e| self.handle_gcs_error(&e))?;
+                .map_err(|e| Self::handle_gcs_error(&e))?;
 
             Ok(())
         })
@@ -485,7 +513,7 @@ impl GcsOperations for GcsClient {
                 .client
                 .prepare_resumable_upload(&request, &upload_type)
                 .await
-                .map_err(|e| self.handle_gcs_error(&e))?;
+                .map_err(|e| Self::handle_gcs_error(&e))?;
 
             Ok(uploader.url().to_string())
         })
@@ -496,27 +524,22 @@ impl GcsOperations for GcsClient {
         &self,
         upload_url: &str,
         _object_path: &ObjectPath,
-        data: Vec<u8>,
-        offset: i64,
-        end_offset: i64,
-        is_final: bool,
+        data: Bytes,
+        offset: u64,
+        end_offset: u64,
+        total_size: Option<u64>,
     ) -> Result<(), Error> {
         self.with_connection(|| async {
             let uploader = self.client.get_resumable_upload(upload_url.to_string());
 
-            let total_size = if is_final {
-                Some(end_offset as u64)
-            } else {
-                None
-            };
-
-            let chunk_def = ChunkSize::new(offset as u64, end_offset as u64 - 1, total_size);
+            let last_byte = if end_offset == 0 { 0 } else { end_offset - 1 };
+            let chunk_def = ChunkSize::new(offset, last_byte, total_size);
 
             // Upload chunk
             uploader
                 .upload_multiple_chunk(data, &chunk_def)
                 .await
-                .map_err(|e| self.handle_gcs_error(&e))?;
+                .map_err(|e| Self::handle_gcs_error(&e))?;
 
             Ok(())
         })
@@ -528,7 +551,7 @@ impl GcsOperations for GcsClient {
         object_path: &ObjectPath,
         reader: &mut DropCloserReadHalf,
         _upload_id: &str,
-        max_size: i64,
+        max_size: u64,
     ) -> Result<(), Error> {
         let mut retry_count = 0;
         let mut retry_delay = INITIAL_UPLOAD_RETRY_DELAY_MS;
