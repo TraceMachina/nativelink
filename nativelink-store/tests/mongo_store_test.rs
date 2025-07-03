@@ -551,7 +551,7 @@ async fn test_database_lifecycle() -> Result<(), Error> {
 
     // Verify database doesn't exist initially
     let db_names = client
-        .list_database_names(None, None)
+        .list_database_names()
         .await
         .map_err(|e| make_err!(Code::Internal, "Failed to list databases: {e}"))?;
     assert!(
@@ -576,7 +576,7 @@ async fn test_database_lifecycle() -> Result<(), Error> {
         let mut db_exists = false;
         for _attempt in 0..5 {
             let db_names = client
-                .list_database_names(None, None)
+                .list_database_names()
                 .await
                 .map_err(|e| make_err!(Code::Internal, "Failed to list databases: {e}"))?;
             if db_names.contains(&database_name) {
@@ -588,10 +588,7 @@ async fn test_database_lifecycle() -> Result<(), Error> {
         assert!(
             db_exists,
             "Test database should exist after creation, found databases: {:?}",
-            client
-                .list_database_names(None, None)
-                .await
-                .unwrap_or_default()
+            client.list_database_names().await.unwrap_or_default()
         );
 
         // Verify data is accessible
@@ -606,7 +603,7 @@ async fn test_database_lifecycle() -> Result<(), Error> {
 
     // Database should still exist after helper is dropped
     let db_names = client
-        .list_database_names(None, None)
+        .list_database_names()
         .await
         .map_err(|e| make_err!(Code::Internal, "Failed to list databases: {e}"))?;
     assert!(
@@ -693,7 +690,7 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
 
     // Count documents in collection
     let count = collection
-        .count_documents(None, None)
+        .count_documents(doc! {})
         .await
         .map_err(|e| make_err!(Code::Internal, "Failed to count documents: {e}"))?;
 
@@ -701,7 +698,7 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
 
     // List first few documents
     let mut cursor = collection
-        .find(None, None)
+        .find(doc! {})
         .await
         .map_err(|e| make_err!(Code::Internal, "Failed to find documents: {e}"))?;
 
