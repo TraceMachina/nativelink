@@ -67,14 +67,16 @@ impl MetricsComponent for Error {
 
 impl Error {
     #[must_use]
+    pub const fn new_with_messages(code: Code, messages: Vec<String>) -> Self {
+        Self { code, messages }
+    }
+
+    #[must_use]
     pub fn new(code: Code, msg: String) -> Self {
-        let mut msgs = Vec::with_capacity(1);
-        if !msg.is_empty() {
-            msgs.push(msg);
-        }
-        Self {
-            code,
-            messages: msgs,
+        if msg.is_empty() {
+            Self::new_with_messages(code, vec![])
+        } else {
+            Self::new_with_messages(code, vec![msg])
         }
     }
 

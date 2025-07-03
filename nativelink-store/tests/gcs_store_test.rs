@@ -96,6 +96,39 @@ async fn simple_has_object_not_found() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn simple_has_object_error() -> Result<(), Error> {
+    // Create mock GCS operations
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    // Mark it to fail
+    mock_ops.set_should_fail(true);
+    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
+
+    let store = create_test_store(ops_as_trait).await?;
+
+    // Test has method with a digest that doesn't exist
+    let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
+    let store_key: StoreKey = to_store_key(digest);
+    let result = store.has(store_key).await;
+
+    assert_eq!(
+        result,
+        Err(Error::new_with_messages(
+            Code::Internal,
+            [
+                "Simulated generic failure",
+                "Error while trying to read - bucket: test-bucket path: test-prefix/0123456789abcdef000000000000000000010000000000000123456789abcdef-100",
+                "On attempt 1"
+            ]
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        )),
+        "Expected to get an error"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
 async fn has_with_results_test() -> Result<(), Error> {
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());
