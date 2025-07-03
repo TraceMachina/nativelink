@@ -110,3 +110,19 @@ jobs:
       - name: Test buildstream run
         run: |
           nix run -L .#buildstream-with-nativelink-test
+
+  buck2:
+    name: buck2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+
+      - name: Test buck2 run
+        run: |
+          nix run -L .#buck2-with-nativelink-test
