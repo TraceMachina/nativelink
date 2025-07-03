@@ -143,7 +143,12 @@ where
 
         self.retrier
             .retry(unfold(object_path, move |object_path| async move {
-                match client.read_object_metadata(&object_path).await {
+                match client.read_object_metadata(&object_path).await.err_tip(|| {
+                    format!(
+                        "Error while trying to read - bucket: {} path: {}",
+                        object_path.bucket, object_path.path
+                    )
+                }) {
                     Ok(Some(metadata)) => {
                         if consider_expired_after_s != 0 {
                             if let Some(update_time) = &metadata.update_time {
