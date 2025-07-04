@@ -264,7 +264,8 @@ impl SchedulerStoreKeyProvider for ClientIdToOperationId<'_> {
 impl SchedulerStoreDecodeTo for ClientIdToOperationId<'_> {
     type DecodeOutput = OperationId;
     fn decode(_version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
-        OperationId::try_from(data).err_tip(|| "In ClientIdToOperationId::decode")
+        serde_json::from_slice(&data)
+            .map_err(|e| make_input_err!("In ClientIdToOperationId::decode - {e:?}"))
     }
 }
 
