@@ -195,6 +195,13 @@ jobs:
             --timeout=15m \
             nativelink-core"
 
+      - name: Debug NativeLink Kustomization
+        run: >
+          nix develop --impure --command
+          bash -c "flux debug kustomization -n default \
+          --show-status nativelink-core"
+        if: always()
+
       - name: Wait for Worker Kustomization
         env:
           TOOLCHAIN: ${{ matrix.toolchain }}
@@ -203,6 +210,13 @@ jobs:
           bash -c "flux reconcile kustomization -n default \
             --timeout=15m \
             nativelink-${TOOLCHAIN}"
+
+      - name: Debug Worker Kustomization
+        run: >
+          nix develop --impure --command
+          bash -c "flux debug kustomization -n default \
+          --show-status nativelink-${TOOLCHAIN}"
+        if: always()
 
       - name: Wait for NativeLink
         run: >
