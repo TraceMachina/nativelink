@@ -283,19 +283,18 @@ The `public` server consists of a `listener` object and a `services` object. The
       "execution": [{
         "instance_name": "main",
         "cas_store": "WORKER_FAST_SLOW_STORE",
-        "scheduler": "MAIN_SCHEDULER",
+        "scheduler": "MAIN_SCHEDULER"
       }],
       "capabilities": [{
         "instance_name": "main",
         "remote_execution": {
-          "scheduler": "MAIN_SCHEDULER",
+          "scheduler": "MAIN_SCHEDULER"
         }
       }],
-      "bytestream": {
-        "cas_stores": {
-          "main": "WORKER_FAST_SLOW_STORE",
-        }
-      }
+      "bytestream": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE"
+      }]
     },
   },{
     "name": "private_workers_servers"
@@ -334,19 +333,18 @@ The `private` server consists of a `listener` object and a `services` object. Th
       "execution": [{
         "instance_name": "main",
         "cas_store": "WORKER_FAST_SLOW_STORE",
-        "scheduler": "MAIN_SCHEDULER",
+        "scheduler": "MAIN_SCHEDULER"
       }],
       "capabilities": [{
         "instance_name": "main",
         "remote_execution": {
-          "scheduler": "MAIN_SCHEDULER",
+          "scheduler": "MAIN_SCHEDULER"
         }
       }],
-      "bytestream": {
-        "cas_stores": {
-          "main": "WORKER_FAST_SLOW_STORE",
-        }
-      }
+      "bytestream": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE"
+      }]
     },
   },{
     "name": "private_workers_servers",
@@ -511,19 +509,18 @@ Below, you will find a fully tested example that you can also find in [basic_cas
       "execution": [{
         "instance_name": "main",
         "cas_store": "WORKER_FAST_SLOW_STORE",
-        "scheduler": "MAIN_SCHEDULER",
+        "scheduler": "MAIN_SCHEDULER"
       }],
       "capabilities": [{
         "instance_name": "main",
         "remote_execution": {
-          "scheduler": "MAIN_SCHEDULER",
+          "scheduler": "MAIN_SCHEDULER"
         }
       }],
-      "bytestream": {
-        "cas_stores": {
-          "main": "WORKER_FAST_SLOW_STORE",
-        }
-      }
+      "bytestream": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE"
+      }]
     }
   }, {
     "name": "private_workers_servers",

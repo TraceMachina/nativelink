@@ -12,54 +12,63 @@ A very basic configuration that's a pure in-memory store is:
 
 ```js
 {
-  "stores": [
+  stores: [
     {
-      "name": "CAS_MAIN_STORE",
-      "memory": {
-        "eviction_policy": {
+      name: "CAS_MAIN_STORE",
+      memory: {
+        eviction_policy: {
           // 1gb.
-          "max_bytes": 1000000000,
-        }
-      }
+          max_bytes: 1000000000,
+        },
+      },
     },
     {
-      "name": "AC_MAIN_STORE",
-      "memory": {
-        "eviction_policy": {
+      name: "AC_MAIN_STORE",
+      memory: {
+        eviction_policy: {
           // 100mb.
-          "max_bytes": 100000000,
-        }
-      }
-    }
-  ],
-  "servers": [{
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50051",
-        "advanced_http": {
-          "http2_keep_alive_interval": 10
-        }
-      }
+          max_bytes: 100000000,
+        },
+      },
     },
-    "services": {
-      "cas": [{
-        "instance_name": "main",
-        "cas_store": "CAS_MAIN_STORE"
-      }],
-      "ac": [{
-        "instance_name": "main",
-        "ac_store": "AC_MAIN_STORE"
-      }],
-      "capabilities": [{
-        "instance_name": "main"
-      }],
-      "bytestream": {
-        "cas_stores": {
-          "main": "CAS_MAIN_STORE",
-        }
-      }
-    }
-  }]
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+          advanced_http: {
+            http2_keep_alive_interval: 10,
+          },
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+             instance_name: "main",
+             ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "main",
+          },
+        ],
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+      },
+    },
+  ]
 }
 ```
 
@@ -103,7 +112,7 @@ the data is retrieved.
         }
       }
     }
-  ],
+  ]
   // Place rest of configuration here ...
 }
 ```
