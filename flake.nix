@@ -79,6 +79,7 @@
         config,
         pkgs,
         system,
+        lib,
         ...
       }: let
         craneLibFor = p: (crane.mkLib p).overrideToolchain pkgs.lre.stableRustFor;
@@ -318,6 +319,10 @@
       in rec {
         _module.args.pkgs = import self.inputs.nixpkgs {
           inherit system;
+          config.allowUnfreePredicate = pkg:
+            builtins.elem (lib.getName pkg) [
+              "mongodb"
+            ];
           overlays = [
             self.overlays.lre
             self.overlays.tools
@@ -361,11 +366,15 @@
             nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
-            inherit (pkgs) buildstream buildbox;
+            generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
+
+            inherit (pkgs) buildstream buildbox mongodb wait4x bazelisk;
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
               inherit nativelink buildstream buildbox;
             };
-            generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
+            mongo-with-nativelink-test = pkgs.callPackage integration_tests/mongo/mongo-with-nativelink-test.nix {
+              inherit nativelink mongodb wait4x bazelisk;
+            };
           }
           // (
             # It's not possible to crosscompile to darwin, not even between
