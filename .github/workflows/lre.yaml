@@ -198,8 +198,7 @@ jobs:
       - name: Debug NativeLink Kustomization
         run: >
           nix develop --impure --command
-          bash -c "flux debug kustomization -n default \
-          --show-status nativelink-core"
+          bash -c "kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A"
         if: always()
 
       - name: Wait for Worker Kustomization
