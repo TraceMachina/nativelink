@@ -23,10 +23,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt, TryStreamExt};
 use mongodb::bson::{Bson, Document, doc};
-use mongodb::options::{
-    ClientOptions, FindOneAndUpdateOptions, FindOptions, IndexOptions, ReturnDocument,
-    UpdateOptions, WriteConcern,
-};
+use mongodb::options::{ClientOptions, FindOptions, IndexOptions, ReturnDocument, WriteConcern};
 use mongodb::{Client as MongoClient, Collection, Database, IndexModel};
 use nativelink_config::stores::ExperimentalMongoSpec;
 use nativelink_error::{Code, Error, make_err, make_input_err};
@@ -242,10 +239,7 @@ impl ExperimentalMongoStore {
     ) -> Result<(), Error> {
         // CAS collection indexes
         cas_collection
-            .create_index(
-                IndexModel::builder().keys(doc! { SIZE_FIELD: 1 }).build(),
-                None,
-            )
+            .create_index(IndexModel::builder().keys(doc! { SIZE_FIELD: 1 }).build())
             .await
             .map_err(|e| {
                 make_err!(
@@ -307,7 +301,7 @@ impl StoreDriver for ExperimentalMongoStore {
             let encoded_key = self.encode_key(key);
             let filter = doc! { KEY_FIELD: encoded_key.as_ref() };
 
-            match self.cas_collection.find_one(filter, None).await {
+            match self.cas_collection.find_one(filter).await {
                 Ok(Some(doc)) => {
                     *result = doc.get_i64(SIZE_FIELD).ok().map(|v| v as u64);
                 }
@@ -376,13 +370,10 @@ impl StoreDriver for ExperimentalMongoStore {
             }
         }
 
-        let find_options = FindOptions::builder()
-            .projection(doc! { KEY_FIELD: 1 })
-            .build();
-
         let mut cursor = self
             .cas_collection
-            .find(filter, find_options)
+            .find(filter)
+            .projection(doc! { KEY_FIELD: 1 })
             .await
             .map_err(|e| make_err!(Code::Internal, "Failed to create cursor in list: {e}"))?;
 
@@ -473,13 +464,12 @@ impl StoreDriver for ExperimentalMongoStore {
         };
 
         // Upsert the document
-        let options = UpdateOptions::builder().upsert(true).build();
         self.cas_collection
             .update_one(
                 doc! { KEY_FIELD: encoded_key.as_ref() },
                 doc! { "$set": doc },
-                options,
             )
+            .upsert(true)
             .await
             .map_err(|e| make_err!(Code::Internal, "Failed to update document in MongoDB: {e}"))?;
 
@@ -508,7 +498,7 @@ impl StoreDriver for ExperimentalMongoStore {
 
         let doc = self
             .cas_collection
-            .find_one(filter, None)
+            .find_one(filter)
             .await
             .map_err(|e| make_err!(Code::Internal, "Failed to find document in get_part: {e}"))?
             .ok_or_else(|| {
@@ -592,7 +582,7 @@ impl HealthStatusIndicator for ExperimentalMongoStore {
     }
 
     async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
-        match self.database.run_command(doc! { "ping": 1 }, None).await {
+        match self.database.run_command(doc! { "ping": 1 }).await {
             Ok(_) => HealthStatus::new_ok(self, "Connection healthy".into()),
             Err(e) => HealthStatus::new_failed(
                 self,
@@ -717,7 +707,7 @@ impl ExperimentalMongoSubscriptionManager {
 
                 loop {
                     // Try to create change stream
-                    let change_stream_result = collection.watch(None, None).await;
+                    let change_stream_result = collection.watch().await;
 
                     match change_stream_result {
                         Ok(mut change_stream) => {
@@ -918,14 +908,11 @@ impl SchedulerStore for ExperimentalMongoStore {
                 VERSION_FIELD: current_version as i64,
             };
 
-            let options = FindOneAndUpdateOptions::builder()
-                .upsert(true)
-                .return_document(ReturnDocument::After)
-                .build();
-
             match self
                 .scheduler_collection
-                .find_one_and_update(filter, update_doc, options)
+                .find_one_and_update(filter, update_doc)
+                .upsert(true)
+                .return_document(ReturnDocument::After)
                 .await
             {
                 Ok(Some(doc)) => {
@@ -965,13 +952,12 @@ impl SchedulerStore for ExperimentalMongoStore {
                 );
             }
 
-            let options = UpdateOptions::builder().upsert(true).build();
             self.scheduler_collection
                 .update_one(
                     doc! { KEY_FIELD: encoded_key.as_ref() },
                     doc! { "$set": doc },
-                    options,
                 )
+                .upsert(true)
                 .await
                 .map_err(|e| {
                     make_err!(Code::Internal, "Failed to update scheduler document: {e}")
@@ -1001,7 +987,6 @@ impl SchedulerStore for ExperimentalMongoStore {
                     .keys(doc! { K::INDEX_NAME: 1 })
                     .options(IndexOptions::builder().name(index_name).build())
                     .build(),
-                None,
             )
             .await
             .map_err(|e| make_err!(Code::Internal, "Failed to create scheduler index: {e}"))?;
@@ -1022,7 +1007,8 @@ impl SchedulerStore for ExperimentalMongoStore {
 
         let cursor = self
             .scheduler_collection
-            .find(filter, find_options)
+            .find(filter)
+            .with_options(find_options)
             .await
             .map_err(|e| {
                 make_err!(
@@ -1077,7 +1063,7 @@ impl SchedulerStore for ExperimentalMongoStore {
 
         let doc = self
             .scheduler_collection
-            .find_one(filter, None)
+            .find_one(filter)
             .await
             .map_err(|e| {
                 make_err!(
