@@ -31,6 +31,7 @@ use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use rand::Rng;
 use tokio::time::sleep;
+use tracing::warn;
 
 use crate::cas_utils::is_zero_digest;
 use crate::gcs_client::client::{GcsClient, GcsOperations};
@@ -222,6 +223,18 @@ where
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
+        // Check if this is a zero-byte file
+        if is_zero_digest(digest.borrow()) {
+            warn!(
+                "Attempted to upload zero-byte file to GCS. This is not supported. \
+                Consider using a size partitioning store to restrict zero-byte files."
+            );
+            // Consume any data in the reader (should be empty) and return success
+            // to maintain compatibility with existing behavior
+            drop(reader.consume(None).await?);
+            return Ok(());
+        }
+
         let object_path = self.make_object_path(&digest);
 
         reader.set_max_recent_data_size(

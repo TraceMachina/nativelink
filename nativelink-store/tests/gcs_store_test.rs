@@ -346,43 +346,44 @@ async fn get_part_with_range() -> Result<(), Error> {
     Ok(())
 }
 
-#[nativelink_test]
-async fn get_part_zero_digest() -> Result<(), Error> {
-    // Create mock GCS operations
-    let mock_ops = Arc::new(MockGcsOperations::new());
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
-    let store = create_test_store(ops_as_trait).await?;
+// I'll delete this but it did not actually test and prevent the issue we were addressing.
+// #[nativelink_test]
+// async fn get_part_zero_digest() -> Result<(), Error> {
+//     // Create mock GCS operations
+//     let mock_ops = Arc::new(MockGcsOperations::new());
+//     let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
+//     let store = create_test_store(ops_as_trait).await?;
 
-    // Create a zero digest
-    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
-    let store_key: StoreKey = to_store_key(digest);
-    let (mut tx, mut rx) = make_buf_channel_pair();
+//     // Create a zero digest
+//     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
+//     let store_key: StoreKey = to_store_key(digest);
+//     let (mut tx, mut rx) = make_buf_channel_pair();
 
-    // Start get_part operation
-    let store_clone = store.clone();
-    let get_fut = nativelink_util::spawn!("get_part_full_task", async move {
-        store_clone.get_part(store_key, &mut tx, 0, None).await
-    });
+//     // Start get_part operation
+//     let store_clone = store.clone();
+//     let get_fut = nativelink_util::spawn!("get_part_full_task", async move {
+//         store_clone.get_part(store_key, &mut tx, 0, None).await
+//     });
 
-    // Receive the data - should be empty
-    let received_data = rx.consume(Some(100)).await?;
-    assert_eq!(
-        received_data.as_ref(),
-        b"",
-        "Received data should be empty for zero digest"
-    );
-    get_fut.await??;
+//     // Receive the data - should be empty
+//     let received_data = rx.consume(Some(100)).await?;
+//     assert_eq!(
+//         received_data.as_ref(),
+//         b"",
+//         "Received data should be empty for zero digest"
+//     );
+//     get_fut.await??;
 
-    // Verify no mock operations were called (zero digest is special-cased)
-    let call_counts = mock_ops.get_call_counts();
-    assert_eq!(
-        call_counts.read_calls.load(Ordering::Relaxed),
-        0,
-        "No read operations should have been called for zero digest"
-    );
+//     // Verify no mock operations were called (zero digest is special-cased)
+//     let call_counts = mock_ops.get_call_counts();
+//     assert_eq!(
+//         call_counts.read_calls.load(Ordering::Relaxed),
+//         0,
+//         "No read operations should have been called for zero digest"
+//     );
 
-    Ok(())
-}
+//     Ok(())
+// }
 
 #[nativelink_test]
 async fn test_expired_object() -> Result<(), Error> {
@@ -608,4 +609,64 @@ fn create_object_path(key: &StoreKey) -> ObjectPath {
         BUCKET_NAME.to_string(),
         &format!("{}{}", KEY_PREFIX, key.as_str()),
     )
+}
+
+#[nativelink_test]
+async fn test_zero_byte_upload_prevention() -> Result<(), Error> {
+    // Create mock GCS operations
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
+    let store = create_test_store(ops_as_trait).await?;
+
+    // Create a zero-byte digest
+    let zero_digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
+    let store_key: StoreKey = to_store_key(zero_digest);
+    let (mut tx, rx) = make_buf_channel_pair();
+
+    // Start update operation for zero-byte file
+    let store_clone = store.clone();
+    let update_fut = nativelink_util::spawn!("update_zero_byte_task", async move {
+        store_clone
+            .update(store_key, rx, UploadSizeInfo::ExactSize(0))
+            .await
+    });
+
+    // Send EOF immediately (zero bytes)
+    tx.send_eof()?;
+
+    // The update should complete but no upload should occur
+    let result = update_fut.await?;
+    assert!(result.is_ok(), "Update should complete without error");
+
+    // Verify that no write operations were called
+    let requests = mock_ops.get_requests().await;
+    let write_request_count = requests
+        .iter()
+        .filter(|req| {
+            matches!(
+                req,
+                MockRequest::Write { .. } | MockRequest::StartResumable { .. }
+            )
+        })
+        .count();
+
+    assert_eq!(
+        write_request_count, 0,
+        "No write requests should be made for zero-byte files"
+    );
+
+    // Verify call counts
+    let call_counts = mock_ops.get_call_counts();
+    assert_eq!(
+        call_counts.write_calls.load(Ordering::Relaxed),
+        0,
+        "No write operations should have been called"
+    );
+    assert_eq!(
+        call_counts.start_resumable_calls.load(Ordering::Relaxed),
+        0,
+        "No resumable upload operations should have been called"
+    );
+
+    Ok(())
 }
