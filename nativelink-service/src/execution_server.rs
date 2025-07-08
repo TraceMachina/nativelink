@@ -245,7 +245,7 @@ impl ExecutionServer {
         let instance_info = self
             .instance_infos
             .get(&instance_name)
-            .err_tip(|| "Instance name '{}' not configured")?;
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
 
         let digest = DigestInfo::try_from(
             request

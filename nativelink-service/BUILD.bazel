@@ -60,6 +60,7 @@ rust_test_suite(
         "tests/bep_server_test.rs",
         "tests/bytestream_server_test.rs",
         "tests/cas_server_test.rs",
+        "tests/execution_server_test.rs",
         "tests/fetch_server_test.rs",
         "tests/push_server_test.rs",
         "tests/worker_api_server_test.rs",

@@ -16,7 +16,6 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 mod utils {
-    pub(crate) mod mock_scheduler;
     pub(crate) mod scheduler_utils;
 }
 
@@ -26,6 +25,7 @@ use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::ActionResult as ProtoActionResult;
 use nativelink_scheduler::cache_lookup_scheduler::CacheLookupScheduler;
+use nativelink_scheduler::mock_scheduler::MockActionScheduler;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{
     ActionResult, ActionStage, ActionState, ActionUniqueQualifier, OperationId,
@@ -38,7 +38,6 @@ use prost::Message;
 use tokio::sync::watch;
 use tokio::{self};
 use tokio_stream::StreamExt;
-use utils::mock_scheduler::MockActionScheduler;
 use utils::scheduler_utils::{TokioWatchActionStateResult, make_base_action_info};
 
 struct TestContext {
