@@ -36,7 +36,7 @@ use nativelink_scheduler::awaited_action_db::{
 use nativelink_scheduler::store_awaited_action_db::StoreAwaitedActionDb;
 use nativelink_store::redis_store::{RedisStore, RedisSubscriptionManager};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier,
+    ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -198,6 +198,8 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         new_awaited_action
     };
 
+    let worker_operation_id = OperationId::from(WORKER_OPERATION_ID);
+
     let ft_aggregate_args = vec![
         format!("aa__unique_qualifier__{SCRIPT_VERSION}").into(),
         format!("@unique_qualifier:{{ {INSTANCE_NAME}_SHA256_0000000000000000000000000000000000000000000000000000000000000000_0_c }}").into(),
@@ -357,6 +359,43 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         )
         .expect(
             MockCommand {
+                cmd: Str::from_static("HMGET"),
+                subcommand: None,
+                args: vec![
+                    format!("cid_{CLIENT_OPERATION_ID}").as_bytes().into(),
+                    "version".as_bytes().into(),
+                    "data".as_bytes().into(),
+                ],
+            },
+            Ok(RedisValue::Array(vec![
+                // Version.
+                RedisValue::Null,
+                // Data.
+                RedisValue::Bytes(Bytes::from(serde_json::to_string(&worker_operation_id).unwrap())),
+            ])),
+            None,
+        )
+        .expect(
+            MockCommand {
+                cmd: Str::from_static("HMGET"),
+                subcommand: None,
+                args: vec![
+                    format!("aa_{WORKER_OPERATION_ID}").as_bytes().into(),
+                    "version".as_bytes().into(),
+                    "data".as_bytes().into(),
+                ],
+            },
+            Ok(RedisValue::Array(vec![
+                // Version.
+                "2".into(),
+                // Data.
+                RedisValue::Bytes(Bytes::from(serde_json::to_string(&new_awaited_action).unwrap())),
+            ])),
+            None,
+        )
+
+        .expect(
+            MockCommand {
                 cmd: Str::from_static("EVALSHA"),
                 subcommand: None,
                 args: vec![
@@ -459,6 +498,18 @@ async fn add_action_smoke_test() -> Result<(), Error> {
             changed_awaited_action_res.unwrap().state().stage,
             ActionStage::Queued
         );
+    }
+
+    {
+        let get_subscription = awaited_action_db
+            .get_awaited_action_by_id(&OperationId::from(CLIENT_OPERATION_ID))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let get_res = get_subscription.borrow().await;
+
+        assert_eq!(get_res.unwrap().state().stage, ActionStage::Executing);
     }
 
     {
