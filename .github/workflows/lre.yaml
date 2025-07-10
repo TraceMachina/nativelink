@@ -195,6 +195,12 @@ jobs:
             --timeout=15m \
             nativelink-core"
 
+      - name: Debug Kustomizations
+        run: >
+          nix develop --impure --command
+          bash -c "kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A && kubectl describe kustomizations.kustomize.toolkit.fluxcd.io -A"
+        if: always()
+
       - name: Wait for Worker Kustomization
         env:
           TOOLCHAIN: ${{ matrix.toolchain }}
@@ -203,6 +209,12 @@ jobs:
           bash -c "flux reconcile kustomization -n default \
             --timeout=15m \
             nativelink-${TOOLCHAIN}"
+
+      - name: Debug Kustomizations
+        run: >
+          nix develop --impure --command
+          bash -c "kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A && kubectl describe kustomizations.kustomize.toolkit.fluxcd.io -A"
+        if: always()
 
       - name: Wait for NativeLink
         run: >
