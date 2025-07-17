@@ -156,11 +156,12 @@
             },
           },
         ],
-        bytestream: {
-          cas_stores: {
-            main: "WORKER_FAST_SLOW_STORE",
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
           },
-        },
+        ],
       },
     },
     {

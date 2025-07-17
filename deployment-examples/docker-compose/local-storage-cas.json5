@@ -54,11 +54,11 @@
           },
         ],
         capabilities: [],
-        bytestream: {
-          cas_stores: {
-            "": "CAS_MAIN_STORE",
+        bytestream: [
+          {
+            cas_store: "CAS_MAIN_STORE",
           },
-        },
+        ],
         fetch: {},
         push: {},
       },
@@ -91,11 +91,11 @@
           },
         ],
         capabilities: [],
-        bytestream: {
-          cas_stores: {
-            "": "CAS_MAIN_STORE",
+        bytestream: [
+          {
+            cas_store: "CAS_MAIN_STORE",
           },
-        },
+        ],
         health: {},
       },
     },
