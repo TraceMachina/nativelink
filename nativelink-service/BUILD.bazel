@@ -94,6 +94,8 @@ rust_test_suite(
         "@crates//:tokio-stream",
         "@crates//:tonic",
         "@crates//:tower",
+        "@crates//:tracing",
+        "@crates//:tracing-test",
     ],
 )
 

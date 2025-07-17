@@ -148,6 +148,7 @@ rust_test_suite(
         "@crates//:tokio-stream",
         "@crates//:tracing",
         "@crates//:tracing-subscriber",
+        "@crates//:tracing-test",
         "@crates//:uuid",
     ],
 )
