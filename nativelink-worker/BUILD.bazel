@@ -81,6 +81,8 @@ rust_test_suite(
         "@crates//:serial_test",
         "@crates//:tokio",
         "@crates//:tonic",
+        "@crates//:tracing",
+        "@crates//:tracing-test",
     ],
 )
 

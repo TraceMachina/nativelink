@@ -92,3 +92,6 @@ rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
 serde_json = { version = "1.0.140", default-features = false }
+tracing-test = { version = "0.2.5", default-features = false, features = [
+  "no-env-filter",
+] }

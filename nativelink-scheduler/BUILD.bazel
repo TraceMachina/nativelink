@@ -93,6 +93,8 @@ rust_test_suite(
         "@crates//:serde_json",
         "@crates//:tokio",
         "@crates//:tokio-stream",
+        "@crates//:tracing",
+        "@crates//:tracing-test",
         "@crates//:uuid",
     ],
 )
