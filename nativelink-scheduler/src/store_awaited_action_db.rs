@@ -13,12 +13,16 @@
 // limitations under the License.
 
 use std::borrow::Cow;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::ops::Bound;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use bytes::Bytes;
+use chrono;
 use futures::{Stream, TryStreamExt};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
@@ -412,6 +416,8 @@ where
     now_fn: NowFn,
     operation_id_creator: F,
     _pull_task_change_subscriber_spawn: JoinHandleDropGuard<()>,
+    added_operations_log_path: Option<PathBuf>,
+    not_found_operations_log_path: Option<PathBuf>,
 }
 
 impl<S, F, I, NowFn> StoreAwaitedActionDb<S, F, I, NowFn>
@@ -426,6 +432,24 @@ where
         task_change_publisher: Arc<Notify>,
         now_fn: NowFn,
         operation_id_creator: F,
+    ) -> Result<Self, Error> {
+        Self::new_with_logging(
+            store,
+            task_change_publisher,
+            now_fn,
+            operation_id_creator,
+            None,
+            None,
+        )
+    }
+
+    pub fn new_with_logging(
+        store: Arc<S>,
+        task_change_publisher: Arc<Notify>,
+        now_fn: NowFn,
+        operation_id_creator: F,
+        added_operations_log_path: Option<PathBuf>,
+        not_found_operations_log_path: Option<PathBuf>,
     ) -> Result<Self, Error> {
         let mut subscription = store
             .subscription_manager()
@@ -461,7 +485,27 @@ where
             now_fn,
             operation_id_creator,
             _pull_task_change_subscriber_spawn: pull_task_change_subscriber,
+            added_operations_log_path,
+            not_found_operations_log_path,
         })
+    }
+
+    fn log_added_operation(&self, client_operation_id: &ClientOperationId) {
+        if let Some(ref log_path) = self.added_operations_log_path {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+                let timestamp = chrono::Utc::now().to_rfc3339();
+                let _ = writeln!(file, "{},{}", timestamp, client_operation_id);
+            }
+        }
+    }
+
+    fn log_not_found_operation(&self, client_operation_id: &ClientOperationId) {
+        if let Some(ref log_path) = self.not_found_operations_log_path {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+                let timestamp = chrono::Utc::now().to_rfc3339();
+                let _ = writeln!(file, "{},{}", timestamp, client_operation_id);
+            }
+        }
     }
 
     async fn try_subscribe(
@@ -531,6 +575,8 @@ where
             .await
             .err_tip(|| "In RedisAwaitedActionDb::get_awaited_action_by_id")?;
         let Some(operation_id) = maybe_operation_id else {
+            // Log the not found operation
+            self.log_not_found_operation(client_operation_id);
             return Ok(None);
         };
         Ok(Some(OperationSubscriber::new(
@@ -618,6 +664,9 @@ where
             })
             .await
             .err_tip(|| "In RedisAwaitedActionDb::add_action")?;
+
+        // Log the added operation
+        self.log_added_operation(&client_operation_id);
 
         Ok(OperationSubscriber::new(
             Some(client_operation_id),

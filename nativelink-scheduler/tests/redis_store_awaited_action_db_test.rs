@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use std::collections::{HashMap, VecDeque};
-use std::fmt;
 use std::sync::Arc;
 use std::thread::panicking;
 use std::time::{Duration, SystemTime};
+use std::{fmt, fs};
 
 use bytes::Bytes;
 use fred::bytes_utils::string::Str;
@@ -43,6 +43,7 @@ use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::store_trait::{SchedulerStore, SchedulerSubscriptionManager};
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
+use tempfile::TempDir;
 use tokio::sync::Notify;
 
 const INSTANCE_NAME: &str = "instance_name";
@@ -465,12 +466,18 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         .lock()
         .replace(store.subscription_manager().unwrap());
 
+    let temp_dir = TempDir::new()?;
+    let added_log_path = temp_dir.path().join("added_operations.log");
+    let not_found_log_path = temp_dir.path().join("not_found_operations.log");
+
     let notifier = Arc::new(Notify::new());
-    let awaited_action_db = StoreAwaitedActionDb::new(
+    let awaited_action_db = StoreAwaitedActionDb::new_with_logging(
         store.clone(),
         notifier.clone(),
         MockInstantWrapped::default,
         move || WORKER_OPERATION_ID.into(),
+        Option::from(added_log_path.clone()),
+        Option::from(not_found_log_path.clone()),
     )
     .unwrap();
 
@@ -517,6 +524,11 @@ async fn add_action_smoke_test() -> Result<(), Error> {
             ActionStage::Executing
         );
     }
+
+    let added_log_content = fs::read_to_string(&added_log_path)?;
+    assert!(added_log_content.contains(&CLIENT_OPERATION_ID.to_string()));
+
+    assert_eq!(fs::exists(&not_found_log_path)?, false);
 
     Ok(())
 }
