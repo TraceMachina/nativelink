@@ -146,6 +146,10 @@ pub struct ExperimentalRedisSchedulerBackend {
     /// A reference to the redis store to use for the scheduler.
     /// Note: This MUST resolve to a `RedisSpec`.
     pub redis_store: StoreRefName,
+
+    pub new_operation_id_log_path: String,
+
+    pub not_found_operation_id_log_path: String,
 }
 
 /// A scheduler that simply forwards requests to an upstream scheduler.  This

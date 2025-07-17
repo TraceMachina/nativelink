@@ -12,9 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use crate::cache_lookup_scheduler::CacheLookupScheduler;
+use crate::grpc_scheduler::GrpcScheduler;
+use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
+use crate::property_modifier_scheduler::PropertyModifierScheduler;
+use crate::simple_scheduler::SimpleScheduler;
+use crate::store_awaited_action_db::StoreAwaitedActionDb;
+use crate::worker_scheduler::WorkerScheduler;
 use nativelink_config::schedulers::{
     ExperimentalSimpleSchedulerBackend, SchedulerSpec, SimpleSpec,
 };
@@ -26,14 +34,6 @@ use nativelink_store::store_manager::StoreManager;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::operation_state_manager::ClientStateManager;
 use tokio::sync::{mpsc, Notify};
-
-use crate::cache_lookup_scheduler::CacheLookupScheduler;
-use crate::grpc_scheduler::GrpcScheduler;
-use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
-use crate::property_modifier_scheduler::PropertyModifierScheduler;
-use crate::simple_scheduler::SimpleScheduler;
-use crate::store_awaited_action_db::StoreAwaitedActionDb;
-use crate::worker_scheduler::WorkerScheduler;
 
 /// Default timeout for recently completed actions in seconds.
 /// If this changes, remember to change the documentation in the config.
@@ -135,11 +135,13 @@ fn simple_scheduler_factory(
                         "Could not downcast to redis store in RedisAwaitedActionDb::new"
                     )
                 })?;
-            let awaited_action_db = StoreAwaitedActionDb::new(
+            let awaited_action_db = StoreAwaitedActionDb::new_with_logging(
                 store,
                 task_change_notify.clone(),
                 now_fn,
                 Default::default,
+                PathBuf::try_from(&redis_config.new_operation_id_log_path).ok(),
+                PathBuf::try_from(&redis_config.not_found_operation_id_log_path).ok(),
             )
             .err_tip(|| "In state_manager_factory::redis_state_manager")?;
             let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
