@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -135,13 +134,11 @@ fn simple_scheduler_factory(
                         "Could not downcast to redis store in RedisAwaitedActionDb::new"
                     )
                 })?;
-            let awaited_action_db = StoreAwaitedActionDb::new_with_logging(
+            let awaited_action_db = StoreAwaitedActionDb::new(
                 store,
                 task_change_notify.clone(),
                 now_fn,
                 Default::default,
-                PathBuf::try_from(&redis_config.new_operation_id_log_path).ok(),
-                PathBuf::try_from(&redis_config.not_found_operation_id_log_path).ok(),
             )
             .err_tip(|| "In state_manager_factory::redis_state_manager")?;
             let (action_scheduler, worker_scheduler) = SimpleScheduler::new(

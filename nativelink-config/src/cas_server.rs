@@ -297,6 +297,10 @@ pub struct ServicesConfig {
 
     /// This is the service for health status check.
     pub health: Option<HealthConfig>,
+
+    pub new_log_path: Option<String>,
+
+    pub not_found_log_path: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]

@@ -14,6 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -338,7 +339,14 @@ async fn inner_main(
                 services
                     .execution
                     .map_or(Ok(None), |cfg| {
-                        ExecutionServer::new(&cfg, &action_schedulers, &store_manager).map(|v| {
+                        ExecutionServer::new_with_logging(
+                            &cfg,
+                            &action_schedulers,
+                            &store_manager,
+                            services.new_log_path.map(|path| PathBuf::from(&path)),
+                            services.not_found_log_path.map(|path| PathBuf::from(&path)),
+                        )
+                        .map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =

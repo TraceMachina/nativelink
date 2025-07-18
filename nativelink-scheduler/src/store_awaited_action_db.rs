@@ -22,7 +22,6 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use bytes::Bytes;
-use chrono;
 use futures::{Stream, TryStreamExt};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
@@ -493,8 +492,7 @@ where
     fn log_added_operation(&self, client_operation_id: &ClientOperationId) {
         if let Some(ref log_path) = self.added_operations_log_path {
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
-                let timestamp = chrono::Utc::now().to_rfc3339();
-                let _ = writeln!(file, "{},{}", timestamp, client_operation_id);
+                let _ = writeln!(file, "{}", client_operation_id);
             }
         }
     }
@@ -502,8 +500,7 @@ where
     fn log_not_found_operation(&self, client_operation_id: &ClientOperationId) {
         if let Some(ref log_path) = self.not_found_operations_log_path {
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
-                let timestamp = chrono::Utc::now().to_rfc3339();
-                let _ = writeln!(file, "{},{}", timestamp, client_operation_id);
+                let _ = writeln!(file, "{}", client_operation_id);
             }
         }
     }

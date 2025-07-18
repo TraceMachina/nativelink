@@ -15,6 +15,9 @@
 use std::collections::HashMap;
 use std::convert::Into;
 use std::fmt;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -154,6 +157,8 @@ impl InstanceInfo {
 
 pub struct ExecutionServer {
     instance_infos: HashMap<InstanceName, InstanceInfo>,
+    added_operations_log_path: Option<PathBuf>,
+    not_found_operations_log_path: Option<PathBuf>,
 }
 
 type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + 'static>>;
@@ -163,6 +168,22 @@ impl ExecutionServer {
         config: &HashMap<InstanceName, ExecutionConfig>,
         scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
         store_manager: &StoreManager,
+    ) -> Result<Self, Error> {
+        Self::new_with_logging(
+            config,
+            scheduler_map,
+            store_manager,
+            None,
+            None,
+        )
+    }
+
+    pub fn new_with_logging(
+        config: &HashMap<InstanceName, ExecutionConfig>,
+        scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
+        store_manager: &StoreManager,
+        added_operations_log_path: Option<PathBuf>,
+        not_found_operations_log_path: Option<PathBuf>,
     ) -> Result<Self, Error> {
         let mut instance_infos = HashMap::with_capacity(config.len());
         for (instance_name, exec_cfg) in config {
@@ -189,7 +210,27 @@ impl ExecutionServer {
                 },
             );
         }
-        Ok(Self { instance_infos })
+        Ok(Self {
+            instance_infos,
+            added_operations_log_path,
+            not_found_operations_log_path,
+        })
+    }
+
+    fn log_added_operation(&self, client_operation_id: &OperationId) {
+        if let Some(ref log_path) = self.added_operations_log_path {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+                let _ = writeln!(file, "{}", client_operation_id);
+            }
+        }
+    }
+
+    fn log_not_found_operation(&self, client_operation_id: &OperationId) {
+        if let Some(ref log_path) = self.not_found_operations_log_path {
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+                let _ = writeln!(file, "{}", client_operation_id);
+            }
+        }
     }
 
     pub fn into_service(self) -> Server<ExecutionServer> {
@@ -272,16 +313,21 @@ impl ExecutionServer {
             .await
             .err_tip(|| "Failed to schedule task")?;
 
+        let client_operation_id = action_listener
+            .as_state()
+            .await
+            .err_tip(|| "In ExecutionServer::inner_execute")?
+            .0
+            .client_operation_id
+            .clone();
+
+        // Log the added operation
+        self.log_added_operation(&client_operation_id);
+
         Ok(Box::pin(Self::to_execute_stream(
             &NativelinkOperationId::new(
                 instance_name,
-                action_listener
-                    .as_state()
-                    .await
-                    .err_tip(|| "In ExecutionServer::inner_execute")?
-                    .0
-                    .client_operation_id
-                    .clone(),
+                client_operation_id,
             ),
             action_listener,
         )))
@@ -310,6 +356,8 @@ impl ExecutionServer {
             .next()
             .await
         else {
+            // Log the not found operation
+            self.log_not_found_operation(&nl_operation_id.client_operation_id);
             return Err(Status::not_found("Failed to find existing task"));
         };
         Ok(Self::to_execute_stream(&nl_operation_id, rx))
