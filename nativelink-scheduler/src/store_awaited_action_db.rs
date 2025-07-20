@@ -510,9 +510,17 @@ where
                     return Ok(None);
                 }
 
+                self.store
+                    .update_data(UpdateClientIdToOperationId {
+                        client_operation_id: client_operation_id.clone(),
+                        operation_id: operation_id.clone(),
+                    })
+                    .await
+                    .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+
                 Ok(Some(OperationSubscriber::new(
                     Some(client_operation_id.clone()),
-                    OperationIdToAwaitedAction(Cow::Owned(operation_id)),
+                    OperationIdToAwaitedAction(Cow::Owned(operation_id.clone())),
                     Arc::downgrade(&self.store),
                     self.now_fn.clone(),
                 )))
