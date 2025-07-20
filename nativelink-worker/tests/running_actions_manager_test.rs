@@ -3521,3 +3521,255 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
     assert_eq!(result.exit_code, 1, "Action process should be been killed");
     Ok(())
 }
+
+#[nativelink_test]
+async fn test_handles_stale_directory_on_retry() -> Result<(), Error> {
+    const WORKER_ID: &str = "foo_worker_id";
+    let (_, ac_store, cas_store, _) = setup_stores().await?;
+    let root_action_directory = make_temp_path("retry_work_directory");
+
+    // Ensure root directory exists
+    fs::create_dir_all(&root_action_directory).await?;
+
+    let running_actions_manager =
+        Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_action_directory: root_action_directory.clone(),
+            execution_configuration: ExecutionConfiguration {
+                entrypoint: None,
+                additional_environment: None,
+            },
+            cas_store: cas_store.clone(),
+            ac_store: Some(Store::new(ac_store.clone())),
+            historical_store: Store::new(cas_store.clone()),
+            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
+                upload_ac_results_strategy:
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
+                ..Default::default()
+            },
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
+
+    // Create a simple action
+    let command = Command {
+        arguments: vec!["echo".to_string(), "test".to_string()],
+        ..Default::default()
+    };
+    let command_digest = serialize_and_upload_message(
+        &command,
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    let input_root_digest = serialize_and_upload_message(
+        &Directory::default(),
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    let action = Action {
+        command_digest: Some(command_digest.into()),
+        input_root_digest: Some(input_root_digest.into()),
+        ..Default::default()
+    };
+    let action_digest = serialize_and_upload_message(
+        &action,
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+
+    let execute_request = ExecuteRequest {
+        action_digest: Some(action_digest.into()),
+        ..Default::default()
+    };
+
+    // Use a fixed operation ID to simulate retry with same ID
+    let operation_id = "test-retry-operation-fixed-id".to_string();
+
+    // Create the directory manually to simulate a previous failed action
+    let action_directory = format!("{root_action_directory}/{operation_id}");
+    eprintln!("Creating directory: {action_directory}");
+    fs::create_dir_all(&action_directory).await?;
+
+    // Also create the work subdirectory to ensure conflict
+    let work_directory = format!("{action_directory}/work");
+    fs::create_dir_all(&work_directory).await?;
+
+    // Add a marker file to detect if directory is deleted and recreated
+    let marker_file = format!("{action_directory}/marker.txt");
+    tokio::fs::write(&marker_file, "test").await?;
+
+    // Verify the directory was created
+    assert!(
+        tokio::fs::metadata(&action_directory).await.is_ok(),
+        "Directory should exist"
+    );
+    assert!(
+        tokio::fs::metadata(&work_directory).await.is_ok(),
+        "Work directory should exist"
+    );
+    assert!(
+        tokio::fs::metadata(&marker_file).await.is_ok(),
+        "Marker file should exist"
+    );
+
+    // Now try to create an action with the same operation ID
+    // This should fail with "File exists" error
+    eprintln!("Attempting to create action with existing directory...");
+    let result = running_actions_manager
+        .create_and_add_action(
+            WORKER_ID.to_string(),
+            StartExecute {
+                execute_request: Some(execute_request),
+                operation_id: operation_id.clone(),
+                queued_timestamp: Some(SystemTime::now().into()),
+                platform: None,
+                worker_id: WORKER_ID.to_string(),
+            },
+        )
+        .await;
+
+    // Verify the behavior - with the fix, it should succeed after removing stale directory
+    match result {
+        Ok(_) => {
+            // Check if the directory still exists and if marker file is gone
+            let dir_exists = tokio::fs::metadata(&action_directory).await.is_ok();
+            let marker_exists = tokio::fs::metadata(&marker_file).await.is_ok();
+            eprintln!(
+                "SUCCESS: Directory collision handled gracefully. Directory exists: {dir_exists}, Marker exists: {marker_exists}"
+            );
+            assert!(
+                dir_exists,
+                "Directory should exist after successful creation"
+            );
+            assert!(
+                !marker_exists,
+                "Marker file should be gone - stale directory was cleaned up"
+            );
+            eprintln!(
+                "PASSED: The fix is working - stale directory was removed and action proceeded"
+            );
+        }
+        Err(err) => {
+            panic!("Expected success after fix, but got error: {err}");
+        }
+    }
+
+    // Clean up
+    fs::remove_dir_all(&root_action_directory).await?;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_retry_after_cleanup_succeeds() -> Result<(), Error> {
+    const WORKER_ID: &str = "foo_worker_id";
+    let (_, ac_store, cas_store, _) = setup_stores().await?;
+    let root_action_directory = make_temp_path("retry_after_cleanup_work_directory");
+
+    // Ensure root directory exists
+    fs::create_dir_all(&root_action_directory).await?;
+
+    let running_actions_manager =
+        Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_action_directory: root_action_directory.clone(),
+            execution_configuration: ExecutionConfiguration {
+                entrypoint: None,
+                additional_environment: None,
+            },
+            cas_store: cas_store.clone(),
+            ac_store: Some(Store::new(ac_store.clone())),
+            historical_store: Store::new(cas_store.clone()),
+            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
+                upload_ac_results_strategy:
+                    nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
+                ..Default::default()
+            },
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
+
+    // Create a simple action
+    let command = Command {
+        arguments: vec!["echo".to_string(), "test".to_string()],
+        ..Default::default()
+    };
+    let command_digest = serialize_and_upload_message(
+        &command,
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    let input_root_digest = serialize_and_upload_message(
+        &Directory::default(),
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    let action = Action {
+        command_digest: Some(command_digest.into()),
+        input_root_digest: Some(input_root_digest.into()),
+        ..Default::default()
+    };
+    let action_digest = serialize_and_upload_message(
+        &action,
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+
+    let execute_request = ExecuteRequest {
+        action_digest: Some(action_digest.into()),
+        ..Default::default()
+    };
+
+    let operation_id = "test-retry-after-cleanup-fixed-id".to_string();
+
+    // First, create and execute an action
+    let action1 = running_actions_manager
+        .create_and_add_action(
+            WORKER_ID.to_string(),
+            StartExecute {
+                execute_request: Some(execute_request.clone()),
+                operation_id: operation_id.clone(),
+                queued_timestamp: Some(SystemTime::now().into()),
+                platform: None,
+                worker_id: WORKER_ID.to_string(),
+            },
+        )
+        .await?;
+
+    // Clean up the action
+    action1.cleanup().await?;
+
+    // Give cleanup a moment to complete
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Now try to create another action with the same operation ID
+    // This should succeed because the directory has been cleaned up
+    let result = running_actions_manager
+        .create_and_add_action(
+            WORKER_ID.to_string(),
+            StartExecute {
+                execute_request: Some(execute_request),
+                operation_id: operation_id.clone(),
+                queued_timestamp: Some(SystemTime::now().into()),
+                platform: None,
+                worker_id: WORKER_ID.to_string(),
+            },
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Expected success when creating action after cleanup, got: {:?}",
+        result.err()
+    );
+
+    // Clean up
+    if let Ok(action2) = result {
+        action2.cleanup().await?;
+    }
+    fs::remove_dir_all(&root_action_directory).await?;
+    Ok(())
+}
