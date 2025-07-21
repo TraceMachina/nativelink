@@ -26,8 +26,10 @@ rust_library(
         "@crates//:byte-unit",
         "@crates//:humantime",
         "@crates//:serde",
+        "@crates//:serde_json",
         "@crates//:serde_json5",
         "@crates//:shellexpand",
+        "@crates//:tracing",
     ],
 )
 
@@ -60,6 +62,7 @@ rust_test(
     deps = [
         "@crates//:pretty_assertions",
         "@crates//:serde_json",
+        "@crates//:tracing-test",
     ],
 )
 

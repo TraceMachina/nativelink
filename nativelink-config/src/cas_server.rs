@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use nativelink_error::{Error, ResultExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::schedulers::SchedulerSpec;
 use crate::serde_utils::{
@@ -33,7 +33,7 @@ pub type SchedulerRefName = String;
 /// Used when the config references `instance_name` in the protocol.
 pub type InstanceName = String;
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct WithInstanceName<T> {
     #[serde(default)]
     pub instance_name: InstanceName,
@@ -49,14 +49,14 @@ impl<T> core::ops::Deref for WithInstanceName<T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct NamedConfig<Spec> {
     pub name: String,
     #[serde(flatten)]
     pub spec: Spec,
 }
 
-#[derive(Deserialize, Debug, Default, Clone, Copy)]
+#[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum HttpCompressionAlgorithm {
     /// No compression.
@@ -76,7 +76,7 @@ pub enum HttpCompressionAlgorithm {
 /// services with different compression settings that are served on
 /// different ports. Then configure the non-cloud clients to use one port
 /// and cloud-clients to use another.
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct HttpCompressionConfig {
     /// The compression algorithm that the server will use when sending
@@ -99,7 +99,7 @@ pub struct HttpCompressionConfig {
     pub accepted_compression_algorithms: Vec<HttpCompressionAlgorithm>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct AcStoreConfig {
     /// The store name referenced in the `stores` map in the main config.
@@ -113,7 +113,7 @@ pub struct AcStoreConfig {
     pub read_only: bool,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct CasStoreConfig {
     /// The store name referenced in the `stores` map in the main config.
@@ -122,7 +122,7 @@ pub struct CasStoreConfig {
     pub cas_store: StoreRefName,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilitiesRemoteExecutionConfig {
     /// Scheduler used to configure the capabilities of remote execution.
@@ -130,7 +130,7 @@ pub struct CapabilitiesRemoteExecutionConfig {
     pub scheduler: SchedulerRefName,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilitiesConfig {
     /// Configuration for remote execution capabilities.
@@ -139,7 +139,7 @@ pub struct CapabilitiesConfig {
     pub remote_execution: Option<CapabilitiesRemoteExecutionConfig>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionConfig {
     /// The store name referenced in the `stores` map in the main config.
@@ -153,7 +153,7 @@ pub struct ExecutionConfig {
     pub scheduler: SchedulerRefName,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct FetchConfig {
     /// The store name referenced in the `stores` map in the main config.
@@ -162,7 +162,7 @@ pub struct FetchConfig {
     pub fetch_store: StoreRefName,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PushConfig {
     /// The store name referenced in the `stores` map in the main config.
@@ -176,7 +176,7 @@ pub struct PushConfig {
     pub read_only: bool,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
@@ -206,7 +206,7 @@ pub struct ByteStreamConfig {
     pub persist_stream_on_disconnect_timeout: usize,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerApiConfig {
     /// The scheduler name referenced in the `schedulers` map in the main config.
@@ -214,7 +214,7 @@ pub struct WorkerApiConfig {
     pub scheduler: SchedulerRefName,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct AdminConfig {
     /// Path to register the admin API. If path is "/admin", and your
@@ -226,7 +226,7 @@ pub struct AdminConfig {
     pub path: String,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct HealthConfig {
     /// Path to register the health status check. If path is "/status", and your
@@ -238,7 +238,7 @@ pub struct HealthConfig {
     pub path: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct BepConfig {
     /// The store to publish build events to.
     /// The store name referenced in the `stores` map in the main config.
@@ -246,7 +246,7 @@ pub struct BepConfig {
     pub store: StoreRefName,
 }
 
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct IdentityHeaderSpec {
     /// The name of the header to look for the identity in.
     /// Default: "x-identity"
@@ -258,7 +258,7 @@ pub struct IdentityHeaderSpec {
     pub required: bool,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct OriginEventsPublisherSpec {
     /// The store to publish nativelink events to.
     /// The store name referenced in the `stores` map in the main config.
@@ -266,7 +266,7 @@ pub struct OriginEventsPublisherSpec {
     pub store: StoreRefName,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct OriginEventsSpec {
     /// The publisher configuration for origin events.
     pub publisher: OriginEventsPublisherSpec,
@@ -280,7 +280,7 @@ pub struct OriginEventsSpec {
     pub max_event_queue_size: usize,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ServicesConfig {
     /// The Content Addressable Storage (CAS) backend config.
@@ -360,7 +360,7 @@ pub struct ServicesConfig {
     pub health: Option<HealthConfig>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct TlsConfig {
     /// Path to the certificate file.
@@ -388,7 +388,7 @@ pub struct TlsConfig {
 ///
 /// Note: All of these default to hyper's default values unless otherwise
 /// specified.
-#[derive(Deserialize, Debug, Default, Clone, Copy)]
+#[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 pub struct HttpServerConfig {
     /// Interval to send keep-alive pings via HTTP2.
@@ -455,14 +455,14 @@ pub struct HttpServerConfig {
     pub experimental_http2_max_header_list_size: Option<u32>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ListenerConfig {
     /// Listener for HTTP/HTTPS/HTTP2 sockets.
     Http(HttpListener),
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct HttpListener {
     /// Address to listen on. Example: `127.0.0.1:8080` or `:8080` to listen
@@ -486,7 +486,7 @@ pub struct HttpListener {
     pub tls: Option<TlsConfig>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     /// Name of the server. This is used to help identify the service
@@ -508,7 +508,7 @@ pub struct ServerConfig {
     pub experimental_identity_header: IdentityHeaderSpec,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerProperty {
     /// List of static values.
@@ -523,7 +523,7 @@ pub enum WorkerProperty {
 }
 
 /// Generic config for an endpoint and associated configs.
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct EndpointConfig {
     /// URI of the endpoint.
@@ -538,7 +538,7 @@ pub struct EndpointConfig {
     pub tls_config: Option<ClientTlsConfig>,
 }
 
-#[derive(Copy, Clone, Deserialize, Debug, Default)]
+#[derive(Copy, Clone, Deserialize, Serialize, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UploadCacheResultsStrategy {
     /// Only upload action results with an exit code of 0.
@@ -555,7 +555,7 @@ pub enum UploadCacheResultsStrategy {
     FailuresOnly,
 }
 
-#[derive(Clone, Deserialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentSource {
     /// The name of the platform property in the action to get the value from.
@@ -602,7 +602,7 @@ pub enum EnvironmentSource {
     ActionDirectory,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct UploadActionResultConfig {
     /// Underlying AC store that the worker will use to publish execution results
@@ -662,7 +662,7 @@ pub struct UploadActionResultConfig {
     pub failure_message_template: String,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct LocalWorkerConfig {
     /// Name of the worker. This is give a more friendly name to a worker for logging
@@ -754,14 +754,14 @@ pub struct LocalWorkerConfig {
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerConfig {
     /// A worker type that executes jobs locally on this machine.
     Local(LocalWorkerConfig),
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalConfig {
     /// Maximum number of open files that can be opened at one time.
@@ -796,7 +796,7 @@ pub struct GlobalConfig {
 pub type StoreConfig = NamedConfig<StoreSpec>;
 pub type SchedulerConfig = NamedConfig<SchedulerSpec>;
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct CasConfig {
     /// List of stores available to use in this config.
