@@ -6,6 +6,7 @@
     local-image-test = final.callPackage ./local-image-test.nix {};
     publish-ghcr = final.callPackage ./publish-ghcr.nix {};
     native-cli = final.callPackage ../../native-cli/default.nix {};
+    create-local-image = final.callPackage ./create-local-image.nix {};
 
     lib = {
       createWorker = self:

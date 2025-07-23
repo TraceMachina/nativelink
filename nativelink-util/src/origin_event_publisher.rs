@@ -84,6 +84,7 @@ impl OriginEventPublisher {
     }
 
     async fn handle_batch(&self, batch: &mut Vec<OriginEvent>) {
+        // Use v4 for simplicity - v6 requires timestamp and node ID which adds unnecessary complexity
         let uuid = Uuid::new_v4();
         let events = OriginEvents {
             #[expect(

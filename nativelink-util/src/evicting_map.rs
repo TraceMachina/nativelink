@@ -109,6 +109,7 @@ impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Syn
 {
     /// Removes an item from the cache and returns the data for deferred cleanup.
     /// The caller is responsible for calling `unref()` on the returned data outside of the lock.
+    #[must_use]
     fn remove<Q>(&mut self, key: &Q, eviction_item: &EvictionItem<T>, replaced: bool) -> T
     where
         K: Borrow<Q>,
@@ -132,6 +133,7 @@ impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Syn
 
     /// Inserts a new item into the cache. If the key already exists, the old item is returned
     /// for deferred cleanup.
+    #[must_use]
     fn put(&mut self, key: &K, eviction_item: EvictionItem<T>) -> Option<T>
     where
         K: Clone,
@@ -261,6 +263,7 @@ where
         is_over_size || old_item_exists || is_over_count
     }
 
+    #[must_use]
     fn evict_items(&self, state: &mut State<K, T>) -> Vec<T> {
         let Some((_, mut peek_entry)) = state.lru.peek_lru() else {
             return Vec::new();
