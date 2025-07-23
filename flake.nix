@@ -352,7 +352,8 @@
               nativelink-x86_64-linux
               ;
 
-            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr native-cli;
+            # Used by the CI
+            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr;
 
             default = nativelink;
 
@@ -498,6 +499,7 @@
               pkgs.lre.lre-cc.lre-cc-configs-gen
               pkgs.nativelink-tools.local-image-test
               pkgs.nativelink-tools.native-cli
+              pkgs.nativelink-tools.create-local-image
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.darwin.apple_sdk.frameworks.CoreFoundation
