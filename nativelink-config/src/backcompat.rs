@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
+use tracing::warn;
 
 use crate::cas_server::WithInstanceName;
 
@@ -11,23 +12,6 @@ enum WithInstanceNameBackCompat<T> {
     Vec(Vec<WithInstanceName<T>>),
 }
 
-const DEPRECATION_MESSAGE: &str = r#"
-WARNING: Using deprecated map format for services. Please migrate to the new array format:
-    // Old:
-    "cas": {
-        "main": {
-            "cas_store": "STORE_NAME"
-        }
-    }
-    // New:
-    "cas": [
-        {
-            "instance_name": "main",
-            "cas_store": "STORE_NAME"
-        }
-    ]
-"#;
-
 /// Use `#[serde(default, deserialize_with = "backcompat::opt_vec_named_config")]` for backwards
 /// compatibility with map-based access. A deprecation warning will be written to stderr if the
 /// old format is used.
@@ -36,7 +20,7 @@ pub(crate) fn opt_vec_with_instance_name<'de, D, T>(
 ) -> Result<Option<Vec<WithInstanceName<T>>>, D::Error>
 where
     D: Deserializer<'de>,
-    T: Deserialize<'de>,
+    T: Deserialize<'de> + Serialize,
 {
     let Some(back_compat) = Option::deserialize(deserializer)? else {
         return Ok(None);
@@ -44,14 +28,28 @@ where
 
     match back_compat {
         WithInstanceNameBackCompat::Map(map) => {
-            eprintln!("{DEPRECATION_MESSAGE}");
-            let vec = map
+            // TODO(palfrey): ideally this would be serde_json5::to_string_pretty but that doesn't exist
+            // JSON is close enough to be workable for now
+            let serde_map = serde_json::to_string_pretty(&map).expect("valid map");
+            let vec: Vec<WithInstanceName<T>> = map
                 .into_iter()
                 .map(|(instance_name, config)| WithInstanceName {
                     instance_name,
                     config,
                 })
                 .collect();
+            warn!(
+                r"WARNING: Using deprecated map format for services. Please migrate to the new array format:
+// Old:
+{}
+// New:
+{}
+",
+                serde_map,
+                // TODO(palfrey): ideally this would be serde_json5::to_string_pretty but that doesn't exist
+                // JSON is close enough to be workable for now
+                serde_json::to_string_pretty(&vec).expect("valid new map")
+            );
             Ok(Some(vec))
         }
         WithInstanceNameBackCompat::Vec(vec) => Ok(Some(vec)),
@@ -61,21 +59,23 @@ where
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use tracing_test::traced_test;
 
     use super::*;
 
-    #[derive(Debug, Deserialize, PartialEq)]
+    #[derive(Debug, Deserialize, Serialize, PartialEq)]
     struct PartialConfig {
         store: String,
     }
 
-    #[derive(Debug, Deserialize, PartialEq)]
+    #[derive(Debug, Deserialize, Serialize, PartialEq)]
     struct FullConfig {
         #[serde(default, deserialize_with = "opt_vec_with_instance_name")]
         cas: Option<Vec<WithInstanceName<PartialConfig>>>,
     }
 
     #[test]
+    #[traced_test]
     fn test_configs_deserialization() {
         let old_format = json!({
             "cas": {
@@ -109,6 +109,17 @@ mod tests {
         }
 
         assert_eq!(old_format, new_format);
+
+        logs_assert(|lines: &[&str]| {
+            if lines.len() != 1 {
+                return Err(format!("Expected 1 log line, got: {lines:?}"));
+            }
+            let line = lines[0];
+            // TODO(palfrey): we should be checking the whole thing, but tracing-test is broken with multi-line items
+            // See https://github.com/dbrgn/tracing-test/issues/48
+            assert!(line.ends_with("WARNING: Using deprecated map format for services. Please migrate to the new array format:"));
+            Ok(())
+        });
     }
 
     #[test]
