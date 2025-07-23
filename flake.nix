@@ -353,7 +353,7 @@
               ;
 
             # Used by the CI
-            inherit (pkgs.nativelink-tools) local-image-test;
+            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr;
 
             default = nativelink;
 
