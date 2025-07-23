@@ -39,7 +39,7 @@ use nativelink_proto::google::bytestream::{
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
-use nativelink_util::digest_hasher::{DigestHasherFunc, default_digest_hasher_func};
+use nativelink_util::digest_hasher::{DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func};
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::proto_stream_utils::{
     FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
@@ -48,7 +48,7 @@ use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::{default_health_status_indicator, tls_utils};
-use opentelemetry::context::Context;
+use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
 use prost::Message;
 use rand::Rng;
@@ -140,6 +140,11 @@ impl GrpcStore {
             .await
     }
 
+    /// Finds missing blobs in the remote store.
+    ///
+    /// Extracts the digest_function from the request and sets the appropriate
+    /// context before forwarding the request to the upstream GRPC service.
+    /// This ensures that the correct hash function is used throughout the operation.
     pub async fn find_missing_blobs(
         &self,
         grpc_request: Request<FindMissingBlobsRequest>,
@@ -150,6 +155,7 @@ impl GrpcStore {
         );
 
         let mut request = grpc_request.into_inner();
+        let digest_function = request.digest_function;
         request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let channel = self
@@ -162,6 +168,10 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in GrpcStore::find_missing_blobs")
         })
+        .with_context(
+            make_ctx_for_hash_func(digest_function)
+                .err_tip(|| "In GrpcStore::find_missing_blobs")?,
+        )
         .await
     }
 
@@ -175,6 +185,7 @@ impl GrpcStore {
         );
 
         let mut request = grpc_request.into_inner();
+        let digest_function = request.digest_function;
         request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let channel = self
@@ -187,6 +198,10 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in GrpcStore::batch_update_blobs")
         })
+        .with_context(
+            make_ctx_for_hash_func(digest_function)
+                .err_tip(|| "In GrpcStore::batch_update_blobs")?,
+        )
         .await
     }
 
@@ -200,6 +215,7 @@ impl GrpcStore {
         );
 
         let mut request = grpc_request.into_inner();
+        let digest_function = request.digest_function;
         request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let channel = self
@@ -212,6 +228,10 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in GrpcStore::batch_read_blobs")
         })
+        .with_context(
+            make_ctx_for_hash_func(digest_function)
+                .err_tip(|| "In GrpcStore::batch_read_blobs")?,
+        )
         .await
     }
 
@@ -394,6 +414,7 @@ impl GrpcStore {
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Error> {
         let mut request = grpc_request.into_inner();
+        let digest_function = request.digest_function;
         request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let channel = self
@@ -406,6 +427,10 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in GrpcStore::get_action_result")
         })
+        .with_context(
+            make_ctx_for_hash_func(digest_function)
+                .err_tip(|| "In GrpcStore::get_action_result")?,
+        )
         .await
     }
 
@@ -414,6 +439,7 @@ impl GrpcStore {
         grpc_request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Error> {
         let mut request = grpc_request.into_inner();
+        let digest_function = request.digest_function;
         request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let channel = self
@@ -426,6 +452,10 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in GrpcStore::update_action_result")
         })
+        .with_context(
+            make_ctx_for_hash_func(digest_function)
+                .err_tip(|| "In GrpcStore::update_action_result")?,
+        )
         .await
     }
 
