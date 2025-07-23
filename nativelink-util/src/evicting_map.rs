@@ -107,11 +107,13 @@ struct State<K: Ord + Hash + Eq + Clone + Debug + Send, T: LenEntry + Debug + Se
 impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Sync + Send>
     State<K, T>
 {
-    /// Removes an item from the cache.
-    async fn remove<Q>(&mut self, key: &Q, eviction_item: &EvictionItem<T>, replaced: bool)
+    /// Removes an item from the cache and returns the data for deferred cleanup.
+    /// The caller is responsible for calling `unref()` on the returned data outside of the lock.
+    fn remove<Q>(&mut self, key: &Q, eviction_item: &EvictionItem<T>, replaced: bool) -> T
     where
         K: Borrow<Q>,
         Q: Ord + Hash + Eq + Debug + Sync,
+        T: Clone,
     {
         if let Some(btree) = &mut self.btree {
             btree.remove(key.borrow());
@@ -124,19 +126,24 @@ impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Syn
             self.evicted_items.inc();
             self.evicted_bytes.add(eviction_item.data.len());
         }
-        // Note: See comment in `unref()` requiring global lock of insert/remove.
-        eviction_item.data.unref().await;
+        // Return the data for deferred unref outside of lock
+        eviction_item.data.clone()
     }
 
-    /// Inserts a new item into the cache. If the key already exists, the old item is returned.
-    async fn put(&mut self, key: K, eviction_item: EvictionItem<T>) -> Option<T> {
+    /// Inserts a new item into the cache. If the key already exists, the old item is returned
+    /// for deferred cleanup.
+    fn put(&mut self, key: &K, eviction_item: EvictionItem<T>) -> Option<T>
+    where
+        K: Clone,
+        T: Clone,
+    {
         // If we are maintaining a btree index, we need to update it.
         if let Some(btree) = &mut self.btree {
             btree.insert(key.clone());
         }
         if let Some(old_item) = self.lru.put(key.clone(), eviction_item) {
-            self.remove(&key, &old_item, true).await;
-            return Some(old_item.data);
+            let old_data = self.remove(key, &old_item, true);
+            return Some(old_data);
         }
         None
     }
@@ -254,9 +261,9 @@ where
         is_over_size || old_item_exists || is_over_count
     }
 
-    async fn evict_items(&self, state: &mut State<K, T>) {
+    fn evict_items(&self, state: &mut State<K, T>) -> Vec<T> {
         let Some((_, mut peek_entry)) = state.lru.peek_lru() else {
-            return;
+            return Vec::new();
         };
 
         let max_bytes = if self.max_bytes != 0
@@ -272,20 +279,25 @@ where
             self.max_bytes
         };
 
+        let mut items_to_unref = Vec::new();
+
         while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, max_bytes) {
             let (key, eviction_item) = state
                 .lru
                 .pop_lru()
                 .expect("Tried to peek() then pop() but failed");
             debug!(?key, "Evicting",);
-            state.remove(&key, &eviction_item, false).await;
+            let data = state.remove(&key, &eviction_item, false);
+            items_to_unref.push(data);
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
                 entry
             } else {
-                return;
+                break;
             };
         }
+
+        items_to_unref
     }
 
     /// Return the size of a `key`, if not found `None` is returned.
@@ -338,7 +350,11 @@ where
                         *result = None;
                         if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
                             info!(?key, "Item expired, evicting");
-                            state.remove(key.borrow(), &eviction_item, false).await;
+                            let data = state.remove(key.borrow(), &eviction_item, false);
+                            // Store data for later unref - we can't drop state here as we're still iterating
+                            // The unref will happen after the method completes
+                            // For now, we just do inline unref
+                            data.unref().await;
                         }
                     } else {
                         if !peek {
@@ -358,11 +374,36 @@ where
         K: Borrow<Q>,
         Q: Ord + Hash + Eq + Debug + Sync,
     {
+        // Fast path: Check if we need eviction before acquiring lock for eviction
+        let needs_eviction = {
+            let state = self.state.lock().await;
+            if let Some((_, peek_entry)) = state.lru.peek_lru() {
+                self.should_evict(
+                    state.lru.len(),
+                    peek_entry,
+                    state.sum_store_size,
+                    self.max_bytes,
+                )
+            } else {
+                false
+            }
+        };
+
+        // Perform eviction if needed
+        if needs_eviction {
+            let items_to_unref = {
+                let mut state = self.state.lock().await;
+                self.evict_items(&mut *state)
+            };
+            // Unref items outside of lock
+            for item in items_to_unref {
+                item.unref().await;
+            }
+        }
+
+        // Now get the item
         let mut state = self.state.lock().await;
-        self.evict_items(&mut *state).await;
-
         let entry = state.lru.get_mut(key.borrow())?;
-
         entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
         Some(entry.data.clone())
     }
@@ -375,10 +416,18 @@ where
 
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
-        let mut state = self.state.lock().await;
-        let results = self
-            .inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
-            .await;
+        let items_to_unref = {
+            let mut state = self.state.lock().await;
+            self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
+        };
+
+        // Unref items outside of lock
+        let mut results = Vec::new();
+        for item in items_to_unref {
+            item.unref().await;
+            results.push(item);
+        }
+
         results.into_iter().next()
     }
 
@@ -396,12 +445,23 @@ where
         if inserts.peek().is_none() {
             return Vec::new();
         }
-        let state = &mut self.state.lock().await;
-        self.inner_insert_many(state, inserts, self.anchor_time.elapsed().as_secs() as i32)
-            .await
+
+        let items_to_unref = {
+            let state = &mut self.state.lock().await;
+            self.inner_insert_many(state, inserts, self.anchor_time.elapsed().as_secs() as i32)
+        };
+
+        // Unref items outside of lock
+        let mut results = Vec::new();
+        for item in items_to_unref {
+            item.unref().await;
+            results.push(item);
+        }
+
+        results
     }
 
-    async fn inner_insert_many<It>(
+    fn inner_insert_many<It>(
         &self,
         state: &mut State<K, T>,
         inserts: It,
@@ -421,13 +481,22 @@ where
                 data,
             };
 
-            if let Some(old_item) = state.put(key, eviction_item).await {
+            if let Some(old_item) = state.put(&key, eviction_item) {
                 replaced_items.push(old_item);
             }
             state.sum_store_size += new_item_size;
             state.lifetime_inserted_bytes.add(new_item_size);
-            self.evict_items(state).await;
         }
+
+        // Perform eviction after all insertions
+        let items_to_unref = self.evict_items(state);
+
+        // Note: We cannot drop the state lock here since we're borrowing it,
+        // but the caller will handle unreffing these items after releasing the lock
+        for item in items_to_unref {
+            replaced_items.push(item);
+        }
+
         replaced_items
     }
 
@@ -436,20 +505,33 @@ where
         K: Borrow<Q>,
         Q: Ord + Hash + Eq + Debug + Sync,
     {
-        let mut state = self.state.lock().await;
-        self.inner_remove(&mut state, key).await
-    }
+        let (items_to_unref, removed_item) = {
+            let mut state = self.state.lock().await;
 
-    async fn inner_remove<Q>(&self, state: &mut State<K, T>, key: &Q) -> bool
-    where
-        K: Borrow<Q>,
-        Q: Ord + Hash + Eq + Debug + Sync,
-    {
-        self.evict_items(state).await;
-        if let Some(entry) = state.lru.pop(key.borrow()) {
-            state.remove(key, &entry, false).await;
+            // First perform eviction
+            let evicted_items = self.evict_items(&mut *state);
+
+            // Then try to remove the requested item
+            let removed = if let Some(entry) = state.lru.pop(key.borrow()) {
+                Some(state.remove(key, &entry, false))
+            } else {
+                None
+            };
+
+            (evicted_items, removed)
+        };
+
+        // Unref evicted items outside of lock
+        for item in items_to_unref {
+            item.unref().await;
+        }
+
+        // Unref removed item if any
+        if let Some(item) = removed_item {
+            item.unref().await;
             return true;
         }
+
         false
     }
 
@@ -466,7 +548,31 @@ where
             if !cond(&entry.data) {
                 return false;
             }
-            return self.inner_remove(&mut state, key).await;
+            // First perform eviction
+            let evicted_items = self.evict_items(&mut state);
+
+            // Then try to remove the requested item
+            let removed_item = if let Some(entry) = state.lru.pop(key.borrow()) {
+                Some(state.remove(key, &entry, false))
+            } else {
+                None
+            };
+
+            // Drop the lock before unref operations
+            drop(state);
+
+            // Unref evicted items
+            for item in evicted_items {
+                item.unref().await;
+            }
+
+            // Unref removed item if any
+            if let Some(item) = removed_item {
+                item.unref().await;
+                return true;
+            }
+
+            return false;
         }
         false
     }

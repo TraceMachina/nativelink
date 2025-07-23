@@ -20,7 +20,6 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::error;
 use uuid::Uuid;
 
-use crate::origin_event::get_node_id;
 use crate::shutdown_guard::{Priority, ShutdownGuard};
 use crate::store_trait::{Store, StoreLike};
 
@@ -85,7 +84,7 @@ impl OriginEventPublisher {
     }
 
     async fn handle_batch(&self, batch: &mut Vec<OriginEvent>) {
-        let uuid = Uuid::now_v6(&get_node_id(None));
+        let uuid = Uuid::new_v4();
         let events = OriginEvents {
             #[expect(
                 clippy::drain_collect,
