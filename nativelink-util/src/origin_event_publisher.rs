@@ -18,7 +18,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{OriginEve
 use prost::Message;
 use tokio::sync::{broadcast, mpsc};
 use tracing::error;
-use uuid::Uuid;
+use uuid::{Timestamp, Uuid};
 
 use crate::shutdown_guard::{Priority, ShutdownGuard};
 use crate::store_trait::{Store, StoreLike};
@@ -29,18 +29,26 @@ pub struct OriginEventPublisher {
     store: Store,
     rx: mpsc::Receiver<OriginEvent>,
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
+    node_id: [u8; 6],
 }
 
 impl OriginEventPublisher {
-    pub const fn new(
+    pub fn new(
         store: Store,
         rx: mpsc::Receiver<OriginEvent>,
         shutdown_tx: broadcast::Sender<ShutdownGuard>,
     ) -> Self {
+        // Generate a random node_id for this instance
+        use rand::Rng;
+        let mut rng = rand::rng();
+        let mut node_id = [0u8; 6];
+        rng.fill(&mut node_id);
+
         Self {
             store,
             rx,
             shutdown_tx,
+            node_id,
         }
     }
 
@@ -84,8 +92,17 @@ impl OriginEventPublisher {
     }
 
     async fn handle_batch(&self, batch: &mut Vec<OriginEvent>) {
-        // Use v4 for simplicity - v6 requires timestamp and node ID which adds unnecessary complexity
-        let uuid = Uuid::new_v4();
+        // UUID v6 requires a timestamp and node ID
+        // Create timestamp from current system time with nanosecond precision
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let ts = Timestamp::from_unix(
+            uuid::timestamp::context::NoContext,
+            now.as_secs(),
+            now.subsec_nanos(),
+        );
+        let uuid = Uuid::new_v6(ts, &self.node_id);
         let events = OriginEvents {
             #[expect(
                 clippy::drain_collect,
