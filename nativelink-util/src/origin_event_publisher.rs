@@ -18,7 +18,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{OriginEve
 use prost::Message;
 use tokio::sync::{broadcast, mpsc};
 use tracing::error;
-use uuid::Uuid;
+use uuid::{Timestamp, Uuid};
 
 use crate::shutdown_guard::{Priority, ShutdownGuard};
 use crate::store_trait::{Store, StoreLike};
@@ -84,8 +84,21 @@ impl OriginEventPublisher {
     }
 
     async fn handle_batch(&self, batch: &mut Vec<OriginEvent>) {
-        // Use v4 for simplicity - v6 requires timestamp and node ID which adds unnecessary complexity
-        let uuid = Uuid::new_v4();
+        // Use a static node ID for this service instance - could be MAC address or random
+        // In production, this could be derived from MAC address or a configured node ID
+        static NODE_ID: [u8; 6] = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab];
+
+        // UUID v6 requires a timestamp and node ID
+        // Create timestamp from current system time with nanosecond precision
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let ts = Timestamp::from_unix(
+            uuid::timestamp::context::NoContext,
+            now.as_secs(),
+            now.subsec_nanos(),
+        );
+        let uuid = Uuid::new_v6(ts, &NODE_ID);
         let events = OriginEvents {
             #[expect(
                 clippy::drain_collect,

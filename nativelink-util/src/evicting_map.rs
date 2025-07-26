@@ -109,7 +109,6 @@ impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Syn
 {
     /// Removes an item from the cache and returns the data for deferred cleanup.
     /// The caller is responsible for calling `unref()` on the returned data outside of the lock.
-    #[must_use]
     fn remove<Q>(&mut self, key: &Q, eviction_item: &EvictionItem<T>, replaced: bool) -> T
     where
         K: Borrow<Q>,
