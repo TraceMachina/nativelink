@@ -6,6 +6,7 @@ use nativelink_util::store_trait::StoreLike;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spec = RedisSpec {
         addresses: vec!["redis://127.0.0.1:6379/".to_string()],
+        connection_timeout_ms: 1000,
         ..Default::default()
     };
     let store = RedisStore::new(spec)?;
