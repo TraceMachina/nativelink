@@ -488,7 +488,7 @@ impl SimpleScheduler {
                                                 })
                                                 .collect::<Vec<_>>()
                                                 .await;
-                                            for action_state in actions.iter() {
+                                            for action_state in &actions {
                                                 let name = action_state.stage.name();
                                                 match oldest_actions_in_state.get_mut(&name) {
                                                     Some(values) => {
@@ -503,7 +503,7 @@ impl SimpleScheduler {
                                                         oldest_actions_in_state
                                                             .insert(name, values);
                                                     }
-                                                };
+                                                }
                                             }
                                         }
                                         Err(e) => {

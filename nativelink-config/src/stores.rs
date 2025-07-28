@@ -489,7 +489,8 @@ pub enum StoreSpec {
     /// "redis_store": {
     ///   "addresses": [
     ///     "redis://127.0.0.1:6379/",
-    ///   ]
+    ///   ],
+    ///   "max_client_permits": 1000,
     /// }
     /// ```
     ///
@@ -1217,6 +1218,12 @@ pub struct RedisSpec {
     /// ```
     #[serde(default)]
     pub retry: Retry,
+
+    /// Maximum number of permitted actions to the Redis store at any one time
+    /// This stops problems with timeouts due to many, many inflight actions
+    /// Default: 100
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_client_permits: usize,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
