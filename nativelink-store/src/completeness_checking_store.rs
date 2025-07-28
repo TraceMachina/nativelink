@@ -223,7 +223,7 @@ impl CompletenessCheckingStore {
                 .map_err(move |mut e| {
                     if e.code != Code::NotFound {
                         e = e.append(
-                            "Error checking existence of digest in CompletenessCheckingStore::has",
+                            format!("Error checking existence of digest ({digest}) in CompletenessCheckingStore::has"),
                         );
                     }
                     (e, i)
