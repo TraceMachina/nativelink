@@ -101,9 +101,9 @@ impl BepServer {
             .err_tip(|| "Could not encode PublishLifecycleEventRequest proto")?;
 
         self.store
-            .update_oneshot(store_key, buf.freeze())
+            .update_oneshot(store_key.clone(), buf.freeze())
             .await
-            .err_tip(|| "Failed to store PublishLifecycleEventRequest")?;
+            .err_tip(|| format!("Failed to store PublishLifecycleEventRequest for {store_key}",))?;
 
         Ok(Response::new(()))
     }
