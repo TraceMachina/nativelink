@@ -39,6 +39,23 @@ rust_binary(
     ],
 )
 
+rust_binary(
+    name = "redis_store_tester",
+    srcs = [
+        "src/bin/redis_store_tester.rs",
+    ],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:bytes",
+        "@crates//:rand",
+        "@crates//:tokio",
+        "@crates//:tracing",
+    ],
+)
+
 filegroup(
     name = "docs",
     srcs = [

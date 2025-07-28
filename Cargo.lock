@@ -2498,6 +2498,7 @@ version = "0.7.6"
 dependencies = [
  "async-lock",
  "axum",
+ "bytes",
  "clap",
  "futures",
  "hyper 1.7.0",
@@ -2510,6 +2511,7 @@ dependencies = [
  "nativelink-store",
  "nativelink-util",
  "nativelink-worker",
+ "rand 0.9.2",
  "rustls-pemfile",
  "tokio",
  "tokio-rustls",
