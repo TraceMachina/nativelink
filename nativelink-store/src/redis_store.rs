@@ -24,7 +24,7 @@ use bytes::Bytes;
 use const_format::formatcp;
 use fred::clients::{Pool as RedisPool, SubscriberClient};
 use fred::interfaces::{ClientLike, KeysInterface, PubsubInterface};
-use fred::prelude::{EventInterface, HashesInterface, RediSearchInterface};
+use fred::prelude::{Client, EventInterface, HashesInterface, RediSearchInterface};
 use fred::types::config::{
     Config as RedisConfig, ConnectionConfig, PerformanceConfig, ReconnectPolicy, UnresponsiveConfig,
 };
@@ -293,6 +293,22 @@ impl RedisStore {
         })
     }
 
+    async fn get_client(&'_ self) -> Result<&'_ Client, Error> {
+        let config = self.client_pool.last().client_config();
+        if config.mocks.is_none() {
+            self.client_pool.wait_for_connect().await.err_tip(|| {
+                format!(
+                    "Connection issue connecting to redis server with hosts: {:?}, username: {}, database: {}",
+                    config.server.hosts().iter().map(|s| format!("{}:{}", s.host, s.port)).collect::<Vec<String>>(),
+                    config.username.unwrap_or_else(|| "None".to_string()),
+                    config.database.unwrap_or_default()
+                )
+            })?;
+        }
+        let client = self.client_pool.next();
+        Ok(client)
+    }
+
     /// Encode a [`StoreKey`] so it can be sent to Redis.
     fn encode_key<'a>(&self, key: &'a StoreKey<'a>) -> Cow<'a, str> {
         let key_body = key.as_str();
@@ -328,7 +344,7 @@ impl StoreDriver for RedisStore {
         // difficult and it doesn't work very well in cluster mode.
         // If we wanted to optimize this with pipeline be careful to
         // implement retry and to support cluster mode.
-        let client = self.client_pool.next();
+        let client = self.get_client().await?;
         keys.iter()
             .zip(results.iter_mut())
             .map(|(key, result)| async move {
@@ -395,7 +411,7 @@ impl StoreDriver for RedisStore {
             },
             Bound::Unbounded => format!("{}*", self.key_prefix),
         };
-        let client = self.client_pool.next();
+        let client = self.get_client().await?;
         let mut scan_stream = client.scan(pattern, Some(self.scan_count), None);
         let mut iterations = 0;
         'outer: while let Some(mut page) = scan_stream.try_next().await? {
@@ -458,7 +474,7 @@ impl StoreDriver for RedisStore {
             }
         }
 
-        let client = self.client_pool.next();
+        let client = self.get_client().await?;
 
         let mut read_stream = reader
             .scan(0u32, |bytes_read, chunk_res| {
@@ -550,7 +566,7 @@ impl StoreDriver for RedisStore {
                 .err_tip(|| "Failed to send zero EOF in redis store get_part");
         }
 
-        let client = self.client_pool.next();
+        let client = self.get_client().await?;
         let encoded_key = self.encode_key(&key);
         let encoded_key = encoded_key.as_ref();
 
@@ -1048,7 +1064,7 @@ impl SchedulerStore for RedisStore {
     {
         let key = data.get_key();
         let key = self.encode_key(&key);
-        let client = self.client_pool.next();
+        let client = self.get_client().await?;
         let maybe_index = data.get_indexes().err_tip(|| {
             format!("Err getting index in RedisStore::update_data::versioned for {key:?}")
         })?;
@@ -1251,7 +1267,7 @@ impl SchedulerStore for RedisStore {
     {
         let key = key.get_key();
         let key = self.encode_key(&key);
-        let client = self.client_pool.next();
+        let client = self.get_client().await?;
         let (maybe_version, maybe_data) = client
             .hmget::<(Option<u64>, Option<Bytes>), _, _>(
                 key.as_ref(),

@@ -968,7 +968,7 @@ pub enum ErrorCode {
     // Note: This list is duplicated from nativelink-error/lib.rs.
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RedisSpec {
     /// The hostname or IP address of the Redis server.
     /// Ex: `["redis://username:password@redis-server-url:6380/99"]`
