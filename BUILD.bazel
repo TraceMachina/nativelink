@@ -50,6 +50,7 @@ rust_binary(
         "//nativelink-config",
         "//nativelink-store",
         "//nativelink-util",
+        "@crates//:bytes",
         "@crates//:tokio",
     ],
 )

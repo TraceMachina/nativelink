@@ -2575,6 +2575,7 @@ version = "0.7.1"
 dependencies = [
  "async-lock",
  "axum",
+ "bytes",
  "clap",
  "futures",
  "hyper 1.7.0",
