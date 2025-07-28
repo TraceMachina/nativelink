@@ -691,7 +691,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         self.evicting_map
             .get::<StoreKey<'static>>(&digest.into())
             .await
-            .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store"))
+            .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store. This may indicate the file was evicted due to cache pressure. Consider increasing 'max_bytes' in your filesystem store's eviction_policy configuration."))
     }
 
     async fn update_file(
