@@ -533,6 +533,17 @@ where
                     return Ok(None);
                 }
 
+                // Add the client_operation_id to operation_id mapping
+                self.store
+                    .update_data(UpdateClientIdToOperationId {
+                        client_operation_id: client_operation_id.clone(),
+                        operation_id: operation_id.clone(),
+                    })
+                    .await
+                    .err_tip(
+                        || "In RedisAwaitedActionDb::try_subscribe while adding client mapping",
+                    )?;
+
                 Ok(Some(OperationSubscriber::new(
                     Some(client_operation_id.clone()),
                     OperationIdToAwaitedAction(Cow::Owned(operation_id)),
