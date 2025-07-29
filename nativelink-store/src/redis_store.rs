@@ -133,6 +133,10 @@ pub struct RedisStore {
     #[metric(help = "The COUNT value passed when scanning keys in Redis")]
     scan_count: u32,
 
+    /// The position to split keys at, when hash-splitting is enabled.
+    #[metric(help = "The position to split keys at, when hash-splitting is enabled")]
+    hash_split_pos: usize,
+
     /// Redis script used to update a value in redis if the version matches.
     /// This is done by incrementing the version number and then setting the new data
     /// only if the version number matches the existing version number.
@@ -257,6 +261,7 @@ impl RedisStore {
             spec.read_chunk_size,
             spec.max_chunk_uploads_per_update,
             spec.scan_count,
+            spec.hash_split_pos,
         )
         .map(Arc::new)
     }
@@ -272,6 +277,7 @@ impl RedisStore {
         read_chunk_size: usize,
         max_chunk_uploads_per_update: usize,
         scan_count: u32,
+        hash_split_pos: usize,
     ) -> Result<Self, Error> {
         // Start connection pool (this will retry forever by default).
         client_pool.connect();
@@ -288,6 +294,7 @@ impl RedisStore {
             read_chunk_size,
             max_chunk_uploads_per_update,
             scan_count,
+            hash_split_pos,
             update_if_version_matches_script: Script::from_lua(LUA_VERSION_SET_SCRIPT),
             subscription_manager: Mutex::new(None),
         })
@@ -315,6 +322,24 @@ impl RedisStore {
             }
         }
     }
+
+    /// Split an encoded key for Redis into hash name and field.
+    fn split_key<'a>(&self, encoded_key: &Cow<'a, str>) -> Option<(Cow<'a, str>, Cow<'a, str>)> {
+        let pos = self.key_prefix.len() + self.hash_split_pos;
+        if self.hash_split_pos == 0 || encoded_key.len() <= pos {
+            return None;
+        }
+        match encoded_key {
+            Cow::Owned(encoded_key) => {
+                let (name, field) = encoded_key.split_at(pos);
+                Some((Cow::Owned(name.to_string()), Cow::Owned(field.to_string())))
+            }
+            Cow::Borrowed(encoded_key) => {
+                let (name, field) = encoded_key.split_at(pos);
+                Some((Cow::Borrowed(name), Cow::Borrowed(field)))
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -339,22 +364,39 @@ impl StoreDriver for RedisStore {
                 }
                 let encoded_key = self.encode_key(key);
                 let pipeline = client.pipeline();
-                pipeline
-                    .strlen::<(), _>(encoded_key.as_ref())
-                    .await
-                    .err_tip(|| {
-                        format!("In RedisStore::has_with_results::strlen for {encoded_key}")
-                    })?;
-                // Redis returns 0 when the key doesn't exist
-                // AND when the key exists with value of length 0.
-                // Therefore, we need to check both length and existence
-                // and do it in a pipeline for efficiency.
-                pipeline
-                    .exists::<(), _>(encoded_key.as_ref())
-                    .await
-                    .err_tip(|| {
-                        format!("In RedisStore::has_with_results::exists for {encoded_key}")
-                    })?;
+                if let Some((name, field)) = self.split_key(&encoded_key) {
+                    pipeline
+                        .hstrlen::<(), _, _>(name.as_ref(), field.as_ref())
+                        .await
+                        .err_tip(|| {
+                            format!("In RedisStore::has_with_results::hstrlen for {encoded_key}")
+                        })?;
+                    pipeline
+                        .hexists::<(), _, _>(name.as_ref(), field.as_ref())
+                        .await
+                        .err_tip(|| {
+                            format!("In RedisStore::has_with_results::hexists for {encoded_key}")
+                        })?;
+                } else if self.hash_split_pos > 0 {
+                    return Err(make_input_err!("Short key in RedisStore::has_with_results"));
+                } else {
+                    pipeline
+                        .strlen::<(), _>(encoded_key.as_ref())
+                        .await
+                        .err_tip(|| {
+                            format!("In RedisStore::has_with_results::strlen for {encoded_key}")
+                        })?;
+                    // Redis returns 0 when the key doesn't exist
+                    // AND when the key exists with value of length 0.
+                    // Therefore, we need to check both length and existence
+                    // and do it in a pipeline for efficiency.
+                    pipeline
+                        .exists::<(), _>(encoded_key.as_ref())
+                        .await
+                        .err_tip(|| {
+                            format!("In RedisStore::has_with_results::exists for {encoded_key}")
+                        })?;
+                }
                 let (blob_len, exists) = pipeline
                     .all::<(u64, bool)>()
                     .await
@@ -395,28 +437,50 @@ impl StoreDriver for RedisStore {
             },
             Bound::Unbounded => format!("{}*", self.key_prefix),
         };
+        let pattern_split_pos = self.key_prefix.len() + self.hash_split_pos;
+        if self.hash_split_pos > 0 && pattern.len() <= pattern_split_pos {
+            return Err(make_input_err!("Short pattern in RedisStore::list"));
+        }
         let client = self.client_pool.next();
-        let mut scan_stream = client.scan(pattern, Some(self.scan_count), None);
         let mut iterations = 0;
-        'outer: while let Some(mut page) = scan_stream.try_next().await? {
-            if let Some(keys) = page.take_results() {
-                for key in keys {
-                    // TODO: Notification of conversion errors
-                    // Any results that do not conform to expectations are ignored.
-                    if let Some(key) = key.as_str() {
-                        if let Some(key) = key.strip_prefix(&self.key_prefix) {
-                            let key = StoreKey::new_str(key);
-                            if range.contains(&key) {
-                                iterations += 1;
-                                if !handler(&key) {
-                                    break 'outer;
+        if self.hash_split_pos == 0 {
+            let mut scan_stream = client.scan(pattern, Some(self.scan_count), None);
+            'outer: while let Some(mut page) = scan_stream.try_next().await? {
+                if let Some(keys) = page.take_results() {
+                    for key in keys {
+                        // TODO: Notification of conversion errors
+                        // Any results that do not conform to expectations are ignored.
+                        if let Some(key) = key.as_str() {
+                            if let Some(key) = key.strip_prefix(&self.key_prefix) {
+                                let key = StoreKey::new_str(key);
+                                if range.contains(&key) {
+                                    iterations += 1;
+                                    if !handler(&key) {
+                                        break 'outer;
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                page.next();
             }
-            page.next();
+        } else {
+            let (name, _pattern) = pattern.split_at(pattern_split_pos);
+            let keys: Vec<String> = client.hkeys(name).await?;
+            let raw_name = &name[self.key_prefix.len()..];
+            for key in keys {
+                // TODO: Notification of conversion errors
+                // Any results that do not conform to expectations are ignored.
+                let key = format!("{raw_name}{key}");
+                let key = StoreKey::new_str(&key);
+                if range.contains(&key) {
+                    iterations += 1;
+                    if !handler(&key) {
+                        break;
+                    }
+                }
+            }
         }
         Ok(iterations)
     }
@@ -459,6 +523,19 @@ impl StoreDriver for RedisStore {
         }
 
         let client = self.client_pool.next();
+
+        if let Some((final_name, final_field)) = self.split_key(&final_key) {
+            let final_value = reader.consume(None).await?;
+            return client
+                .hset::<(), _, _>(
+                    final_name.as_ref(),
+                    (final_field.as_ref(), final_value.as_ref()),
+                )
+                .await
+                .err_tip(|| "While setting hash entry in RedisStore::update");
+        } else if self.hash_split_pos > 0 {
+            return Err(make_input_err!("Short key in RedisStore::update"));
+        }
 
         let mut read_stream = reader
             .scan(0u32, |bytes_read, chunk_res| {
@@ -552,6 +629,32 @@ impl StoreDriver for RedisStore {
 
         let client = self.client_pool.next();
         let encoded_key = self.encode_key(&key);
+
+        if let Some((name, field)) = self.split_key(&encoded_key) {
+            let chunk = client
+                .hget::<RedisValue, _, _>(name.as_ref(), field.as_ref())
+                .await
+                .err_tip(|| "In RedisStore::get_part::hget")?;
+            if chunk.is_null() {
+                return Err(make_err!(
+                    Code::NotFound,
+                    "Data not found in Redis store for digest: {key:?}"
+                ));
+            }
+            let chunk = chunk.into_bytes().ok_or_else(|| {
+                make_err!(Code::Internal, "Expected Bytes in RedisStore::get_part")
+            })?;
+            writer
+                .send(chunk)
+                .await
+                .err_tip(|| "Failed to write data in RedisStore::get_part")?;
+            return writer
+                .send_eof()
+                .err_tip(|| "Failed to write EOF in redis store get_part");
+        } else if self.hash_split_pos > 0 {
+            return Err(make_input_err!("Short key in RedisStore::get_part"));
+        }
+
         let encoded_key = encoded_key.as_ref();
 
         // N.B. the `-1`'s you see here are because redis GETRANGE is inclusive at both the start and end, so when we

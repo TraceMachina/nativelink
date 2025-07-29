@@ -42,6 +42,7 @@ const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 const DEFAULT_READ_CHUNK_SIZE: usize = 1024;
 const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 const DEFAULT_SCAN_COUNT: u32 = 10_000;
+const NO_HASH_SPLIT: usize = 0;
 
 fn mock_uuid_generator() -> String {
     uuid::Uuid::parse_str(TEMP_UUID).unwrap().to_string()
@@ -274,6 +275,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
             DEFAULT_READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
             DEFAULT_SCAN_COUNT,
+            NO_HASH_SPLIT,
         )
         .unwrap()
     };
@@ -380,6 +382,7 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
             DEFAULT_READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
             DEFAULT_SCAN_COUNT,
+            NO_HASH_SPLIT,
         )
         .unwrap()
     };
@@ -418,6 +421,7 @@ async fn upload_empty_data() -> Result<(), Error> {
         DEFAULT_READ_CHUNK_SIZE,
         DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
         DEFAULT_SCAN_COUNT,
+        NO_HASH_SPLIT,
     )
     .unwrap();
 
@@ -448,6 +452,7 @@ async fn upload_empty_data_with_prefix() -> Result<(), Error> {
         DEFAULT_READ_CHUNK_SIZE,
         DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
         DEFAULT_SCAN_COUNT,
+        NO_HASH_SPLIT,
     )
     .unwrap();
 
@@ -563,6 +568,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
             READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
             DEFAULT_SCAN_COUNT,
+            NO_HASH_SPLIT,
         )
         .unwrap()
     };
@@ -718,6 +724,7 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
             DEFAULT_READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
             DEFAULT_SCAN_COUNT,
+            NO_HASH_SPLIT,
         )
         .unwrap()
     };
@@ -809,6 +816,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
             DEFAULT_READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
             DEFAULT_SCAN_COUNT,
+            NO_HASH_SPLIT,
         )
         .unwrap()
     };
@@ -899,6 +907,7 @@ async fn list_test() -> Result<(), Error> {
             DEFAULT_READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
             DEFAULT_SCAN_COUNT,
+            NO_HASH_SPLIT,
         )
         .unwrap()
     };
@@ -959,6 +968,7 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
             DEFAULT_READ_CHUNK_SIZE,
             DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
             DEFAULT_SCAN_COUNT,
+            NO_HASH_SPLIT,
         )
         .unwrap()
     };
