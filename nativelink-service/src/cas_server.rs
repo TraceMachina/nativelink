@@ -310,7 +310,11 @@ impl ContentAddressableStorage for CasServer {
         ret(level = Level::DEBUG),
         level = Level::ERROR,
         skip_all,
-        fields(request = ?grpc_request.get_ref())
+        fields(
+            // Mostly to skip request.blob_digests which is sometimes enormous
+            request.instance_name = ?grpc_request.get_ref().instance_name,
+            request.digest_function = ?grpc_request.get_ref().digest_function
+        )
     )]
     async fn find_missing_blobs(
         &self,
