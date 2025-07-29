@@ -97,18 +97,6 @@ fn tracing_stdout_layer() -> impl Layer<Registry> {
     }
 }
 
-/// Initialize a minimal tracing configuration for tests.
-///
-/// The OTLP logic in the main tracing loop causes issues with the tokio runtime
-/// in tests, so we use a more naive logger implementation here. This function
-/// is idempotent and can be called multiple times safely.
-pub fn init_tracing_for_tests() {
-    static INITIALIZED: OnceLock<()> = OnceLock::new();
-    INITIALIZED.get_or_init(|| {
-        registry().with(tracing_stdout_layer()).init();
-    });
-}
-
 /// Initialize tracing with OpenTelemetry support.
 ///
 /// # Errors

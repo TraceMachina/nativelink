@@ -53,12 +53,10 @@ build:self_execute --platform_suffix=self-execute
 build --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
 build --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 
-# Keep this in sync with the top-level Cargo.toml
+# Kept in sync with top-level Cargo.toml via generate-bazel-rc
+## BEGIN CARGO LINTS ##
 
-# rustc lints with negative (low) priority
-build --@rules_rust//:extra_rustc_flag=-Wunused
-
-# rustc denies with default priority
+build --@rules_rust//:extra_rustc_flag=-Dunused
 build --@rules_rust//:extra_rustc_flag=-Dambiguous_glob_reexports
 build --@rules_rust//:extra_rustc_flag=-Dclashing_extern_declarations
 build --@rules_rust//:extra_rustc_flag=-Dconst_item_mutation
@@ -74,81 +72,70 @@ build --@rules_rust//:extra_rustc_flag=-Dinvalid_macro_export_arguments
 build --@rules_rust//:extra_rustc_flag=-Dinvalid_nan_comparisons
 build --@rules_rust//:extra_rustc_flag=-Dinvalid_reference_casting
 build --@rules_rust//:extra_rustc_flag=-Dinvalid_value
+build --@rules_rust//:extra_rustc_flag=-Dkeyword_idents
+build --@rules_rust//:extra_rustc_flag=-Dlet_underscore
+build --@rules_rust//:extra_rustc_flag=-Dmacro_use_extern_crate
+build --@rules_rust//:extra_rustc_flag=-Dmeta_variable_misuse
+build --@rules_rust//:extra_rustc_flag=-Dmissing_abi
+build --@rules_rust//:extra_rustc_flag=-Dmissing_copy_implementations
+build --@rules_rust//:extra_rustc_flag=-Dmissing_debug_implementations
+build --@rules_rust//:extra_rustc_flag=-Dnoop_method_call
 build --@rules_rust//:extra_rustc_flag=-Dopaque_hidden_inferred_bound
 build --@rules_rust//:extra_rustc_flag=-Doverlapping_range_endpoints
+build --@rules_rust//:extra_rustc_flag=-Dsingle_use_lifetimes
 build --@rules_rust//:extra_rustc_flag=-Dsuspicious_double_ref_op
+build --@rules_rust//:extra_rustc_flag=-Dtrivial_casts
+build --@rules_rust//:extra_rustc_flag=-Dtrivial_numeric_casts
 build --@rules_rust//:extra_rustc_flag=-Dunconditional_recursion
 build --@rules_rust//:extra_rustc_flag=-Dunexpected_cfgs
 build --@rules_rust//:extra_rustc_flag=-Dunnameable_test_items
+build --@rules_rust//:extra_rustc_flag=-Dunreachable_pub
 build --@rules_rust//:extra_rustc_flag=-Dunsafe_op_in_unsafe_fn
 build --@rules_rust//:extra_rustc_flag=-Dunstable_syntax_pre_expansion
+build --@rules_rust//:extra_rustc_flag=-Dunused_import_braces
+build --@rules_rust//:extra_rustc_flag=-Dunused_lifetimes
+build --@rules_rust//:extra_rustc_flag=-Dunused_qualifications
+build --@rules_rust//:extra_rustc_flag=-Dvariant_size_differences
 
-# rustc warnings with default priority
-build --@rules_rust//:extra_rustc_flag=-Wkeyword_idents
-build --@rules_rust//:extra_rustc_flag=-Wlet_underscore
-build --@rules_rust//:extra_rustc_flag=-Wmacro_use_extern_crate
-build --@rules_rust//:extra_rustc_flag=-Wmeta_variable_misuse
-build --@rules_rust//:extra_rustc_flag=-Wmissing_abi
-build --@rules_rust//:extra_rustc_flag=-Wmissing_copy_implementations
-build --@rules_rust//:extra_rustc_flag=-Wmissing_debug_implementations
-build --@rules_rust//:extra_rustc_flag=-Wnoop_method_call
-build --@rules_rust//:extra_rustc_flag=-Wsingle_use_lifetimes
-build --@rules_rust//:extra_rustc_flag=-Wtrivial_casts
-build --@rules_rust//:extra_rustc_flag=-Wtrivial_numeric_casts
-build --@rules_rust//:extra_rustc_flag=-Wunreachable_pub
-build --@rules_rust//:extra_rustc_flag=-Wunused_import_braces
-build --@rules_rust//:extra_rustc_flag=-Wunused_lifetimes
-build --@rules_rust//:extra_rustc_flag=-Wunused_qualifications
-build --@rules_rust//:extra_rustc_flag=-Wvariant_size_differences
-
-# Global clippy configuration
-build --@rules_rust//:clippy_flag=-Wclippy::all
-build --@rules_rust//:clippy_flag=-Wclippy::nursery
-build --@rules_rust//:clippy_flag=-Wclippy::pedantic
-
-# Restriction denies with default priority
+build --@rules_rust//:clippy_flag=-Dclippy::all
+build --@rules_rust//:clippy_flag=-Dclippy::nursery
+build --@rules_rust//:clippy_flag=-Dclippy::pedantic
 build --@rules_rust//:clippy_flag=-Dclippy::alloc_instead_of_core
 build --@rules_rust//:clippy_flag=-Dclippy::as_underscore
-build --@rules_rust//:clippy_flag=-Dclippy::std_instead_of_core
-
-# Restriction warnings with default priority
-build --@rules_rust//:clippy_flag=-Wclippy::dbg_macro
-build --@rules_rust//:clippy_flag=-Wclippy::decimal_literal_representation
-build --@rules_rust//:clippy_flag=-Aclippy::get_unwrap # TODO(jhpratt): Flip
-build --@rules_rust//:clippy_flag=-Aclippy::missing_docs_in_private_items # TODO(jhpratt): Flip
-build --@rules_rust//:clippy_flag=-Wclippy::print_stdout
-build --@rules_rust//:clippy_flag=-Wclippy::todo
-build --@rules_rust//:clippy_flag=-Wclippy::unimplemented
-build --@rules_rust//:clippy_flag=-Aclippy::unwrap_in_result # TODO(jhpratt): Flip
-build --@rules_rust//:clippy_flag=-Aclippy::unwrap_used # TODO(jhpratt): Flip
-build --@rules_rust//:clippy_flag=-Wclippy::use_debug
-
-# Nursery denies we want once they get out of Nursery
+build --@rules_rust//:clippy_flag=-Dclippy::dbg_macro
+build --@rules_rust//:clippy_flag=-Dclippy::decimal_literal_representation
+build --@rules_rust//:clippy_flag=-Aclippy::get_unwrap
 build --@rules_rust//:clippy_flag=-Dclippy::missing_const_for_fn
-
-# Nursery overrides that are either buggy or we want to fix
-build --@rules_rust//:clippy_flag=-Aclippy::iter_with_drain # TODO(jhpratt): Flip
-build --@rules_rust//:clippy_flag=-Aclippy::option_if_let_else # rust-lang/rust-clippy#8829
-build --@rules_rust//:clippy_flag=-Aclippy::redundant_pub_crate # rust-lang/rust-clippy#5369
-build --@rules_rust//:clippy_flag=-Aclippy::significant_drop_tightening # TODO(jhpratt): Flip
-build --@rules_rust//:clippy_flag=-Aclippy::too_long_first_doc_paragraph # TODO(jhpratt): Flip
-build --@rules_rust//:clippy_flag=-Aclippy::uninhabited_references # rust-lang/rust-clippy#11984
-
-# TODO(aaronmondal): Remove these to get to pedantic.
+build --@rules_rust//:clippy_flag=-Aclippy::missing_docs_in_private_items
+build --@rules_rust//:clippy_flag=-Dclippy::print_stdout
+build --@rules_rust//:clippy_flag=-Dclippy::std_instead_of_core
+build --@rules_rust//:clippy_flag=-Dclippy::todo
+build --@rules_rust//:clippy_flag=-Aclippy::too_long_first_doc_paragraph
+build --@rules_rust//:clippy_flag=-Dclippy::unimplemented
+build --@rules_rust//:clippy_flag=-Aclippy::unwrap_in_result
+build --@rules_rust//:clippy_flag=-Aclippy::unwrap_used
+build --@rules_rust//:clippy_flag=-Dclippy::use_debug
 build --@rules_rust//:clippy_flag=-Aclippy::cast_possible_truncation
 build --@rules_rust//:clippy_flag=-Aclippy::cast_possible_wrap
 build --@rules_rust//:clippy_flag=-Aclippy::cast_precision_loss
 build --@rules_rust//:clippy_flag=-Aclippy::cast_sign_loss
+build --@rules_rust//:clippy_flag=-Aclippy::cognitive_complexity
+build --@rules_rust//:clippy_flag=-Aclippy::iter_with_drain
 build --@rules_rust//:clippy_flag=-Aclippy::large_futures
 build --@rules_rust//:clippy_flag=-Aclippy::missing_errors_doc
 build --@rules_rust//:clippy_flag=-Aclippy::missing_fields_in_debug
 build --@rules_rust//:clippy_flag=-Aclippy::missing_panics_doc
 build --@rules_rust//:clippy_flag=-Aclippy::must_use_candidate
+build --@rules_rust//:clippy_flag=-Aclippy::option_if_let_else
+build --@rules_rust//:clippy_flag=-Aclippy::redundant_pub_crate
 build --@rules_rust//:clippy_flag=-Aclippy::ref_option
+build --@rules_rust//:clippy_flag=-Aclippy::significant_drop_tightening
 build --@rules_rust//:clippy_flag=-Aclippy::too_many_lines
+build --@rules_rust//:clippy_flag=-Aclippy::uninhabited_references
 build --@rules_rust//:clippy_flag=-Aclippy::unused_async
 build --@rules_rust//:clippy_flag=-Aclippy::unused_self
-build --@rules_rust//:clippy_flag=-Aclippy::used_underscore_binding
+
+## END CARGO LINTS ##
 
 build --@rules_rust//:clippy.toml=//:clippy.toml
 test --@rules_rust//:rustfmt.toml=//:.rustfmt.toml
@@ -176,6 +163,10 @@ startup --windows_enable_symlinks
 build:windows --cxxopt=/std:c++14 --host_cxxopt=/std:c++14
 build:windows --enable_runfiles
 build:windows --extra_toolchains=@rust_toolchains//:all  # Doesn't support LRE.
+
+# rustfmt
+# TODO(palfrey): compatibility workaround for https://github.com/bazelbuild/rules_rust/issues/3493
+build:rustfmt --@rules_rust//:extra_rustc_flag=-Aunused_qualifications
 
 # Generated by the LRE flake module.
 try-import %workspace%/lre.bazelrc

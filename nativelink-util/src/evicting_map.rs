@@ -32,6 +32,7 @@ use tracing::{debug, info};
 
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics::{CACHE_METRICS, CacheMetricAttrs};
+use crate::metrics_utils::{Counter, CounterWithTime};
 
 // Sentinel value for overflows so that we don't introduce branches or error
 // handling in highly unlikely error branches of size conversions that would
@@ -96,54 +97,65 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
 struct State<K: Ord + Hash + Eq + Clone + Debug + Send, T: LenEntry + Debug + Send> {
     lru: LruCache<K, EvictionItem<T>>,
     btree: Option<BTreeSet<K>>,
-    // Total size of all items in the store.
+    #[metric(help = "Total size of all items in the store")]
     sum_store_size: u64,
+
+    #[metric(help = "Number of bytes evicted from the store")]
+    evicted_bytes: Counter,
+    #[metric(help = "Number of items evicted from the store")]
+    evicted_items: CounterWithTime,
+    #[metric(help = "Number of bytes replaced in the store")]
+    replaced_bytes: Counter,
+    #[metric(help = "Number of items replaced in the store")]
+    replaced_items: CounterWithTime,
+    #[metric(help = "Number of bytes inserted into the store since it was created")]
+    lifetime_inserted_bytes: Counter,
 }
 
 impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Sync + Send>
     State<K, T>
 {
-    /// Removes an item from the cache.
-    async fn remove<Q>(&mut self, key: &Q, eviction_item: &EvictionItem<T>)
+    /// Removes an item from the cache and returns the data for deferred cleanup.
+    /// The caller is responsible for calling `unref()` on the returned data outside of the lock.
+    #[must_use]
+    fn remove<Q>(&mut self, key: &Q, eviction_item: &EvictionItem<T>, replaced: bool) -> T
     where
         K: Borrow<Q>,
         Q: Ord + Hash + Eq + Debug + Sync,
+        T: Clone,
     {
         if let Some(btree) = &mut self.btree {
             btree.remove(key.borrow());
         }
-
-        self.sum_store_size = self.sum_store_size.saturating_sub(eviction_item.data.len());
-        // Note: See comment in `unref()` requiring global lock of insert/remove.
-        eviction_item.data.unref().await;
+        self.sum_store_size -= eviction_item.data.len();
+        if replaced {
+            self.replaced_items.inc();
+            self.replaced_bytes.add(eviction_item.data.len());
+        } else {
+            self.evicted_items.inc();
+            self.evicted_bytes.add(eviction_item.data.len());
+        }
+        // Return the data for deferred unref outside of lock
+        eviction_item.data.clone()
     }
 
-    /// Inserts a new item into the cache. If the key already exists, the old item is returned.
-    async fn put(&mut self, key: K, eviction_item: EvictionItem<T>) -> (Option<T>, u64) {
+    /// Inserts a new item into the cache. If the key already exists, the old item is returned
+    /// for deferred cleanup.
+    #[must_use]
+    fn put(&mut self, key: &K, eviction_item: EvictionItem<T>) -> Option<T>
+    where
+        K: Clone,
+        T: Clone,
+    {
         // If we are maintaining a btree index, we need to update it.
         if let Some(btree) = &mut self.btree {
             btree.insert(key.clone());
         }
-
-        let new_item_size = eviction_item.data.len();
-
-        // Update value if it already exists.
-        if let Some(old_item) = self.lru.put(key, eviction_item) {
-            let old_item_size = old_item.data.len();
-            // Update sum_store_size with net difference
-            self.sum_store_size = self
-                .sum_store_size
-                .saturating_sub(old_item_size)
-                .saturating_add(new_item_size);
-
-            old_item.data.unref().await;
-
-            return (Some(old_item.data), old_item_size);
+        if let Some(old_item) = self.lru.put(key.clone(), eviction_item) {
+            let old_data = self.remove(key, &old_item, true);
+            return Some(old_data);
         }
-
-        // If the value didn't exist, it's a new insertion.
-        self.sum_store_size = self.sum_store_size.saturating_add(new_item_size);
-        (None, 0)
+        None
     }
 }
 
@@ -195,6 +207,11 @@ where
                 lru: LruCache::unbounded(),
                 btree: None,
                 sum_store_size: 0,
+                evicted_bytes: Counter::default(),
+                evicted_items: CounterWithTime::default(),
+                replaced_bytes: Counter::default(),
+                replaced_items: CounterWithTime::default(),
+                lifetime_inserted_bytes: Counter::default(),
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,
@@ -271,9 +288,10 @@ where
         is_over_size || old_item_exists || is_over_count
     }
 
-    async fn evict_items(&self, state: &mut State<K, T>) {
+    #[must_use]
+    fn evict_items(&self, state: &mut State<K, T>) -> Vec<T> {
         let Some((_, mut peek_entry)) = state.lru.peek_lru() else {
-            return;
+            return Vec::new();
         };
 
         let max_bytes = if self.max_bytes != 0
@@ -289,6 +307,9 @@ where
             self.max_bytes
         };
 
+        let mut items_to_unref = Vec::new();
+        let metrics = &*CACHE_METRICS;
+
         while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, max_bytes) {
             let (key, eviction_item) = state
                 .lru
@@ -298,11 +319,10 @@ where
             let item_size = eviction_item.data.len();
             debug!(?key, "Evicting",);
 
-            let metrics = &*CACHE_METRICS;
+            let data = state.remove(&key, &eviction_item, false);
+            items_to_unref.push(data);
 
-            state.remove(&key, &eviction_item).await;
-
-            // TODO(aaronmondal): Is it true that this cannot fail?
+            // Record metrics
             metrics
                 .cache_operations
                 .add(1, self.metric_attrs.evict_success());
@@ -321,9 +341,11 @@ where
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
                 entry
             } else {
-                return;
+                break;
             };
         }
+
+        items_to_unref
     }
 
     /// Return the size of a `key`, if not found `None` is returned.
@@ -371,63 +393,70 @@ where
                 state.lru.get_mut(key.borrow())
             };
 
-            if let Some(entry) = maybe_entry {
-                // Note: We need to check eviction because the item might be expired
-                // based on the current time. In such case, we remove the item while
-                // we are here.
-                if self.should_evict(lru_len, entry, 0, u64::MAX) {
-                    *result = None;
-                    if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
-                        info!(?key, "Item expired, evicting");
-                        let item_size = eviction_item.data.len();
+            match maybe_entry {
+                Some(entry) => {
+                    // Note: We need to check eviction because the item might be expired
+                    // based on the current time. In such case, we remove the item while
+                    // we are here.
+                    if self.should_evict(lru_len, entry, 0, u64::MAX) {
+                        *result = None;
+                        if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
+                            info!(?key, "Item expired, evicting");
+                            let item_size = eviction_item.data.len();
+                            let data = state.remove(key.borrow(), &eviction_item, false);
+                            // Store data for later unref - we can't drop state here as we're still iterating
+                            // The unref will happen after the method completes
+                            // For now, we just do inline unref
+                            data.unref().await;
 
-                        state.remove(key.borrow(), &eviction_item).await;
+                            metrics
+                                .cache_operations
+                                .add(1, self.metric_attrs.evict_expired());
+                            metrics
+                                .cache_io
+                                .add(item_size, self.metric_attrs.evict_expired());
+                            metrics.cache_operation_duration.record(
+                                start_time.elapsed().as_secs_f64() * 1000.0,
+                                self.metric_attrs.evict_expired(),
+                            );
+                            metrics.cache_size.add(
+                                -(i64::try_from(item_size).unwrap_or(METRIC_SIZE_OVERFLOW)),
+                                &self.base_metric_attrs,
+                            );
+                            metrics.cache_entries.add(-1, &self.base_metric_attrs);
+                        }
+                    } else {
+                        if !peek {
+                            entry.seconds_since_anchor =
+                                self.anchor_time.elapsed().as_secs() as i32;
+                        }
+                        let data_len = entry.data.len();
+                        *result = Some(data_len);
 
                         metrics
                             .cache_operations
-                            .add(1, self.metric_attrs.evict_expired());
-                        metrics
-                            .cache_io
-                            .add(item_size, self.metric_attrs.evict_expired());
+                            .add(1, self.metric_attrs.read_hit());
+                        metrics.cache_io.add(data_len, self.metric_attrs.read_hit());
                         metrics.cache_operation_duration.record(
                             start_time.elapsed().as_secs_f64() * 1000.0,
-                            self.metric_attrs.evict_expired(),
+                            self.metric_attrs.read_hit(),
                         );
-                        metrics.cache_size.add(
-                            -(i64::try_from(item_size).unwrap_or(METRIC_SIZE_OVERFLOW)),
-                            &self.base_metric_attrs,
-                        );
-                        metrics.cache_entries.add(-1, &self.base_metric_attrs);
+                        metrics
+                            .cache_entry_size
+                            .record(data_len, &self.base_metric_attrs);
                     }
-                } else {
-                    if !peek {
-                        entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
-                    }
-                    let data_len = entry.data.len();
-                    *result = Some(data_len);
+                }
+                None => {
+                    *result = None;
 
                     metrics
                         .cache_operations
-                        .add(1, self.metric_attrs.read_hit());
-                    metrics.cache_io.add(data_len, self.metric_attrs.read_hit());
+                        .add(1, self.metric_attrs.read_miss());
                     metrics.cache_operation_duration.record(
                         start_time.elapsed().as_secs_f64() * 1000.0,
-                        self.metric_attrs.read_hit(),
+                        self.metric_attrs.read_miss(),
                     );
-                    metrics
-                        .cache_entry_size
-                        .record(data_len, &self.base_metric_attrs);
                 }
-            } else {
-                *result = None;
-
-                metrics
-                    .cache_operations
-                    .add(1, self.metric_attrs.read_miss());
-                metrics.cache_operation_duration.record(
-                    start_time.elapsed().as_secs_f64() * 1000.0,
-                    self.metric_attrs.read_miss(),
-                );
             }
         }
     }
@@ -439,10 +468,36 @@ where
     {
         let start_time = Instant::now();
         let metrics = &*CACHE_METRICS;
+
+        // Fast path: Check if we need eviction before acquiring lock for eviction
+        let needs_eviction = {
+            let state = self.state.lock().await;
+            if let Some((_, peek_entry)) = state.lru.peek_lru() {
+                self.should_evict(
+                    state.lru.len(),
+                    peek_entry,
+                    state.sum_store_size,
+                    self.max_bytes,
+                )
+            } else {
+                false
+            }
+        };
+
+        // Perform eviction if needed
+        if needs_eviction {
+            let items_to_unref = {
+                let mut state = self.state.lock().await;
+                self.evict_items(&mut *state)
+            };
+            // Unref items outside of lock
+            for item in items_to_unref {
+                item.unref().await;
+            }
+        }
+
+        // Now get the item
         let mut state = self.state.lock().await;
-
-        self.evict_items(&mut *state).await;
-
         let entry = state.lru.get_mut(key.borrow());
 
         if let Some(entry) = entry {
@@ -483,10 +538,18 @@ where
 
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
-        let mut state = self.state.lock().await;
-        let results = self
-            .inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
-            .await;
+        let items_to_unref = {
+            let mut state = self.state.lock().await;
+            self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
+        };
+
+        // Unref items outside of lock
+        let mut results = Vec::new();
+        for item in items_to_unref {
+            item.unref().await;
+            results.push(item);
+        }
+
         results.into_iter().next()
     }
 
@@ -504,12 +567,23 @@ where
         if inserts.peek().is_none() {
             return Vec::new();
         }
-        let state = &mut self.state.lock().await;
-        self.inner_insert_many(state, inserts, self.anchor_time.elapsed().as_secs() as i32)
-            .await
+
+        let items_to_unref = {
+            let state = &mut self.state.lock().await;
+            self.inner_insert_many(state, inserts, self.anchor_time.elapsed().as_secs() as i32)
+        };
+
+        // Unref items outside of lock
+        let mut results = Vec::new();
+        for item in items_to_unref {
+            item.unref().await;
+            results.push(item);
+        }
+
+        results
     }
 
-    async fn inner_insert_many<It>(
+    fn inner_insert_many<It>(
         &self,
         state: &mut State<K, T>,
         inserts: It,
@@ -533,7 +607,33 @@ where
                 data,
             };
 
-            let (old_item_data, old_item_size) = state.put(key, eviction_item).await;
+            if let Some(old_item) = state.put(&key, eviction_item) {
+                let old_item_size = old_item.len();
+                replaced_items.push(old_item);
+
+                // Update metrics for replaced item
+                metrics.cache_size.add(
+                    i64::try_from(new_item_size).unwrap_or(METRIC_SIZE_OVERFLOW)
+                        - i64::try_from(old_item_size).unwrap_or(METRIC_SIZE_OVERFLOW),
+                    &self.base_metric_attrs,
+                );
+                metrics
+                    .cache_entry_size
+                    .record(new_item_size, &self.base_metric_attrs);
+            } else {
+                // New item metrics
+                metrics.cache_size.add(
+                    i64::try_from(new_item_size).unwrap_or(METRIC_SIZE_OVERFLOW),
+                    &self.base_metric_attrs,
+                );
+                metrics.cache_entries.add(1, &self.base_metric_attrs);
+                metrics
+                    .cache_entry_size
+                    .record(new_item_size, &self.base_metric_attrs);
+            }
+
+            state.sum_store_size += new_item_size;
+            state.lifetime_inserted_bytes.add(new_item_size);
 
             metrics
                 .cache_operations
@@ -545,30 +645,15 @@ where
                 start_time.elapsed().as_secs_f64() * 1000.0,
                 self.metric_attrs.write_success(),
             );
+        }
 
-            if let Some(old_item) = old_item_data {
-                metrics.cache_size.add(
-                    i64::try_from(new_item_size).unwrap_or(METRIC_SIZE_OVERFLOW)
-                        - i64::try_from(old_item_size).unwrap_or(METRIC_SIZE_OVERFLOW),
-                    &self.base_metric_attrs,
-                );
-                metrics
-                    .cache_entry_size
-                    .record(new_item_size, &self.base_metric_attrs);
+        // Perform eviction after all insertions
+        let items_to_unref = self.evict_items(state);
 
-                replaced_items.push(old_item);
-            } else {
-                metrics.cache_size.add(
-                    i64::try_from(new_item_size).unwrap_or(METRIC_SIZE_OVERFLOW),
-                    &self.base_metric_attrs,
-                );
-                metrics.cache_entries.add(1, &self.base_metric_attrs);
-                metrics
-                    .cache_entry_size
-                    .record(new_item_size, &self.base_metric_attrs);
-            }
-
-            self.evict_items(state).await;
+        // Note: We cannot drop the state lock here since we're borrowing it,
+        // but the caller will handle unreffing these items after releasing the lock
+        for item in items_to_unref {
+            replaced_items.push(item);
         }
 
         replaced_items
@@ -579,51 +664,60 @@ where
         K: Borrow<Q>,
         Q: Ord + Hash + Eq + Debug + Sync,
     {
-        let mut state = self.state.lock().await;
-        self.inner_remove(&mut state, key).await
-    }
-
-    async fn inner_remove<Q>(&self, state: &mut State<K, T>, key: &Q) -> bool
-    where
-        K: Borrow<Q>,
-        Q: Ord + Hash + Eq + Debug + Sync,
-    {
         let start_time = Instant::now();
         let metrics = &*CACHE_METRICS;
 
-        self.evict_items(state).await;
+        let (items_to_unref, removed_item) = {
+            let mut state = self.state.lock().await;
 
-        if let Some(entry) = state.lru.pop(key.borrow()) {
-            let item_size = entry.data.len();
+            // First perform eviction
+            let evicted_items = self.evict_items(&mut *state);
 
-            state.remove(key, &entry).await;
+            // Then try to remove the requested item
+            let removed = if let Some(entry) = state.lru.pop(key.borrow()) {
+                let item_size = entry.data.len();
 
-            metrics
-                .cache_operations
-                .add(1, self.metric_attrs.delete_success());
-            metrics
-                .cache_io
-                .add(item_size, self.metric_attrs.delete_success());
-            metrics.cache_operation_duration.record(
-                start_time.elapsed().as_secs_f64() * 1000.0,
-                self.metric_attrs.delete_success(),
-            );
-            metrics.cache_size.add(
-                -(i64::try_from(item_size).unwrap_or(METRIC_SIZE_OVERFLOW)),
-                &self.base_metric_attrs,
-            );
-            metrics.cache_entries.add(-1, &self.base_metric_attrs);
+                metrics
+                    .cache_operations
+                    .add(1, self.metric_attrs.delete_success());
+                metrics
+                    .cache_io
+                    .add(item_size, self.metric_attrs.delete_success());
+                metrics.cache_operation_duration.record(
+                    start_time.elapsed().as_secs_f64() * 1000.0,
+                    self.metric_attrs.delete_success(),
+                );
+                metrics.cache_size.add(
+                    -(i64::try_from(item_size).unwrap_or(METRIC_SIZE_OVERFLOW)),
+                    &self.base_metric_attrs,
+                );
+                metrics.cache_entries.add(-1, &self.base_metric_attrs);
 
-            return true;
+                Some(state.remove(key, &entry, false))
+            } else {
+                metrics
+                    .cache_operations
+                    .add(1, self.metric_attrs.delete_miss());
+                metrics.cache_operation_duration.record(
+                    start_time.elapsed().as_secs_f64() * 1000.0,
+                    self.metric_attrs.delete_miss(),
+                );
+                None
+            };
+
+            (evicted_items, removed)
+        };
+
+        // Unref evicted items outside of lock
+        for item in items_to_unref {
+            item.unref().await;
         }
 
-        metrics
-            .cache_operations
-            .add(1, self.metric_attrs.delete_miss());
-        metrics.cache_operation_duration.record(
-            start_time.elapsed().as_secs_f64() * 1000.0,
-            self.metric_attrs.delete_miss(),
-        );
+        // Unref removed item if any
+        if let Some(item) = removed_item {
+            item.unref().await;
+            return true;
+        }
 
         false
     }
@@ -641,7 +735,31 @@ where
             if !cond(&entry.data) {
                 return false;
             }
-            return self.inner_remove(&mut state, key).await;
+            // First perform eviction
+            let evicted_items = self.evict_items(&mut state);
+
+            // Then try to remove the requested item
+            let removed_item = if let Some(entry) = state.lru.pop(key.borrow()) {
+                Some(state.remove(key, &entry, false))
+            } else {
+                None
+            };
+
+            // Drop the lock before unref operations
+            drop(state);
+
+            // Unref evicted items
+            for item in evicted_items {
+                item.unref().await;
+            }
+
+            // Unref removed item if any
+            if let Some(item) = removed_item {
+                item.unref().await;
+                return true;
+            }
+
+            return false;
         }
         false
     }

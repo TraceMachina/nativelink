@@ -37,7 +37,7 @@ use_repo(pip, "pip")
 bazel_dep(name = "rules_go", version = "0.53.0")
 
 # Rust
-bazel_dep(name = "rules_rust", version = "0.59.1")
+bazel_dep(name = "rules_rust", version = "0.61.0")
 
 # C++ toolchain via zig-cc.
 #

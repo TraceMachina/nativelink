@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::TryStreamExt;
 use futures::stream::{FuturesUnordered, unfold};
+use futures::{StreamExt, TryStreamExt};
 use nativelink_config::stores::ExperimentalGcsSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
@@ -76,6 +76,9 @@ where
         client: Arc<dyn GcsOperations>,
         now_fn: NowFn,
     ) -> Result<Arc<Self>, Error> {
+        // Chunks must be a multiple of 256kb according to the documentation.
+        const CHUNK_MULTIPLE: usize = 256 * 1024;
+
         let max_connections = spec
             .common
             .multipart_max_concurrent_uploads
@@ -88,6 +91,27 @@ where
             }
             delay.mul_f32(jitter_amt.mul_add(rand::rng().random::<f32>() - 0.5, 1.))
         });
+
+        let max_chunk_size =
+            core::cmp::min(spec.resumable_chunk_size.unwrap_or(CHUNK_SIZE), CHUNK_SIZE);
+
+        let max_chunk_size = if max_chunk_size % CHUNK_MULTIPLE != 0 {
+            ((max_chunk_size + CHUNK_MULTIPLE / 2) / CHUNK_MULTIPLE) * CHUNK_MULTIPLE
+        } else {
+            max_chunk_size
+        };
+
+        let max_retry_buffer_size = spec
+            .common
+            .max_retry_buffer_per_request
+            .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST);
+
+        // The retry buffer should be at least as big as the chunk size.
+        let max_retry_buffer_size = if max_retry_buffer_size < max_chunk_size {
+            max_chunk_size
+        } else {
+            max_retry_buffer_size
+        };
 
         Ok(Arc::new(Self {
             client,
@@ -105,14 +129,8 @@ where
                 spec.common.retry.clone(),
             ),
             consider_expired_after_s: i64::from(spec.common.consider_expired_after_s),
-            max_retry_buffer_size: spec
-                .common
-                .max_retry_buffer_per_request
-                .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST),
-            max_chunk_size: core::cmp::min(
-                spec.resumable_chunk_size.unwrap_or(CHUNK_SIZE),
-                CHUNK_SIZE,
-            ),
+            max_retry_buffer_size,
+            max_chunk_size,
             max_concurrent_uploads: max_connections,
         }))
     }
@@ -125,7 +143,12 @@ where
 
         self.retrier
             .retry(unfold(object_path, move |object_path| async move {
-                match client.read_object_metadata(&object_path).await {
+                match client.read_object_metadata(&object_path).await.err_tip(|| {
+                    format!(
+                        "Error while trying to read - bucket: {} path: {}",
+                        object_path.bucket, object_path.path
+                    )
+                }) {
                     Ok(Some(metadata)) => {
                         if consider_expired_after_s != 0 {
                             if let Some(update_time) = &metadata.update_time {
@@ -200,9 +223,6 @@ where
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
         let object_path = self.make_object_path(&digest);
-        let max_size = match upload_size {
-            UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
-        };
 
         reader.set_max_recent_data_size(
             u64::try_from(self.max_retry_buffer_size)
@@ -210,149 +230,143 @@ where
         );
 
         // For small files with exact size, we'll use simple upload
-        if max_size < MIN_MULTIPART_SIZE && matches!(upload_size, UploadSizeInfo::ExactSize(_)) {
-            let content = reader.consume(Some(max_size as usize)).await?;
-            let client = &self.client;
-            let object_path_cloned = object_path.clone();
+        if let UploadSizeInfo::ExactSize(size) = upload_size {
+            if size < MIN_MULTIPART_SIZE {
+                let content = reader.consume(Some(size as usize)).await?;
+                let client = &self.client;
 
-            return self
-                .retrier
-                .retry(unfold(content, move |content| {
-                    let object_path_cloned = object_path_cloned.clone();
-                    async move {
-                        match client
-                            .write_object(&object_path_cloned, content.to_vec())
-                            .await
-                        {
+                return self
+                    .retrier
+                    .retry(unfold(content, |content| async {
+                        match client.write_object(&object_path, content.to_vec()).await {
                             Ok(()) => Some((RetryResult::Ok(()), content)),
                             Err(e) => Some((RetryResult::Retry(e), content)),
                         }
-                    }
-                }))
-                .await;
+                    }))
+                    .await;
+            }
         }
 
         // For larger files, we'll use resumable upload
-        // First, we'll initiate the upload session
-        let client = &self.client;
-        let object_path_for_start = object_path.clone();
-        let upload_id = self
-            .retrier
-            .retry(unfold((), move |()| {
-                let object_path = object_path_for_start.clone();
-                async move {
-                    match client.start_resumable_write(&object_path).await {
-                        Ok(id) => Some((RetryResult::Ok(id), ())),
-                        Err(e) => Some((
-                            RetryResult::Retry(make_err!(
-                                Code::Aborted,
-                                "Failed to start resumable upload: {:?}",
-                                e
-                            )),
-                            (),
-                        )),
-                    }
-                }
-            }))
-            .await?;
-
         // Stream and upload data in chunks
-        let chunk_size = core::cmp::min(self.max_chunk_size, max_size as usize);
         let mut offset = 0u64;
-        let mut total_uploaded = 0u64;
-
-        let upload_id = upload_id.clone();
-        let object_path_for_chunks = object_path.clone();
+        let mut total_size = if let UploadSizeInfo::ExactSize(size) = upload_size {
+            Some(size)
+        } else {
+            None
+        };
+        let mut upload_id: Option<String> = None;
+        let client = &self.client;
 
         loop {
-            let to_read = core::cmp::min(chunk_size, (max_size - total_uploaded) as usize);
-            if to_read == 0 {
-                break;
-            }
-
-            let chunk = reader.consume(Some(to_read)).await?;
+            let chunk = reader.consume(Some(self.max_chunk_size)).await?;
             if chunk.is_empty() {
                 break;
             }
+            // If a full chunk wasn't read, then this is the full length.
+            if chunk.len() < self.max_chunk_size {
+                total_size = Some(offset + chunk.len() as u64);
+            }
 
-            let chunk_size = chunk.len() as u64;
-            total_uploaded += chunk_size;
-            let is_final = total_uploaded >= max_size || chunk.len() < to_read;
+            let upload_id_ref = if let Some(upload_id_ref) = &upload_id {
+                upload_id_ref
+            } else {
+                // Initiate the upload session on the first non-empty chunk.
+                upload_id = Some(
+                    self.retrier
+                        .retry(unfold((), |()| async {
+                            match client.start_resumable_write(&object_path).await {
+                                Ok(id) => Some((RetryResult::Ok(id), ())),
+                                Err(e) => Some((
+                                    RetryResult::Retry(make_err!(
+                                        Code::Aborted,
+                                        "Failed to start resumable upload: {:?}",
+                                        e
+                                    )),
+                                    (),
+                                )),
+                            }
+                        }))
+                        .await?,
+                );
+                upload_id.as_deref().unwrap()
+            };
+
             let current_offset = offset;
-            let object_path = object_path_for_chunks.clone();
-            let upload_id_clone = upload_id.clone();
+            offset += chunk.len() as u64;
 
             // Uploading the chunk with a retry
+            let object_path_ref = &object_path;
             self.retrier
-                .retry(unfold(chunk, move |chunk| {
-                    let object_path = object_path.clone();
-                    let upload_id_clone = upload_id_clone.clone();
-                    async move {
-                        match client
-                            .upload_chunk(
-                                &upload_id_clone,
-                                &object_path,
-                                chunk.to_vec(),
-                                current_offset as i64,
-                                (current_offset + chunk.len() as u64) as i64,
-                                is_final,
-                            )
-                            .await
-                        {
-                            Ok(()) => Some((RetryResult::Ok(()), chunk)),
-                            Err(e) => Some((RetryResult::Retry(e), chunk)),
-                        }
+                .retry(unfold(chunk, |chunk| async move {
+                    match client
+                        .upload_chunk(
+                            upload_id_ref,
+                            object_path_ref,
+                            chunk.clone(),
+                            current_offset,
+                            offset,
+                            total_size,
+                        )
+                        .await
+                    {
+                        Ok(()) => Some((RetryResult::Ok(()), chunk)),
+                        Err(e) => Some((RetryResult::Retry(e), chunk)),
                     }
                 }))
                 .await?;
-
-            offset += chunk_size;
-
-            if is_final {
-                break;
-            }
         }
 
-        // Handle the edge case: empty file (nothing uploaded)
-        if offset == 0 {
-            let object_path = object_path.clone();
-            let upload_id_clone = upload_id.clone();
-
-            self.retrier
-                .retry(unfold((), move |()| {
-                    let object_path = object_path.clone();
-                    let upload_id_clone = upload_id_clone.clone();
-                    async move {
+        // Handle the case that the stream was of unknown length and
+        // happened to be an exact multiple of chunk size.
+        if let Some(upload_id_ref) = &upload_id {
+            if total_size.is_none() {
+                let object_path_ref = &object_path;
+                self.retrier
+                    .retry(unfold((), |()| async move {
                         match client
-                            .upload_chunk(&upload_id_clone, &object_path, Vec::new(), 0, 0, true)
+                            .upload_chunk(
+                                upload_id_ref,
+                                object_path_ref,
+                                Bytes::new(),
+                                offset,
+                                offset,
+                                Some(offset),
+                            )
                             .await
                         {
                             Ok(()) => Some((RetryResult::Ok(()), ())),
                             Err(e) => Some((RetryResult::Retry(e), ())),
                         }
+                    }))
+                    .await?;
+            }
+        } else {
+            // Handle streamed empty file.
+            return self
+                .retrier
+                .retry(unfold((), |()| async {
+                    match client.write_object(&object_path, Vec::new()).await {
+                        Ok(()) => Some((RetryResult::Ok(()), ())),
+                        Err(e) => Some((RetryResult::Retry(e), ())),
                     }
                 }))
-                .await?;
+                .await;
         }
 
         // Verifying if the upload was successful
-        let object_path = object_path.clone();
-
         self.retrier
-            .retry(unfold((), move |()| {
-                let object_path = object_path.clone();
-                async move {
-                    match client.object_exists(&object_path).await {
-                        Ok(true) => Some((RetryResult::Ok(()), ())),
-                        Ok(false) => Some((
-                            RetryResult::Retry(make_err!(
-                                Code::Internal,
-                                "Object not found after upload completion"
-                            )),
-                            (),
+            .retry(unfold((), |()| async {
+                match client.object_exists(&object_path).await {
+                    Ok(true) => Some((RetryResult::Ok(()), ())),
+                    Ok(false) => Some((
+                        RetryResult::Retry(make_err!(
+                            Code::Internal,
+                            "Object not found after upload completion"
                         )),
-                        Err(e) => Some((RetryResult::Retry(e), ())),
-                    }
+                        (),
+                    )),
+                    Err(e) => Some((RetryResult::Retry(e), ())),
                 }
             }))
             .await?;
@@ -376,48 +390,42 @@ where
         let end_offset = length.map(|len| offset + len);
         let client = &self.client;
 
-        let result = self
-            .retrier
+        let object_path_ref = &object_path;
+        self.retrier
             .retry(unfold(
-                (offset, end_offset, object_path.clone()),
-                move |(start_offset, end_offset, object_path)| async move {
-                    match client
-                        .read_object_content(
-                            &object_path,
-                            start_offset as i64,
-                            end_offset.map(|e| e as i64),
-                        )
+                (offset, writer),
+                |(mut offset, writer)| async move {
+                    let mut stream = match client
+                        .read_object_content(object_path_ref, offset, end_offset)
                         .await
                     {
-                        Ok(data) => Some((
-                            RetryResult::Ok(data),
-                            (start_offset, end_offset, object_path),
-                        )),
+                        Ok(stream) => stream,
                         Err(e) if e.code == Code::NotFound => {
-                            Some((RetryResult::Err(e), (start_offset, end_offset, object_path)))
+                            return Some((RetryResult::Err(e), (offset, writer)));
                         }
-                        Err(e) => Some((
-                            RetryResult::Retry(e),
-                            (start_offset, end_offset, object_path),
-                        )),
+                        Err(e) => return Some((RetryResult::Retry(e), (offset, writer))),
+                    };
+
+                    while let Some(next_chunk) = stream.next().await {
+                        match next_chunk {
+                            Ok(bytes) => {
+                                offset += bytes.len() as u64;
+                                if let Err(err) = writer.send(bytes).await {
+                                    return Some((RetryResult::Err(err), (offset, writer)));
+                                }
+                            }
+                            Err(err) => return Some((RetryResult::Retry(err), (offset, writer))),
+                        }
                     }
+
+                    if let Err(err) = writer.send_eof() {
+                        return Some((RetryResult::Err(err), (offset, writer)));
+                    }
+
+                    Some((RetryResult::Ok(()), (offset, writer)))
                 },
             ))
-            .await;
-
-        match result {
-            Ok(data) => {
-                if !data.is_empty() {
-                    writer.send(Bytes::from(data)).await?;
-                }
-                writer.send_eof()?;
-                Ok(())
-            }
-            Err(e) => {
-                drop(writer.send_eof());
-                Err(e)
-            }
-        }
+            .await
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {

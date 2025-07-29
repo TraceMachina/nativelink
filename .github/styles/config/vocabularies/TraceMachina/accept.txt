@@ -9,6 +9,7 @@ Bazelisk
 Cloudflare
 Colab
 CPUs
+[Dd]eduplication
 ELB
 Eskandar
 FFI
@@ -39,6 +40,7 @@ OSSF
 Reclient
 Rosetta
 [Rr]epository
+[Ss]harding
 SPDX
 Starlark
 Tokio
@@ -46,6 +48,7 @@ TraceMachina
 [Tt]oolchain
 [Tt]oolchains
 Qwik
+[Uu]psert
 Verilator
 Verilog
 Zstandard
@@ -73,8 +76,9 @@ CMake
 Gradle
 Pantsbuild
 sandboxing
-config
+[Cc]onfig
 bytestream
+[Ff]ailover
 proto
 quantiles
 Config
@@ -104,3 +108,4 @@ Datadog
 Brex
 Citrix
 Menlo
+benchmarked

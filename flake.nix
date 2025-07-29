@@ -79,6 +79,7 @@
         config,
         pkgs,
         system,
+        lib,
         ...
       }: let
         craneLibFor = p: (crane.mkLib p).overrideToolchain pkgs.lre.stableRustFor;
@@ -87,7 +88,7 @@
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
           filter = path: type:
-            (builtins.match "^.*(data/SekienAkashita\.jpg|nativelink-config/README\.md)" path != null)
+            (builtins.match "^.*(examples/.+\.json5|data/SekienAkashita\.jpg|nativelink-config/README\.md)" path != null)
             || ((craneLibFor pkgs).filterCargoSources path type);
         };
 
@@ -318,6 +319,10 @@
       in rec {
         _module.args.pkgs = import self.inputs.nixpkgs {
           inherit system;
+          config.allowUnfreePredicate = pkg:
+            builtins.elem (lib.getName pkg) [
+              "mongodb"
+            ];
           overlays = [
             self.overlays.lre
             self.overlays.tools
@@ -347,7 +352,8 @@
               nativelink-x86_64-linux
               ;
 
-            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr native-cli;
+            # Used by the CI
+            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr;
 
             default = nativelink;
 
@@ -361,13 +367,14 @@
             nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
-            pyroaring = pkgs.callPackage ./tools/buildstream/pyroaring.nix {pythonPkgs = pkgs.python312Packages;};
-            bst = pkgs.callPackage ./tools/buildstream/bst.nix {
-              inherit pkgs pyroaring;
-              pythonPkgs = pkgs.python312Packages;
-            };
+            generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
+
+            inherit (pkgs) buildstream buildbox mongodb wait4x bazelisk;
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
-              inherit nativelink bst;
+              inherit nativelink buildstream buildbox;
+            };
+            mongo-with-nativelink-test = pkgs.callPackage integration_tests/mongo/mongo-with-nativelink-test.nix {
+              inherit nativelink mongodb wait4x bazelisk;
             };
           }
           // (
@@ -397,6 +404,7 @@
         pre-commit.settings = {
           hooks = import ./tools/pre-commit-hooks.nix {
             inherit pkgs;
+            inherit (packages) generate-bazel-rc;
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
@@ -491,6 +499,7 @@
               pkgs.lre.lre-cc.lre-cc-configs-gen
               pkgs.nativelink-tools.local-image-test
               pkgs.nativelink-tools.native-cli
+              pkgs.nativelink-tools.create-local-image
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.darwin.apple_sdk.frameworks.CoreFoundation

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM ubuntu:22.04@sha256:f9d633ff6640178c2d0525017174a688e2c1aef28f0a0130b26bd5554491f0da
+FROM ubuntu:22.04@sha256:3c61d3759c2639d4b836d32a2d3c83fa0214e36f195a3421018dbaaf79cbe37f
 
 # Set shell to bash and enable pipefail
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -24,8 +24,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --no-instal
     python3=3.10.6-1~22.04 \
     python3-minimal=3.10.6-1~22.04 \
     libpython3-stdlib=3.10.6-1~22.04 \
-    curl=7.81.0-1ubuntu1.17 \
-    ca-certificates=20230311ubuntu0.22.04.1 \
+    curl=7.81.0-1ubuntu1.20 \
+    ca-certificates=20240203~22.04.1 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

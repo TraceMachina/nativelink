@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
+use axum::http::Uri;
 use clap::Parser;
 use futures::FutureExt;
 use futures::future::{BoxFuture, Either, OptionFuture, TryFutureExt, try_join_all};
@@ -72,9 +73,7 @@ use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
 use tonic::codec::CompressionEncoding;
 use tonic::service::Routes;
-#[cfg(target_family = "unix")]
-use tracing::warn;
-use tracing::{error, error_span, info, trace_span};
+use tracing::{error, error_span, info, trace_span, warn};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -541,9 +540,11 @@ async fn inner_main(
             );
         }
 
-        svc = svc
-            // This is the default service that executes if no other endpoint matches.
-            .fallback((StatusCode::NOT_FOUND, "Not Found"));
+        // This is the default service that executes if no other endpoint matches.
+        svc = svc.fallback(|uri: Uri| async move {
+            warn!("No route for {uri}");
+            (StatusCode::NOT_FOUND, format!("No route for {uri}"))
+        });
 
         // Configure our TLS acceptor if we have TLS configured.
         let maybe_tls_acceptor = http_config.tls.map_or(Ok(None), |tls_config| {
@@ -820,13 +821,9 @@ async fn inner_main(
     Ok(())
 }
 
-fn get_config() -> Result<CasConfig, Box<dyn core::error::Error>> {
+fn get_config() -> Result<CasConfig, Error> {
     let args = Args::parse();
-    let json_contents = String::from_utf8(
-        std::fs::read(&args.config_file)
-            .err_tip(|| format!("Could not open config file {}", args.config_file))?,
-    )?;
-    Ok(serde_json5::from_str(&json_contents)?)
+    CasConfig::try_from_json5_file(&args.config_file)
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {

@@ -486,7 +486,7 @@ impl StoreDriver for RedisStore {
                         .setrange::<(), _, _>(temp_key_ref, offset, chunk)
                         .await
                         .err_tip(
-                            || "While appending to append to temp key in RedisStore::update",
+                            || format!("While appending to temp key ({temp_key_ref}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"),
                         )?;
                     Ok::<u32, Error>(end_pos)
                 })

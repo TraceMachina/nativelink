@@ -138,7 +138,7 @@ pub struct SimpleScheduler {
 
     /// Background task that tries to match actions to workers. If this struct
     /// is dropped the spawn will be cancelled as well.
-    _task_worker_matching_spawn: JoinHandleDropGuard<()>,
+    task_worker_matching_spawn: JoinHandleDropGuard<()>,
 }
 
 impl core::fmt::Debug for SimpleScheduler {
@@ -148,8 +148,8 @@ impl core::fmt::Debug for SimpleScheduler {
             .field("worker_scheduler", &self.worker_scheduler)
             .field("maybe_origin_event_tx", &self.maybe_origin_event_tx)
             .field(
-                "_task_worker_matching_spawn",
-                &self._task_worker_matching_spawn,
+                "task_worker_matching_spawn",
+                &self.task_worker_matching_spawn,
             )
             .finish_non_exhaustive()
     }
@@ -439,7 +439,7 @@ impl SimpleScheduler {
                 worker_scheduler,
                 platform_property_manager,
                 maybe_origin_event_tx,
-                _task_worker_matching_spawn: task_worker_matching_spawn,
+                task_worker_matching_spawn,
             }
         });
         (action_scheduler, worker_scheduler_clone)

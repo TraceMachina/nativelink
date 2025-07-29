@@ -72,7 +72,7 @@ for how to build the images yourself.
 
 ```bash
 curl -O \
-    https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5
+    https://raw.githubusercontent.com/TraceMachina/nativelink/v0.6.0/nativelink-config/examples/basic_cas.json5
 
 # See https://github.com/TraceMachina/nativelink/pkgs/container/nativelink
 # to find the latest tag
@@ -88,7 +88,7 @@ docker run \
 ```powershell
 # Download the configuration file
 Invoke-WebRequest `
-    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5" `
+    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v0.6.0/nativelink-config/examples/basic_cas.json5" `
     -OutFile "basic_cas.json5"
 
 # Run the Docker container

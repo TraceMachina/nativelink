@@ -1,6 +1,7 @@
 {
   pkgs,
   nightly-rust,
+  generate-bazel-rc,
   ...
 }: let
   excludes = ["nativelink-proto/genproto" "native-cli/vendor"];
@@ -172,5 +173,42 @@ in {
     excludes = ["local-remote-execution/generated-cc/cc/cc_toolchain_config.bzl"];
     name = "buildifier lint";
     types = ["bazel"];
+  };
+
+  # bazelrc
+  generate-bazel-rc = {
+    description = "Generate bazelrc";
+    enable = true;
+    entry = "${generate-bazel-rc}/bin/generate-bazel-rc Cargo.toml .bazelrc";
+    name = "generate-bazel-rc";
+    files = "Cargo.toml|.bazelrc";
+    pass_filenames = false;
+  };
+
+  # json5
+  formatjson5 = {
+    description = "Format json5 files";
+    enable = true;
+    entry = "${pkgs.formatjson5}/bin/formatjson5";
+    args = ["-r" "--indent" "2"];
+    types = ["json5"];
+  };
+
+  # Renovate config validator
+  renovate = {
+    description = "Validate renovate config";
+    enable = true;
+    entry = "${pkgs.renovate}/bin/renovate-config-validator";
+    args = ["--strict"];
+    files = "renovate.json5";
+  };
+
+  # Detect unused cargo deps
+  machete = {
+    description = "Detect unused cargo deps";
+    enable = true;
+    entry = "${pkgs.cargo-machete}/bin/cargo-machete";
+    args = ["."];
+    pass_filenames = false;
   };
 }

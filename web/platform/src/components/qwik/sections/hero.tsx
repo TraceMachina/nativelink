@@ -4,8 +4,9 @@ import { BackgroundVideo } from "../components/video.tsx";
 
 const _MockUp =
   "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp";
+
 const videoMockUp =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_introduction.mp4";
+  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/Walkthrough+of+Nativelink+Cloud.mp4";
 
 export const Hero = component$(() => {
   const rotatingText = useSignal("Accelerating Advanced CI");
@@ -90,7 +91,7 @@ export const Hero = component$(() => {
           </a>
         </div>
         <div class="w-full flex justify-center items-center">
-          <div class="w-9/11 aspect-video relative">
+          <div class="w-9/11 relative">
             <video
               src={videoMockUp}
               class="w-full h-full object-contain self-center shadow-[0px_0px_50px_0px_rgba(96,80,230,0.3)]"

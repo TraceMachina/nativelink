@@ -14,7 +14,7 @@
 
 // ----- File size thresholds -----
 /// Threshold for using simple upload vs. resumable upload (10MB)
-pub const SIMPLE_UPLOAD_THRESHOLD: i64 = 10 * 1024 * 1024;
+pub const SIMPLE_UPLOAD_THRESHOLD: u64 = 10 * 1024 * 1024;
 /// Minimum size for multipart upload (5MB)
 pub const MIN_MULTIPART_SIZE: u64 = 5 * 1024 * 1024;
 /// Default chunk size for uploads (~2MB)

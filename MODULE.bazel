@@ -104,7 +104,7 @@ rust.toolchain(
 )
 use_repo(rust, "rust_toolchains")
 
-bazel_dep(name = "toolchains_protoc", version = "0.4.1")
+bazel_dep(name = "toolchains_protoc", version = "0.4.3")
 
 protoc = use_extension("@toolchains_protoc//protoc:extensions.bzl", "protoc")
 protoc.toolchain(

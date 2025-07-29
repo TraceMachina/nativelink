@@ -95,8 +95,11 @@ jobs:
         run: |
           nix run -L .#nativelink-is-executable-test
 
-  buildstream:
-    name: buildstream
+  integration:
+    name: ${{ matrix.test-name }}
+    strategy:
+      matrix:
+          test-name: [buildstream, mongo]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -107,6 +110,6 @@ jobs:
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
 
-      - name: Test buildstream run
+      - name: Test ${{ matrix.test-name }} run
         run: |
-          nix run -L .#buildstream-with-nativelink-test
+          nix run -L .#${{ matrix.test-name }}-with-nativelink-test
