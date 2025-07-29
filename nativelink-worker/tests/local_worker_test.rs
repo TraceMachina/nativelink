@@ -547,6 +547,9 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
             std::process::Command::new("sync").output().unwrap();
         }
         std::fs::rename(&precondition_script_tmp, &precondition_script).unwrap();
+        // Add a small delay to ensure the file system has fully released the file
+        // This helps avoid "Text file busy" errors on some Linux environments
+        tokio::time::sleep(Duration::from_millis(100)).await;
         precondition_script
     };
     #[cfg(target_family = "windows")]
