@@ -18,6 +18,7 @@ rust_library(
         "src/grpc_scheduler.rs",
         "src/lib.rs",
         "src/memory_awaited_action_db.rs",
+        "src/mock_scheduler.rs",
         "src/platform_property_manager.rs",
         "src/property_modifier_scheduler.rs",
         "src/simple_scheduler.rs",
@@ -67,7 +68,6 @@ rust_test_suite(
         "tests/simple_scheduler_test.rs",
     ],
     compile_data = [
-        "tests/utils/mock_scheduler.rs",
         "tests/utils/scheduler_utils.rs",
     ],
     proc_macro_deps = [
@@ -93,6 +93,8 @@ rust_test_suite(
         "@crates//:serde_json",
         "@crates//:tokio",
         "@crates//:tokio-stream",
+        "@crates//:tracing",
+        "@crates//:tracing-test",
         "@crates//:uuid",
     ],
 )

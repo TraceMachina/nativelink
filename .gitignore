@@ -22,4 +22,4 @@ nixos.bazelrc
 rust-project.json
 darwin.bazelrc
 nativelink.bazelrc
-integration_tests/buildstream/buildstream.log
+integration_tests/**/*.log

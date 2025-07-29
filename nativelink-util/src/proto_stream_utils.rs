@@ -32,7 +32,7 @@ pub struct WriteRequestStreamWrapper<T> {
     pub bytes_received: usize,
     stream: T,
     first_msg: Option<WriteRequest>,
-    write_finished: bool,
+    pub write_finished: bool,
 }
 
 impl<T> Debug for WriteRequestStreamWrapper<T> {

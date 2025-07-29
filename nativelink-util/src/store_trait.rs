@@ -14,6 +14,7 @@
 
 use core::borrow::{Borrow, BorrowMut};
 use core::convert::Into;
+use core::fmt::{self, Display};
 use core::hash::{Hash, Hasher};
 use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
@@ -316,6 +317,20 @@ impl From<&DigestInfo> for StoreKey<'_> {
     }
 }
 
+// mostly for use with tracing::Value
+impl Display for StoreKey<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StoreKey::Str(s) => {
+                write!(f, "{s}")
+            }
+            StoreKey::Digest(d) => {
+                write!(f, "Digest: {d}")
+            }
+        }
+    }
+}
+
 #[derive(Clone, MetricsComponent)]
 #[repr(transparent)]
 pub struct Store {
@@ -323,8 +338,8 @@ pub struct Store {
     inner: Arc<dyn StoreDriver>,
 }
 
-impl core::fmt::Debug for Store {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for Store {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Store").finish_non_exhaustive()
     }
 }
@@ -636,7 +651,7 @@ pub trait StoreDriver:
         let inner_store = self.inner_store(Some(key.borrow()));
         if inner_store.optimized_for(StoreOptimizations::FileUpdates) {
             error_if!(
-                addr_eq(inner_store, &*self),
+                addr_eq(inner_store, &raw const *self),
                 "Store::inner_store() returned self when optimization present"
             );
             return Pin::new(inner_store)

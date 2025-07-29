@@ -48,9 +48,9 @@ runs:
         fi
 
     - name: Install Nix
-      uses: >- # v16
-        DeterminateSystems/nix-installer-action@e50d5f73bfe71c2dd0aa4218de8f4afa59f8f81d
+      uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v17
+        DeterminateSystems/nix-installer-action@21a544727d0c62386e78b4befe52d19ad12692e3
 
-    - name: Cache Nix derivations
-      uses: >- # v9
-        DeterminateSystems/magic-nix-cache-action@6221693898146dc97e38ad0e013488a16477a4c4
+    - name: Add Nix magic cache
+      uses: >- # https://github.com/DeterminateSystems/magic-nix-cache-action/releases/tag/v11
+        DeterminateSystems/magic-nix-cache-action@def9f5a5c6a6b8751c0534e8813a5d0ad2635660

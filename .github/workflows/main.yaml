@@ -43,6 +43,7 @@ jobs:
         DOCKERFILE_HASH=$(sha256sum "$GITHUB_WORKSPACE/tools/toolchain-nativelink/Dockerfile" | awk '{print $1}')
         IMAGE_DETAILS=$(aws ecr describe-images --repository-name ${{ secrets.RBE_ECR_REPOSITORY_NAME }} --image-ids imageTag=$DOCKERFILE_HASH)
         if [ $? -ne 0 ]; then
+          echo "Run tools/toolchain-nativelink/toolchain-nativelink.sh locally and upload a new version of the stock image"
           exit 1;
         fi
         echo "RBE_IMAGE=${{ secrets.RBE_ECR_AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.RBE_ECR_AWS_ACCOUNT_REGION }}.amazonaws.com/${{ secrets.RBE_ECR_REPOSITORY_NAME }}:$DOCKERFILE_HASH" >> $GITHUB_ENV

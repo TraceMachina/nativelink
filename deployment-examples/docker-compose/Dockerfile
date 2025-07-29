@@ -29,7 +29,7 @@ RUN apt-get update \
         DEBIAN_FRONTEND=noninteractive \
         apt-get install --no-install-recommends -y \
             npm=9.2.0~ds1-2 \
-            git=1:2.43.0-1ubuntu7.2 \
+            git=1:2.43.0-1ubuntu7.3 \
             gcc=4:13.2.0-7ubuntu1 \
             g++=4:13.2.0-7ubuntu1 \
             python3=3.12.3-0ubuntu2 \
@@ -38,7 +38,7 @@ RUN apt-get update \
         DEBIAN_FRONTEND=noninteractive \
         apt-get install --no-install-recommends -y \
             npm=8.5.1~ds-1 \
-            git=1:2.34.1-1ubuntu1.12 \
+            git=1:2.34.1-1ubuntu1.15 \
             gcc=4:11.2.0-1ubuntu1 \
             g++=4:11.2.0-1ubuntu1 \
             python3=3.10.6-1~22.04.1 \

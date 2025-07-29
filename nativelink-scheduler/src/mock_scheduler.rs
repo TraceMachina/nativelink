@@ -42,8 +42,8 @@ enum ActionSchedulerReturns {
     FilterOperations(Result<ActionStateResultStream<'static>, Error>),
 }
 
-#[derive(MetricsComponent)]
-pub(crate) struct MockActionScheduler {
+#[derive(MetricsComponent, Debug)]
+pub struct MockActionScheduler {
     rx_call: Mutex<mpsc::UnboundedReceiver<ActionSchedulerCalls>>,
     tx_call: mpsc::UnboundedSender<ActionSchedulerCalls>,
 
@@ -58,7 +58,7 @@ impl Default for MockActionScheduler {
 }
 
 impl MockActionScheduler {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
         Self {
@@ -70,10 +70,7 @@ impl MockActionScheduler {
     }
 
     #[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
-    pub(crate) async fn expect_get_known_properties(
-        &self,
-        result: Result<Vec<String>, Error>,
-    ) -> String {
+    pub async fn expect_get_known_properties(&self, result: Result<Vec<String>, Error>) -> String {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::GetGetKnownProperties(req) = rx_call_lock
             .recv()
@@ -89,7 +86,8 @@ impl MockActionScheduler {
         req
     }
 
-    pub(crate) async fn expect_add_action(
+    #[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
+    pub async fn expect_add_action(
         &self,
         result: Result<Box<dyn ActionStateResult>, Error>,
     ) -> (OperationId, ActionInfo) {
@@ -108,7 +106,8 @@ impl MockActionScheduler {
         req
     }
 
-    pub(crate) async fn expect_filter_operations(
+    #[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
+    pub async fn expect_filter_operations(
         &self,
         result: Result<ActionStateResultStream<'static>, Error>,
     ) -> OperationFilter {

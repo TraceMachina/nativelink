@@ -66,14 +66,17 @@ impl MetricsComponent for Error {
 }
 
 impl Error {
+    #[must_use]
+    pub const fn new_with_messages(code: Code, messages: Vec<String>) -> Self {
+        Self { code, messages }
+    }
+
+    #[must_use]
     pub fn new(code: Code, msg: String) -> Self {
-        let mut msgs = Vec::with_capacity(1);
-        if !msg.is_empty() {
-            msgs.push(msg);
-        }
-        Self {
-            code,
-            messages: msgs,
+        if msg.is_empty() {
+            Self::new_with_messages(code, vec![])
+        } else {
+            Self::new_with_messages(code, vec![msg])
         }
     }
 
@@ -107,10 +110,12 @@ impl Error {
         other.map(Into::into)
     }
 
+    #[must_use]
     pub fn to_std_err(self) -> std::io::Error {
         std::io::Error::new(self.code.into_error_kind(), self.messages.join(" : "))
     }
 
+    #[must_use]
     pub fn message_string(&self) -> String {
         self.messages.join(" : ")
     }
@@ -182,6 +187,12 @@ impl From<tokio::task::JoinError> for Error {
     }
 }
 
+impl From<serde_json5::Error> for Error {
+    fn from(err: serde_json5::Error) -> Self {
+        make_err!(Code::Internal, "{}", err.to_string())
+    }
+}
+
 impl From<core::num::ParseIntError> for Error {
     fn from(err: core::num::ParseIntError) -> Self {
         make_err!(Code::InvalidArgument, "{}", err.to_string())
@@ -246,12 +257,18 @@ impl From<Error> for tonic::Status {
 }
 
 pub trait ResultExt<T> {
+    /// # Errors
+    ///
+    /// Will return `Err` if we can't convert the error.
     fn err_tip_with_code<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
         S: ToString,
         F: (FnOnce(&Error) -> (Code, S)) + Sized;
 
+    /// # Errors
+    ///
+    /// Will return `Err` if we can't convert the error.
     #[inline]
     fn err_tip<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
@@ -262,6 +279,9 @@ pub trait ResultExt<T> {
         self.err_tip_with_code(|e| (e.code, tip_fn()))
     }
 
+    /// # Errors
+    ///
+    /// Will return `Err` if we can't merge the errors.
     fn merge<U>(self, _other: Result<U, Error>) -> Result<U, Error>
     where
         Self: Sized,

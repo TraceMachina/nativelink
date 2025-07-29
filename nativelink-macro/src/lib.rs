@@ -34,9 +34,8 @@ pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
             reason = "`tokio::test` uses `tokio::runtime::Runtime::block_on`"
         )]
         #[tokio::test(#attr)]
+        #[::tracing_test::traced_test]
         async fn #fn_name(#fn_inputs) #fn_output {
-            nativelink_util::telemetry::init_tracing_for_tests();
-
             ::nativelink_util::__tracing::error_span!(stringify!(#fn_name))
                 .in_scope(|| async move {
                     ::nativelink_util::common::reseed_rng_for_test().unwrap();

@@ -284,7 +284,12 @@ impl SchedulerStoreKeyProvider for ClientIdToOperationId<'_> {
 impl SchedulerStoreDecodeTo for ClientIdToOperationId<'_> {
     type DecodeOutput = OperationId;
     fn decode(_version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
-        OperationId::try_from(data).err_tip(|| "In ClientIdToOperationId::decode")
+        serde_json::from_slice(&data).map_err(|e| {
+            make_input_err!(
+                "In ClientIdToOperationId::decode - {e:?} (data: {:02x?})",
+                data
+            )
+        })
     }
 }
 
@@ -527,6 +532,17 @@ where
                     );
                     return Ok(None);
                 }
+
+                // Add the client_operation_id to operation_id mapping
+                self.store
+                    .update_data(UpdateClientIdToOperationId {
+                        client_operation_id: client_operation_id.clone(),
+                        operation_id: operation_id.clone(),
+                    })
+                    .await
+                    .err_tip(
+                        || "In RedisAwaitedActionDb::try_subscribe while adding client mapping",
+                    )?;
 
                 Ok(Some(OperationSubscriber::new(
                     Some(client_operation_id.clone()),

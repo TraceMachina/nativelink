@@ -19,14 +19,14 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::collections::vec_deque::VecDeque;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
@@ -74,10 +74,11 @@ use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{Notify, oneshot, watch};
+use tokio::time::Instant;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -158,7 +159,24 @@ pub fn download_to_directory<'a>(
                             .get_file_path_locked(|src| fs::hard_link(src, &dest))
                             .await
                             .map_err(|e| {
-                                make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}")
+                                if e.code == Code::NotFound {
+                                    make_err!(
+                                        Code::Internal,
+                                        "Could not make hardlink, file was likely evicted from cache. {e:?} : {dest}\n\
+                                        This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+                                        To fix this issue:\n\
+                                        1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+                                        2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+                                        3. The setting is typically found in your nativelink.json config under:\n\
+                                           stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+                                        4. Restart NativeLink after making the change\n\n\
+                                        If this error persists after increasing max_bytes several times, please report at:\n\
+                                        https://github.com/TraceMachina/nativelink/issues\n\
+                                        Include your config file and both server and client logs to help us assist you."
+                                    )
+                                } else {
+                                    make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}")
+                                }
                             })?;
                         #[cfg(target_family = "unix")]
                         if let Some(unix_mode) = unix_mode {
@@ -527,20 +545,38 @@ async fn do_cleanup(
     operation_id: &OperationId,
     action_directory: &str,
 ) -> Result<(), Error> {
+    // Mark this operation as being cleaned up
+    {
+        let mut cleaning = running_actions_manager.cleaning_up_operations.lock();
+        cleaning.insert(operation_id.clone());
+    }
+
     debug!("Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
     let remove_dir_result = fs::remove_dir_all(action_directory)
         .await
         .err_tip(|| format!("Could not remove working directory {action_directory}"));
-    if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
+
+    let cleanup_result = if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
         error!(?operation_id, ?err, "Error cleaning up action");
-        return Result::<(), Error>::Err(err).merge(remove_dir_result);
-    }
-    if let Err(err) = remove_dir_result {
+        Result::<(), Error>::Err(err).merge(remove_dir_result)
+    } else if let Err(err) = remove_dir_result {
         error!(?operation_id, ?err, "Error removing working directory");
-        return Err(err);
+        Err(err)
+    } else {
+        Ok(())
+    };
+
+    // Remove from cleaning set and notify waiters
+    {
+        let mut cleaning = running_actions_manager.cleaning_up_operations.lock();
+        cleaning.remove(operation_id);
     }
-    Ok(())
+    running_actions_manager
+        .cleanup_complete_notify
+        .notify_waiters();
+
+    cleanup_result
 }
 
 pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
@@ -1655,9 +1691,22 @@ pub struct RunningActionsManagerImpl {
     action_done_tx: watch::Sender<()>,
     callbacks: Callbacks,
     metrics: Arc<Metrics>,
+    /// Track operations being cleaned up to avoid directory collisions during action retries.
+    /// When an action fails and is retried on the same worker, we need to ensure the previous
+    /// attempt's directory is fully cleaned up before creating a new one.
+    /// See: <https://github.com/TraceMachina/nativelink/issues/1859>
+    cleaning_up_operations: Mutex<HashSet<OperationId>>,
+    /// Notify waiters when a cleanup operation completes. This is used in conjunction with
+    /// `cleaning_up_operations` to coordinate directory cleanup and creation.
+    cleanup_complete_notify: Arc<Notify>,
 }
 
 impl RunningActionsManagerImpl {
+    /// Maximum time to wait for a cleanup operation to complete before timing out.
+    /// TODO(marcussorealheis): Consider making cleanup wait timeout configurable in the future
+    const MAX_WAIT: Duration = Duration::from_secs(30);
+    /// Maximum backoff duration for exponential backoff when waiting for cleanup.
+    const MAX_BACKOFF: Duration = Duration::from_millis(500);
     pub fn new_with_callbacks(
         args: RunningActionsManagerArgs<'_>,
         callbacks: Callbacks,
@@ -1690,6 +1739,8 @@ impl RunningActionsManagerImpl {
             action_done_tx,
             callbacks,
             metrics: Arc::new(Metrics::default()),
+            cleaning_up_operations: Mutex::new(HashSet::new()),
+            cleanup_complete_notify: Arc::new(Notify::new()),
         })
     }
 
@@ -1701,6 +1752,105 @@ impl RunningActionsManagerImpl {
                 sleep_fn: |duration| Box::pin(tokio::time::sleep(duration)),
             },
         )
+    }
+
+    /// Fixes a race condition that occurs when an action fails to execute on a worker, and the same worker
+    /// attempts to re-execute the same action before the physical cleanup (file is removed) completes.
+    /// See this issue for additional details: <https://github.com/TraceMachina/nativelink/issues/1859>
+    async fn wait_for_cleanup_if_needed(&self, operation_id: &OperationId) -> Result<(), Error> {
+        let start = Instant::now();
+        let mut backoff = Duration::from_millis(10);
+        let mut has_waited = false;
+
+        loop {
+            let should_wait = {
+                let cleaning = self.cleaning_up_operations.lock();
+                cleaning.contains(operation_id)
+            };
+
+            if !should_wait {
+                let dir_path =
+                    PathBuf::from(&self.root_action_directory).join(operation_id.to_string());
+
+                if !dir_path.exists() {
+                    return Ok(());
+                }
+
+                // Safety check: ensure we're only removing directories under root_action_directory
+                let root_path = Path::new(&self.root_action_directory);
+                let canonical_root = root_path.canonicalize().err_tip(|| {
+                    format!(
+                        "Failed to canonicalize root directory: {}",
+                        self.root_action_directory
+                    )
+                })?;
+                let canonical_dir = dir_path.canonicalize().err_tip(|| {
+                    format!("Failed to canonicalize directory: {}", dir_path.display())
+                })?;
+
+                if !canonical_dir.starts_with(&canonical_root) {
+                    return Err(make_err!(
+                        Code::Internal,
+                        "Attempted to remove directory outside of root_action_directory: {}",
+                        dir_path.display()
+                    ));
+                }
+
+                // Directory exists but not being cleaned - remove it
+                warn!(
+                    "Removing stale directory for {}: {}",
+                    operation_id,
+                    dir_path.display()
+                );
+                self.metrics.stale_removals.inc();
+
+                // Try to remove the directory, with one retry on failure
+                let remove_result = fs::remove_dir_all(&dir_path).await;
+                if let Err(e) = remove_result {
+                    // Retry once after a short delay in case the directory is temporarily locked
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    fs::remove_dir_all(&dir_path).await.err_tip(|| {
+                        format!(
+                            "Failed to remove stale directory {} for retry of {} after retry (original error: {})",
+                            dir_path.display(),
+                            operation_id,
+                            e
+                        )
+                    })?;
+                }
+                return Ok(());
+            }
+
+            if start.elapsed() > Self::MAX_WAIT {
+                self.metrics.cleanup_wait_timeouts.inc();
+                return Err(make_err!(
+                    Code::DeadlineExceeded,
+                    "Timeout waiting for previous operation cleanup: {} (waited {:?})",
+                    operation_id,
+                    start.elapsed()
+                ));
+            }
+
+            if !has_waited {
+                self.metrics.cleanup_waits.inc();
+                has_waited = true;
+            }
+
+            trace!(
+                "Waiting for cleanup of {} (elapsed: {:?}, backoff: {:?})",
+                operation_id,
+                start.elapsed(),
+                backoff
+            );
+
+            tokio::select! {
+                () = self.cleanup_complete_notify.notified() => {},
+                () = tokio::time::sleep(backoff) => {
+                    // Exponential backoff
+                    backoff = (backoff * 2).min(Self::MAX_BACKOFF);
+                },
+            }
+        }
     }
 
     fn make_action_directory<'a>(
@@ -1800,6 +1950,8 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     ?action_info,
                     "Worker received action",
                 );
+                // Wait for any previous cleanup to complete before creating directory
+                self.wait_for_cleanup_if_needed(&operation_id).await?;
                 let action_directory = self.make_action_directory(&operation_id).await?;
                 let execution_metadata = ExecutionMetadata {
                     worker: worker_id,
@@ -1836,6 +1988,16 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 ));
                 {
                     let mut running_actions = self.running_actions.lock();
+                    // Check if action already exists and is still alive
+                    if let Some(existing_weak) = running_actions.get(&operation_id) {
+                        if let Some(_existing_action) = existing_weak.upgrade() {
+                            return Err(make_err!(
+                                Code::AlreadyExists,
+                                "Action with operation_id {} is already running",
+                                operation_id
+                            ));
+                        }
+                    }
                     running_actions.insert(operation_id, Arc::downgrade(&running_action));
                 }
                 Ok(running_action)
@@ -1939,6 +2101,12 @@ pub struct Metrics {
     cleanup: AsyncCounterWrapper,
     #[metric(help = "Stats about the get_finished_result command.")]
     get_finished_result: AsyncCounterWrapper,
+    #[metric(help = "Number of times an action waited for cleanup to complete.")]
+    cleanup_waits: CounterWithTime,
+    #[metric(help = "Number of stale directories removed during action retries.")]
+    stale_removals: CounterWithTime,
+    #[metric(help = "Number of timeouts while waiting for cleanup to complete.")]
+    cleanup_wait_timeouts: CounterWithTime,
     #[metric(help = "Stats about the get_proto_command_from_store command.")]
     get_proto_command_from_store: AsyncCounterWrapper,
     #[metric(help = "Stats about the download_to_directory command.")]

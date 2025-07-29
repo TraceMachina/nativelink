@@ -1,0 +1,26 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+  ],
+  packageRules: [
+    {
+      matchUpdateTypes: [
+        "patch",
+        "minor",
+      ],
+      enabled: false,
+    },
+    {
+      matchPackageNames: [
+        "*",
+      ],
+      automerge: true,
+    },
+  ],
+  prConcurrentLimit: 2,
+  vulnerabilityAlerts: {
+    enabled: true,
+  },
+  osvVulnerabilityAlerts: true,
+}

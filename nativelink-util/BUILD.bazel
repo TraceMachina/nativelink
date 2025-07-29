@@ -131,6 +131,8 @@ rust_test_suite(
         "@crates//:tokio-stream",
         "@crates//:tokio-util",
         "@crates//:tonic",
+        "@crates//:tracing",
+        "@crates//:tracing-test",
         "@crates//:uuid",
     ],
 )
