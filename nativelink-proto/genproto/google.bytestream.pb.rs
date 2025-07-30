@@ -37,17 +37,24 @@ pub struct ReadRequest {
     pub read_limit: i64,
 }
 /// Response object for ByteStream.Read.
+#[derive(::derivative::Derivative)]
+#[derivative(Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct ReadResponse {
     /// A portion of the data for the resource. The service **may** leave `data`
     /// empty for any given `ReadResponse`. This enables the service to inform the
     /// client that the request is still live while it is running an operation to
     /// generate more data.
     #[prost(bytes = "bytes", tag = "10")]
+    #[derivative(Debug = "ignore")]
     pub data: ::prost::bytes::Bytes,
 }
 /// Request object for ByteStream.Write.
+#[derive(::derivative::Derivative)]
+#[derivative(Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct WriteRequest {
     /// The name of the resource to write. This **must** be set on the first
     /// `WriteRequest` of each `Write()` action. If it is set on subsequent calls,
@@ -78,6 +85,7 @@ pub struct WriteRequest {
     /// service that the request is still live while it is running an operation to
     /// generate more data.
     #[prost(bytes = "bytes", tag = "10")]
+    #[derivative(Debug = "ignore")]
     pub data: ::prost::bytes::Bytes,
 }
 /// Response object for ByteStream.Write.
