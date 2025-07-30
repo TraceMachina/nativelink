@@ -1269,7 +1269,10 @@ pub struct BatchUpdateBlobsRequest {
 /// Nested message and enum types in `BatchUpdateBlobsRequest`.
 pub mod batch_update_blobs_request {
     /// A request corresponding to a single blob that the client wants to upload.
+    #[derive(::derivative::Derivative)]
+    #[derivative(Debug)]
     #[derive(Clone, PartialEq, ::prost::Message)]
+    #[prost(skip_debug)]
     pub struct Request {
         /// The digest of the blob. This MUST be the digest of `data`. All
         /// digests MUST use the same digest function.
@@ -1277,6 +1280,7 @@ pub mod batch_update_blobs_request {
         pub digest: ::core::option::Option<super::Digest>,
         /// The raw binary data.
         #[prost(bytes = "bytes", tag = "2")]
+        #[derivative(Debug = "ignore")]
         pub data: ::prost::bytes::Bytes,
         /// The format of `data`. Must be `IDENTITY`/unspecified, or one of the
         /// compressors advertised by the
@@ -1349,13 +1353,17 @@ pub struct BatchReadBlobsResponse {
 /// Nested message and enum types in `BatchReadBlobsResponse`.
 pub mod batch_read_blobs_response {
     /// A response corresponding to a single blob that the client tried to download.
+    #[derive(::derivative::Derivative)]
+    #[derivative(Debug)]
     #[derive(Clone, PartialEq, ::prost::Message)]
+    #[prost(skip_debug)]
     pub struct Response {
         /// The digest to which this response corresponds.
         #[prost(message, optional, tag = "1")]
         pub digest: ::core::option::Option<super::Digest>,
         /// The raw binary data.
         #[prost(bytes = "bytes", tag = "2")]
+        #[derivative(Debug = "ignore")]
         pub data: ::prost::bytes::Bytes,
         /// The format the data is encoded in. MUST be `IDENTITY`/unspecified,
         /// or one of the acceptable compressors specified in the `BatchReadBlobsRequest`.

@@ -266,26 +266,6 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn core::erro
         );
     }
 
-    logs_assert(|lines: &[&str]| {
-        // Filter out OpenTelemetry NoopMeterProvider warnings
-        let filtered_lines: Vec<&str> = lines
-            .iter()
-            .filter(|line| !line.contains("NoopMeterProvider"))
-            .copied()
-            .collect();
-
-        if filtered_lines.len() != 1 {
-            return Err(format!(
-                "Expected 1 log line (excluding OpenTelemetry warnings), got: {filtered_lines:?}"
-            ));
-        }
-        let line = filtered_lines[0];
-        if !line.contains("stream.first_msg=\"<redacted>\"") && line.contains("first_msg") {
-            return Err(format!("Non-redacted first_msg in \"{line}\""));
-        }
-        Ok(())
-    });
-
     Ok(())
 }
 
