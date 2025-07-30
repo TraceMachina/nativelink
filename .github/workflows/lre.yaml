@@ -198,7 +198,7 @@ jobs:
       - name: Debug Kustomizations
         run: >
           nix develop --impure --command
-          bash -c "kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A && kubectl describe kustomizations.kustomize.toolkit.fluxcd.io -A"
+          bash -c "kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A && kubectl events --all-namespaces && kubectl describe kustomizations.kustomize.toolkit.fluxcd.io -A"
         if: always()
 
       - name: Wait for Worker Kustomization
@@ -213,7 +213,7 @@ jobs:
       - name: Debug Kustomizations
         run: >
           nix develop --impure --command
-          bash -c "kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A && kubectl describe kustomizations.kustomize.toolkit.fluxcd.io -A"
+          bash -c "kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A && kubectl events --all-namespaces && kubectl describe kustomizations.kustomize.toolkit.fluxcd.io -A"
         if: always()
 
       - name: Wait for NativeLink
