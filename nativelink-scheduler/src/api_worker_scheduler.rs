@@ -13,9 +13,10 @@
 // limitations under the License.
 
 use core::ops::{Deref, DerefMut};
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{Instant, UNIX_EPOCH};
 
 use async_lock::Mutex;
 use lru::LruCache;
@@ -33,8 +34,34 @@ use tokio::sync::Notify;
 use tonic::async_trait;
 use tracing::{error, info, trace, warn};
 
+/// Metrics for tracking scheduler performance.
+#[derive(Debug, Default)]
+pub struct SchedulerMetrics {
+    /// Total number of worker additions.
+    pub workers_added: AtomicU64,
+    /// Total number of worker removals.
+    pub workers_removed: AtomicU64,
+    /// Total number of `find_worker_for_action` calls.
+    pub find_worker_calls: AtomicU64,
+    /// Total number of successful worker matches.
+    pub find_worker_hits: AtomicU64,
+    /// Total number of failed worker matches (no worker found).
+    pub find_worker_misses: AtomicU64,
+    /// Total time spent in `find_worker_for_action` (nanoseconds).
+    pub find_worker_time_ns: AtomicU64,
+    /// Total number of workers iterated during find operations.
+    pub workers_iterated: AtomicU64,
+    /// Total number of action dispatches.
+    pub actions_dispatched: AtomicU64,
+    /// Total number of keep-alive updates.
+    pub keep_alive_updates: AtomicU64,
+    /// Total number of worker timeouts.
+    pub worker_timeouts: AtomicU64,
+}
+
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
+use crate::worker_capability_index::WorkerCapabilityIndex;
 use crate::worker_registry::SharedWorkerRegistry;
 use crate::worker_scheduler::WorkerScheduler;
 
@@ -91,6 +118,11 @@ struct ApiWorkerSchedulerImpl {
 
     /// Whether the worker scheduler is shutting down.
     shutting_down: bool,
+
+    /// Index for fast worker capability lookup.
+    /// Used to accelerate `find_worker_for_action` by filtering candidates
+    /// based on properties before doing linear scan.
+    capability_index: WorkerCapabilityIndex,
 }
 
 impl core::fmt::Debug for ApiWorkerSchedulerImpl {
@@ -99,6 +131,11 @@ impl core::fmt::Debug for ApiWorkerSchedulerImpl {
             .field("workers", &self.workers)
             .field("allocation_strategy", &self.allocation_strategy)
             .field("worker_change_notify", &self.worker_change_notify)
+            .field("operation_keep_alive_tx", &self.operation_keep_alive_tx)
+            .field(
+                "capability_index_size",
+                &self.capability_index.worker_count(),
+            )
             .field("worker_registry", &self.worker_registry)
             .finish_non_exhaustive()
     }
@@ -145,7 +182,12 @@ impl ApiWorkerSchedulerImpl {
     /// Note: This function will not do any task matching.
     fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id.clone();
+        let platform_properties = worker.platform_properties.clone();
         self.workers.put(worker_id.clone(), worker);
+
+        // Add to capability index for fast matching
+        self.capability_index
+            .add_worker(&worker_id, &platform_properties);
 
         // Worker is not cloneable, and we do not want to send the initial connection results until
         // we have added it to the map, or we might get some strange race conditions due to the way
@@ -169,6 +211,9 @@ impl ApiWorkerSchedulerImpl {
     /// Note: The caller is responsible for any rescheduling of any tasks that might be
     /// running.
     fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
+        // Remove from capability index
+        self.capability_index.remove_worker(worker_id);
+
         let result = self.workers.pop(worker_id);
         self.worker_change_notify.notify_one();
         result
@@ -189,47 +234,65 @@ impl ApiWorkerSchedulerImpl {
         Ok(())
     }
 
-    fn inner_worker_checker(
-        (worker_id, w): &(&WorkerId, &Worker),
-        platform_properties: &PlatformProperties,
-        full_worker_logging: bool,
-    ) -> bool {
-        if !w.can_accept_work() {
-            if full_worker_logging {
-                info!(
-                    "Worker {worker_id} cannot accept work because is_paused: {}, is_draining: {}",
-                    w.is_paused, w.is_draining
-                );
-            }
-            false
-        } else if !platform_properties.is_satisfied_by(&w.platform_properties, full_worker_logging)
-        {
-            if full_worker_logging {
-                info!("Worker {worker_id} properties are insufficient");
-            }
-            false
-        } else {
-            true
-        }
-    }
-
     fn inner_find_worker_for_action(
         &self,
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
     ) -> Option<WorkerId> {
-        let mut workers_iter = self.workers.iter();
-        let workers_iter = match self.allocation_strategy {
-            // Use rfind to get the least recently used that satisfies the properties.
-            WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter.rfind(|worker| {
-                Self::inner_worker_checker(worker, platform_properties, full_worker_logging)
-            }),
-            // Use find to get the most recently used that satisfies the properties.
-            WorkerAllocationStrategy::MostRecentlyUsed => workers_iter.find(|worker| {
-                Self::inner_worker_checker(worker, platform_properties, full_worker_logging)
-            }),
+        // Use capability index to get candidate workers that match STATIC properties
+        // (Exact, Unknown) and have the required property keys (Priority, Minimum).
+        // This reduces complexity from O(W × P) to O(P × log(W)) for exact properties.
+        let candidates = self
+            .capability_index
+            .find_matching_workers(platform_properties);
+
+        if candidates.is_empty() {
+            if full_worker_logging {
+                info!("No workers in capability index match required properties");
+            }
+            return None;
+        }
+
+        // Check function for availability AND dynamic Minimum property verification.
+        // The index only does presence checks for Minimum properties since their
+        // values change dynamically as jobs are assigned to workers.
+        let worker_matches = |(worker_id, w): &(&WorkerId, &Worker)| -> bool {
+            if !w.can_accept_work() {
+                if full_worker_logging {
+                    info!(
+                        "Worker {worker_id} cannot accept work: is_paused={}, is_draining={}",
+                        w.is_paused, w.is_draining
+                    );
+                }
+                return false;
+            }
+
+            // Verify Minimum properties at runtime (their values are dynamic)
+            if !platform_properties.is_satisfied_by(&w.platform_properties, full_worker_logging) {
+                return false;
+            }
+
+            true
         };
-        workers_iter.map(|(_, w)| w.id.clone())
+
+        // Now check constraints on filtered candidates.
+        // Iterate in LRU order based on allocation strategy.
+        let workers_iter = self.workers.iter();
+
+        match self.allocation_strategy {
+            // Use rfind to get the least recently used that satisfies the properties.
+            WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
+                .rev()
+                .filter(|(worker_id, _)| candidates.contains(worker_id))
+                .find(&worker_matches)
+                .map(|(_, w)| w.id.clone()),
+
+            // Use find to get the most recently used that satisfies the properties.
+            WorkerAllocationStrategy::MostRecentlyUsed => workers_iter
+                .filter(|(worker_id, _)| candidates.contains(worker_id))
+                .find(&worker_matches)
+                .map(|(_, w)| w.id.clone()),
+        }
     }
 
     async fn update_action(
@@ -411,6 +474,9 @@ pub struct ApiWorkerScheduler {
     worker_timeout_s: u64,
     /// Shared worker registry for checking worker liveness.
     worker_registry: SharedWorkerRegistry,
+
+    /// Performance metrics for observability.
+    metrics: Arc<SchedulerMetrics>,
 }
 
 impl ApiWorkerScheduler {
@@ -430,6 +496,7 @@ impl ApiWorkerScheduler {
                 worker_change_notify,
                 worker_registry: worker_registry.clone(),
                 shutting_down: false,
+                capability_index: WorkerCapabilityIndex::new(),
             }),
             platform_property_manager,
             worker_timeout_s,
@@ -448,10 +515,19 @@ impl ApiWorkerScheduler {
         operation_id: OperationId,
         action_info: ActionInfoWithProps,
     ) -> Result<(), Error> {
+        self.metrics
+            .actions_dispatched
+            .fetch_add(1, Ordering::Relaxed);
         let mut inner = self.inner.lock().await;
         inner
             .worker_notify_run_action(worker_id, operation_id, action_info)
             .await
+    }
+
+    /// Returns the scheduler metrics for observability.
+    #[must_use]
+    pub const fn get_metrics(&self) -> &Arc<SchedulerMetrics> {
+        &self.metrics
     }
 
     /// Attempts to find a worker that is capable of running this action.
@@ -463,8 +539,35 @@ impl ApiWorkerScheduler {
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
     ) -> Option<WorkerId> {
+        let start = Instant::now();
+        self.metrics
+            .find_worker_calls
+            .fetch_add(1, Ordering::Relaxed);
+
         let inner = self.inner.lock().await;
-        inner.inner_find_worker_for_action(platform_properties, full_worker_logging)
+        let worker_count = inner.workers.len() as u64;
+        let result = inner.inner_find_worker_for_action(platform_properties, full_worker_logging);
+
+        // Track workers iterated (worst case is all workers)
+        self.metrics
+            .workers_iterated
+            .fetch_add(worker_count, Ordering::Relaxed);
+
+        if result.is_some() {
+            self.metrics
+                .find_worker_hits
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.metrics
+                .find_worker_misses
+                .fetch_add(1, Ordering::Relaxed);
+        }
+
+        #[allow(clippy::cast_possible_truncation)]
+        self.metrics
+            .find_worker_time_ns
+            .fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        result
     }
 
     /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
@@ -515,6 +618,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
         let now = UNIX_EPOCH + Duration::from_secs(worker_timestamp);
         self.worker_registry.register_worker(&worker_id, now).await;
 
+        self.metrics.workers_added.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 

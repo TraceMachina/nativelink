@@ -2163,7 +2163,7 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
     Ok(())
 }
 
-/// Regression test for: https://github.com/TraceMachina/nativelink/issues/257.
+/// Regression test for: <https://github.com/TraceMachina/nativelink/issues/257>.
 #[nativelink_test]
 async fn ensure_task_or_worker_change_notification_received_test() -> Result<(), Error> {
     let worker_id1 = WorkerId("worker1".to_string());

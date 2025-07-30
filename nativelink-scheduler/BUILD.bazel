@@ -25,6 +25,7 @@ rust_library(
         "src/simple_scheduler_state_manager.rs",
         "src/store_awaited_action_db.rs",
         "src/worker.rs",
+        "src/worker_capability_index.rs",
         "src/worker_registry.rs",
         "src/worker_scheduler.rs",
     ],
@@ -67,6 +68,7 @@ rust_test_suite(
         "tests/redis_store_awaited_action_db_test.rs",
         "tests/simple_scheduler_state_manager_test.rs",
         "tests/simple_scheduler_test.rs",
+        "tests/worker_capability_index_test.rs",
     ],
     compile_data = [
         "tests/utils/scheduler_utils.rs",

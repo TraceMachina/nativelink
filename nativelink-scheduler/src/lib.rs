@@ -25,5 +25,6 @@ pub mod simple_scheduler;
 pub mod simple_scheduler_state_manager;
 pub mod store_awaited_action_db;
 pub mod worker;
+pub mod worker_capability_index;
 pub mod worker_registry;
 pub mod worker_scheduler;
