@@ -39,7 +39,16 @@ pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
             ::nativelink_util::__tracing::error_span!(stringify!(#fn_name))
                 .in_scope(|| async move {
                     ::nativelink_util::common::reseed_rng_for_test().unwrap();
-                    #fn_block
+                    let res = #fn_block;
+                    logs_assert(|lines: &[&str]| {
+                        for line in lines {
+                            if line.contains(" data: b") {
+                                return Err(format!("Non-redacted data in \"{line}\""));
+                            }
+                        }
+                        Ok(())
+                    });
+                    res
                 })
                 .await
         }
