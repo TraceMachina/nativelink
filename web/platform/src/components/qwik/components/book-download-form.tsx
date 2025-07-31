@@ -43,8 +43,6 @@ export const BookDownloadForm = component$(() => {
       // Simulate API call delay
       await new Promise((resolve) => setTimeout(resolve, 500));
 
-      // Uncomment this block for actual API integration
-      /*
       const response = await fetch("/api/mail.json", {
         method: "POST",
         headers: {
@@ -64,11 +62,9 @@ export const BookDownloadForm = component$(() => {
       if (!response.ok) {
         throw new Error(data.error || "Failed to process request");
       }
-      */
 
       message.value = "Success! Your download will start automatically...";
 
-      // Trigger download after successful email submission
       setTimeout(() => {
         const link = document.createElement("a");
         link.href = downloadUrl;
