@@ -28,6 +28,25 @@ fn main() -> std::io::Result<()> {
 
     let mut config = Config::new();
     config.bytes(["."]);
+
+    let structs_with_data_to_ignore = [
+        "BatchReadBlobsResponse.Response",
+        "BatchUpdateBlobsRequest.Request",
+        "ReadResponse",
+        "WriteRequest",
+    ];
+
+    for struct_name in structs_with_data_to_ignore {
+        config.type_attribute(struct_name, "#[derive(::derivative::Derivative)]");
+        config.type_attribute(struct_name, "#[derivative(Debug)]");
+        config.field_attribute(
+            format!("{struct_name}.data"),
+            "#[derivative(Debug=\"ignore\")]",
+        );
+    }
+
+    config.skip_debug(structs_with_data_to_ignore);
+
     tonic_build::configure()
         .out_dir(output_dir)
         .compile_protos_with_config(config, &paths, &["nativelink-proto"])?;
