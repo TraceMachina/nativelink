@@ -102,7 +102,6 @@ export const Footer = component$(() => {
             <div class="text-center">
               Lets <span class="text-[#AD96FF]">build</span> together.
             </div>
-            <div class="text-center">We launched!</div>
           </div>
         </div>
 
