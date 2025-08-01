@@ -148,6 +148,9 @@ genrule(
 rust_library(
     name = "nativelink-proto",
     srcs = glob(["genproto/*.rs"]),
+    proc_macro_deps = [
+        "@crates//:derivative",
+    ],
     tags = ["no-rustfmt"],
     visibility = ["//visibility:public"],
     deps = [
