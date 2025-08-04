@@ -50,11 +50,6 @@ export const BookDownloadForm = component$(() => {
         },
         body: JSON.stringify({
           email: email.value,
-          source: "oreilly-bazel-book-download",
-          metadata: {
-            bookTitle: "Extending Bazel to Its Full Potential",
-            downloadTime: new Date().toISOString(),
-          },
         }),
       });
 
