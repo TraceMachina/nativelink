@@ -192,7 +192,7 @@ const Widgets = component$(() => {
 
 export const Header = component$((url: URL) => {
   const navState = useSignal(false);
-  const scrolled = useSignal(false);
+  const scrolled = useSignal(true);
 
   useOnDocument(
     "scrolled",

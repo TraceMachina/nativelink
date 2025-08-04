@@ -1,7 +1,7 @@
 import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
 
 export const BookBanner = component$(() => {
-  const isMinimized = useSignal(false);
+  const isMinimized = useSignal(true);
   const isHidden = useSignal(false);
 
   // Check localStorage on mount to persist banner state
