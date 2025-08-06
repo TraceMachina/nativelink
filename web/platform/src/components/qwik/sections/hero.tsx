@@ -14,11 +14,11 @@ export const Hero = component$(() => {
   useVisibleTask$(() => {
     const options = [
       { text: "Accelerating Advanced CI", duration: 5000 },
-      { text: "Remote execution in Bazel", duration: 5000 },
-      { text: "Remote execution in Buck2", duration: 5000 },
+      { text: "Remote Execution in Bazel", duration: 5000 },
+      { text: "Remote Execution in Buck2", duration: 5000 },
       { text: "Faster Chromium Builds", duration: 3000 },
       { text: "Model Training on CPUs", duration: 3000 },
-      { text: "Robotics", duration: 3000 },
+      { text: "Robotics Policy Evaluation", duration: 3000 },
       { text: "Simulation for Semiconductors", duration: 3000 },
     ];
 
