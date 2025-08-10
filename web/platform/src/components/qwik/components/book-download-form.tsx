@@ -84,10 +84,13 @@ export const BookDownloadForm = component$(() => {
         Enter your work email to download the book
       </p>
 
-      <form onSubmit$={(e) => {
-        e.preventDefault();
-        handleSubmit();
-      }} class="space-y-4">
+      <form
+        onSubmit$={(e) => {
+          e.preventDefault();
+          handleSubmit();
+        }}
+        class="space-y-4"
+      >
         <div>
           <label
             class="block text-sm font-medium mb-2 text-gray-300"

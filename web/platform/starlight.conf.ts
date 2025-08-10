@@ -22,7 +22,7 @@ export const starlightConfig = {
     {
       icon: "slack",
       label: "Slack",
-      href: "https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A",
+      href: "https://forms.gle/LtaWSixEC6bYi5xF7",
     },
   ],
   customCss: [
