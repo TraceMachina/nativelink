@@ -128,7 +128,7 @@ impl PlatformPropertyValue {
         }
     }
 
-    pub fn as_str(&self) -> Cow<_, str> {
+    pub fn as_str(&self) -> Cow<'_, str> {
         match self {
             Self::Exact(value) | Self::Priority(value) | Self::Unknown(value) => {
                 Cow::Borrowed(value)
