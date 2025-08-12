@@ -84,7 +84,13 @@ export const BookDownloadForm = component$(() => {
         Enter your work email to download the book
       </p>
 
-      <form onSubmit$={(e) => e.preventDefault()} class="space-y-4">
+      <form
+        onSubmit$={(e) => {
+          e.preventDefault();
+          handleSubmit();
+        }}
+        class="space-y-4"
+      >
         <div>
           <label
             class="block text-sm font-medium mb-2 text-gray-300"
@@ -118,8 +124,7 @@ export const BookDownloadForm = component$(() => {
         )}
 
         <button
-          type="button"
-          onClick$={handleSubmit}
+          type="submit"
           disabled={isLoading.value}
           class="w-full py-3 px-4 bg-gradient-to-r from-[#724FBA] to-[#292C9F] text-white font-semibold rounded-lg hover:from-[#5a3d96] hover:to-[#1f2080] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
         >

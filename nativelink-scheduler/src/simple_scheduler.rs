@@ -182,14 +182,14 @@ impl SimpleScheduler {
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream, Error> {
+    ) -> Result<ActionStateResultStream<'_>, Error> {
         self.client_state_manager
             .filter_operations(filter)
             .await
             .err_tip(|| "In SimpleScheduler::find_by_client_operation_id getting filter result")
     }
 
-    async fn get_queued_operations(&self) -> Result<ActionStateResultStream, Error> {
+    async fn get_queued_operations(&self) -> Result<ActionStateResultStream<'_>, Error> {
         let filter = OperationFilter {
             stages: OperationStageFlags::Queued,
             order_by_priority_direction: Some(OrderDirection::Desc),
