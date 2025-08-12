@@ -303,7 +303,7 @@ impl GrpcScheduler {
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream, Error> {
+    ) -> Result<ActionStateResultStream<'_>, Error> {
         error_if!(
             filter
                 != OperationFilter {
