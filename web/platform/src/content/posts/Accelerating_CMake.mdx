@@ -1,22 +1,22 @@
 ---
-title: "NativeLink for CMake Acceleration"
-tags: ["news", "blog-posts"]
-image: https://www.gstatic.com/webp/gallery/4.sm.webp
-slug: cmake
-pubDate: 2024-08-12
-readTime: 15 minutes
+title: "Supercharge Your C/C++ Builds without Migrating to Bazel: A Tutorial for CMake, Nativelink and BuildStream"
+tags: ["tutorial", "cmake", "build-acceleration", "blog-posts"]
+image: https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo.webp
+slug: accelerating-cmake-with-nativelink
+pubDate: 2025-08-12
+readTime: 8 minutes
 ---
 
-## Supercharge Your C/C++ Builds without Migrating to Bazel: A Guide to CMake Acceleration with Nativelink and BuildStream
+## Supercharge Your C/C++ Builds without Migrating to Bazel: A Tutorial for CMake Acceleration with Nativelink and BuildStream
 
-Slow build times can be a major drag on developer productivity. Waiting for your code to compile and build can interrupt your flow and waste valuable time. Lots of companies have moved to Bazel and Buck2 to deal with this issue. But for many companies that investment in migrating to Bazel is too risky or too costly. What if you could accelerate your C/C++ projects using CMake? This tutorial will guide you through setting up a blazing-fast build environment using [Nativelink](https://github.com/TraceMachina/nativelink) and [Apache BuildStream](https://buildstream.build/) for remote caching and execution. We'll walk through a simple "hello, world" example to get you up and running in under 15 minutes.
+Slow build times can be a major drag on developer productivity. Waiting for your code to compile and build can interrupt your flow and waste valuable time. Lots of companies have moved to Bazel and Buck2 to deal with this issue. But for many companies that investment in migrating to Bazel is too risky or too costly. What if you could accelerate your C/C++ projects using CMake? This tutorial will guide you through setting up a blazing-fast build environment using [Nativelink](https://github.com/TraceMachina/nativelink) and [Apache BuildStream](https://buildstream.build/) for remote caching and execution. We'll walk through a "hello, world" example to get you up and running in under 15 minutes.
 
 -----
 
 ### What are Nativelink and Apache BuildStream?
 
-  * **BuildStream** is a flexible and extensible tool for building and integrating software stacks. It creates a sandboxed environment for your builds, ensuring they are reproducible and isolated.
-  * **Nativelink** is a high-performance remote execution and caching service that is compatible with the Remote Execution API (REAPI). It acts as a backend to store and retrieve build artifacts, and to execute build tasks on remote workers.
+  * **BuildStream** is a flexible and extensible tool for building and integrating software stacks. It creates a sandbox environment for your builds, ensuring they're reproducible and isolated.
+  * **Nativelink** is a high-performance remote execution and caching service that's compatible with the Remote Execution API (REAPI). It acts as a server to store and retrieve build artifacts, and to execute build tasks on remote workers.
 
 By using them together, you can distribute your build jobs and cache their results, leading to significant speedups, especially in large projects.
 
@@ -24,7 +24,7 @@ By using them together, you can distribute your build jobs and cache their resul
 
 ### Project Setup
 
-Let's start by setting up our project directory. We'll create a simple structure to hold our source code, Makefile, and BuildStream configuration.
+Let's start by setting up our project directory. We'll create a structure to hold our source code, Makefile, and BuildStream configuration.
 
 ```bash
 mkdir -p first-project/elements/base first-project/files/src
@@ -45,7 +45,7 @@ first-project/
 
 ### The "Hello, World" Application
 
-Next, let's create our simple C application and the corresponding Makefile.
+Next, let's create our C application and the corresponding Makefile.
 
 #### `hello.c`
 
@@ -53,7 +53,7 @@ Create a file named `hello.c` inside the `files/src` directory:
 
 ```c
 /*
- * hello.c - Simple hello world program
+ * hello.c - a hello world program
  */
 #include <stdio.h>
 
@@ -162,7 +162,7 @@ config:
 
 ###Configuring Nativelink for Remote Caching & Execution
 
-With our project set up, it's time to bring in Nativelik to accelerate the build.
+With our project set up, it's time to bring in Nativelink to accelerate the build.
 
 ####`buildstream.conf`
 
@@ -190,7 +190,7 @@ This configuration tells BuildStream to connect to a Nativelink instance running
 
 ###Running the Build
 
-We'll use a simple script to launch the Nativelink service and then run the BuildStream build. The example below uses Nix to manage the dependencies, but you can adapt it to your environment.
+We'll use a script to launch the Nativelink service and then run the BuildStream build. The example below uses Nix to manage the dependencies, but you can adapt it to your environment.
 
 ####Launch Script
 
