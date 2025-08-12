@@ -17,6 +17,7 @@ use core::cmp::{max, min};
 use core::ops::Range;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::sync::{Arc, Weak};
 
@@ -34,9 +35,13 @@ use nativelink_util::store_trait::{
     Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
     slow_update_store_with_file,
 };
+use parking_lot::Mutex;
+use tokio::sync::OnceCell;
 
 // TODO(aaronmondal) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
+
+type Loader = Arc<OnceCell<()>>;
 
 // TODO(aaronmondal) We should consider copying the data in the background to allow the
 // client to hang up while the data is buffered. An alternative is to possibly make a
@@ -51,6 +56,8 @@ pub struct FastSlowStore {
     weak_self: Weak<Self>,
     #[metric]
     metrics: FastSlowStoreMetrics,
+    // De-duplicate the populate_fast_store requests.
+    populating_digests: Mutex<HashMap<StoreKey<'static>, Loader>>,
 }
 
 impl FastSlowStore {
@@ -60,6 +67,7 @@ impl FastSlowStore {
             slow_store,
             weak_self: weak_self.clone(),
             metrics: FastSlowStoreMetrics::default(),
+            populating_digests: Mutex::new(HashMap::new()),
         })
     }
 
@@ -88,16 +96,39 @@ impl FastSlowStore {
         if maybe_size_info.is_some() {
             return Ok(());
         }
-        // TODO(aaronmondal) This is extremely inefficient, since we are just trying
-        // to send the stream to /dev/null. Maybe we could instead make a version of
-        // the stream that can send to the drain more efficiently?
-        let (tx, mut rx) = make_buf_channel_pair();
-        let drain_fut = async move {
-            while !rx.recv().await?.is_empty() {}
-            Ok(())
+        // Get a single loader instance that's used to populate the fast store
+        // for this digest.  If another request comes in then it's de-duplicated.
+        let loader = match self
+            .populating_digests
+            .lock()
+            .entry(key.borrow().into_owned())
+        {
+            std::collections::hash_map::Entry::Occupied(occupied_entry) => {
+                occupied_entry.get().clone()
+            }
+            std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert(Arc::new(OnceCell::new())).clone()
+            }
         };
-        let (drain_res, get_res) = join!(drain_fut, StoreDriver::get(Pin::new(self), key, tx));
-        get_res.err_tip(|| "Failed to populate()").merge(drain_res)
+        loader
+            .get_or_try_init(async move || {
+                // TODO(aaronmondal) This is extremely inefficient, since we are just trying
+                // to send the stream to /dev/null. Maybe we could instead make a version of
+                // the stream that can send to the drain more efficiently?
+                let (tx, mut rx) = make_buf_channel_pair();
+                let drain_fut = async move {
+                    while !rx.recv().await?.is_empty() {}
+                    Ok(())
+                };
+                let key_owned = key.borrow().into_owned();
+                let (drain_res, get_res) =
+                    join!(drain_fut, StoreDriver::get(Pin::new(self), key, tx));
+                // Now the store is populated, remove the loader.
+                self.populating_digests.lock().remove_entry(&key_owned);
+                get_res.err_tip(|| "Failed to populate()").merge(drain_res)
+            })
+            .await?;
+        Ok(())
     }
 
     /// Returns the range of bytes that should be sent given a slice bounds
