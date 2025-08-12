@@ -804,44 +804,46 @@ impl SchedulerStoreDecodeTo for TestSchedulerKey {
     }
 }
 
-// Define test index provider
-#[derive(Debug, Clone)]
-struct TestIndexProvider {
-    value: String,
-}
+// COMMENTED OUT FOR NOW BECAUSE IT IS UNUSED BUT MAY NEED TO RETURN
+// TODO(marcussorealheis)determine if we need to bring this back as a durable backup option
+// // Define test index provider
+// #[derive(Debug, Clone)]
+// struct TestIndexProvider {
+//     value: String,
+// }
 
-impl SchedulerIndexProvider for TestIndexProvider {
-    const KEY_PREFIX: &'static str = "test:";
-    const INDEX_NAME: &'static str = "test_index";
-    type Versioned = TrueValue;
+// impl SchedulerIndexProvider for TestIndexProvider {
+//     const KEY_PREFIX: &'static str = "test:";
+//     const INDEX_NAME: &'static str = "test_index";
+//     type Versioned = TrueValue;
 
-    fn index_value(&self) -> std::borrow::Cow<'_, str> {
-        std::borrow::Cow::Borrowed(&self.value)
-    }
-}
+//     fn index_value(&self) -> std::borrow::Cow<'_, str> {
+//         std::borrow::Cow::Borrowed(&self.value)
+//     }
+// }
 
-impl SchedulerStoreKeyProvider for TestIndexProvider {
-    type Versioned = TrueValue;
+// impl SchedulerStoreKeyProvider for TestIndexProvider {
+//     type Versioned = TrueValue;
 
-    fn get_key(&self) -> StoreKey<'static> {
-        StoreKey::Str(std::borrow::Cow::Owned(format!(
-            "{}indexed_key",
-            Self::KEY_PREFIX
-        )))
-    }
-}
+//     fn get_key(&self) -> StoreKey<'static> {
+//         StoreKey::Str(std::borrow::Cow::Owned(format!(
+//             "{}indexed_key",
+//             Self::KEY_PREFIX
+//         )))
+//     }
+// }
 
-impl SchedulerStoreDecodeTo for TestIndexProvider {
-    type DecodeOutput = (StoreKey<'static>, Bytes);
+// impl SchedulerStoreDecodeTo for TestIndexProvider {
+//     type DecodeOutput = (StoreKey<'static>, Bytes);
 
-    fn decode(_version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
-        // For search results, we just return the key and data
-        Ok((
-            StoreKey::Str(std::borrow::Cow::Owned("decoded_key".to_string())),
-            data,
-        ))
-    }
-}
+//     fn decode(_version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+//         // For search results, we just return the key and data
+//         Ok((
+//             StoreKey::Str(std::borrow::Cow::Owned("decoded_key".to_string())),
+//             data,
+//         ))
+//     }
+// }
 
 #[nativelink_test]
 async fn test_scheduler_store_operations() -> Result<(), Error> {
