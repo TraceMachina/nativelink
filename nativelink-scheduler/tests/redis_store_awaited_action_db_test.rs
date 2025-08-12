@@ -788,6 +788,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
 async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
     const CLIENT_OPERATION_ID_1: &str = "client_operation_id_1";
     const CLIENT_OPERATION_ID_2: &str = "client_operation_id_2";
+    const CLIENT_OPERATION_ID_3: &str = "client_operation_id_3";
     const WORKER_OPERATION_ID: &str = "worker_operation_id";
     const SUB_CHANNEL: &str = "sub_channel";
 
@@ -941,6 +942,28 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         .changed()
         .await
         .expect("No update to subscription");
+    assert_eq!(state.stage, ActionStage::Queued);
+
+    // Create and drop the worker three times to cause the job to complete with
+    // a failure.
+    for _ in 0..3 {
+        let rx_from_worker =
+            setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+        scheduler.do_try_match_for_test().await?;
+        drop(rx_from_worker);
+        scheduler.remove_worker(&worker_id).await?;
+    }
+
+    // Subscribe with a new operation ID after all that and we should be queued.
+    let subscription3 = scheduler
+        .add_action(CLIENT_OPERATION_ID_3.into(), action_info.clone())
+        .await
+        .unwrap();
+
+    let (state, _metadata) = subscription3
+        .as_state()
+        .await
+        .expect("Unable to get state of operation");
     assert_eq!(state.stage, ActionStage::Queued);
 
     Ok(())
