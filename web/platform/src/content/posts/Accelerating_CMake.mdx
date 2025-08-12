@@ -36,9 +36,10 @@ Your directory structure should look like this:
 ```
 first-project/
 ├── elements/
-│   ├── base/
-│   └── src/
+│   └── base/
+│
 └── files/
+    └── src/
 ```
 
 -----
@@ -160,11 +161,11 @@ config:
 
 -----
 
-###Configuring Nativelink for Remote Caching & Execution
+### Configuring Nativelink for Remote Caching & Execution
 
 With our project set up, it's time to bring in Nativelink to accelerate the build.
 
-####`buildstream.conf`
+#### `buildstream.conf`
 
 To tell BuildStream to use a remote execution service, create a `buildstream.conf` file in your project's root directory:
 
@@ -188,11 +189,11 @@ This configuration tells BuildStream to connect to a Nativelink instance running
 
 -----
 
-###Running the Build
+### Running the Build
 
 We'll use a script to launch the Nativelink service and then run the BuildStream build. The example below uses Nix to manage the dependencies, but you can adapt it to your environment.
 
-####Launch Script
+#### Launch Script
 
 Here is an example script, similar to `buildstream-with-nativelink-test.nix`, that shows how to run the build.
 
@@ -248,8 +249,8 @@ The first time you run the build, it will compile the code and store the result 
 
 -----
 
-###Conclusion
+### Conclusion
 
 You have now successfully set up a project with BuildStream and Nativelink for accelerated builds with code pulled directly from Nativelink's production [integration tests](https://github.com/TraceMachina/nativelink/tree/main/integration_tests/buildstream). By leveraging remote caching and execution, you can dramatically reduce build times, especially for larger and more complex projects. This allows you to iterate faster and stay in the creative flow. Finally, developers and managers alike can appreciate a developer productivity tool!
 
-If you have any questions or want to learn more, feel free to reach out to **contact@nativelink.com**. Happy building\! 🚀
+If you have any questions or want to learn more, feel free to reach out to **contact@nativelink.com** or get started on the [Nativelink Cloud](https://app.nativelink.com). Happy building\! 🚀
