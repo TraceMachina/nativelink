@@ -735,7 +735,7 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
 struct TestSchedulerData {
     key: String,
     content: String,
-    version: u64,
+    version: i64,
 }
 
 impl SchedulerStoreKeyProvider for TestSchedulerData {
@@ -764,7 +764,7 @@ impl SchedulerStoreDataProvider for TestSchedulerData {
 }
 
 impl SchedulerCurrentVersionProvider for TestSchedulerData {
-    fn current_version(&self) -> u64 {
+    fn current_version(&self) -> i64 {
         self.version
     }
 }
@@ -772,7 +772,7 @@ impl SchedulerCurrentVersionProvider for TestSchedulerData {
 impl SchedulerStoreDecodeTo for TestSchedulerData {
     type DecodeOutput = Self;
 
-    fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+    fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
         let content = String::from_utf8(data.to_vec())
             .map_err(|e| make_err!(Code::InvalidArgument, "Invalid UTF-8 data: {e}"))?;
         // We don't have the key in the data, so we'll use a placeholder
@@ -799,7 +799,7 @@ impl SchedulerStoreKeyProvider for TestSchedulerKey {
 impl SchedulerStoreDecodeTo for TestSchedulerKey {
     type DecodeOutput = TestSchedulerData;
 
-    fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+    fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
         TestSchedulerData::decode(version, data)
     }
 }
@@ -955,7 +955,7 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
         impl SchedulerStoreDecodeTo for SearchByContentPrefix {
             type DecodeOutput = TestSchedulerData;
 
-            fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+            fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
                 TestSchedulerKey::decode(version, data)
             }
         }
@@ -1024,7 +1024,7 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
         impl SchedulerStoreDecodeTo for SearchByTestIndex {
             type DecodeOutput = TestSchedulerData;
 
-            fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+            fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
                 TestSchedulerKey::decode(version, data)
             }
         }

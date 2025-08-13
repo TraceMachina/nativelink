@@ -239,7 +239,7 @@ where
     }
 }
 
-fn awaited_action_decode(version: u64, data: &Bytes) -> Result<AwaitedAction, Error> {
+fn awaited_action_decode(version: i64, data: &Bytes) -> Result<AwaitedAction, Error> {
     let mut awaited_action: AwaitedAction = serde_json::from_slice(data)
         .map_err(|e| make_input_err!("In AwaitedAction::decode - {e:?}"))?;
     awaited_action.set_version(version);
@@ -267,7 +267,7 @@ impl SchedulerStoreKeyProvider for OperationIdToAwaitedAction<'_> {
 }
 impl SchedulerStoreDecodeTo for OperationIdToAwaitedAction<'_> {
     type DecodeOutput = AwaitedAction;
-    fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+    fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
         awaited_action_decode(version, &data)
     }
 }
@@ -284,7 +284,7 @@ impl SchedulerStoreKeyProvider for ClientIdToOperationId<'_> {
 }
 impl SchedulerStoreDecodeTo for ClientIdToOperationId<'_> {
     type DecodeOutput = OperationId;
-    fn decode(_version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+    fn decode(_version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
         serde_json::from_slice(&data).map_err(|e| {
             make_input_err!(
                 "In ClientIdToOperationId::decode - {e:?} (data: {:02x?})",
@@ -307,7 +307,7 @@ impl SchedulerIndexProvider for SearchUniqueQualifierToAwaitedAction<'_> {
 }
 impl SchedulerStoreDecodeTo for SearchUniqueQualifierToAwaitedAction<'_> {
     type DecodeOutput = AwaitedAction;
-    fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+    fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
         awaited_action_decode(version, &data)
     }
 }
@@ -324,7 +324,7 @@ impl SchedulerIndexProvider for SearchStateToAwaitedAction {
 }
 impl SchedulerStoreDecodeTo for SearchStateToAwaitedAction {
     type DecodeOutput = AwaitedAction;
-    fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+    fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
         awaited_action_decode(version, &data)
     }
 }
@@ -340,7 +340,7 @@ const fn get_state_prefix(state: SortedAwaitedActionState) -> &'static str {
 
 struct UpdateOperationIdToAwaitedAction(AwaitedAction);
 impl SchedulerCurrentVersionProvider for UpdateOperationIdToAwaitedAction {
-    fn current_version(&self) -> u64 {
+    fn current_version(&self) -> i64 {
         self.0.version()
     }
 }

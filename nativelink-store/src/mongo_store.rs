@@ -855,7 +855,7 @@ impl SchedulerStore for ExperimentalMongoStore {
         }
     }
 
-    async fn update_data<T>(&self, data: T) -> Result<Option<u64>, Error>
+    async fn update_data<T>(&self, data: T) -> Result<Option<i64>, Error>
     where
         T: SchedulerStoreDataProvider
             + SchedulerStoreKeyProvider
@@ -905,7 +905,7 @@ impl SchedulerStore for ExperimentalMongoStore {
 
             let filter = doc! {
                 KEY_FIELD: encoded_key.as_ref(),
-                VERSION_FIELD: current_version as i64,
+                VERSION_FIELD: current_version,
             };
 
             match self
@@ -915,10 +915,7 @@ impl SchedulerStore for ExperimentalMongoStore {
                 .return_document(ReturnDocument::After)
                 .await
             {
-                Ok(Some(doc)) => {
-                    let new_version = doc.get_i64(VERSION_FIELD).unwrap_or(1) as u64;
-                    Ok(Some(new_version))
-                }
+                Ok(Some(doc)) => Ok(doc.get_i64(VERSION_FIELD).ok().or(Some(1i64))),
                 Ok(None) => Ok(None),
                 Err(e) => Err(make_err!(
                     Code::Internal,
@@ -1036,7 +1033,7 @@ impl SchedulerStore for ExperimentalMongoStore {
             };
 
             let version = if <K as SchedulerIndexProvider>::Versioned::VALUE {
-                doc.get_i64(VERSION_FIELD).unwrap_or(0) as u64
+                doc.get_i64(VERSION_FIELD).unwrap_or(0)
             } else {
                 0
             };
@@ -1082,7 +1079,7 @@ impl SchedulerStore for ExperimentalMongoStore {
         };
 
         let version = if <K as SchedulerStoreKeyProvider>::Versioned::VALUE {
-            doc.get_i64(VERSION_FIELD).unwrap_or(0) as u64
+            doc.get_i64(VERSION_FIELD).unwrap_or(0)
         } else {
             0
         };

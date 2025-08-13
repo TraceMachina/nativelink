@@ -1055,7 +1055,7 @@ impl SchedulerStore for RedisStore {
         }
     }
 
-    async fn update_data<T>(&self, data: T) -> Result<Option<u64>, Error>
+    async fn update_data<T>(&self, data: T) -> Result<Option<i64>, Error>
     where
         T: SchedulerStoreDataProvider
             + SchedulerStoreKeyProvider
@@ -1080,7 +1080,7 @@ impl SchedulerStore for RedisStore {
                 argv.push(Bytes::from_static(name.as_bytes()));
                 argv.push(value);
             }
-            let (success, new_version): (bool, u64) = self
+            let (success, new_version): (bool, i64) = self
                 .update_if_version_matches_script
                 .evalsha_with_reload(client, vec![key.as_ref()], argv)
                 .await
@@ -1249,7 +1249,7 @@ impl SchedulerStore for RedisStore {
                 redis_map
                     .remove(&RedisKey::from_static_str(VERSION_FIELD_NAME))
                     .err_tip(|| "Missing version field in RedisStore::search_by_index_prefix")?
-                    .as_u64()
+                    .as_i64()
                     .err_tip(|| {
                         formatcp!("'{VERSION_FIELD_NAME}' is not u64 in RedisStore::search_by_index_prefix::as_u64")
                     })?
@@ -1272,7 +1272,7 @@ impl SchedulerStore for RedisStore {
         let key = self.encode_key(&key);
         let client = self.get_client().await?;
         let (maybe_version, maybe_data) = client
-            .hmget::<(Option<u64>, Option<Bytes>), _, _>(
+            .hmget::<(Option<i64>, Option<Bytes>), _, _>(
                 key.as_ref(),
                 vec![
                     RedisKey::from(VERSION_FIELD_NAME),
