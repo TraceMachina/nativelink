@@ -303,6 +303,18 @@ async fn upload_file(
     // times in the output with different names.
     digest_uploader
         .get_or_try_init(async || {
+            // Only upload if the digest doesn't already exist, this should be
+            // a much cheaper operation than an upload.
+            let cas_store = cas_store.as_store_driver_pin();
+            let store_key: nativelink_util::store_trait::StoreKey<'_> = digest.into();
+            if cas_store
+                .has(store_key.borrow())
+                .await
+                .is_ok_and(|result| result.is_some())
+            {
+                return Ok(());
+            }
+
             file.rewind().await.err_tip(|| "Could not rewind file")?;
 
             // Note: For unknown reasons we appear to be hitting:
@@ -310,9 +322,8 @@ async fn upload_file(
             // or a smiliar issue if we try to use the non-store driver function, so we
             // are using the store driver function here.
             cas_store
-                .as_store_driver_pin()
                 .update_with_whole_file(
-                    digest.into(),
+                    store_key,
                     full_path.as_ref().into(),
                     file,
                     UploadSizeInfo::ExactSize(digest.size_bytes()),
