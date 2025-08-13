@@ -29,6 +29,7 @@ use nativelink_util::operation_state_manager::{
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
 use nativelink_util::origin_event::OriginMetadata;
+use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::KeyValue;
@@ -539,6 +540,10 @@ impl WorkerScheduler for SimpleScheduler {
 
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
         self.worker_scheduler.remove_worker(worker_id).await
+    }
+
+    async fn shutdown(&self, shutdown_guard: ShutdownGuard) {
+        self.worker_scheduler.shutdown(shutdown_guard).await;
     }
 
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {

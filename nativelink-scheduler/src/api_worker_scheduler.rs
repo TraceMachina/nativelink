@@ -27,6 +27,7 @@ use nativelink_metric::{
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::platform_properties::PlatformProperties;
+use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::Notify;
@@ -592,6 +593,27 @@ impl WorkerScheduler for ApiWorkerScheduler {
                 false,
             )
             .await
+    }
+
+    async fn shutdown(&self, shutdown_guard: ShutdownGuard) {
+        let mut inner = self.inner.lock().await;
+        while let Some(worker_id) = inner
+            .workers
+            .peek_lru()
+            .map(|(worker_id, _worker)| worker_id.clone())
+        {
+            if let Err(err) = inner
+                .immediate_evict_worker(
+                    &worker_id,
+                    make_err!(Code::Internal, "Scheduler shutdown"),
+                    true,
+                )
+                .await
+            {
+                error!(?err, "Error evicting worker on shutdown.");
+            }
+        }
+        drop(shutdown_guard);
     }
 
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
