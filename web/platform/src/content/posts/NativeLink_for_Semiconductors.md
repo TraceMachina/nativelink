@@ -4,7 +4,7 @@ tags: ["news", "blog-posts"]
 image: https://www.gstatic.com/webp/gallery/4.sm.webp
 slug: semiconductors
 pubDate: 2024-12-04
-readTime: 2 minutes
+readTime: 4 minutes
 ---
 ## Open Source: Enabling the Performance and Deterministic Builds for the Next Era of Semiconductor Innovation
 

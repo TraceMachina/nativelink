@@ -27,12 +27,13 @@ LLM
 LLMs
 LLVM
 Machina
+Makefile
 [Mm]etamaterials
 [Mm]onorepo
 Nvidia
 NVMe
 hello@nativelink.com
-Native[Ll]ink
+[Nn]ative[Ll]ink
 [Nn]anophotonic
 OCI
 onboarding

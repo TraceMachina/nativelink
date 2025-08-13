@@ -190,6 +190,13 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
         let mut add_future_rx = UnboundedReceiverStream::new(add_future_rx).fuse();
 
         let mut update_for_worker_stream = update_for_worker_stream.fuse();
+        // A notify which is triggered every time actions_in_flight is subtracted.
+        let actions_notify = Arc::new(tokio::sync::Notify::new());
+        // A counter of actions that are in-flight, this is similar to actions_in_transit but
+        // includes the AC upload and notification to the scheduler.
+        let actions_in_flight = Arc::new(AtomicU64::new(0));
+        // Set to true when shutting down, this stops any new StartAction.
+        let mut shutting_down = false;
 
         loop {
             select! {
@@ -223,6 +230,21 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             }
                         }
                         Update::StartAction(start_execute) => {
+                            // Don't accept any new requests if we're shutting down.
+                            if shutting_down {
+                                if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
+                                    self.grpc_client.clone().execution_response(
+                                        ExecuteResult{
+                                            worker_id: self.worker_id.clone(),
+                                            instance_name,
+                                            operation_id: start_execute.operation_id,
+                                            result: Some(execute_result::Result::InternalError(make_err!(Code::ResourceExhausted, "Worker shutting down").into())),
+                                        }
+                                    ).await?;
+                                }
+                                continue;
+                            }
+
                             self.metrics.start_actions_received.inc();
 
                             let execute_request = start_execute.execute_request.as_ref();
@@ -316,7 +338,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             };
 
                             self.actions_in_transit.fetch_add(1, Ordering::Release);
-                            let futures_ref = &futures;
 
                             let add_future_channel = add_future_channel.clone();
 
@@ -327,16 +348,32 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 let _guard = Context::current_with_value(digest_hasher)
                                     .attach();
 
-                                futures_ref.push(
+                                let actions_in_flight = actions_in_flight.clone();
+                                let actions_notify = actions_notify.clone();
+                                let actions_in_flight_fail = actions_in_flight.clone();
+                                let actions_notify_fail = actions_notify.clone();
+                                actions_in_flight.fetch_add(1, Ordering::Release);
+
+                                futures.push(
                                     spawn!("worker_start_action", start_action_fut).map(move |res| {
                                         let res = res.err_tip(|| "Failed to launch spawn")?;
                                         if let Err(err) = &res {
                                             error!(?err, "Error executing action");
                                         }
                                         add_future_channel
-                                            .send(make_publish_future(res).boxed())
+                                            .send(make_publish_future(res).then(move |res| {
+                                                actions_in_flight.fetch_sub(1, Ordering::Release);
+                                                actions_notify.notify_one();
+                                                core::future::ready(res)
+                                            }).boxed())
                                             .map_err(|_| make_err!(Code::Internal, "LocalWorker could not send future"))?;
                                         Ok(())
+                                    })
+                                    .or_else(move |err| {
+                                        // If the make_publish_future is not run we still need to notify.
+                                        actions_in_flight_fail.fetch_sub(1, Ordering::Release);
+                                        actions_notify_fail.notify_one();
+                                        core::future::ready(Err(err))
                                     })
                                     .boxed()
                                 );
@@ -350,20 +387,29 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                 },
                 res = futures.next() => res.err_tip(|| "Keep-alive should always pending. Likely unable to send data to scheduler")??,
                 complete_msg = shutdown_rx.recv().fuse() => {
-                    warn!("Worker loop reveiced shutdown signal. Shutting down worker...",);
+                    warn!("Worker loop received shutdown signal. Shutting down worker...",);
                     let mut grpc_client = self.grpc_client.clone();
                     let worker_id = self.worker_id.clone();
-                    let running_actions_manager = self.running_actions_manager.clone();
-                    let complete_msg_clone = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?.clone();
+                    let shutdown_guard = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?;
+                    let actions_in_flight = actions_in_flight.clone();
+                    let actions_notify = actions_notify.clone();
                     let shutdown_future = async move {
+                        // Wait for in-flight operations to be fully completed.
+                        while actions_in_flight.load(Ordering::Acquire) > 0 {
+                            actions_notify.notified().await;
+                        }
+                        // Sending this message immediately evicts all jobs from
+                        // this worker, of which there should be none.
                         if let Err(e) = grpc_client.going_away(GoingAwayRequest { worker_id }).await {
                             error!("Failed to send GoingAwayRequest: {e}",);
                             return Err(e.into());
                         }
-                        running_actions_manager.complete_actions(complete_msg_clone).await;
+                        // Allow shutdown to occur now.
+                        drop(shutdown_guard);
                         Ok::<(), Error>(())
                     };
                     futures.push(shutdown_future.boxed());
+                    shutting_down = true;
                 },
             };
         }

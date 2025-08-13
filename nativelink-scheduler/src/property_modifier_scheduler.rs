@@ -109,7 +109,7 @@ impl PropertyModifierScheduler {
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream, Error> {
+    ) -> Result<ActionStateResultStream<'_>, Error> {
         self.scheduler.filter_operations(filter).await
     }
 }

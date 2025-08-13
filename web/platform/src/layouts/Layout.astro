@@ -6,11 +6,12 @@ import ClientRouter from "astro/components/ClientRouter.astro";
 import { ScrollTracker } from "@qwik/components/scroll";
 import { Header } from "@qwik/components/header";
 import { Footer } from "@qwik/components/footer";
+import { BookBanner } from "@qwik/components/book-banner.tsx";
 import GoogleTagManager from "../thirdParty/GoogleTagManager.astro";
 
 const { title } = Astro.props;
 
-const scrolled = false;
+const scrolled = true;
 ---
 
 <!doctype html>
@@ -68,6 +69,7 @@ const scrolled = false;
     <ClientRouter />
   </head>
   <body class="bg-black w-screen">
+    <BookBanner client:load />
     <ScrollTracker scrolled={scrolled} />
     <Header pathName={Astro.url.pathname} />
     <slot />

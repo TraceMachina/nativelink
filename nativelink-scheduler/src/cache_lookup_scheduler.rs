@@ -350,7 +350,7 @@ impl CacheLookupScheduler {
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream, Error> {
+    ) -> Result<ActionStateResultStream<'_>, Error> {
         self.action_scheduler
             .filter_operations(filter)
             .await
