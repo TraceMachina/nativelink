@@ -273,10 +273,14 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
-    // Now the RunningAction needs to send a series of state updates. This shortcuts them
-    // into a single call (shortcut for prepare, execute, upload, collect_results, cleanup).
+    // Now the RunningAction needs to send a series of state updates.
+    running_action.simple_expect_prepare_and_execute().await?;
+    test_context
+        .client
+        .expect_execution_complete(Ok(Response::new(())))
+        .await;
     running_action
-        .simple_expect_get_finished_result(Ok(ActionResult::default()))
+        .simple_expect_upload_and_complete(Ok(ActionResult::default()))
         .await?;
 
     // Expect the action to be updated in the action cache.
@@ -387,10 +391,14 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
-    // Now the RunningAction needs to send a series of state updates. This shortcuts them
-    // into a single call (shortcut for prepare, execute, upload, collect_results, cleanup).
+    // Now the RunningAction needs to send a series of state updates.
+    running_action.simple_expect_prepare_and_execute().await?;
+    test_context
+        .client
+        .expect_execution_complete(Ok(Response::new(())))
+        .await;
     running_action
-        .simple_expect_get_finished_result(Ok(action_result.clone()))
+        .simple_expect_upload_and_complete(Ok(action_result.clone()))
         .await?;
 
     // Expect the action to be updated in the action cache.

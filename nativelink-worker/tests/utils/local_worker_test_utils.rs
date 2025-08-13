@@ -21,7 +21,8 @@ use hyper::body::Frame;
 use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
 use nativelink_error::Error;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
+    ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
+    UpdateForWorker,
 };
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -53,6 +54,7 @@ const BROADCAST_CAPACITY: usize = 1;
 enum WorkerClientApiCalls {
     ConnectWorker(ConnectWorkerRequest),
     ExecutionResponse(ExecuteResult),
+    ExecutionComplete(ExecuteComplete),
 }
 
 #[derive(Debug)]
@@ -63,6 +65,7 @@ enum WorkerClientApiCalls {
 enum WorkerClientApiReturns {
     ConnectWorker(Result<Response<Streaming<UpdateForWorker>>, Status>),
     ExecutionResponse(Result<Response<()>, Status>),
+    ExecutionComplete(Result<Response<()>, Status>),
 }
 
 #[derive(Clone)]
@@ -104,7 +107,7 @@ impl MockWorkerApiClient {
             .expect("Could not receive msg in mpsc")
         {
             WorkerClientApiCalls::ConnectWorker(req) => req,
-            req @ WorkerClientApiCalls::ExecutionResponse(_) => {
+            req => {
                 panic!("expect_connect_worker expected ConnectWorker, got : {req:?}")
             }
         };
@@ -125,12 +128,33 @@ impl MockWorkerApiClient {
             .expect("Could not receive msg in mpsc")
         {
             WorkerClientApiCalls::ExecutionResponse(req) => req,
-            req @ WorkerClientApiCalls::ConnectWorker(_) => {
+            req => {
                 panic!("expect_execution_response expected ExecutionResponse, got : {req:?}")
             }
         };
         self.tx_resp
             .send(WorkerClientApiReturns::ExecutionResponse(result))
+            .expect("Could not send request to mpsc");
+        req
+    }
+
+    pub(crate) async fn expect_execution_complete(
+        &self,
+        result: Result<Response<()>, Status>,
+    ) -> ExecuteComplete {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        let req = match rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerClientApiCalls::ExecutionComplete(req) => req,
+            req => {
+                panic!("expect_execution_complete expected ExecutionComplete, got : {req:?}")
+            }
+        };
+        self.tx_resp
+            .send(WorkerClientApiReturns::ExecutionComplete(result))
             .expect("Could not send request to mpsc");
         req
     }
@@ -151,7 +175,7 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
             .expect("Could not receive msg in mpsc")
         {
             WorkerClientApiReturns::ConnectWorker(result) => result,
-            resp @ WorkerClientApiReturns::ExecutionResponse(_) => {
+            resp => {
                 panic!("connect_worker expected ConnectWorker response, received {resp:?}")
             }
         }
@@ -176,7 +200,27 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
             .expect("Could not receive msg in mpsc")
         {
             WorkerClientApiReturns::ExecutionResponse(result) => result,
-            resp @ WorkerClientApiReturns::ConnectWorker(_) => {
+            resp => {
+                panic!("execution_response expected ExecutionResponse response, received {resp:?}")
+            }
+        }
+    }
+
+    async fn execution_complete(
+        &mut self,
+        request: ExecuteComplete,
+    ) -> Result<Response<()>, Status> {
+        self.tx_call
+            .send(WorkerClientApiCalls::ExecutionComplete(request))
+            .expect("Could not send request to mpsc");
+        let mut rx_resp_lock = self.rx_resp.lock().await;
+        match rx_resp_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerClientApiReturns::ExecutionComplete(result) => result,
+            resp => {
                 panic!("execution_response expected ExecutionResponse response, received {resp:?}")
             }
         }
