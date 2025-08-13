@@ -240,6 +240,7 @@ impl ApiWorkerSchedulerImpl {
             UpdateOperationType::UpdateWithError(err) => {
                 (true, err.code == Code::ResourceExhausted)
             }
+            UpdateOperationType::UpdateWithDisconnect => (true, false),
         };
 
         // Update the operation in the worker state manager.
@@ -354,7 +355,7 @@ impl ApiWorkerSchedulerImpl {
                 .notify_update(WorkerUpdate::RunAction((operation_id, action_info.clone())))
                 .await;
 
-            if notify_worker_result.is_err() {
+            if let Err(notify_worker_result) = notify_worker_result {
                 warn!(
                     ?worker_id,
                     ?action_info,
@@ -362,13 +363,22 @@ impl ApiWorkerSchedulerImpl {
                     "Worker command failed, removing worker",
                 );
 
+                // A slightly nasty way of figuring out that the worker disconnected
+                // from send_msg_to_worker without introducing complexity to the
+                // code path from here to there.
+                let is_disconnect = notify_worker_result.code == Code::Internal
+                    && notify_worker_result.messages.len() == 1
+                    && notify_worker_result.messages[0] == "Worker Disconnected";
+
                 let err = make_err!(
                     Code::Internal,
                     "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
                 );
 
-                return Result::<(), _>::Err(err.clone())
-                    .merge(self.immediate_evict_worker(&worker_id, err).await);
+                return Result::<(), _>::Err(err.clone()).merge(
+                    self.immediate_evict_worker(&worker_id, err, is_disconnect)
+                        .await,
+                );
             }
         } else {
             warn!(
@@ -386,19 +396,21 @@ impl ApiWorkerSchedulerImpl {
         &mut self,
         worker_id: &WorkerId,
         err: Error,
+        is_disconnect: bool,
     ) -> Result<(), Error> {
         let mut result = Ok(());
         if let Some(mut worker) = self.remove_worker(worker_id) {
             // We don't care if we fail to send message to worker, this is only a best attempt.
             drop(worker.notify_update(WorkerUpdate::Disconnect).await);
+            let update = if is_disconnect {
+                UpdateOperationType::UpdateWithDisconnect
+            } else {
+                UpdateOperationType::UpdateWithError(err)
+            };
             for (operation_id, _) in worker.running_action_infos.drain() {
                 result = result.merge(
                     self.worker_state_manager
-                        .update_operation(
-                            &operation_id,
-                            worker_id,
-                            UpdateOperationType::UpdateWithError(err.clone()),
-                        )
+                        .update_operation(&operation_id, worker_id, update.clone())
                         .await,
                 );
             }
@@ -536,7 +548,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
             .err_tip(|| "Error while adding worker, removing from pool");
         if let Err(err) = result {
             return Result::<(), _>::Err(err.clone())
-                .merge(inner.immediate_evict_worker(&worker_id, err).await);
+                .merge(inner.immediate_evict_worker(&worker_id, err, false).await);
         }
         Ok(())
     }
@@ -577,6 +589,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
             .immediate_evict_worker(
                 worker_id,
                 make_err!(Code::Internal, "Received request to remove worker"),
+                false,
             )
             .await
     }
@@ -609,6 +622,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
                             Code::Internal,
                             "Worker {worker_id} timed out, removing from pool"
                         ),
+                        false,
                     )
                     .await,
             );

@@ -186,5 +186,6 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + Unpin + 'static {
         &self,
         client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
     ) -> impl Future<Output = Result<Self::Subscriber, Error>> + Send;
 }

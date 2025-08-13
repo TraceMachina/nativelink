@@ -566,6 +566,7 @@ where
                         ActionStage::Queued
                     }
                 }
+                UpdateOperationType::UpdateWithDisconnect => ActionStage::Queued,
             };
             let now = (self.now_fn)().now();
             if matches!(stage, ActionStage::Queued) {
@@ -619,7 +620,11 @@ where
         action_info: Arc<ActionInfo>,
     ) -> Result<T::Subscriber, Error> {
         self.action_db
-            .add_action(new_client_operation_id, action_info)
+            .add_action(
+                new_client_operation_id,
+                action_info,
+                self.no_event_action_timeout,
+            )
             .await
             .err_tip(|| "In SimpleSchedulerStateManager::add_operation")
     }

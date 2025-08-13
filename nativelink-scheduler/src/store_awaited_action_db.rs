@@ -17,6 +17,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::sync::{Arc, Weak};
+use std::time::SystemTime;
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
@@ -492,74 +493,69 @@ where
         &self,
         client_operation_id: &ClientOperationId,
         unique_qualifier: &ActionUniqueQualifier,
+        no_event_action_timeout: Duration,
         // TODO(aaronmondal) To simplify the scheduler 2024 refactor, we
         // removed the ability to upgrade priorities of actions.
         // we should add priority upgrades back in.
         _priority: i32,
-    ) -> Result<Option<OperationSubscriber<S, I, NowFn>>, Error> {
+    ) -> Result<Option<AwaitedAction>, Error> {
         match unique_qualifier {
             ActionUniqueQualifier::Cacheable(_) => {}
             ActionUniqueQualifier::Uncacheable(_) => return Ok(None),
         }
-        loop {
-            let stream = self
-                .store
-                .search_by_index_prefix(SearchUniqueQualifierToAwaitedAction(unique_qualifier))
-                .await
-                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
-            tokio::pin!(stream);
-            let maybe_awaited_action = stream
-                .try_next()
-                .await
-                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
-            match maybe_awaited_action {
-                Some(awaited_action) => {
-                    // TODO(aaronmondal) We don't support joining completed jobs because we
-                    // need to also check that all the data is still in the cache.
-                    // If the existing job failed then we need to set back to queued or we get
-                    // a version mismatch.
-                    let mut awaited_action = if awaited_action.state().stage.is_finished() {
-                        let mut new_awaited_action = AwaitedAction::new(
-                            (self.operation_id_creator)(),
-                            awaited_action.action_info().clone(),
-                            (self.now_fn)().now(),
-                        );
-                        new_awaited_action.set_version(awaited_action.version());
-                        new_awaited_action
-                    } else {
+        let stream = self
+            .store
+            .search_by_index_prefix(SearchUniqueQualifierToAwaitedAction(unique_qualifier))
+            .await
+            .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+        tokio::pin!(stream);
+        let maybe_awaited_action = stream
+            .try_next()
+            .await
+            .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+        match maybe_awaited_action {
+            Some(awaited_action) => {
+                // TODO(aaronmondal) We don't support joining completed jobs because we
+                // need to also check that all the data is still in the cache.
+                // If the existing job failed then we need to set back to queued or we get
+                // a version mismatch.  Equally we need to check the timeout as the job
+                // may be abandoned in the store.
+                let worker_should_update_before = (awaited_action.state().stage
+                    == ActionStage::Executing)
+                    .then_some(())
+                    .and_then(|()| {
                         awaited_action
-                    };
-                    let operation_id = awaited_action.operation_id().clone();
-
-                    awaited_action.update_client_keep_alive((self.now_fn)().now());
-                    if inner_update_awaited_action(self.store.as_ref(), awaited_action)
-                        .await
-                        .is_err()
-                    {
-                        // The version was out of date, try again.
-                        continue;
-                    }
-
-                    // Add the client_operation_id to operation_id mapping
-                    self.store
-                        .update_data(UpdateClientIdToOperationId {
-                            client_operation_id: client_operation_id.clone(),
-                            operation_id: operation_id.clone(),
-                        })
-                        .await
-                        .err_tip(
-                            || "In RedisAwaitedActionDb::try_subscribe while adding client mapping",
-                        )?;
-
-                    return Ok(Some(OperationSubscriber::new(
-                        Some(client_operation_id.clone()),
-                        OperationIdToAwaitedAction(Cow::Owned(operation_id)),
-                        Arc::downgrade(&self.store),
-                        self.now_fn.clone(),
-                    )));
-                }
-                None => return Ok(None),
+                            .last_worker_updated_timestamp()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .ok()
+                    })
+                    .and_then(|last_worker_updated| {
+                        last_worker_updated.checked_add(no_event_action_timeout)
+                    });
+                let awaited_action = if awaited_action.state().stage.is_finished()
+                    || worker_should_update_before
+                        .is_some_and(|timestamp| timestamp >= (self.now_fn)().elapsed())
+                {
+                    tracing::debug!(
+                        "Recreating action {:?} for operation {client_operation_id}",
+                        awaited_action.action_info().digest()
+                    );
+                    // The version is reset because we have a new operation ID.
+                    AwaitedAction::new(
+                        (self.operation_id_creator)(),
+                        awaited_action.action_info().clone(),
+                        (self.now_fn)().now(),
+                    )
+                } else {
+                    tracing::debug!(
+                        "Subscribing to existing action {:?} for operation {client_operation_id}",
+                        awaited_action.action_info().digest()
+                    );
+                    awaited_action
+                };
+                Ok(Some(awaited_action))
             }
+            None => Ok(None),
         }
     }
 
@@ -622,52 +618,76 @@ where
         &self,
         client_operation_id: ClientOperationId,
         action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
     ) -> Result<Self::Subscriber, Error> {
-        // Check to see if the action is already known and subscribe if it is.
-        let subscription = self
-            .try_subscribe(
-                &client_operation_id,
-                &action_info.unique_qualifier,
-                action_info.priority,
-            )
-            .await
-            .err_tip(|| "In RedisAwaitedActionDb::add_action")?;
-        if let Some(sub) = subscription {
-            return Ok(sub);
+        loop {
+            // Check to see if the action is already known and subscribe if it is.
+            let mut awaited_action = self
+                .try_subscribe(
+                    &client_operation_id,
+                    &action_info.unique_qualifier,
+                    no_event_action_timeout,
+                    action_info.priority,
+                )
+                .await
+                .err_tip(|| "In RedisAwaitedActionDb::add_action")?
+                .unwrap_or_else(|| {
+                    tracing::debug!(
+                        "Creating new action {:?} for operation {client_operation_id}",
+                        action_info.digest()
+                    );
+                    AwaitedAction::new(
+                        (self.operation_id_creator)(),
+                        action_info.clone(),
+                        (self.now_fn)().now(),
+                    )
+                });
+
+            debug_assert!(
+                ActionStage::Queued == awaited_action.state().stage,
+                "Expected action to be queued"
+            );
+
+            let operation_id = awaited_action.operation_id().clone();
+            if awaited_action.state().client_operation_id != operation_id {
+                // Just in case the client_operation_id was set to something else
+                // we put it back to the underlying operation_id.
+                awaited_action.set_client_operation_id(operation_id.clone());
+            }
+            awaited_action.update_client_keep_alive((self.now_fn)().now());
+
+            let version = awaited_action.version();
+            if self
+                .store
+                .update_data(UpdateOperationIdToAwaitedAction(awaited_action))
+                .await
+                .err_tip(|| "In RedisAwaitedActionDb::update_awaited_action")?
+                .is_none()
+            {
+                // The version was out of date, try again.
+                tracing::debug!(
+                    "Version out of date for {:?} {operation_id} {version}, retrying.",
+                    action_info.digest()
+                );
+                continue;
+            }
+
+            // Add the client_operation_id to operation_id mapping
+            self.store
+                .update_data(UpdateClientIdToOperationId {
+                    client_operation_id: client_operation_id.clone(),
+                    operation_id: operation_id.clone(),
+                })
+                .await
+                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe while adding client mapping")?;
+
+            return Ok(OperationSubscriber::new(
+                Some(client_operation_id),
+                OperationIdToAwaitedAction(Cow::Owned(operation_id)),
+                Arc::downgrade(&self.store),
+                self.now_fn.clone(),
+            ));
         }
-
-        let new_operation_id = (self.operation_id_creator)();
-        let awaited_action =
-            AwaitedAction::new(new_operation_id.clone(), action_info, (self.now_fn)().now());
-        debug_assert!(
-            ActionStage::Queued == awaited_action.state().stage,
-            "Expected action to be queued"
-        );
-
-        // Note: Version is not needed with this api.
-        let _version = self
-            .store
-            .update_data(UpdateOperationIdToAwaitedAction(awaited_action))
-            .await
-            .err_tip(|| "In RedisAwaitedActionDb::add_action")?
-            .err_tip(
-                || "Version match failed for new action insert in RedisAwaitedActionDb::add_action",
-            )?;
-
-        self.store
-            .update_data(UpdateClientIdToOperationId {
-                client_operation_id: client_operation_id.clone(),
-                operation_id: new_operation_id.clone(),
-            })
-            .await
-            .err_tip(|| "In RedisAwaitedActionDb::add_action")?;
-
-        Ok(OperationSubscriber::new(
-            Some(client_operation_id),
-            OperationIdToAwaitedAction(Cow::Owned(new_operation_id)),
-            Arc::downgrade(&self.store),
-            self.now_fn.clone(),
-        ))
     }
 
     async fn get_range_of_actions(

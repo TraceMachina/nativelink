@@ -705,7 +705,7 @@ local indexes = {{}}
 
 if new_version-1 ~= expected_version then
     redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', -1)
-    return 0
+    return {{ 0, new_version-1 }}
 end
 -- Skip first 2 argvs, as they are known inputs.
 -- Remember: Lua is 1-indexed.
@@ -719,7 +719,7 @@ end
 redis.call('DEL', key)
 redis.call('HSET', key, '{DATA_FIELD_NAME}', new_data, '{VERSION_FIELD_NAME}', new_version, unpack(indexes))
 
-return new_version
+return {{ 1, new_version }}
 "
 );
 
@@ -1080,12 +1080,15 @@ impl SchedulerStore for RedisStore {
                 argv.push(Bytes::from_static(name.as_bytes()));
                 argv.push(value);
             }
-            let new_version = self
+            let (success, new_version): (bool, u64) = self
                 .update_if_version_matches_script
-                .evalsha_with_reload::<u64, _, Vec<Bytes>>(client, vec![key.as_ref()], argv)
+                .evalsha_with_reload(client, vec![key.as_ref()], argv)
                 .await
                 .err_tip(|| format!("In RedisStore::update_data::versioned for {key:?}"))?;
-            if new_version == 0 {
+            if !success {
+                tracing::info!(
+                    "Error updating Redis key {key} expected version {current_version} but found {new_version}"
+                );
                 return Ok(None);
             }
             // If we have a publish channel configured, send a notice that the key has been set.

@@ -975,6 +975,7 @@ impl AwaitedActionDb for RxMockAwaitedAction {
         &self,
         _client_operation_id: OperationId,
         _action_info: Arc<ActionInfo>,
+        _no_event_action_timeout: Duration,
     ) -> Result<Self::Subscriber, Error> {
         unreachable!();
     }
