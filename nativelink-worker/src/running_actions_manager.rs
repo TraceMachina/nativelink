@@ -64,7 +64,6 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
-use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
@@ -272,12 +271,14 @@ fn is_executable(metadata: &std::fs::Metadata, _full_path: &impl AsRef<Path>) ->
     (metadata.mode() & 0o111) != 0
 }
 
-#[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
+type DigestUploader = Arc<tokio::sync::OnceCell<()>>;
+
 async fn upload_file(
     cas_store: Pin<&impl StoreLike>,
-    full_path: impl AsRef<Path> + Debug,
+    full_path: impl AsRef<Path> + Debug + Send + Sync,
     hasher: DigestHasherFunc,
     metadata: std::fs::Metadata,
+    digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
 ) -> Result<FileInfo, Error> {
     let is_executable = is_executable(&metadata, &full_path);
     let file_size = metadata.len();
@@ -291,20 +292,45 @@ async fn upload_file(
         .await
         .err_tip(|| format!("Failed to hash file in digest_for_file failed for {full_path:?}"))?;
 
-    file.rewind().await.err_tip(|| "Could not rewind file")?;
+    let digest_uploader = match digest_uploaders.lock().entry(digest) {
+        std::collections::hash_map::Entry::Occupied(occupied_entry) => occupied_entry.get().clone(),
+        std::collections::hash_map::Entry::Vacant(vacant_entry) => vacant_entry
+            .insert(Arc::new(tokio::sync::OnceCell::new()))
+            .clone(),
+    };
 
-    // Note: For unknown reasons we appear to be hitting:
-    // https://github.com/rust-lang/rust/issues/92096
-    // or a smiliar issue if we try to use the non-store driver function, so we
-    // are using the store driver function here.
-    cas_store
-        .as_store_driver_pin()
-        .update_with_whole_file(
-            digest.into(),
-            full_path.as_ref().into(),
-            file,
-            UploadSizeInfo::ExactSize(digest.size_bytes()),
-        )
+    // Only upload a file with a given hash once.  The file may exist multiple
+    // times in the output with different names.
+    digest_uploader
+        .get_or_try_init(async || {
+            // Only upload if the digest doesn't already exist, this should be
+            // a much cheaper operation than an upload.
+            let cas_store = cas_store.as_store_driver_pin();
+            let store_key: nativelink_util::store_trait::StoreKey<'_> = digest.into();
+            if cas_store
+                .has(store_key.borrow())
+                .await
+                .is_ok_and(|result| result.is_some())
+            {
+                return Ok(());
+            }
+
+            file.rewind().await.err_tip(|| "Could not rewind file")?;
+
+            // Note: For unknown reasons we appear to be hitting:
+            // https://github.com/rust-lang/rust/issues/92096
+            // or a smiliar issue if we try to use the non-store driver function, so we
+            // are using the store driver function here.
+            cas_store
+                .update_with_whole_file(
+                    store_key,
+                    full_path.as_ref().into(),
+                    file,
+                    UploadSizeInfo::ExactSize(digest.size_bytes()),
+                )
+                .await
+                .map(|_slot| ())
+        })
         .await
         .err_tip(|| format!("for {full_path:?}"))?;
 
@@ -385,6 +411,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
     full_dir_path: P,
     full_work_directory: &'a str,
     hasher: DigestHasherFunc,
+    digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
 ) -> BoxFuture<'a, Result<(Directory, VecDeque<ProtoDirectory>), Error>> {
     Box::pin(async move {
         let file_futures = FuturesUnordered::new();
@@ -410,47 +437,51 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                 if file_type.is_dir() {
                     let full_dir_path = full_dir_path.clone();
                     dir_futures.push(
-                        upload_directory(cas_store, full_path.clone(), full_work_directory, hasher)
-                            .and_then(|(dir, all_dirs)| async move {
-                                let directory_name = full_path
-                                    .file_name()
-                                    .err_tip(|| {
-                                        format!("Expected file_name to exist on {full_dir_path:?}")
-                                    })?
-                                    .to_str()
-                                    .err_tip(|| {
-                                        make_err!(
-                                            Code::Internal,
-                                            "Could not convert {:?} to string",
-                                            full_dir_path
-                                        )
-                                    })?
-                                    .to_string();
+                        upload_directory(
+                            cas_store,
+                            full_path.clone(),
+                            full_work_directory,
+                            hasher,
+                            digest_uploaders.clone(),
+                        )
+                        .and_then(|(dir, all_dirs)| async move {
+                            let directory_name = full_path
+                                .file_name()
+                                .err_tip(|| {
+                                    format!("Expected file_name to exist on {full_dir_path:?}")
+                                })?
+                                .to_str()
+                                .err_tip(|| {
+                                    make_err!(
+                                        Code::Internal,
+                                        "Could not convert {:?} to string",
+                                        full_dir_path
+                                    )
+                                })?
+                                .to_string();
 
-                                let digest = serialize_and_upload_message(
-                                    &dir,
-                                    cas_store,
-                                    &mut hasher.hasher(),
-                                )
-                                .await
-                                .err_tip(|| format!("for {}", full_path.display()))?;
+                            let digest =
+                                serialize_and_upload_message(&dir, cas_store, &mut hasher.hasher())
+                                    .await
+                                    .err_tip(|| format!("for {}", full_path.display()))?;
 
-                                Result::<(DirectoryNode, VecDeque<Directory>), Error>::Ok((
-                                    DirectoryNode {
-                                        name: directory_name,
-                                        digest: Some(digest.into()),
-                                    },
-                                    all_dirs,
-                                ))
-                            })
-                            .boxed(),
+                            Result::<(DirectoryNode, VecDeque<Directory>), Error>::Ok((
+                                DirectoryNode {
+                                    name: directory_name,
+                                    digest: Some(digest.into()),
+                                },
+                                all_dirs,
+                            ))
+                        })
+                        .boxed(),
                     );
                 } else if file_type.is_file() {
+                    let digest_uploaders = digest_uploaders.clone();
                     file_futures.push(async move {
                         let metadata = fs::metadata(&full_path)
                             .await
                             .err_tip(|| format!("Could not open file {}", full_path.display()))?;
-                        upload_file(cas_store, &full_path, hasher, metadata)
+                        upload_file(cas_store, &full_path, hasher, metadata, digest_uploaders)
                             .map_ok(TryInto::try_into)
                             .await?
                     });
@@ -1074,6 +1105,7 @@ impl RunningActionImpl {
             output_paths.append(&mut command_proto.output_files);
             output_paths.append(&mut command_proto.output_directories);
         }
+        let digest_uploaders = Arc::new(Mutex::new(HashMap::new()));
         for entry in output_paths {
             let full_path = OsString::from(if command_proto.working_directory.is_empty() {
                 format!("{}/{}", self.work_directory, entry)
@@ -1084,6 +1116,7 @@ impl RunningActionImpl {
                 )
             });
             let work_directory = &self.work_directory;
+            let digest_uploaders = digest_uploaders.clone();
             output_path_futures.push(async move {
                 let metadata = {
                     let metadata = match fs::symlink_metadata(&full_path).await {
@@ -1102,39 +1135,51 @@ impl RunningActionImpl {
 
                     if metadata.is_file() {
                         return Ok(OutputType::File(
-                            upload_file(cas_store.as_pin(), &full_path, hasher, metadata)
-                                .await
-                                .map(|mut file_info| {
-                                    file_info.name_or_path = NameOrPath::Path(entry);
-                                    file_info
-                                })
-                                .err_tip(|| format!("Uploading file {}", full_path.display()))?,
+                            upload_file(
+                                cas_store.as_pin(),
+                                &full_path,
+                                hasher,
+                                metadata,
+                                digest_uploaders,
+                            )
+                            .await
+                            .map(|mut file_info| {
+                                file_info.name_or_path = NameOrPath::Path(entry);
+                                file_info
+                            })
+                            .err_tip(|| format!("Uploading file {}", full_path.display()))?,
                         ));
                     }
                     metadata
                 };
                 if metadata.is_dir() {
                     Ok(OutputType::Directory(
-                        upload_directory(cas_store.as_pin(), &full_path, work_directory, hasher)
-                            .and_then(|(root_dir, children)| async move {
-                                let tree = ProtoTree {
-                                    root: Some(root_dir),
-                                    children: children.into(),
-                                };
-                                let tree_digest = serialize_and_upload_message(
-                                    &tree,
-                                    cas_store.as_pin(),
-                                    &mut hasher.hasher(),
-                                )
-                                .await
-                                .err_tip(|| format!("While processing {entry}"))?;
-                                Ok(DirectoryInfo {
-                                    path: entry,
-                                    tree_digest,
-                                })
-                            })
+                        upload_directory(
+                            cas_store.as_pin(),
+                            &full_path,
+                            work_directory,
+                            hasher,
+                            digest_uploaders,
+                        )
+                        .and_then(|(root_dir, children)| async move {
+                            let tree = ProtoTree {
+                                root: Some(root_dir),
+                                children: children.into(),
+                            };
+                            let tree_digest = serialize_and_upload_message(
+                                &tree,
+                                cas_store.as_pin(),
+                                &mut hasher.hasher(),
+                            )
                             .await
-                            .err_tip(|| format!("Uploading directory {}", full_path.display()))?,
+                            .err_tip(|| format!("While processing {entry}"))?;
+                            Ok(DirectoryInfo {
+                                path: entry,
+                                tree_digest,
+                            })
+                        })
+                        .await
+                        .err_tip(|| format!("Uploading directory {}", full_path.display()))?,
                     ))
                 } else if metadata.is_symlink() {
                     let output_symlink = upload_symlink(&full_path, work_directory)
@@ -1369,8 +1414,6 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
         action_result: &mut ActionResult,
         hasher: DigestHasherFunc,
     ) -> impl Future<Output = Result<(), Error>> + Send;
-
-    fn complete_actions(&self, complete_msg: ShutdownGuard) -> impl Future<Output = ()> + Send;
 
     fn kill_all(&self) -> impl Future<Output = ()> + Send;
 
@@ -2031,18 +2074,6 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         };
         Self::kill_operation(running_action).await;
         Ok(())
-    }
-
-    // Waits for all running actions to complete and signals completion.
-    // Use the ShutdownGuard to signal the completion of the actions
-    // Dropping the sender automatically notifies the process to terminate.
-    async fn complete_actions(&self, _complete_msg: ShutdownGuard) {
-        drop(
-            self.action_done_tx
-                .subscribe()
-                .wait_for(|()| self.running_actions.lock().is_empty())
-                .await,
-        );
     }
 
     // Note: When the future returns the process should be fully killed and cleaned up.

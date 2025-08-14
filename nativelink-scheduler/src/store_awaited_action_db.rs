@@ -34,7 +34,7 @@ use nativelink_util::store_trait::{
 };
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::Notify;
-use tracing::{error, warn};
+use tracing::error;
 
 use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
@@ -501,57 +501,65 @@ where
             ActionUniqueQualifier::Cacheable(_) => {}
             ActionUniqueQualifier::Uncacheable(_) => return Ok(None),
         }
-        let stream = self
-            .store
-            .search_by_index_prefix(SearchUniqueQualifierToAwaitedAction(unique_qualifier))
-            .await
-            .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
-        tokio::pin!(stream);
-        let maybe_awaited_action = stream
-            .try_next()
-            .await
-            .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
-        match maybe_awaited_action {
-            Some(mut awaited_action) => {
-                // TODO(aaronmondal) We don't support joining completed jobs because we
-                // need to also check that all the data is still in the cache.
-                if awaited_action.state().stage.is_finished() {
-                    return Ok(None);
+        loop {
+            let stream = self
+                .store
+                .search_by_index_prefix(SearchUniqueQualifierToAwaitedAction(unique_qualifier))
+                .await
+                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+            tokio::pin!(stream);
+            let maybe_awaited_action = stream
+                .try_next()
+                .await
+                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+            match maybe_awaited_action {
+                Some(awaited_action) => {
+                    // TODO(aaronmondal) We don't support joining completed jobs because we
+                    // need to also check that all the data is still in the cache.
+                    // If the existing job failed then we need to set back to queued or we get
+                    // a version mismatch.
+                    let mut awaited_action = if awaited_action.state().stage.is_finished() {
+                        let mut new_awaited_action = AwaitedAction::new(
+                            (self.operation_id_creator)(),
+                            awaited_action.action_info().clone(),
+                            (self.now_fn)().now(),
+                        );
+                        new_awaited_action.set_version(awaited_action.version());
+                        new_awaited_action
+                    } else {
+                        awaited_action
+                    };
+                    let operation_id = awaited_action.operation_id().clone();
+
+                    awaited_action.update_client_keep_alive((self.now_fn)().now());
+                    if inner_update_awaited_action(self.store.as_ref(), awaited_action)
+                        .await
+                        .is_err()
+                    {
+                        // The version was out of date, try again.
+                        continue;
+                    }
+
+                    // Add the client_operation_id to operation_id mapping
+                    self.store
+                        .update_data(UpdateClientIdToOperationId {
+                            client_operation_id: client_operation_id.clone(),
+                            operation_id: operation_id.clone(),
+                        })
+                        .await
+                        .err_tip(
+                            || "In RedisAwaitedActionDb::try_subscribe while adding client mapping",
+                        )?;
+
+                    return Ok(Some(OperationSubscriber::new(
+                        Some(client_operation_id.clone()),
+                        OperationIdToAwaitedAction(Cow::Owned(operation_id)),
+                        Arc::downgrade(&self.store),
+                        self.now_fn.clone(),
+                    )));
                 }
-                // TODO(aaronmondal) We only care about the operation_id here, we should
-                // have a way to tell the decoder we only care about specific fields.
-                let operation_id = awaited_action.operation_id().clone();
-
-                awaited_action.update_client_keep_alive((self.now_fn)().now());
-                let update_res = inner_update_awaited_action(self.store.as_ref(), awaited_action)
-                    .await
-                    .err_tip(|| "In OperationSubscriber::changed");
-                if let Err(err) = update_res {
-                    warn!(
-                        "Error updating client keep alive in RedisAwaitedActionDb::try_subscribe - {err:?} - This is not a critical error, but we did decide to create a new action instead of joining an existing one."
-                    );
-                    return Ok(None);
-                }
-
-                // Add the client_operation_id to operation_id mapping
-                self.store
-                    .update_data(UpdateClientIdToOperationId {
-                        client_operation_id: client_operation_id.clone(),
-                        operation_id: operation_id.clone(),
-                    })
-                    .await
-                    .err_tip(
-                        || "In RedisAwaitedActionDb::try_subscribe while adding client mapping",
-                    )?;
-
-                Ok(Some(OperationSubscriber::new(
-                    Some(client_operation_id.clone()),
-                    OperationIdToAwaitedAction(Cow::Owned(operation_id)),
-                    Arc::downgrade(&self.store),
-                    self.now_fn.clone(),
-                )))
+                None => return Ok(None),
             }
-            None => Ok(None),
         }
     }
 

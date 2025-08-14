@@ -266,17 +266,6 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn core::erro
         );
     }
 
-    logs_assert(|lines: &[&str]| {
-        if lines.len() != 1 {
-            return Err(format!("Expected 1 log line, got: {lines:?}"));
-        }
-        let line = lines[0];
-        if !line.contains("stream.first_msg=\"<redacted>\"") && line.contains("first_msg") {
-            return Err(format!("Non-redacted first_msg in \"{line}\""));
-        }
-        Ok(())
-    });
-
     Ok(())
 }
 

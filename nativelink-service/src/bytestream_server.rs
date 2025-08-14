@@ -399,14 +399,7 @@ impl ByteStreamServer {
     #[instrument(
         ret(level = Level::DEBUG),
         level = Level::ERROR,
-        skip(self, store, stream),
-        fields(
-              // we also skip stream.stream as it doesn't implement debug
-              stream.resource_info = ?stream.resource_info,
-              stream.bytes_received = stream.bytes_received,
-              stream.first_msg = "<redacted>",
-              stream.write_finished = stream.write_finished
-        )
+        skip(self, store),
     )]
     async fn inner_write(
         &self,

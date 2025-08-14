@@ -42,7 +42,7 @@ fred = { version = "10.1.0", default-features = false, features = [
   "i-redisearch",
   "i-scripts",
   "i-std",
-  "metrics",
+  "mocks",
   "sentinel-auth",
   "sentinel-client",
   "sha-1",
@@ -114,7 +114,6 @@ aws-smithy-runtime-api = { version = "1.7.4", default-features = false }
 aws-smithy-types = { version = "1.3.0", default-features = false, features = [
   "http-body-1-x",
 ] }
-fred = { version = "10.1.0", default-features = false, features = ["mocks"] }
 http = { version = "1.3.1", default-features = false }
 memory-stats = "1.2.0"
 mock_instant = "0.5.3"

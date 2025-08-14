@@ -56,51 +56,12 @@ use nativelink_util::operation_state_manager::{
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
 use tokio::sync::{Notify, mpsc};
-use utils::scheduler_utils::{INSTANCE_NAME, make_base_action_info};
+use utils::scheduler_utils::{INSTANCE_NAME, make_base_action_info, update_eq};
 
 mod utils {
     pub(crate) mod scheduler_utils;
 }
 
-fn update_eq(expected: UpdateForWorker, actual: UpdateForWorker, ignore_id: bool) -> bool {
-    let Some(expected_update) = expected.update else {
-        return actual.update.is_none();
-    };
-    let Some(actual_update) = actual.update else {
-        return false;
-    };
-    match actual_update {
-        update_for_worker::Update::Disconnect(()) => {
-            matches!(expected_update, update_for_worker::Update::Disconnect(()))
-        }
-        update_for_worker::Update::KeepAlive(()) => {
-            matches!(expected_update, update_for_worker::Update::KeepAlive(()))
-        }
-        update_for_worker::Update::StartAction(actual_update) => match expected_update {
-            update_for_worker::Update::StartAction(mut expected_update) => {
-                if ignore_id {
-                    expected_update
-                        .operation_id
-                        .clone_from(&actual_update.operation_id);
-                }
-                expected_update == actual_update
-            }
-            _ => false,
-        },
-        update_for_worker::Update::KillOperationRequest(actual_update) => match expected_update {
-            update_for_worker::Update::KillOperationRequest(expected_update) => {
-                expected_update == actual_update
-            }
-            _ => false,
-        },
-        update_for_worker::Update::ConnectionResult(actual_update) => match expected_update {
-            update_for_worker::Update::ConnectionResult(expected_update) => {
-                expected_update == actual_update
-            }
-            _ => false,
-        },
-    }
-}
 async fn verify_initial_connection_message(
     worker_id: WorkerId,
     rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>,
