@@ -411,6 +411,7 @@ impl SimpleScheduler {
             let weak_inner = weak_self.clone();
             let task_worker_matching_spawn =
                 spawn!("simple_scheduler_task_worker_matching", async move {
+                    let mut last_match_successful = true;
                     // Break out of the loop only when the inner is dropped.
                     loop {
                         let task_change_fut = task_change_notify.notified();
@@ -418,13 +419,26 @@ impl SimpleScheduler {
                         tokio::pin!(task_change_fut);
                         tokio::pin!(worker_change_fut);
                         // Wait for either of these futures to be ready.
-                        let _ = futures::future::select(task_change_fut, worker_change_fut).await;
+                        let state_changed =
+                            futures::future::select(task_change_fut, worker_change_fut);
+                        if last_match_successful {
+                            let _ = state_changed.await;
+                        } else {
+                            // If the last match failed, then run again after a short sleep.
+                            // This resolves issues where we tried to re-schedule a job to
+                            // a disconnected worker.  The sleep ensures we don't enter a
+                            // hard loop if there's something wrong inside do_try_match.
+                            let sleep_fut = tokio::time::sleep(Duration::from_millis(100));
+                            tokio::pin!(sleep_fut);
+                            let _ = futures::future::select(state_changed, sleep_fut).await;
+                        }
                         let result = match weak_inner.upgrade() {
                             Some(scheduler) => scheduler.do_try_match().await,
                             // If the inner went away it means the scheduler is shutting
                             // down, so we need to resolve our future.
                             None => return,
                         };
+                        last_match_successful = result.is_ok();
                         if let Err(err) = result {
                             error!(?err, "Error while running do_try_match");
                         }
@@ -500,6 +514,16 @@ impl WorkerScheduler for SimpleScheduler {
     ) -> Result<(), Error> {
         self.worker_scheduler
             .update_action(worker_id, operation_id, update)
+            .await
+    }
+
+    async fn notify_complete(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .notify_complete(worker_id, operation_id)
             .await
     }
 
