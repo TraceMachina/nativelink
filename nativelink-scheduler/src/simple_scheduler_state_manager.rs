@@ -16,7 +16,6 @@ use core::ops::Bound;
 use core::time::Duration;
 use std::string::ToString;
 use std::sync::{Arc, Weak};
-use std::time::SystemTime;
 
 use async_lock::Mutex;
 use async_trait::async_trait;
@@ -439,19 +438,16 @@ where
             return Ok(());
         }
 
-        let last_worker_updated = awaited_action
+        let worker_should_update_before = awaited_action
             .last_worker_updated_timestamp()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|e| {
+            .checked_add(self.no_event_action_timeout)
+            .ok_or_else(|| {
                 make_err!(
                     Code::Internal,
-                    "Failed to convert last_worker_updated to duration since epoch {e:?}"
+                    "Timestamp too big in SimpleSchedulerStateManager::timeout_operation_id"
                 )
             })?;
-        let worker_should_update_before = last_worker_updated
-            .checked_add(self.no_event_action_timeout)
-            .err_tip(|| "Timestamp too big in SimpleSchedulerStateManager::timeout_operation_id")?;
-        if worker_should_update_before < (self.now_fn)().elapsed() {
+        if worker_should_update_before >= (self.now_fn)().now() {
             // The action was updated recently, we should not timeout the action.
             // This is to prevent timing out actions that have recently been updated
             // (like multiple clients timeout the same action at the same time).
