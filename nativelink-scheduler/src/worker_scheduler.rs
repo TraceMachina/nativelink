@@ -17,6 +17,7 @@ use nativelink_error::Error;
 use nativelink_metric::RootMetricsComponent;
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::UpdateOperationType;
+use nativelink_util::shutdown_guard::ShutdownGuard;
 
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{Worker, WorkerTimestamp};
@@ -55,6 +56,9 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
 
     /// Removes worker from pool and reschedule any tasks that might be running on it.
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error>;
+
+    /// Evict all workers from the scheduler, setting their actions back to queued.
+    async fn shutdown(&self, shutdown_guard: ShutdownGuard);
 
     /// Removes timed out workers from the pool. This is called periodically by an
     /// external source.

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::ops::{Bound, RangeBounds};
+use core::time::Duration;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -1080,6 +1081,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
         &self,
         client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
+        _no_event_action_timeout: Duration,
     ) -> Result<Self::Subscriber, Error> {
         let subscriber = self
             .inner

@@ -33,7 +33,7 @@ use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 /// This number will always increment by one each time
 /// the action is updated.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
-struct AwaitedActionVersion(u64);
+struct AwaitedActionVersion(i64);
 
 impl MetricsComponent for AwaitedActionVersion {
     fn publish(
@@ -41,7 +41,9 @@ impl MetricsComponent for AwaitedActionVersion {
         _kind: MetricKind,
         _field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
-        Ok(MetricPublishKnownKindData::Counter(self.0))
+        Ok(MetricPublishKnownKindData::Counter(u64::from_ne_bytes(
+            self.0.to_ne_bytes(),
+        )))
     }
 }
 
@@ -136,11 +138,11 @@ impl AwaitedAction {
         }
     }
 
-    pub(crate) const fn version(&self) -> u64 {
+    pub(crate) const fn version(&self) -> i64 {
         self.version.0
     }
 
-    pub(crate) const fn set_version(&mut self, version: u64) {
+    pub(crate) const fn set_version(&mut self, version: i64) {
         self.version = AwaitedActionVersion(version);
     }
 

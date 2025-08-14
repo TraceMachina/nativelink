@@ -123,7 +123,7 @@ pub trait ClientStateManager: Sync + Send + Unpin + MetricsComponent + 'static {
 }
 
 /// The type of update to perform on an operation.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 #[allow(
     clippy::large_enum_variant,
     reason = "TODO Fix this. Breaks on stable, but not on nightly"
@@ -137,6 +137,9 @@ pub enum UpdateOperationType {
 
     /// Notification that the operation has been completed.
     UpdateWithError(Error),
+
+    /// Notification that the worker disconnected.
+    UpdateWithDisconnect,
 }
 
 #[async_trait]
