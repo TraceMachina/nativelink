@@ -17,7 +17,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::sync::{Arc, Weak};
-use std::time::SystemTime;
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
@@ -523,18 +522,13 @@ where
                 let worker_should_update_before = (awaited_action.state().stage
                     == ActionStage::Executing)
                     .then_some(())
-                    .and_then(|()| {
-                        awaited_action
-                            .last_worker_updated_timestamp()
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .ok()
-                    })
+                    .map(|()| awaited_action.last_worker_updated_timestamp())
                     .and_then(|last_worker_updated| {
                         last_worker_updated.checked_add(no_event_action_timeout)
                     });
                 let awaited_action = if awaited_action.state().stage.is_finished()
                     || worker_should_update_before
-                        .is_some_and(|timestamp| timestamp >= (self.now_fn)().elapsed())
+                        .is_some_and(|timestamp| timestamp < (self.now_fn)().now())
                 {
                     tracing::debug!(
                         "Recreating action {:?} for operation {client_operation_id}",
