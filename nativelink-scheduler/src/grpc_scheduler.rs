@@ -41,7 +41,6 @@ use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
-use rand::Rng;
 use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
@@ -97,26 +96,14 @@ pub struct GrpcScheduler {
 
 impl GrpcScheduler {
     pub fn new(spec: &GrpcSpec) -> Result<Self, Error> {
-        let jitter_amt = spec.retry.jitter;
-        Self::new_with_jitter(
-            spec,
-            Box::new(move |delay: Duration| {
-                if jitter_amt == 0. {
-                    return delay;
-                }
-                let min = 1. - (jitter_amt / 2.);
-                let max = 1. + (jitter_amt / 2.);
-                delay.mul_f32(rand::rng().random_range(min..max))
-            }),
-        )
+        Self::new_with_jitter(spec, spec.retry.make_jitter_fn())
     }
 
     pub fn new_with_jitter(
         spec: &GrpcSpec,
-        jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
+        jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
         let endpoint = tls_utils::endpoint(&spec.endpoint)?;
-        let jitter_fn = Arc::new(jitter_fn);
         Ok(Self {
             supported_props: Mutex::new(HashMap::new()),
             retrier: Retrier::new(
