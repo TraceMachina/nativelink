@@ -831,7 +831,7 @@ pub trait StoreDriver:
 /// the underlying type.
 pub trait SchedulerStoreDecodeTo {
     type DecodeOutput;
-    fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error>;
+    fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error>;
 }
 
 pub trait SchedulerSubscription: Send + Sync {
@@ -862,7 +862,7 @@ pub trait SchedulerStore: Send + Sync + 'static {
     /// the version in the passed in data.
     /// No guarantees are made about when `Version` is `FalseValue`.
     /// Indexes are guaranteed to be updated atomically with the data.
-    fn update_data<T>(&self, data: T) -> impl Future<Output = Result<Option<u64>, Error>> + Send
+    fn update_data<T>(&self, data: T) -> impl Future<Output = Result<Option<i64>, Error>> + Send
     where
         T: SchedulerStoreDataProvider
             + SchedulerStoreKeyProvider
@@ -934,7 +934,7 @@ pub trait SchedulerStoreDataProvider {
 /// Provides the current version of the data in the store.
 pub trait SchedulerCurrentVersionProvider {
     /// Returns the current version of the data in the store.
-    fn current_version(&self) -> u64;
+    fn current_version(&self) -> i64;
 }
 
 /// Default implementation for when we are not providing a version
@@ -943,7 +943,7 @@ impl<T> SchedulerCurrentVersionProvider for T
 where
     T: SchedulerStoreKeyProvider<Versioned = FalseValue>,
 {
-    fn current_version(&self) -> u64 {
+    fn current_version(&self) -> i64 {
         0
     }
 }

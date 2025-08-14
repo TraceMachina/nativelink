@@ -68,7 +68,7 @@ mod utils {
 const INSTANCE_NAME: &str = "instance_name";
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 const SCRIPT_VERSION: &str = "3e762c15";
-const VERSION_SCRIPT_HASH: &str = "fdf1152fd21705c8763752809b86b55c5d4511ce";
+const VERSION_SCRIPT_HASH: &str = "b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5";
 const MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 const SCAN_COUNT: u32 = 10_000;
 
@@ -275,15 +275,18 @@ impl Mocks for FakeRedisBackend {
                         .get()
                         .get("version")
                         .expect("No version field");
-                    if *version != actual.args[3] {
-                        // Version mismatch.
-                        return Ok(0.into());
-                    }
-                    let version_int: u32 =
+                    let version_int: i64 =
                         str::from_utf8(version.as_bytes().expect("Version field not bytes"))
                             .expect("Version field not valid string")
                             .parse()
                             .expect("Unable to parse version field");
+                    if *version != actual.args[3] {
+                        // Version mismatch.
+                        return Ok(RedisValue::Array(vec![
+                            RedisValue::Integer(0),
+                            RedisValue::Integer(version_int),
+                        ]));
+                    }
                     value.insert(
                         "version".into(),
                         RedisValue::Bytes(
@@ -294,12 +297,22 @@ impl Mocks for FakeRedisBackend {
                     version_int + 1
                 }
                 Entry::Vacant(vacant_entry) => {
+                    if actual.args[3] != RedisValue::Bytes(Bytes::from_static(b"0")) {
+                        // Version mismatch.
+                        return Ok(RedisValue::Array(vec![
+                            RedisValue::Integer(0),
+                            RedisValue::Integer(0),
+                        ]));
+                    }
                     value.insert("version".into(), RedisValue::Bytes("1".into()));
                     vacant_entry.insert_entry(value);
                     1
                 }
             };
-            return Ok(version.into());
+            return Ok(RedisValue::Array(vec![
+                RedisValue::Integer(1),
+                RedisValue::Integer(version),
+            ]));
         }
 
         if actual.cmd == Str::from_static("HSET") {
@@ -554,7 +567,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
                     "80000000ffffffff".as_bytes().into(),
                 ],
             },
-            Ok(1.into() /* New version */),
+            Ok(RedisValue::Array(vec![RedisValue::Integer(1), RedisValue::Integer(1)])),
             None,
         )
         .expect(
@@ -667,7 +680,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
                     "80000000ffffffff".as_bytes().into(),
                 ],
             },
-            Ok(2.into() /* New version */),
+            Ok(RedisValue::Array(vec![RedisValue::Integer(1), RedisValue::Integer(2)])),
             None,
         )
         .expect(
@@ -741,6 +754,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         .add_action(
             CLIENT_OPERATION_ID.into(),
             worker_awaited_action.action_info().clone(),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -789,7 +803,8 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
     const CLIENT_OPERATION_ID_1: &str = "client_operation_id_1";
     const CLIENT_OPERATION_ID_2: &str = "client_operation_id_2";
     const CLIENT_OPERATION_ID_3: &str = "client_operation_id_3";
-    const WORKER_OPERATION_ID: &str = "worker_operation_id";
+    const WORKER_OPERATION_ID_1: &str = "worker_operation_id_1";
+    const WORKER_OPERATION_ID_2: &str = "worker_operation_id_2";
     const SUB_CHANNEL: &str = "sub_channel";
 
     let action_info = Arc::new(ActionInfo {
@@ -833,11 +848,13 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
     mocks.set_subscription_manager(store.subscription_manager().unwrap());
 
     let notifier = Arc::new(Notify::new());
+    let worker_operation_id = Arc::new(Mutex::new(WORKER_OPERATION_ID_1));
+    let worker_operation_id_clone = worker_operation_id.clone();
     let awaited_action_db = StoreAwaitedActionDb::new(
         store.clone(),
         notifier.clone(),
         MockInstantWrapped::default,
-        move || WORKER_OPERATION_ID.into(),
+        move || worker_operation_id_clone.lock().clone().into(),
     )
     .unwrap();
 
@@ -953,6 +970,9 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         drop(rx_from_worker);
         scheduler.remove_worker(&worker_id).await?;
     }
+
+    // Update the operation ID for the new subscription.
+    *worker_operation_id.lock() = WORKER_OPERATION_ID_2;
 
     // Subscribe with a new operation ID after all that and we should be queued.
     let subscription3 = scheduler
