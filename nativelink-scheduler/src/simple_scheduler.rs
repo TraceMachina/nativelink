@@ -517,6 +517,16 @@ impl WorkerScheduler for SimpleScheduler {
             .await
     }
 
+    async fn notify_complete(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .notify_complete(worker_id, operation_id)
+            .await
+    }
+
     async fn worker_keep_alive_received(
         &self,
         worker_id: &WorkerId,
