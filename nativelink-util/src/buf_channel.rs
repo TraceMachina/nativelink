@@ -396,7 +396,7 @@ impl DropCloserReadHalf {
 impl Stream for DropCloserReadHalf {
     type Item = Result<Bytes, std::io::Error>;
 
-    // TODO(aaronmondal) This is not very efficient as we are creating a new future on every
+    // TODO(palfrey) This is not very efficient as we are creating a new future on every
     // poll() call. It might be better to use a waker.
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Box::pin(self.recv())

@@ -32,7 +32,7 @@ index a752642..53b6b19 100644
 +    // registry. Skipping this hash is not a generally safe practice and only
 +    // works for us because our images are reproducible.
 +    //
-+    // TODO(aaronmondal): In our case it's technically not necessary to use
++    // TODO(palfrey): In our case it's technically not necessary to use
 +    //                    images at all since we can get all the information we
 +    //                    need directly from nix derivations. Rewrite this tool
 +    //                    for much more performant and flexible toochain config

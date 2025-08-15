@@ -256,7 +256,7 @@ fn recursive_parse<'a>(
             State::Hash => {
                 output.hash = Cow::Borrowed(part);
                 *bytes_processed += part.len() + SLASH_SIZE;
-                // TODO(aaronmondal) Set the digest_function if it is not set based on the hash size.
+                // TODO(palfrey) Set the digest_function if it is not set based on the hash size.
                 return Ok(State::Size);
             }
             State::Size => {

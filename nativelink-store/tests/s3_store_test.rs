@@ -39,7 +39,7 @@ use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
 
-// TODO(aaronmondal): Figure out how to test the connector retry mechanism.
+// TODO(palfrey): Figure out how to test the connector retry mechanism.
 
 const BUCKET_NAME: &str = "dummy-bucket-name";
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";

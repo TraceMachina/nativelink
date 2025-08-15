@@ -13,7 +13,7 @@ nativelink-proto = { path = "../nativelink-proto" }
 nativelink-store = { path = "../nativelink-store" }
 nativelink-util = { path = "../nativelink-util" }
 
-# TODO(aaronmondal): This should not be a dependency. Move the corresponding
+# TODO(palfrey): This should not be a dependency. Move the corresponding
 #                    files somewhere else.
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 async-trait = "0.1.88"

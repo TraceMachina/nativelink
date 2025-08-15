@@ -99,13 +99,13 @@ in {
     name = "gofumpt";
     types = ["go"];
   };
-  # TODO(aaronmondal): This linter works in the nix developmen environment, but
+  # TODO(palfrey): This linter works in the nix developmen environment, but
   #                    not with `nix flake check`. It's unclear how to fix this.
   golangci-lint-in-shell = {
     enable = true;
     entry = let
       script = pkgs.writeShellScript "precommit-golangci-lint" ''
-        # TODO(aaronmondal): This linter works in the nix development
+        # TODO(palfrey): This linter works in the nix development
         #                    environment, but not with `nix flake check`. It's
         #                    unclear how to fix this.
         if [ ''${IN_NIX_SHELL} = "impure" ]; then

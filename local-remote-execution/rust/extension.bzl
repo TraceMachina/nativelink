@@ -18,7 +18,7 @@
 
 load("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
 
-# TODO(aaronmondal): Using module extensions here isn't optimal as it doesn't
+# TODO(palfrey): Using module extensions here isn't optimal as it doesn't
 #                    allow overriding tools via environment variables.
 #                    Unfortunately rules_rust's rust_toolchain currently
 #                    requires tools to be declared via labels to filegroups,

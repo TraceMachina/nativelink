@@ -94,8 +94,8 @@
     {
       name: "MAIN_SCHEDULER",
 
-      // TODO(aaronmondal): use the right scheduler because reclient doesn't use the cached results?
-      // TODO(aaronmondal): max_bytes_per_stream
+      // TODO(palfrey): use the right scheduler because reclient doesn't use the cached results?
+      // TODO(palfrey): max_bytes_per_stream
       simple: {
         supported_platform_properties: {
           cpu_count: "priority",
