@@ -160,7 +160,7 @@ mod body_processing {
 
     /// Buffer a request body fully into memory.
     ///
-    /// TODO(aaronmondal): This could lead to OOMs in extremely constrained
+    /// TODO(palfrey): This could lead to OOMs in extremely constrained
     ///                    environments. Probably better to implement something
     ///                    like a rewindable stream logic.
     #[inline]

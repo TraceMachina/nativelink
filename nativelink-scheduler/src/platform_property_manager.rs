@@ -27,7 +27,7 @@ pub struct PlatformPropertyManager {
     known_properties: HashMap<String, PropertyType>,
 }
 
-// TODO(aaronmondal) We cannot use the `MetricsComponent` trait here because
+// TODO(palfrey) We cannot use the `MetricsComponent` trait here because
 // the `PropertyType` lives in the `nativelink-config` crate which is not
 // a dependency of the `nativelink-metric-collector` crate.
 impl MetricsComponent for PlatformPropertyManager {

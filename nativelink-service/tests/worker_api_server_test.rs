@@ -483,8 +483,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
             details: Vec::default(),
         }),
         server_logs,
-        message: "TODO(aaronmondal) We should put a reference something like bb_browser"
-            .to_string(),
+        message: "TODO(palfrey) We should put a reference something like bb_browser".to_string(),
     };
     let result = ExecuteResult {
         instance_name,

@@ -191,7 +191,7 @@
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
 
-        # TODO(aaronmondal): Allow "crosscompiling" this image. At the moment
+        # TODO(palfrey): Allow "crosscompiling" this image. At the moment
         #                    this would set a wrong container architecture. See:
         #                    https://github.com/nlewo/nix2container/issues/138.
         nativelink-image = let
@@ -293,7 +293,7 @@
           coverageArgs =
             (commonArgsFor p)
             // {
-              # TODO(aaronmondal): For some reason we're triggering an edgecase where
+              # TODO(palfrey): For some reason we're triggering an edgecase where
               #                    mimalloc builds against glibc headers in coverage
               #                    builds. This leads to nonexistend __memcpy_chk and
               #                    __memset_chk symbols if fortification is enabled.
@@ -392,7 +392,7 @@
             else {}
           );
         checks = {
-          # TODO(aaronmondal): Fix the tests.
+          # TODO(palfrey): Fix the tests.
           # tests = craneLib.cargoNextest (commonArgs
           #   // {
           #   inherit cargoArtifacts;
@@ -534,7 +534,7 @@
               ${config.darwin.installationScript}
 
               # The Bazel and Cargo builds in nix require a Clang toolchain.
-              # TODO(aaronmondal): The Bazel build currently uses the
+              # TODO(palfrey): The Bazel build currently uses the
               #                    irreproducible host C++ toolchain. Provide
               #                    this toolchain via nix for bitwise identical
               #                    binaries across machines.
@@ -545,7 +545,7 @@
               export PATH=$HOME/.deno/bin:$PATH
               deno types > web/platform/utils/deno.d.ts
             ''
-            # TODO(aaronmondal): Generalize this.
+            # TODO(palfrey): Generalize this.
             + pkgs.lib.optionalString (system == "x86_64-linux") ''
               export CC_x86_64_unknown_linux_gnu=customClang
             '';

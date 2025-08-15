@@ -25,7 +25,7 @@ common --incompatible_use_plus_in_repo_names
 
 # Simulate rules_python's initialization with a script and use a statically
 # linked musl Python toolchain.
-# TODO(aaronmondal): This is a hack. It works for us because have just a few
+# TODO(palfrey): This is a hack. It works for us because have just a few
 #                    simple python scripts in the repository and don't have
 #                    complex Python dependencies. Implement LRE for Python.
 common --@rules_python//python/config_settings:bootstrap_impl=script

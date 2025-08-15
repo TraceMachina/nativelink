@@ -120,7 +120,7 @@ impl AwaitedAction {
                     .get(ENDUSER_ID)
                     .map(|v| v.as_str().to_string())
                     .unwrap_or_default(),
-                bazel_metadata: None, // TODO(aaronmondal): Implement conversion.
+                bazel_metadata: None, // TODO(palfrey): Implement conversion.
             })
         };
 

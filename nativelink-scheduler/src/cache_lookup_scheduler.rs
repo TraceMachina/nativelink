@@ -149,7 +149,7 @@ impl ActionStateResult for CacheLookupActionStateResult {
     }
 
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
-        // TODO(aaronmondal) We should probably remove as_action_info()
+        // TODO(palfrey) We should probably remove as_action_info()
         // or implement it properly.
         return Err(make_err!(
             Code::Unimplemented,
@@ -280,7 +280,7 @@ impl CacheLookupScheduler {
                                 .get(ENDUSER_ID)
                                 .map(|v| v.as_str().to_string())
                                 .unwrap_or_default(),
-                            bazel_metadata: None, // TODO(aaronmondal): Implement conversion.
+                            bazel_metadata: None, // TODO(palfrey): Implement conversion.
                         })
                     };
 

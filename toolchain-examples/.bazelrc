@@ -11,7 +11,7 @@ build:zig-cc --platforms @zig_sdk//platform:linux_amd64
 # These toolchains map out everything in
 # https://github.com/uber/hermetic_cc_toolchain/blob/bfc407599e503a44928a3cefad27421c9341eff0/MODULE.bazel#L44
 #
-# TODO(aaronmondal): Change this after the next release that contains
+# TODO(palfrey): Change this after the next release that contains
 #                    https://github.com/uber/hermetic_cc_toolchain/commit/892973baa37ee1cb7adc8e5b0f75e1966093b1d3
 build:zig-cc --extra_toolchains @zig_sdk-linux-amd64//toolchain:linux_amd64_gnu.2.28
 build:zig-cc --extra_toolchains @zig_sdk-linux-amd64//toolchain:linux_arm64_gnu.2.28

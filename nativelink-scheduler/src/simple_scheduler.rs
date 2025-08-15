@@ -206,7 +206,7 @@ impl SimpleScheduler {
         self.do_try_match().await
     }
 
-    // TODO(aaronmondal) This is an O(n*m) (aka n^2) algorithm. In theory we
+    // TODO(palfrey) This is an O(n*m) (aka n^2) algorithm. In theory we
     // can create a map of capabilities of each worker and then try and match
     // the actions to the worker using the map lookup (ie. map reduce).
     async fn do_try_match(&self) -> Result<(), Error> {
@@ -222,7 +222,7 @@ impl SimpleScheduler {
                     .await
                     .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
 
-            // TODO(aaronmondal) We should not compute this every time and instead store
+            // TODO(palfrey) We should not compute this every time and instead store
             // it with the ActionInfo when we receive it.
             let platform_properties = platform_property_manager
                 .make_platform_properties(action_info.platform_properties.clone())
