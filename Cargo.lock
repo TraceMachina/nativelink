@@ -2555,7 +2555,7 @@ checksum = "defc4c55412d89136f966bbb339008b474350e5e6e78d2714439c386b3137a03"
 
 [[package]]
 name = "nativelink"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-lock",
  "axum",
@@ -2653,7 +2653,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-lock",
  "async-trait",
