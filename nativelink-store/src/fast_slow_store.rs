@@ -38,12 +38,12 @@ use nativelink_util::store_trait::{
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
 
-// TODO(aaronmondal) This store needs to be evaluated for more efficient memory usage,
+// TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
 
 type Loader = Arc<OnceCell<()>>;
 
-// TODO(aaronmondal) We should consider copying the data in the background to allow the
+// TODO(palfrey) We should consider copying the data in the background to allow the
 // client to hang up while the data is buffered. An alternative is to possibly make a
 // "BufferedStore" that could be placed on the "slow" store that would hang up early
 // if data is in the buffer.
@@ -112,7 +112,7 @@ impl FastSlowStore {
         };
         loader
             .get_or_try_init(async move || {
-                // TODO(aaronmondal) This is extremely inefficient, since we are just trying
+                // TODO(palfrey) This is extremely inefficient, since we are just trying
                 // to send the stream to /dev/null. Maybe we could instead make a version of
                 // the stream that can send to the drain more efficiently?
                 let (tx, mut rx) = make_buf_channel_pair();
@@ -133,7 +133,7 @@ impl FastSlowStore {
 
     /// Returns the range of bytes that should be sent given a slice bounds
     /// offset so the output range maps the `received_range.start` to 0.
-    // TODO(aaronmondal) This should be put into utils, as this logic is used
+    // TODO(palfrey) This should be put into utils, as this logic is used
     // elsewhere in the code.
     pub fn calculate_range(
         received_range: &Range<u64>,
@@ -319,7 +319,7 @@ impl StoreDriver for FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        // TODO(aaronmondal) Investigate if we should maybe ignore errors here instead of
+        // TODO(palfrey) Investigate if we should maybe ignore errors here instead of
         // forwarding the up.
         if self.fast_store.has(key.borrow()).await?.is_some() {
             self.metrics

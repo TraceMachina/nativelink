@@ -48,7 +48,7 @@
     pre-commit run -a
   '';
 
-  # TODO(aaronmondal): Move the generator logic into this packageset.
+  # TODO(palfrey): Move the generator logic into this packageset.
   # This environment is shared between toolchain autogen images and the final
   # toolchain image.
   Env = [

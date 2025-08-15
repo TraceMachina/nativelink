@@ -417,7 +417,7 @@ impl ApiWorkerSchedulerImpl {
             }
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
-        // TODO(aaronmondal) This should be moved to inside the Workers struct.
+        // TODO(palfrey) This should be moved to inside the Workers struct.
         self.worker_change_notify.notify_one();
         result
     }
@@ -504,7 +504,7 @@ impl ApiWorkerScheduler {
     }
 
     /// Attempts to find a worker that is capable of running this action.
-    // TODO(aaronmondal) This algorithm is not very efficient. Simple testing using a tree-like
+    // TODO(palfrey) This algorithm is not very efficient. Simple testing using a tree-like
     // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
     // simulation of worst cases in a single threaded environment.
     pub async fn find_worker_for_action(

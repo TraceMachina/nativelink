@@ -195,7 +195,7 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
 const BAZEL_METADATA_KEY: &str = "bazel.metadata";
 
 /// This is the header that bazel sends when using the `--remote_header` flag.
-/// TODO(aaronmondal): There are various other headers that bazel supports.
+/// TODO(palfrey): There are various other headers that bazel supports.
 ///                    Optimize their usage.
 const BAZEL_REQUESTMETADATA_HEADER: &str = "build.bazel.remote.execution.v2.requestmetadata-bin";
 

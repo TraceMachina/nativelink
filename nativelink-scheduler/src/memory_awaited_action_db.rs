@@ -753,7 +753,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         &mut self,
         client_operation_id: &OperationId,
         unique_qualifier: &ActionUniqueQualifier,
-        // TODO(aaronmondal) To simplify the scheduler 2024 refactor, we
+        // TODO(palfrey) To simplify the scheduler 2024 refactor, we
         // removed the ability to upgrade priorities of actions.
         // we should add priority upgrades back in.
         _priority: i32,
@@ -937,7 +937,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
                     .get_range_of_actions(state, (start.as_ref(), end.as_ref()))
                     .map(|res| res.err_tip(|| "In AwaitedActionDb::get_range_of_actions"));
 
-                // TODO(aaronmondal) This should probably use the `.left()/right()` pattern,
+                // TODO(palfrey) This should probably use the `.left()/right()` pattern,
                 // but that doesn't exist in the std or any libraries we use.
                 if desc {
                     for result in iterator.rev() {

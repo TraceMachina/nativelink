@@ -11,7 +11,7 @@ runs:
         remove_android: false # Takes too long.
         remove_dotnet: true
         remove_haskell: true
-        remove_tool_cache: false # TODO(aaronmondal): Do we really need this?
+        remove_tool_cache: false # TODO(palfrey): Do we really need this?
         # Note: Not deleting google-cloud-cli because it takes too long.
         remove_packages: >
           azure-cli

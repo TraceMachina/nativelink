@@ -340,7 +340,7 @@ impl StoreDriver for RedisStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // TODO(aaronmondal) We could use pipeline here, but it makes retry more
+        // TODO(palfrey) We could use pipeline here, but it makes retry more
         // difficult and it doesn't work very well in cluster mode.
         // If we wanted to optimize this with pipeline be careful to
         // implement retry and to support cluster mode.

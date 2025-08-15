@@ -403,6 +403,6 @@ might need to implement your own logic to get from the toolchain container to
 some usable RBE configuration files (or write them manually), but this can be
 considered an implementation detail specific to your requirements.
 
-TODO(aaronmondal): Add an example of a custom toolchain extension around lre-cc.
+TODO(palfrey): Add an example of a custom toolchain extension around lre-cc.
 
 <img referrerpolicy="no-referrer-when-downgrade" src="https://nativelink.matomo.cloud/matomo.php?idsite=2&amp;rec=1&amp;action_name=local-remote-execution%20Readme.md" style="border:0" alt="" />

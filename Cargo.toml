@@ -154,7 +154,7 @@ significant-drop-tightening = { level = "allow", priority = 1 } # TODO(jhpratt) 
 too-long-first-doc-paragraph = { level = "allow" }              # TODO(jhpratt) Flip
 uninhabited-references = { level = "allow", priority = 1 }      # rust-lang/rust-clippy#11984
 
-# TODO(aaronmondal): Remove these to get to pedantic.
+# TODO(palfrey): Remove these to get to pedantic.
 cast_possible_truncation = { level = "allow", priority = 1 }
 cast_possible_wrap = { level = "allow", priority = 1 }
 cast_precision_loss = { level = "allow", priority = 1 }

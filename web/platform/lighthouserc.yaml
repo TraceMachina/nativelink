@@ -22,10 +22,10 @@ ci:
         - "error"
 
   upload:
-    # TODO(aaronmondal): upload options here
+    # TODO(palfrey): upload options here
 
   server:
-    # TODO(aaronmondal): server options here
+    # TODO(palfrey): server options here
 
   wizard:
-    # TODO(aaronmondal): wizard options here
+    # TODO(palfrey): wizard options here
