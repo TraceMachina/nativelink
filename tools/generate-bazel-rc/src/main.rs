@@ -80,10 +80,10 @@ fn generate_lint_text(flag_key: &str, lints: BTreeSet<Lint>) -> String {
         let prefix = match value.level {
             LintLevel::Deny => "D",
             LintLevel::Allow => "A",
-            // Note these are warns at Cargo level, but Deny in bazel
-            // mainly so we can do stuff locally temporarily with warnings
-            // but then make them break if we do them in CI
-            LintLevel::Warn => "D",
+            // TODO(palfrey): these should be deny's as Bazel swallows warnings the first time it runs
+            // But we've got them as warnings currently as this breaks builds as the scheduler
+            // borks in some scenarios with build failures which we should fix properly later.
+            LintLevel::Warn => "W",
         };
         let bazel_key = value.key.replace("-", "_");
         rules.push(format!(
