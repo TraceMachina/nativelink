@@ -87,7 +87,7 @@ test_suite(
 genrule(
     name = "dummy_test_sh",
     outs = ["dummy_test.sh"],
-    cmd = "echo \"sleep .1;   echo $$(printf '=%.0s' {1..100})\" > \"$@\"",
+    cmd = "echo '#!/bin/bash\nsleep 0.1\nprintf \"=\"%.0s {1..100}\necho' > \"$@\" && chmod +x \"$@\"",
 )
 
 sh_test(
