@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-version: '3.4'
-
 services:
   nativelink_local_cas:
     image: trace_machina/nativelink:latest
@@ -52,6 +50,8 @@ services:
     ports: [ "50052:50052/tcp" ]
     command: |
       nativelink /root/scheduler.json5
+    depends_on:
+      - nativelink_local_cas
 
   nativelink_executor:
     image: trace_machina/nativelink:latest
@@ -72,3 +72,6 @@ services:
       SCHEDULER_ENDPOINT: nativelink_scheduler
     command: |
       nativelink /root/worker.json5
+    depends_on:
+      - nativelink_local_cas
+      - nativelink_scheduler
