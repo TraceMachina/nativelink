@@ -46,7 +46,7 @@
     "@react-three/fiber": "^9.1.2",
     "@tailwindcss/vite": "^4.1.5",
     "@types/bun": "^1.2.12",
-    "astro": "5.7.10",
+    "astro": "5.13.2",
     "clsx": "^2.1.1",
     "dotenv": "^16.5.0",
     "framer-motion": "^12.9.4",
