@@ -52,3 +52,5 @@ jobs:
       - name: Run Bazel tests
         run: bazel test --config=${{ matrix.sanitizer }} --verbose_failures //...
         shell: bash
+        env:
+          NATIVELINK_TEST_MONGO_URL: ${{ secrets.NATIVELINK_TEST_MONGO_URL}}

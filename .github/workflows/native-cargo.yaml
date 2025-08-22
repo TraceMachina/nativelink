@@ -50,3 +50,5 @@ jobs:
 
       - name: Test on ${{ runner.os }}
         run: cargo test --all --profile=smol
+        env:
+          NATIVELINK_TEST_MONGO_URL: ${{ secrets.NATIVELINK_TEST_MONGO_URL}}
