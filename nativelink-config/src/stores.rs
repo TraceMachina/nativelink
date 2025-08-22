@@ -1174,6 +1174,16 @@ pub struct ExperimentalMongoSpec {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub connection_string: String,
 
+    // Username to use for connection
+    // Default: not set, or use the one from connection_string
+    #[serde(default)]
+    pub username: String,
+
+    // Password to use for connection
+    // Default: not set, or use the one from connection_string
+    #[serde(default)]
+    pub password: String,
+
     /// The database name to use.
     /// Default: "nativelink"
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
