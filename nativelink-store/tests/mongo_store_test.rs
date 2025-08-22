@@ -53,6 +53,8 @@ fn create_test_spec_with_key_prefix(key_prefix: Option<String>) -> ExperimentalM
 
     ExperimentalMongoSpec {
         connection_string: std::env::var("NATIVELINK_TEST_MONGO_URL").unwrap_or(default_connection),
+        username: String::new(),
+        password: String::new(),
         database: format!(
             "nltest_{}_{}",
             timestamp,
@@ -83,11 +85,13 @@ pub struct TestMongoHelper {
     pub database_name: String,
 }
 
+fn in_ci() -> bool {
+    std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok()
+}
+
 fn non_ci_test_store_access() {
     // Check if this is a local development environment without credentials
-    let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
-
-    if !is_ci {
+    if !in_ci() {
         eprintln!("\n🔒 MongoDB tests require access to the NativeLink test database.");
         eprintln!("   For local development access, please email: marcus@tracemachina.com");
         eprintln!("   ");
@@ -177,18 +181,68 @@ async fn create_test_store() -> Result<Arc<ExperimentalMongoStore>, Error> {
     ExperimentalMongoStore::new(spec).await
 }
 
+#[nativelink_test]
+async fn connect_with_username_and_password() -> Result<(), Error> {
+    match check_mongodb_available().await {
+        MongoDBState::Ok(_helper) => {}
+        MongoDBState::Broken(err) => {
+            return Err(err);
+        }
+        MongoDBState::Skipping => {
+            return Ok(());
+        }
+    }
+
+    let mut spec = create_test_spec();
+    // These are incorrect, but should allow us to connect and fail with bad login
+    // v.s. "cannot do login at all" or "config failure"
+    spec.username = "foo".to_string();
+    spec.password = "bar".to_string();
+    let store = ExperimentalMongoStore::new(spec)
+        .await
+        .expect("Working store");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let result = store.has(digest).await?;
+    assert!(
+        result.is_some(),
+        "Expected mongo store to have hash: {VALID_HASH1}",
+    );
+    Ok(())
+}
+
+enum MongoDBState {
+    Ok(TestMongoHelper),
+    Broken(Error),
+    Skipping,
+}
+
 /// Utility to check if `MongoDB` is available for testing.
 /// Returns an error that can be used to skip tests when `MongoDB` is not available.
-async fn check_mongodb_available() -> Result<(), Error> {
-    TestMongoHelper::new_or_skip().await.map(|_| ())
+async fn check_mongodb_available() -> MongoDBState {
+    match TestMongoHelper::new_or_skip().await {
+        Ok(helper) => MongoDBState::Ok(helper),
+        Err(err) if err.code == Code::Unavailable && !in_ci() => {
+            eprintln!("Skipping MongoDB test - MongoDB not available");
+            MongoDBState::Skipping
+        }
+        Err(err) => {
+            eprintln!("Mongo test error: {err}");
+            MongoDBState::Broken(err)
+        }
+    }
 }
 
 #[nativelink_test]
 async fn upload_and_get_data() -> Result<(), Error> {
     // Create test helper with automatic cleanup
-    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
+    let helper = match check_mongodb_available().await {
+        MongoDBState::Ok(helper) => helper,
+        MongoDBState::Broken(err) => {
+            return Err(err);
+        }
+        MongoDBState::Skipping => {
+            return Ok(());
+        }
     };
 
     // Construct the data we want to send.
@@ -252,9 +306,14 @@ async fn upload_and_get_data_without_prefix() -> Result<(), Error> {
 #[nativelink_test]
 async fn upload_empty_data() -> Result<(), Error> {
     // Skip test if MongoDB is not available
-    if check_mongodb_available().await.is_err() {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
+    match check_mongodb_available().await {
+        MongoDBState::Ok(_helper) => {}
+        MongoDBState::Broken(err) => {
+            return Err(err);
+        }
+        MongoDBState::Skipping => {
+            return Ok(());
+        }
     }
 
     let data = Bytes::from_static(b"");
@@ -277,9 +336,14 @@ async fn upload_empty_data() -> Result<(), Error> {
 #[allow(clippy::items_after_statements)]
 async fn test_large_downloads_are_chunked() -> Result<(), Error> {
     // Skip test if MongoDB is not available
-    if check_mongodb_available().await.is_err() {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
+    match check_mongodb_available().await {
+        MongoDBState::Ok(_helper) => {}
+        MongoDBState::Broken(err) => {
+            return Err(err);
+        }
+        MongoDBState::Skipping => {
+            return Ok(());
+        }
     }
 
     const READ_CHUNK_SIZE: usize = 1024;
@@ -316,9 +380,14 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
 #[allow(clippy::items_after_statements)]
 async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
     // Skip test if MongoDB is not available
-    if check_mongodb_available().await.is_err() {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
+    match check_mongodb_available().await {
+        MongoDBState::Ok(_helper) => {}
+        MongoDBState::Broken(err) => {
+            return Err(err);
+        }
+        MongoDBState::Skipping => {
+            return Ok(());
+        }
     }
 
     const READ_CHUNK_SIZE: usize = 1024;
@@ -372,9 +441,14 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
 #[nativelink_test]
 async fn zero_len_items_exist_check() -> Result<(), Error> {
     // Skip test if MongoDB is not available
-    if check_mongodb_available().await.is_err() {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
+    match check_mongodb_available().await {
+        MongoDBState::Ok(_helper) => {}
+        MongoDBState::Broken(err) => {
+            return Err(err);
+        }
+        MongoDBState::Skipping => {
+            return Ok(());
+        }
     }
 
     let digest = DigestInfo::try_new(VALID_HASH1, 0)?;
@@ -427,9 +501,14 @@ async fn test_empty_connection_string() -> Result<(), Error> {
 #[nativelink_test]
 async fn test_default_values() -> Result<(), Error> {
     // Skip test if MongoDB is not available
-    if check_mongodb_available().await.is_err() {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
+    match check_mongodb_available().await {
+        MongoDBState::Ok(_helper) => {}
+        MongoDBState::Broken(err) => {
+            return Err(err);
+        }
+        MongoDBState::Skipping => {
+            return Ok(());
+        }
     }
 
     let mut spec = create_test_spec();
@@ -464,9 +543,14 @@ async fn test_default_values() -> Result<(), Error> {
 #[nativelink_test]
 async fn dont_loop_forever_on_empty() -> Result<(), Error> {
     // Skip test if MongoDB is not available
-    if check_mongodb_available().await.is_err() {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
+    match check_mongodb_available().await {
+        MongoDBState::Ok(_helper) => {}
+        MongoDBState::Broken(err) => {
+            return Err(err);
+        }
+        MongoDBState::Skipping => {
+            return Ok(());
+        }
     }
 
     let store = create_test_store().await?;
@@ -502,9 +586,14 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
 #[nativelink_test]
 async fn test_partial_reads() -> Result<(), Error> {
     // Create test helper with automatic cleanup
-    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
+    let helper = match check_mongodb_available().await {
+        MongoDBState::Ok(helper) => helper,
+        MongoDBState::Broken(err) => {
+            return Err(err);
+        }
+        MongoDBState::Skipping => {
+            return Ok(());
+        }
     };
 
     let data = Bytes::from_static(b"Hello, MongoDB World!");
@@ -620,9 +709,14 @@ async fn test_database_lifecycle() -> Result<(), Error> {
 #[allow(clippy::use_debug)]
 async fn create_ten_cas_entries() -> Result<(), Error> {
     // Create test helper with automatic cleanup
-    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
+    let helper = match check_mongodb_available().await {
+        MongoDBState::Ok(helper) => helper,
+        MongoDBState::Broken(err) => {
+            return Err(err);
+        }
+        MongoDBState::Skipping => {
+            return Ok(());
+        }
     };
 
     eprintln!(
@@ -848,9 +942,14 @@ impl SchedulerStoreDecodeTo for TestSchedulerKey {
 #[nativelink_test]
 async fn test_scheduler_store_operations() -> Result<(), Error> {
     // Create test helper
-    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
+    let helper = match check_mongodb_available().await {
+        MongoDBState::Ok(helper) => helper,
+        MongoDBState::Broken(err) => {
+            return Err(err);
+        }
+        MongoDBState::Skipping => {
+            return Ok(());
+        }
     };
 
     eprintln!(
@@ -1062,6 +1161,8 @@ async fn test_non_w_config() -> Result<(), Error> {
         Error::new(Code::InvalidArgument, "write_concern_w not set, but j and/or timeout set. Please set 'write_concern_w' to a non-default value. See https://www.mongodb.com/docs/manual/reference/write-concern/#w-option for options.".to_string()),
         ExperimentalMongoStore::new(ExperimentalMongoSpec {
             connection_string: "mongodb://dummy".to_string(),
+            username: String::new(),
+            password: String::new(),
             database: "dummy".to_string(),
             cas_collection: "test_cas".to_string(),
             scheduler_collection: "test_scheduler".to_string(),
