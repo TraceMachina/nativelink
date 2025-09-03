@@ -1,0 +1,118 @@
+# Copyright 2025 The NativeLink Authors. All rights reserved.
+#
+# Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    See LICENSE file for details
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Bazel configuration for using NativeLink with Remote Persistent Workers
+# This configuration is optimized for JVM-based projects (Java, Scala, Kotlin)
+# and large TypeScript/JavaScript projects
+
+# Remote execution configuration
+build --remote_executor=grpc://localhost:50051
+build --remote_cache=grpc://localhost:50051
+
+# Enable remote persistent workers
+build --experimental_remote_mark_tool_inputs
+build --experimental_remote_persistent_workers
+
+# Instance name for the remote execution service
+build --remote_instance_name=main
+
+# Default remote execution properties
+build --remote_default_exec_properties=OSFamily=linux
+build --remote_default_exec_properties=cpu_count=4
+
+# Java/Scala persistent worker configuration
+build:java --strategy=Javac=remote
+build:java --strategy=JavaIjar=remote
+build:java --strategy=JavaDeployJar=remote
+build:java --strategy=JavaSourceJar=remote
+build:java --remote_default_exec_properties=persistentWorkerTool=javac
+build:java --worker_extra_flag=Javac=--persistent_worker
+build:java --worker_max_instances=Javac=5
+build:java --worker_quit_after_build=false
+
+# Scala persistent worker configuration
+build:scala --strategy=Scalac=remote
+build:scala --remote_default_exec_properties=persistentWorkerTool=scalac
+build:scala --worker_extra_flag=Scalac=--persistent_worker
+build:scala --worker_max_instances=Scalac=3
+build:scala --worker_quit_after_build=false
+
+# Kotlin persistent worker configuration
+build:kotlin --strategy=KotlinCompile=remote
+build:kotlin --remote_default_exec_properties=persistentWorkerTool=kotlinc
+build:kotlin --worker_extra_flag=KotlinCompile=--persistent_worker
+build:kotlin --worker_max_instances=KotlinCompile=3
+build:kotlin --worker_quit_after_build=false
+
+# TypeScript persistent worker configuration
+build:typescript --strategy=TypeScriptCompile=remote
+build:typescript --remote_default_exec_properties=persistentWorkerTool=tsc
+build:typescript --worker_extra_flag=TypeScriptCompile=--persistent_worker
+build:typescript --worker_max_instances=TypeScriptCompile=5
+build:typescript --worker_quit_after_build=false
+
+# Webpack bundling with persistent workers
+build:webpack --strategy=WebpackBundle=remote
+build:webpack --remote_default_exec_properties=persistentWorkerTool=webpack
+build:webpack --worker_extra_flag=WebpackBundle=--persistent_worker
+build:webpack --worker_max_instances=WebpackBundle=2
+build:webpack --worker_quit_after_build=false
+
+# General persistent worker settings
+build --worker_verbose
+build --worker_sandboxing=false  # Persistent workers don't support sandboxing
+build --worker_multiplex_sandboxing=false
+build --experimental_worker_strict_flagfiles
+build --experimental_worker_for_repo_fetching=off
+
+# Memory management for JVM workers
+build --worker_extra_flag=Javac=-J-Xmx2g
+build --worker_extra_flag=Scalac=-J-Xmx4g
+build --worker_extra_flag=KotlinCompile=-J-Xmx2g
+
+# Performance optimizations
+build --jobs=100
+build --remote_download_minimal
+build --experimental_remote_cache_compression
+build --experimental_remote_cache_async
+build --remote_timeout=3600
+
+# Debugging persistent workers (uncomment when needed)
+# build --worker_verbose
+# build --sandbox_debug
+# build --verbose_failures
+# build --subcommands=pretty_print
+
+# Platform-specific configurations
+build:linux --remote_default_exec_properties=OSFamily=linux
+build:linux --remote_default_exec_properties=container-image=docker://gcr.io/nativelink/ubuntu-22.04-java17
+
+build:macos --remote_default_exec_properties=OSFamily=darwin
+build:macos --remote_default_exec_properties=arch=x86_64
+
+build:windows --remote_default_exec_properties=OSFamily=windows
+build:windows --remote_default_exec_properties=arch=x64
+
+# CI configuration with persistent workers
+build:ci --config=java
+build:ci --config=remote
+build:ci --remote_upload_local_results=true
+build:ci --remote_timeout=3600
+build:ci --worker_quit_after_build=true  # Clean up workers after CI build
+
+# Development configuration
+build:dev --config=java
+build:dev --worker_quit_after_build=false
+build:dev --worker_max_instances=10
+build:dev --remote_download_outputs=toplevel

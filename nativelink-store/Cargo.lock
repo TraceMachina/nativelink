@@ -2494,7 +2494,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nativelink"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "async-lock",
  "axum",
@@ -2520,7 +2520,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -2594,7 +2594,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2784,7 +2784,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "async-lock",
  "bytes",
@@ -2792,7 +2792,6 @@ dependencies = [
  "formatx",
  "futures",
  "hyper 1.7.0",
- "hyper-util",
  "nativelink-config",
  "nativelink-error",
  "nativelink-macro",
@@ -3491,9 +3490,12 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "relative-path"
-version = "1.9.3"
+version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba39f3699c378cd8970968dcbff9c43159ea4cfbd88d43c00b22f2ef10a435d2"
+checksum = "bca40a312222d8ba74837cb474edef44b37f561da5f773981007a10bbaa992b0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "reqwest"
