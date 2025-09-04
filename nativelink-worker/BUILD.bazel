@@ -54,7 +54,6 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/local_worker_test.rs",
-        "tests/persistent_worker_runner_test.rs",
         "tests/persistent_worker_test.rs",
         "tests/running_actions_manager_test.rs",
     ],
