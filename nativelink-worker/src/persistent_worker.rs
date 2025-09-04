@@ -525,18 +525,4 @@ mod tests {
 
         assert!(PersistentWorkerKey::from_platform(&platform).is_none());
     }
-
-    // Commented out until tempfile is added to dependencies
-    // #[tokio::test]
-    // async fn test_persistent_worker_manager_creation() {
-    //     let temp_dir = tempfile::tempdir().unwrap();
-    //     let manager = PersistentWorkerManager::new(
-    //         temp_dir.path().to_path_buf(),
-    //         Duration::from_secs(300),
-    //         10,
-    //     );
-
-    //     let stats = manager.get_all_stats().await;
-    //     assert!(stats.is_empty());
-    // }
 }
