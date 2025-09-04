@@ -184,7 +184,7 @@ const Widgets = component$(() => {
         class="hidden md:flex bg-white text-black hover:bg-gray-200 transition-colors duration-300 px-4 h-8 rounded-xl justify-center items-center"
         rel="noreferrer"
       >
-        Try for free
+        Get Started
       </a>
     </div>
   );
