@@ -3231,7 +3231,8 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn core::error::Error>> 
     fs::create_dir_all(&root_action_directory).await?;
 
     // Take all but one FD permit away.
-    let _permits = stream::iter(1..fs::OPEN_FILE_SEMAPHORE.available_permits())
+    let available = fs::OPEN_FILE_SEMAPHORE.available_permits();
+    let _permits = stream::iter(0..available.saturating_sub(1))
         .then(|_| fs::OPEN_FILE_SEMAPHORE.acquire())
         .try_collect::<Vec<_>>()
         .await?;
