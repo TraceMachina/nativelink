@@ -234,6 +234,8 @@ impl PersistentWorkerInstance {
             request_id: format!("{}", action_info.unique_qualifier),
             cancel: false,
             verbosity: 0,
+            // sandbox_dir is intentionally left empty (default) as remote persistent
+            // workers do not support sandboxing per Bazel specification
             sandbox_dir: String::new(),
         };
 
