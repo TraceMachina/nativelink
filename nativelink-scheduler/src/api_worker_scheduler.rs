@@ -151,13 +151,18 @@ impl ApiWorkerSchedulerImpl {
         let worker_id = worker.id.clone();
 
         // Check if this worker supports persistent worker operations
-        if let Some(persistent_key) = worker.platform_properties.get("persistentWorkerKey") {
+        if let Some(persistent_key) = worker
+            .platform_properties
+            .properties
+            .get("persistentWorkerKey")
+        {
+            let key_str = format!("{persistent_key:?}");
             self.persistent_worker_pools
-                .entry(persistent_key.clone())
-                .or_insert_with(Vec::new)
+                .entry(key_str)
+                .or_default()
                 .push(worker_id.clone());
             tracing::info!(
-                "Registered worker {} for persistent key: {}",
+                "Registered worker {} for persistent key: {:?}",
                 worker_id,
                 persistent_key
             );
@@ -190,7 +195,7 @@ impl ApiWorkerSchedulerImpl {
         let result = self.workers.pop(worker_id);
 
         // Remove from persistent worker pools if applicable
-        for (_, workers) in self.persistent_worker_pools.iter_mut() {
+        for workers in self.persistent_worker_pools.values_mut() {
             workers.retain(|id| id != worker_id);
         }
 
@@ -219,18 +224,22 @@ impl ApiWorkerSchedulerImpl {
         platform_properties: &PlatformProperties,
     ) -> Option<WorkerId> {
         // First check if this is a persistent worker request
-        if let Some(persistent_key) = platform_properties.get("persistentWorkerKey") {
-            tracing::trace!("Looking for persistent worker with key: {}", persistent_key);
+        if let Some(persistent_key) = platform_properties.properties.get("persistentWorkerKey") {
+            tracing::trace!(
+                "Looking for persistent worker with key: {:?}",
+                persistent_key
+            );
 
+            let key_str = format!("{persistent_key:?}");
             // Try to find a dedicated persistent worker
-            if let Some(worker_ids) = self.persistent_worker_pools.get(persistent_key) {
+            if let Some(worker_ids) = self.persistent_worker_pools.get(&key_str) {
                 for worker_id in worker_ids {
                     if let Some(worker) = self.workers.peek(worker_id) {
                         if worker.can_accept_work()
                             && platform_properties.is_satisfied_by(&worker.platform_properties)
                         {
                             tracing::debug!(
-                                "Found persistent worker {} for key {}",
+                                "Found persistent worker {} for key {:?}",
                                 worker_id,
                                 persistent_key
                             );
@@ -241,7 +250,7 @@ impl ApiWorkerSchedulerImpl {
             }
 
             tracing::info!(
-                "No available persistent worker found for key: {}, will spawn new one",
+                "No available persistent worker found for key: {:?}, will spawn new one",
                 persistent_key
             );
         }

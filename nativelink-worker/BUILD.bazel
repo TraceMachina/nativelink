@@ -12,6 +12,8 @@ rust_library(
     srcs = [
         "src/lib.rs",
         "src/local_worker.rs",
+        "src/persistent_worker.rs",
+        "src/persistent_worker_runner.rs",
         "src/running_actions_manager.rs",
         "src/worker_api_client_wrapper.rs",
         "src/worker_utils.rs",
@@ -52,6 +54,8 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/local_worker_test.rs",
+        "tests/persistent_worker_runner_test.rs",
+        "tests/persistent_worker_test.rs",
         "tests/running_actions_manager_test.rs",
     ],
     compile_data = [
