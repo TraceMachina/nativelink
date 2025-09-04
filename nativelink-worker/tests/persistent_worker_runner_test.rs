@@ -63,5 +63,5 @@ async fn test_persistent_worker_runner_creation() {
 #[test]
 fn test_module_compiles() {
     // This test just ensures the test module compiles
-    assert!(true);
+    // No assertions needed - compilation itself is the test
 }
