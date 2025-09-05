@@ -342,3 +342,44 @@ bazel test @circl//... \
     --remote_executor=grpc://localhost:50051 \
     --keep_going
 ```
+
+## Persistent Workers
+:::note
+Persistent workers are long-lived processes that handle multiple build requests without restarting.
+This feature dramatically improves build performance, particularly for languages with high startup overhead like Java, where JVM initialization can take several seconds.
+:::
+
+### Java with Persistent Workers
+
+First build - starts the worker JVM
+
+
+```bash
+bazel build //java-persistent-worker:calculator_lib \
+    --config=java \
+    --config=persistent-workers \
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50051
+```
+Make a small change to trigger incremental compilation
+
+```bash
+echo "// Comment added at $(date)" >> java-persistent-worker/Calculator.java
+```
+
+Incremental build - reuses warm JVM (< 200ms instead of 3-4s)
+
+
+```bash
+bazel build //java-persistent-worker:calculator_lib \
+    --config=java \
+    --config=persistent-workers \
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50051
+```
+
+:::note
+The first build takes normal time (~3-4s) to start the worker.
+Subsequent incremental builds complete in under 200ms thanks to the warm JVM.
+This dramatic speedup makes a huge difference for iterative development.
+:::
