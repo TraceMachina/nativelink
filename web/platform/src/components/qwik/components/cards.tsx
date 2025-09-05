@@ -58,8 +58,10 @@ export const VideoCard = component$<VideoCard>(
 
 const pricing = [
   {
-    title: "Starter - $29/month",
+    title: "Starter",
     items: [
+      "Starting at $29/month",
+      "SOC2 and ISO27001",
       "1 TB of Cache Transfer",
       "100 cores of remote builds",
       "Community Support",
@@ -72,7 +74,9 @@ const pricing = [
   {
     title: "Enterprise",
     items: [
-      "SOC2",
+      "Custom pricing",
+      "SOC2 and ISO27001",
+      "Unlimited Cache Transfer",
       "Unlimited cores of remote builds",
       "Dedicated enterprise support",
     ],
