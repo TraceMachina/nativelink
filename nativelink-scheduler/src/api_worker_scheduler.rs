@@ -84,6 +84,9 @@ struct ApiWorkerSchedulerImpl {
     /// uploading results.
     pending_results: HashMap<WorkerId, HashSet<OperationId>>,
 
+    /// Map of persistentWorkerKey to dedicated worker pools for persistent workers
+    persistent_worker_pools: HashMap<String, Vec<WorkerId>>,
+
     /// The worker state manager.
     #[metric(group = "worker_state_manager")]
     worker_state_manager: Arc<dyn WorkerStateManager>,
@@ -146,6 +149,25 @@ impl ApiWorkerSchedulerImpl {
     /// Note: This function will not do any task matching.
     fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id.clone();
+
+        // Check if this worker supports persistent worker operations
+        if let Some(persistent_key) = worker
+            .platform_properties
+            .properties
+            .get("persistentWorkerKey")
+        {
+            let key_str = format!("{persistent_key:?}");
+            self.persistent_worker_pools
+                .entry(key_str)
+                .or_default()
+                .push(worker_id.clone());
+            tracing::info!(
+                "Registered worker {} for persistent key: {:?}",
+                worker_id,
+                persistent_key
+            );
+        }
+
         self.workers.put(worker_id.clone(), worker);
 
         // Worker is not cloneable, and we do not want to send the initial connection results until
@@ -171,6 +193,12 @@ impl ApiWorkerSchedulerImpl {
     /// running.
     fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
         let result = self.workers.pop(worker_id);
+
+        // Remove from persistent worker pools if applicable
+        for workers in self.persistent_worker_pools.values_mut() {
+            workers.retain(|id| id != worker_id);
+        }
+
         self.pending_results.remove(worker_id);
         self.worker_change_notify.notify_one();
         result
@@ -195,6 +223,39 @@ impl ApiWorkerSchedulerImpl {
         &self,
         platform_properties: &PlatformProperties,
     ) -> Option<WorkerId> {
+        // First check if this is a persistent worker request
+        if let Some(persistent_key) = platform_properties.properties.get("persistentWorkerKey") {
+            tracing::trace!(
+                "Looking for persistent worker with key: {:?}",
+                persistent_key
+            );
+
+            let key_str = format!("{persistent_key:?}");
+            // Try to find a dedicated persistent worker
+            if let Some(worker_ids) = self.persistent_worker_pools.get(&key_str) {
+                for worker_id in worker_ids {
+                    if let Some(worker) = self.workers.peek(worker_id) {
+                        if worker.can_accept_work()
+                            && platform_properties.is_satisfied_by(&worker.platform_properties)
+                        {
+                            tracing::debug!(
+                                "Found persistent worker {} for key {:?}",
+                                worker_id,
+                                persistent_key
+                            );
+                            return Some(worker_id.clone());
+                        }
+                    }
+                }
+            }
+
+            tracing::info!(
+                "No available persistent worker found for key: {:?}, will spawn new one",
+                persistent_key
+            );
+        }
+
+        // Fall back to regular worker matching
         let mut workers_iter = self.workers.iter();
         let workers_iter = match self.allocation_strategy {
             // Use rfind to get the least recently used that satisfies the properties.
@@ -450,6 +511,7 @@ impl ApiWorkerScheduler {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
                 pending_results: HashMap::new(),
+                persistent_worker_pools: HashMap::new(),
                 worker_state_manager: worker_state_manager.clone(),
                 allocation_strategy,
                 worker_change_notify,

@@ -81,3 +81,11 @@ build:llvm --extra_toolchains=@llvm_toolchain//:cc-toolchain-x86_64-linux
 # Java runtime to ensure hermeticity on the remote.
 build:java --java_runtime_version=remotejdk_21
 build:java --tool_java_runtime_version=remotejdk_21
+
+# Persistent workers configuration
+build:persistent-workers --strategy=Javac=worker
+build:persistent-workers --worker_sandboxing=false
+build:persistent-workers --experimental_worker_multiplex
+build:persistent-workers --experimental_worker_multiplex_sandboxing=false
+build:persistent-workers --worker_max_instances=Javac=4
+build:persistent-workers --worker_quit_after_build=false
