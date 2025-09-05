@@ -346,7 +346,7 @@ bazel test @circl//... \
 ## Persistent Workers
 :::note
 Persistent workers are long-lived processes that handle multiple build requests without restarting.
-This feature dramatically improves build performance, particularly for languages with high startup overhead like Java, where JVM initialization can take several seconds.
+This feature dramatically improves build performance, particularly for JVM-based languages such as Java, Kotlin, and Scala, where JVM initialization can take several seconds.
 :::
 
 ### Java with Persistent Workers
@@ -380,6 +380,6 @@ bazel build //java-persistent-worker:calculator_lib \
 
 :::note
 The first build takes normal time (~3-4s) to start the worker.
-Subsequent incremental builds complete in under 200ms thanks to the warm JVM.
-This dramatic speedup makes a huge difference for iterative development.
+Subsequent incremental builds complete in under 200ms(thanks to the warm JVM).
+This dramatic speedup makes a significant difference for iterative development.
 :::
