@@ -62,7 +62,7 @@ const pricing = [
     items: [
       "Starting at $29/month",
       "SOC2 and ISO27001",
-      "1 TB of Cache Transfer",
+      "1 TB of cache transfer",
       "100 cores of remote builds",
       "Community Support",
     ],
@@ -76,7 +76,7 @@ const pricing = [
     items: [
       "Custom pricing",
       "SOC2 and ISO27001",
-      "Unlimited Cache Transfer",
+      "Unlimited cache transfer",
       "Unlimited cores of remote builds",
       "Dedicated enterprise support",
     ],
