@@ -58,7 +58,7 @@ export const VideoCard = component$<VideoCard>(
 
 const pricing = [
   {
-    title: "Free Preview",
+    title: "Starter - $29/month",
     items: [
       "1 TB of Cache Transfer",
       "100 cores of remote builds",
