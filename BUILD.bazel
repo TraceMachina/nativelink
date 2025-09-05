@@ -39,6 +39,19 @@ rust_binary(
     ],
 )
 
+rust_binary(
+    name = "store_tester",
+    srcs = [
+        "src/bin/store_tester.rs",
+    ],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:tokio",
+    ],
+)
+
 filegroup(
     name = "docs",
     srcs = [
