@@ -1,10 +1,12 @@
 // Copyright 2025 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Business Source License, Version 1.1 (the "License");
 // you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// You may requested a copy of the License by emailing contact@nativelink.com.
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+// Use of this module requires an enterprise license agreement, which can be
+// attained by emailing contact@nativelink.com or signing up for Nativelink
+// Cloud at app.nativelink.com.
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,

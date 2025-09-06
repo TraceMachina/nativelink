@@ -146,6 +146,10 @@ export const starlightConfig = {
           label: "Chromium",
           link: `${docsRoot}/deployment-examples/chromium`,
         },
+        {
+          label: "Metrics and Observability",
+          link: `${docsRoot}/deployment-examples/metrics`,
+        },
       ],
     },
     {
