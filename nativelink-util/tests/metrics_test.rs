@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use nativelink_util::action_messages::{ActionResult, ActionStage};
 use nativelink_util::metrics::{
-    CACHE_METRICS, CacheMetricAttrs, EXECUTION_METRICS, ExecutionMetricAttrs,
+    CACHE_METRICS, CacheMetricAttrs, EXECUTION_METRICS, ExecutionMetricAttrs, ExecutionStage,
     make_execution_attributes,
 };
 use opentelemetry::KeyValue;
@@ -111,4 +112,87 @@ fn test_metrics_lazy_initialization() {
     let _execution_metrics = &*EXECUTION_METRICS;
 
     // If we got here without panicking, the metrics were initialized successfully
+}
+
+#[test]
+fn test_action_stage_to_execution_stage_conversion() {
+    // Test conversion from owned ActionStage values
+    assert_eq!(
+        ExecutionStage::from(ActionStage::Unknown),
+        ExecutionStage::Unknown
+    );
+    assert_eq!(
+        ExecutionStage::from(ActionStage::CacheCheck),
+        ExecutionStage::CacheCheck
+    );
+    assert_eq!(
+        ExecutionStage::from(ActionStage::Queued),
+        ExecutionStage::Queued
+    );
+    assert_eq!(
+        ExecutionStage::from(ActionStage::Executing),
+        ExecutionStage::Executing
+    );
+
+    // Test that Completed variants map to ExecutionStage::Completed
+    let action_result = ActionResult::default();
+    assert_eq!(
+        ExecutionStage::from(ActionStage::Completed(action_result.clone())),
+        ExecutionStage::Completed
+    );
+
+    // Note: We can't easily test CompletedFromCache without creating a ProtoActionResult,
+    // but the implementation handles it the same as Completed
+}
+
+#[test]
+fn test_action_stage_ref_to_execution_stage_conversion() {
+    // Test conversion from ActionStage references
+    let unknown = ActionStage::Unknown;
+    let cache_check = ActionStage::CacheCheck;
+    let queued = ActionStage::Queued;
+    let executing = ActionStage::Executing;
+    let completed = ActionStage::Completed(ActionResult::default());
+
+    assert_eq!(ExecutionStage::from(&unknown), ExecutionStage::Unknown);
+    assert_eq!(
+        ExecutionStage::from(&cache_check),
+        ExecutionStage::CacheCheck
+    );
+    assert_eq!(ExecutionStage::from(&queued), ExecutionStage::Queued);
+    assert_eq!(ExecutionStage::from(&executing), ExecutionStage::Executing);
+    assert_eq!(ExecutionStage::from(&completed), ExecutionStage::Completed);
+}
+
+#[test]
+fn test_action_stage_conversion_avoids_clone() {
+    use nativelink_util::action_messages::{FileInfo, NameOrPath};
+    use nativelink_util::common::DigestInfo;
+
+    // This test verifies that using a reference doesn't clone the large ActionResult
+    let large_file_info = FileInfo {
+        name_or_path: NameOrPath::Path("test.txt".to_string()),
+        digest: DigestInfo::new([0u8; 32], 100),
+        is_executable: false,
+    };
+    let large_action_result = ActionResult {
+        output_files: vec![large_file_info; 1000], // Large vector to make clone expensive
+        ..Default::default()
+    };
+    let completed = ActionStage::Completed(large_action_result);
+
+    // Using a reference should be fast even with large data
+    let start = std::time::Instant::now();
+    for _ in 0..10000 {
+        let _stage = ExecutionStage::from(&completed);
+    }
+    let elapsed = start.elapsed();
+
+    // This should complete very quickly since we're not cloning
+    // In practice, 10000 conversions should take less than 1ms
+    assert!(
+        elapsed.as_millis() < 100,
+        "Reference conversion took too long: {:?}",
+        elapsed
+    );
 }
