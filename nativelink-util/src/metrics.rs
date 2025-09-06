@@ -16,6 +16,8 @@ use std::sync::LazyLock;
 
 use opentelemetry::{InstrumentationScope, KeyValue, Value, global, metrics};
 
+use crate::action_messages::ActionStage;
+
 // Metric attribute keys for cache operations.
 pub const CACHE_TYPE: &str = "cache.type";
 pub const CACHE_OPERATION: &str = "cache.operation.name";
@@ -107,6 +109,20 @@ impl From<ExecutionStage> for Value {
             ExecutionStage::Queued => Self::from("queued"),
             ExecutionStage::Executing => Self::from("executing"),
             ExecutionStage::Completed => Self::from("completed"),
+        }
+    }
+}
+
+impl From<ActionStage> for ExecutionStage {
+    fn from(stage: ActionStage) -> Self {
+        match stage {
+            ActionStage::Unknown => ExecutionStage::Unknown,
+            ActionStage::CacheCheck => ExecutionStage::CacheCheck,
+            ActionStage::Queued => ExecutionStage::Queued,
+            ActionStage::Executing => ExecutionStage::Executing,
+            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => {
+                ExecutionStage::Completed
+            }
         }
     }
 }

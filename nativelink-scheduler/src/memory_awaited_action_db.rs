@@ -648,57 +648,17 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 metrics.execution_stage_transitions.add(1, &base_attrs);
 
                 // Update active count for old stage
-                let old_stage_attrs = match old_stage {
-                    ActionStage::Unknown => vec![opentelemetry::KeyValue::new(
-                        nativelink_util::metrics::EXECUTION_STAGE,
-                        ExecutionStage::Unknown,
-                    )],
-                    ActionStage::CacheCheck => vec![opentelemetry::KeyValue::new(
-                        nativelink_util::metrics::EXECUTION_STAGE,
-                        ExecutionStage::CacheCheck,
-                    )],
-                    ActionStage::Queued => vec![opentelemetry::KeyValue::new(
-                        nativelink_util::metrics::EXECUTION_STAGE,
-                        ExecutionStage::Queued,
-                    )],
-                    ActionStage::Executing => vec![opentelemetry::KeyValue::new(
-                        nativelink_util::metrics::EXECUTION_STAGE,
-                        ExecutionStage::Executing,
-                    )],
-                    ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => {
-                        vec![opentelemetry::KeyValue::new(
-                            nativelink_util::metrics::EXECUTION_STAGE,
-                            ExecutionStage::Completed,
-                        )]
-                    }
-                };
+                let old_stage_attrs = vec![opentelemetry::KeyValue::new(
+                    nativelink_util::metrics::EXECUTION_STAGE,
+                    ExecutionStage::from(old_stage.clone()),
+                )];
                 metrics.execution_active_count.add(-1, &old_stage_attrs);
 
                 // Update active count for new stage
-                let new_stage_attrs = match new_stage {
-                    ActionStage::Unknown => vec![opentelemetry::KeyValue::new(
-                        nativelink_util::metrics::EXECUTION_STAGE,
-                        ExecutionStage::Unknown,
-                    )],
-                    ActionStage::CacheCheck => vec![opentelemetry::KeyValue::new(
-                        nativelink_util::metrics::EXECUTION_STAGE,
-                        ExecutionStage::CacheCheck,
-                    )],
-                    ActionStage::Queued => vec![opentelemetry::KeyValue::new(
-                        nativelink_util::metrics::EXECUTION_STAGE,
-                        ExecutionStage::Queued,
-                    )],
-                    ActionStage::Executing => vec![opentelemetry::KeyValue::new(
-                        nativelink_util::metrics::EXECUTION_STAGE,
-                        ExecutionStage::Executing,
-                    )],
-                    ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => {
-                        vec![opentelemetry::KeyValue::new(
-                            nativelink_util::metrics::EXECUTION_STAGE,
-                            ExecutionStage::Completed,
-                        )]
-                    }
-                };
+                let new_stage_attrs = vec![opentelemetry::KeyValue::new(
+                    nativelink_util::metrics::EXECUTION_STAGE,
+                    ExecutionStage::from(new_stage.clone()),
+                )];
                 metrics.execution_active_count.add(1, &new_stage_attrs);
 
                 // Record completion metrics
