@@ -87,7 +87,7 @@ impl From<CacheOperationResult> for Value {
 }
 
 /// Remote execution stages for metrics classification.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionStage {
     /// Unknown stage
     Unknown,
@@ -115,6 +115,20 @@ impl From<ExecutionStage> for Value {
 
 impl From<ActionStage> for ExecutionStage {
     fn from(stage: ActionStage) -> Self {
+        match stage {
+            ActionStage::Unknown => ExecutionStage::Unknown,
+            ActionStage::CacheCheck => ExecutionStage::CacheCheck,
+            ActionStage::Queued => ExecutionStage::Queued,
+            ActionStage::Executing => ExecutionStage::Executing,
+            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => {
+                ExecutionStage::Completed
+            }
+        }
+    }
+}
+
+impl From<&ActionStage> for ExecutionStage {
+    fn from(stage: &ActionStage) -> Self {
         match stage {
             ActionStage::Unknown => ExecutionStage::Unknown,
             ActionStage::CacheCheck => ExecutionStage::CacheCheck,

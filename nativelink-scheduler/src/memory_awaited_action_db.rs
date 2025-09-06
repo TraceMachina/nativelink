@@ -649,14 +649,14 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 // Update active count for old stage
                 let old_stage_attrs = vec![opentelemetry::KeyValue::new(
                     nativelink_util::metrics::EXECUTION_STAGE,
-                    ExecutionStage::from(old_stage.clone()),
+                    ExecutionStage::from(old_stage),
                 )];
                 metrics.execution_active_count.add(-1, &old_stage_attrs);
 
                 // Update active count for new stage
                 let new_stage_attrs = vec![opentelemetry::KeyValue::new(
                     nativelink_util::metrics::EXECUTION_STAGE,
-                    ExecutionStage::from(new_stage.clone()),
+                    ExecutionStage::from(new_stage),
                 )];
                 metrics.execution_active_count.add(1, &new_stage_attrs);
 
