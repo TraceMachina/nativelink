@@ -662,17 +662,14 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
 
                 // Record completion metrics
                 if let ActionStage::Completed(action_result) = new_stage {
-                    let result_attrs = if action_result.exit_code == 0 {
-                        vec![opentelemetry::KeyValue::new(
-                            nativelink_util::metrics::EXECUTION_RESULT,
-                            ExecutionResult::Success,
-                        )]
-                    } else {
-                        vec![opentelemetry::KeyValue::new(
-                            nativelink_util::metrics::EXECUTION_RESULT,
-                            ExecutionResult::Failure,
-                        )]
-                    };
+                    let result_attrs = vec![opentelemetry::KeyValue::new(
+                        nativelink_util::metrics::EXECUTION_RESULT,
+                        if action_result.exit_code == 0 {
+                            ExecutionResult::Success
+                        } else {
+                            ExecutionResult::Failure
+                        },
+                    )];
                     metrics.execution_completed_count.add(1, &result_attrs);
                 } else if let ActionStage::CompletedFromCache(_) = new_stage {
                     let result_attrs = vec![opentelemetry::KeyValue::new(
