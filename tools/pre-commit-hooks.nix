@@ -185,6 +185,11 @@ in {
     pass_filenames = false;
   };
 
+  pretty-format-json = {
+    enable = true;
+    args = ["--autofix" "--top-keys" "name,type"];
+  };
+
   # json5
   formatjson5 = {
     description = "Format json5 files";
