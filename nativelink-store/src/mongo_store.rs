@@ -23,9 +23,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt, TryStreamExt};
 use mongodb::bson::{Bson, Document, doc};
-use mongodb::options::{
-    ClientOptions, FindOptions, IndexOptions, ReturnDocument, WriteConcern,
-};
+use mongodb::options::{ClientOptions, FindOptions, IndexOptions, ReturnDocument, WriteConcern};
 use mongodb::{Client as MongoClient, Collection, Database, IndexModel};
 use nativelink_config::stores::ExperimentalMongoSpec;
 use nativelink_error::{Code, Error, make_err, make_input_err};
