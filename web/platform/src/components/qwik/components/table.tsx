@@ -104,7 +104,7 @@ export const FeatureTable = component$(() => {
             Feature
           </th>
           <th class="p-2 w-[30%] md:w-[35%] border-r border-[#2b2b2b] text-center font-semibold">
-            Free Preview
+            Starter ($29/mo)
           </th>
           <th class="p-2 w-[30%] md:w-[35%] text-center font-semibold">
             Enterprise

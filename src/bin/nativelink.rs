@@ -838,6 +838,10 @@ fn get_config() -> Result<CasConfig, Error> {
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
+    if cfg!(feature = "worker_find_logging") {
+        info!("worker_find_logging enabled");
+    }
+
     let mut cfg = get_config()?;
 
     let global_cfg = if let Some(global_cfg) = &mut cfg.global {

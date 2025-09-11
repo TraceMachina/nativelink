@@ -173,8 +173,10 @@ impl From<String> for WorkerId {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionUniqueQualifier {
     /// The action is cacheable.
+    #[serde(alias = "Cachable")] // Pre 0.7.0 spelling
     Cacheable(ActionUniqueKey),
     /// The action is uncacheable.
+    #[serde(alias = "Uncachable")] // Pre 0.7.0 spelling
     Uncacheable(ActionUniqueKey),
 }
 

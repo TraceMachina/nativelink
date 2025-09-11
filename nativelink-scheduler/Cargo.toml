@@ -5,6 +5,9 @@ edition = "2024"
 name = "nativelink-scheduler"
 version = "0.7.0"
 
+[features]
+worker_find_logging = ["nativelink-util/worker_find_logging"]
+
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
 nativelink-error = { path = "../nativelink-error" }

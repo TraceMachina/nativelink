@@ -79,7 +79,7 @@ export const Hero = component$(() => {
             href="https://app.nativelink.com"
             class=" w-1/2 h-10 gap-2 text-sm flex items-center justify-center rounded-xl border border-solid bg-white text-black transition-all duration-200 hover:border-white hover:bg-black hover:text-white md:h-[37px] md:w-[193px]"
           >
-            <Cloud /> Sign up for free
+            <Cloud /> Sign up today
           </a>
 
           <a
