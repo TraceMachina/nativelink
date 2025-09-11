@@ -1,19 +1,13 @@
 {
   "name": "@nativelink/persistent-workers-test",
-  "version": "1.0.0",
-  "description": "Integration tests for NativeLink Remote Persistent Workers",
-  "main": "dist/index.js",
-  "scripts": {
-    "build": "tsc",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "test:integration": "npm run build && node dist/integration.test.js",
-    "lint": "eslint src/**/*.ts",
-    "type-check": "tsc --noEmit"
-  },
-  "keywords": ["nativelink", "persistent-workers", "remote-execution", "bazel"],
   "author": "NativeLink Authors",
-  "license": "Apache-2.0",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.9.0",
+    "@grpc/proto-loader": "^0.7.0",
+    "protobufjs": "^7.2.0",
+    "uuid": "^9.0.0"
+  },
+  "description": "Integration tests for NativeLink Remote Persistent Workers",
   "devDependencies": {
     "@types/jest": "^29.5.0",
     "@types/node": "^20.0.0",
@@ -24,10 +18,21 @@
     "ts-jest": "^29.1.0",
     "typescript": "^5.0.0"
   },
-  "dependencies": {
-    "@grpc/grpc-js": "^1.9.0",
-    "@grpc/proto-loader": "^0.7.0",
-    "protobufjs": "^7.2.0",
-    "uuid": "^9.0.0"
-  }
+  "keywords": [
+    "nativelink",
+    "persistent-workers",
+    "remote-execution",
+    "bazel"
+  ],
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint src/**/*.ts",
+    "test": "jest",
+    "test:integration": "npm run build && node dist/integration.test.js",
+    "test:watch": "jest --watch",
+    "type-check": "tsc --noEmit"
+  },
+  "version": "1.0.0"
 }

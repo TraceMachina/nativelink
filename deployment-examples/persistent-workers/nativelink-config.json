@@ -1,134 +1,32 @@
 {
-  "stores": {
-    "AC_FAST_SLOW_STORE": {
-      "fast_slow": {
-        "fast": {
-          "filesystem": {
-            "content_path": "/tmp/nativelink/content_path-ac",
-            "temp_path": "/tmp/nativelink/tmp_path-ac",
-            "eviction_policy": {
-              "max_bytes": 5000000000
-            }
-          }
-        },
-        "slow": {
-          "noop": {}
-        }
-      }
-    },
-    "CAS_FAST_SLOW_STORE": {
-      "fast_slow": {
-        "fast": {
-          "filesystem": {
-            "content_path": "/tmp/nativelink/content_path-cas",
-            "temp_path": "/tmp/nativelink/tmp_path-cas",
-            "eviction_policy": {
-              "max_bytes": 5000000000
-            }
-          }
-        },
-        "slow": {
-          "noop": {}
-        }
-      }
-    }
-  },
   "schedulers": {
     "MAIN_SCHEDULER": {
       "simple": {
+        "allocation_strategy": "least_recently_used",
+        "max_job_retries": 3,
         "supported_platform_properties": {
+          "OSFamily": "exact",
+          "container-image": "exact",
           "cpu_count": "minimum",
+          "disk_read_bps": "minimum",
+          "disk_read_iops": "minimum",
+          "disk_write_bps": "minimum",
+          "disk_write_iops": "minimum",
           "memory_kb": "minimum",
           "network_kbps": "minimum",
-          "disk_read_iops": "minimum",
-          "disk_read_bps": "minimum",
-          "disk_write_iops": "minimum",
-          "disk_write_bps": "minimum",
           "persistentWorkerKey": "exact",
-          "persistentWorkerTool": "exact",
-          "OSFamily": "exact",
-          "container-image": "exact"
+          "persistentWorkerTool": "exact"
         },
-        "worker_timeout_s": 60,
-        "max_job_retries": 3,
-        "allocation_strategy": "least_recently_used",
         "work_queue_timeout_s": 60,
         "worker_pool_config": {
           "max_persistent_workers": 20,
           "persistent_worker_idle_timeout_s": 300,
           "persistent_worker_max_instances_per_key": 5
-        }
+        },
+        "worker_timeout_s": 60
       }
     }
   },
-  "workers": [
-    {
-      "local": {
-        "worker_api_endpoint": {
-          "uri": "grpc://127.0.0.1:50061"
-        },
-        "entrypoint_cmd": "/nativelink/bin/nativelink_worker_wrapper.sh",
-        "work_dir": "/tmp/nativelink/work",
-        "cas_fast_slow_store": "CAS_FAST_SLOW_STORE",
-        "upload_action_result": {
-          "ac_store": "AC_FAST_SLOW_STORE"
-        },
-        "platform_properties": {
-          "cpu_count": {
-            "values": ["16"]
-          },
-          "memory_kb": {
-            "values": ["64000000"]
-          },
-          "network_kbps": {
-            "values": ["100000"]
-          },
-          "OSFamily": {
-            "values": ["linux"]
-          }
-        },
-        "persistent_worker_config": {
-          "enabled": true,
-          "runner_mode": true,
-          "max_worker_instances": 10,
-          "worker_idle_timeout_s": 300,
-          "fork_strategy": "on_demand",
-          "supported_tools": [
-            {
-              "tool": "javac",
-              "max_instances": 5,
-              "memory_limit_mb": 2048,
-              "cpu_limit": 2
-            },
-            {
-              "tool": "scalac",
-              "max_instances": 3,
-              "memory_limit_mb": 4096,
-              "cpu_limit": 4
-            },
-            {
-              "tool": "kotlinc",
-              "max_instances": 3,
-              "memory_limit_mb": 2048,
-              "cpu_limit": 2
-            },
-            {
-              "tool": "tsc",
-              "max_instances": 5,
-              "memory_limit_mb": 1024,
-              "cpu_limit": 2
-            },
-            {
-              "tool": "webpack",
-              "max_instances": 2,
-              "memory_limit_mb": 4096,
-              "cpu_limit": 4
-            }
-          ]
-        }
-      }
-    }
-  ],
   "servers": [
     {
       "name": "public",
@@ -138,20 +36,9 @@
         }
       },
       "services": {
-        "cas": {
-          "main": {
-            "cas_store": "CAS_FAST_SLOW_STORE"
-          }
-        },
         "ac": {
           "main": {
             "ac_store": "AC_FAST_SLOW_STORE"
-          }
-        },
-        "execution": {
-          "main": {
-            "cas_store": "CAS_FAST_SLOW_STORE",
-            "scheduler": "MAIN_SCHEDULER"
           }
         },
         "capabilities": {
@@ -159,6 +46,17 @@
             "remote_execution": {
               "scheduler": "MAIN_SCHEDULER"
             }
+          }
+        },
+        "cas": {
+          "main": {
+            "cas_store": "CAS_FAST_SLOW_STORE"
+          }
+        },
+        "execution": {
+          "main": {
+            "cas_store": "CAS_FAST_SLOW_STORE",
+            "scheduler": "MAIN_SCHEDULER"
           }
         },
         "worker_api": {
@@ -174,10 +72,120 @@
         }
       },
       "services": {
+        "admin": {},
         "worker_api": {
           "scheduler": "MAIN_SCHEDULER"
+        }
+      }
+    }
+  ],
+  "stores": {
+    "AC_FAST_SLOW_STORE": {
+      "fast_slow": {
+        "fast": {
+          "filesystem": {
+            "content_path": "/tmp/nativelink/content_path-ac",
+            "eviction_policy": {
+              "max_bytes": 5000000000
+            },
+            "temp_path": "/tmp/nativelink/tmp_path-ac"
+          }
         },
-        "admin": {}
+        "slow": {
+          "noop": {}
+        }
+      }
+    },
+    "CAS_FAST_SLOW_STORE": {
+      "fast_slow": {
+        "fast": {
+          "filesystem": {
+            "content_path": "/tmp/nativelink/content_path-cas",
+            "eviction_policy": {
+              "max_bytes": 5000000000
+            },
+            "temp_path": "/tmp/nativelink/tmp_path-cas"
+          }
+        },
+        "slow": {
+          "noop": {}
+        }
+      }
+    }
+  },
+  "workers": [
+    {
+      "local": {
+        "cas_fast_slow_store": "CAS_FAST_SLOW_STORE",
+        "entrypoint_cmd": "/nativelink/bin/nativelink_worker_wrapper.sh",
+        "persistent_worker_config": {
+          "enabled": true,
+          "fork_strategy": "on_demand",
+          "max_worker_instances": 10,
+          "runner_mode": true,
+          "supported_tools": [
+            {
+              "cpu_limit": 2,
+              "max_instances": 5,
+              "memory_limit_mb": 2048,
+              "tool": "javac"
+            },
+            {
+              "cpu_limit": 4,
+              "max_instances": 3,
+              "memory_limit_mb": 4096,
+              "tool": "scalac"
+            },
+            {
+              "cpu_limit": 2,
+              "max_instances": 3,
+              "memory_limit_mb": 2048,
+              "tool": "kotlinc"
+            },
+            {
+              "cpu_limit": 2,
+              "max_instances": 5,
+              "memory_limit_mb": 1024,
+              "tool": "tsc"
+            },
+            {
+              "cpu_limit": 4,
+              "max_instances": 2,
+              "memory_limit_mb": 4096,
+              "tool": "webpack"
+            }
+          ],
+          "worker_idle_timeout_s": 300
+        },
+        "platform_properties": {
+          "OSFamily": {
+            "values": [
+              "linux"
+            ]
+          },
+          "cpu_count": {
+            "values": [
+              "16"
+            ]
+          },
+          "memory_kb": {
+            "values": [
+              "64000000"
+            ]
+          },
+          "network_kbps": {
+            "values": [
+              "100000"
+            ]
+          }
+        },
+        "upload_action_result": {
+          "ac_store": "AC_FAST_SLOW_STORE"
+        },
+        "work_dir": "/tmp/nativelink/work",
+        "worker_api_endpoint": {
+          "uri": "grpc://127.0.0.1:50061"
+        }
       }
     }
   ]
