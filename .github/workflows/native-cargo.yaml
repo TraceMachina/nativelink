@@ -46,3 +46,7 @@ jobs:
 
       - name: Test on ${{ runner.os }}
         run: cargo test --all --profile=smol
+
+      # Not a default target, but need to make sure we don't actually break it
+      - name: Test worker_find_logging
+        run: cargo build --features worker_find_logging --all-targets
