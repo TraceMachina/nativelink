@@ -88,7 +88,7 @@
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
           filter = path: type:
-            (builtins.match "^.*(examples/.+\.json5|data/SekienAkashita\.jpg|nativelink-config/README\.md)" path != null)
+            (builtins.match "^.*(examples/.+\.json5|data/.+|nativelink-config/README\.md)" path != null)
             || ((craneLibFor pkgs).filterCargoSources path type);
         };
 
@@ -161,6 +161,8 @@
           (craneLibFor p).buildPackage ((commonArgsFor p)
             // {
               cargoArtifacts = cargoArtifactsFor p;
+              # Enable this for debugging worker scheduler issues
+              # cargoExtraArgs = "--features worker_find_logging";
             });
 
         nativeTargetPkgs =

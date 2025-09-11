@@ -89,6 +89,7 @@ rust_test_suite(
     name = "integration",
     timeout = "short",
     srcs = [
+        "tests/action_messages_test.rs",
         "tests/buf_channel_test.rs",
         "tests/channel_body_for_tests_test.rs",
         "tests/common_test.rs",
@@ -104,6 +105,8 @@ rust_test_suite(
     ],
     compile_data = [
         "tests/data/SekienAkashita.jpg",
+        "tests/data/action_message_cachable_060.json",
+        "tests/data/action_message_uncachable_060.json",
     ],
     proc_macro_deps = [
         "//nativelink-macro",
