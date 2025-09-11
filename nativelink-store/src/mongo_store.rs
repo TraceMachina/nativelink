@@ -24,7 +24,7 @@ use bytes::Bytes;
 use futures::stream::{Stream, StreamExt, TryStreamExt};
 use mongodb::bson::{Bson, Document, doc};
 use mongodb::options::{
-    ClientOptions, Credential, FindOptions, IndexOptions, ReturnDocument, WriteConcern,
+    ClientOptions, FindOptions, IndexOptions, ReturnDocument, WriteConcern,
 };
 use mongodb::{Client as MongoClient, Collection, Database, IndexModel};
 use nativelink_config::stores::ExperimentalMongoSpec;
@@ -164,21 +164,6 @@ impl ExperimentalMongoStore {
                     "Failed to parse MongoDB connection string: {e}"
                 )
             })?;
-
-        if !spec.username.is_empty() || !spec.password.is_empty() {
-            if client_options.credential.is_some() {
-                return Err(make_err!(
-                    Code::InvalidArgument,
-                    "Can't set credentials in both the connection_string and username/password"
-                ));
-            }
-            client_options.credential = Some(
-                Credential::builder()
-                    .username(spec.username)
-                    .password(spec.password)
-                    .build(),
-            );
-        }
 
         client_options.server_selection_timeout =
             Some(Duration::from_millis(spec.connection_timeout_ms));

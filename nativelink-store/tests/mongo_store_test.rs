@@ -53,8 +53,6 @@ fn create_test_spec_with_key_prefix(key_prefix: Option<String>) -> ExperimentalM
 
     ExperimentalMongoSpec {
         connection_string: std::env::var("NATIVELINK_TEST_MONGO_URL").unwrap_or(default_connection),
-        username: String::new(),
-        password: String::new(),
         database: format!(
             "nltest_{}_{}",
             timestamp,
@@ -215,11 +213,7 @@ async fn connect_with_username_and_password() -> Result<(), Error> {
         }
     }
 
-    let mut spec = create_test_spec();
-    // These are incorrect, but should allow us to connect and fail with bad login
-    // v.s. "cannot do login at all" or "config failure"
-    spec.username = "foo".to_string();
-    spec.password = "bar".to_string();
+    let spec = create_test_spec();
     let store = ExperimentalMongoStore::new(spec)
         .await
         .expect("Working store");
@@ -1161,8 +1155,6 @@ async fn test_non_w_config() -> Result<(), Error> {
         Error::new(Code::InvalidArgument, "write_concern_w not set, but j and/or timeout set. Please set 'write_concern_w' to a non-default value. See https://www.mongodb.com/docs/manual/reference/write-concern/#w-option for options.".to_string()),
         ExperimentalMongoStore::new(ExperimentalMongoSpec {
             connection_string: "mongodb://dummy".to_string(),
-            username: String::new(),
-            password: String::new(),
             database: "dummy".to_string(),
             cas_collection: "test_cas".to_string(),
             scheduler_collection: "test_scheduler".to_string(),
