@@ -189,7 +189,21 @@ impl From<tokio::task::JoinError> for Error {
 
 impl From<serde_json5::Error> for Error {
     fn from(err: serde_json5::Error) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
+        match err {
+            serde_json5::Error::Message { msg, location } => {
+                if let Some(has_location) = location {
+                    make_err!(
+                        Code::Internal,
+                        "line {}, column {} - {}",
+                        has_location.line,
+                        has_location.column,
+                        msg
+                    )
+                } else {
+                    make_err!(Code::Internal, "{}", msg)
+                }
+            }
+        }
     }
 }
 
