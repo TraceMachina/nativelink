@@ -38,6 +38,7 @@ hello@nativelink.com
 OCI
 onboarding
 OSSF
+protobuf
 Reclient
 Rosetta
 [Rr]epository
