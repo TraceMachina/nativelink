@@ -31,6 +31,9 @@ pub struct WorkRequest {
     /// Verbosity level for logging
     #[prost(int32, tag = "5")]
     pub verbosity: i32,
+    /// Sandbox directory for this request
+    #[prost(string, tag = "6")]
+    pub sandbox_dir: ::prost::alloc::string::String,
 }
 /// Input file for work request
 #[derive(Clone, PartialEq, ::prost::Message)]

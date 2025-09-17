@@ -35,6 +35,9 @@ message WorkRequest {
 
   // Verbosity level for logging
   int32 verbosity = 5;
+
+  // Sandbox directory for this request
+  string sandbox_dir = 6;
 }
 
 // Input file for work request
