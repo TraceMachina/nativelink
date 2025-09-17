@@ -14,6 +14,7 @@
 
 pub mod ac_utils;
 pub mod cas_utils;
+pub mod common_s3_utils;
 pub mod completeness_checking_store;
 pub mod compression_store;
 pub mod dedup_store;
@@ -27,6 +28,8 @@ pub mod grpc_store;
 pub mod memory_store;
 pub mod mongo_store;
 pub mod noop_store;
+pub mod ontap_s3_existence_cache_store;
+pub mod ontap_s3_store;
 pub mod redis_store;
 mod redis_utils;
 pub mod ref_store;

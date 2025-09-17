@@ -45,7 +45,6 @@ rust_library(
         "@crates//:opentelemetry",
         "@crates//:opentelemetry-semantic-conventions",
         "@crates//:parking_lot",
-        "@crates//:rand",
         "@crates//:scopeguard",
         "@crates//:serde",
         "@crates//:serde_json",
