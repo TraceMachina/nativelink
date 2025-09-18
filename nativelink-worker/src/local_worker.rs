@@ -28,8 +28,7 @@ use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
-    execute_result,
+    ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -70,7 +69,7 @@ const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 /// If this value gets modified the documentation in `cas_server.rs` must also be updated.
 const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_secs(1200); // 20 mins.
 
-struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
+struct LocalWorkerImpl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> {
     config: &'a LocalWorkerConfig,
     // According to the tonic documentation it is a cheap operation to clone this.
     grpc_client: T,
@@ -262,12 +261,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 let actions_in_transit = self.actions_in_transit.clone();
                                 let worker_id = self.worker_id.clone();
                                 let running_actions_manager = self.running_actions_manager.clone();
-                                let execute_complete = maybe_instance_name.as_ref().map(|instance_name| ExecuteComplete{
-                                    worker_id: worker_id.clone(),
-                                    instance_name: instance_name.clone(),
-                                    operation_id: operation_id.clone(),
-                                });
-                                let mut grpc_client = self.grpc_client.clone();
                                 self.metrics.clone().wrap(move |metrics| async move {
                                     metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
                                     .and_then(|()| running_actions_manager.create_and_add_action(worker_id, start_execute))
@@ -277,7 +270,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         actions_in_transit.fetch_sub(1, Ordering::Release);
                                         r
                                     })
-                                    .and_then(move |action| {
+                                    .and_then(|action| {
                                         debug!(
                                             operation_id = ?action.get_operation_id(),
                                             "Received request to run action"
@@ -286,19 +279,10 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                             .clone()
                                             .prepare_action()
                                             .and_then(RunningAction::execute)
-                                            .and_then(move |result| async move {
-                                                // Notify that we're completed with execution and simply uploading results.
-                                                // We only do this on success as otherwise the action may be retried and
-                                                // cause a conflict with our existing operation ID.
-                                                if let Some(execute_complete) = execute_complete {
-                                                    drop(grpc_client.execution_complete(execute_complete).await);
-                                                }
-                                                Ok(result)
-                                            })
                                             .and_then(RunningAction::upload_results)
                                             .and_then(RunningAction::get_finished_result)
                                             // Note: We need ensure we run cleanup even if one of the other steps fail.
-                                            .then(move |result| async move {
+                                            .then(|result| async move {
                                                 if let Err(e) = action.cleanup().await {
                                                     return Result::<ActionResult, Error>::Err(e).merge(result);
                                                 }
@@ -435,7 +419,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
 type ConnectionFactory<T> = Box<dyn Fn() -> BoxFuture<'static, Result<T, Error>> + Send + Sync>;
 
-pub struct LocalWorker<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
+pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
     config: Arc<LocalWorkerConfig>,
     running_actions_manager: Arc<U>,
     connection_factory: ConnectionFactory<T>,
