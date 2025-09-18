@@ -247,7 +247,7 @@ impl ApiWorkerSchedulerImpl {
                 "Operation {operation_id} should not be running on worker {worker_id} in SimpleScheduler::update_action"
             );
             return Result::<(), _>::Err(err.clone())
-                .merge(self.immediate_evict_worker(worker_id, err).await);
+                .merge(self.immediate_evict_worker(worker_id, err, false).await);
         }
 
         let (is_finished, due_to_backpressure) = match &update {
