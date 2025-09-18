@@ -40,13 +40,6 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         update: UpdateOperationType,
     ) -> Result<(), Error>;
 
-    /// Notify that the operation has completed execution, but not uploaded yet.
-    async fn notify_complete(
-        &self,
-        worker_id: &WorkerId,
-        operation_id: &OperationId,
-    ) -> Result<(), Error>;
-
     /// Event for when the keep alive message was received from the worker.
     async fn worker_keep_alive_received(
         &self,

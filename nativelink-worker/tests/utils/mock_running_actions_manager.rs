@@ -230,15 +230,12 @@ impl MockRunningAction {
         }
     }
 
-    pub(crate) async fn simple_expect_prepare_and_execute(self: &Arc<Self>) -> Result<(), Error> {
-        self.expect_prepare_action(Ok(())).await?;
-        self.expect_execute(Ok(())).await
-    }
-
-    pub(crate) async fn simple_expect_upload_and_complete(
+    pub(crate) async fn simple_expect_get_finished_result(
         self: &Arc<Self>,
         result: Result<ActionResult, Error>,
     ) -> Result<(), Error> {
+        self.expect_prepare_action(Ok(())).await?;
+        self.expect_execute(Ok(())).await?;
         self.upload_results(Ok(())).await?;
         let result = self.get_finished_result(result).await;
         self.cleanup(Ok(())).await?;

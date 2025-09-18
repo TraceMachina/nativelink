@@ -16,8 +16,7 @@ use core::future::Future;
 
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
-    UpdateForWorker,
+    ConnectWorkerRequest, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
 };
 use tonic::codec::Streaming;
 use tonic::transport::Channel;
@@ -44,11 +43,6 @@ pub trait WorkerApiClientTrait: Clone + Sync + Send + Sized + Unpin {
     fn execution_response(
         &mut self,
         request: ExecuteResult,
-    ) -> impl Future<Output = Result<Response<()>, Status>> + Send;
-
-    fn execution_complete(
-        &mut self,
-        request: ExecuteComplete,
     ) -> impl Future<Output = Result<Response<()>, Status>> + Send;
 }
 
@@ -81,12 +75,5 @@ impl WorkerApiClientTrait for WorkerApiClientWrapper {
 
     async fn execution_response(&mut self, request: ExecuteResult) -> Result<Response<()>, Status> {
         self.inner.execution_response(request).await
-    }
-
-    async fn execution_complete(
-        &mut self,
-        request: ExecuteComplete,
-    ) -> Result<Response<()>, Status> {
-        self.inner.execution_complete(request).await
     }
 }

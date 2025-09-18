@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use core::ops::{Deref, DerefMut};
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -81,10 +80,6 @@ struct ApiWorkerSchedulerImpl {
     /// A `LruCache` of workers available based on `allocation_strategy`.
     #[metric(group = "workers")]
     workers: Workers,
-
-    /// A set of operations that have notified completion, but are still
-    /// uploading results.
-    pending_results: HashMap<WorkerId, HashSet<OperationId>>,
 
     /// The worker state manager.
     #[metric(group = "worker_state_manager")]
@@ -173,7 +168,6 @@ impl ApiWorkerSchedulerImpl {
     /// running.
     fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
         let result = self.workers.pop(worker_id);
-        self.pending_results.remove(worker_id);
         self.worker_change_notify.notify_one();
         result
     }
@@ -247,17 +241,13 @@ impl ApiWorkerSchedulerImpl {
         })?;
 
         // Ensure the worker is supposed to be running the operation.
-        let pending_completion = !worker.running_action_infos.contains_key(operation_id);
-        if pending_completion
-            && !self
-                .pending_results
-                .get(worker_id)
-                .is_some_and(|pending_operations| pending_operations.contains(operation_id))
-        {
-            return Err(make_err!(
+        if !worker.running_action_infos.contains_key(operation_id) {
+            let err = make_err!(
                 Code::Internal,
                 "Operation {operation_id} should not be running on worker {worker_id} in SimpleScheduler::update_action"
-            ));
+            );
+            return Result::<(), _>::Err(err.clone())
+                .merge(self.immediate_evict_worker(worker_id, err, false).await);
         }
 
         let (is_finished, due_to_backpressure) = match &update {
@@ -293,32 +283,6 @@ impl ApiWorkerSchedulerImpl {
             return Ok(());
         }
 
-        if pending_completion {
-            // This is absolutely always true, but pattern match anyway.
-            if let Some(pending_operations) = self.pending_results.get_mut(worker_id) {
-                pending_operations.remove(operation_id);
-                if pending_operations.is_empty() {
-                    self.pending_results.remove(worker_id);
-                }
-                return Ok(());
-            }
-        }
-
-        Self::complete_worker_action(
-            worker,
-            operation_id,
-            due_to_backpressure,
-            &self.worker_change_notify,
-        )
-        .await
-    }
-
-    async fn complete_worker_action(
-        worker: &mut Worker,
-        operation_id: &OperationId,
-        due_to_backpressure: bool,
-        notify: &Notify,
-    ) -> Result<(), Error> {
         // Clear this action from the current worker if finished.
         let complete_action_res = {
             let was_paused = !worker.can_accept_work();
@@ -333,41 +297,9 @@ impl ApiWorkerSchedulerImpl {
             complete_action_res
         };
 
-        notify.notify_one();
+        self.worker_change_notify.notify_one();
 
         complete_action_res
-    }
-
-    async fn notify_complete(
-        &mut self,
-        worker_id: &WorkerId,
-        operation_id: &OperationId,
-    ) -> Result<(), Error> {
-        let worker = self.workers.get_mut(worker_id).err_tip(|| {
-            format!("Worker {worker_id} does not exist in SimpleScheduler::notify_complete")
-        })?;
-
-        // Ensure the worker is supposed to be running the operation.
-        if !worker.running_action_infos.contains_key(operation_id) {
-            let err = make_err!(
-                Code::Internal,
-                "Operation {operation_id} should not be running on worker {worker_id} in SimpleScheduler::update_action"
-            );
-            return Err(err);
-        }
-
-        match self.pending_results.entry(worker_id.clone()) {
-            std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
-                occupied_entry.get_mut().insert(operation_id.clone());
-            }
-            std::collections::hash_map::Entry::Vacant(vacant_entry) => {
-                vacant_entry
-                    .insert(HashSet::new())
-                    .insert(operation_id.clone());
-            }
-        }
-
-        Self::complete_worker_action(worker, operation_id, false, &self.worker_change_notify).await
     }
 
     /// Notifies the specified worker to run the given action and handles errors by evicting
@@ -476,7 +408,6 @@ impl ApiWorkerScheduler {
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
-                pending_results: HashMap::new(),
                 worker_state_manager: worker_state_manager.clone(),
                 allocation_strategy,
                 worker_change_notify,
@@ -589,15 +520,6 @@ impl WorkerScheduler for ApiWorkerScheduler {
     ) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
         inner.update_action(worker_id, operation_id, update).await
-    }
-
-    async fn notify_complete(
-        &self,
-        worker_id: &WorkerId,
-        operation_id: &OperationId,
-    ) -> Result<(), Error> {
-        let mut inner = self.inner.lock().await;
-        inner.notify_complete(worker_id, operation_id).await
     }
 
     async fn worker_keep_alive_received(
