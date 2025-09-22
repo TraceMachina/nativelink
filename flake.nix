@@ -216,7 +216,7 @@
               Labels = {
                 "org.opencontainers.image.description" = "An RBE compatible, high-performance cache and remote executor.";
                 "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
-                "org.opencontainers.image.licenses" = "Apache-2.0";
+                "org.opencontainers.image.licenses" = "FSL-1.1-Apache-2.0";
                 "org.opencontainers.image.revision" = "${self.rev or self.dirtyRev or "dirty"}";
                 "org.opencontainers.image.source" = "https://github.com/TraceMachina/nativelink";
                 "org.opencontainers.image.title" = "NativeLink";
