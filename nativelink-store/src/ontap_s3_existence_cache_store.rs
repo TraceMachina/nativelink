@@ -358,7 +358,7 @@ async fn create_s3_client(spec: &ExperimentalOntapS3Spec) -> Result<Client, Erro
         .endpoint_url(&spec.endpoint)
         .region(Region::new(spec.vserver_name.clone()))
         .force_path_style(true)
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .build();
 
     Ok(Client::from_conf(config))

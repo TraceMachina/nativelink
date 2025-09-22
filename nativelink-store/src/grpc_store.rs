@@ -579,6 +579,14 @@ impl StoreDriver for GrpcStore {
             .proto_digest_func()
             .as_str_name()
             .to_ascii_lowercase();
+
+        struct LocalState {
+            resource_name: String,
+            reader: DropCloserReadHalf,
+            did_error: bool,
+            bytes_received: i64,
+        }
+
         let mut buf = Uuid::encode_buffer();
         let resource_name = format!(
             "{}/uploads/{}/blobs/{}/{}/{}",
@@ -588,13 +596,6 @@ impl StoreDriver for GrpcStore {
             digest.packed_hash(),
             digest.size_bytes(),
         );
-
-        struct LocalState {
-            resource_name: String,
-            reader: DropCloserReadHalf,
-            did_error: bool,
-            bytes_received: i64,
-        }
         let local_state = LocalState {
             resource_name,
             reader,
@@ -675,13 +676,6 @@ impl StoreDriver for GrpcStore {
             .proto_digest_func()
             .as_str_name()
             .to_ascii_lowercase();
-        let resource_name = format!(
-            "{}/blobs/{}/{}/{}",
-            &self.instance_name,
-            digest_function,
-            digest.packed_hash(),
-            digest.size_bytes(),
-        );
 
         struct LocalState<'a> {
             resource_name: String,
@@ -689,6 +683,14 @@ impl StoreDriver for GrpcStore {
             read_offset: i64,
             read_limit: i64,
         }
+
+        let resource_name = format!(
+            "{}/blobs/{}/{}/{}",
+            &self.instance_name,
+            digest_function,
+            digest.packed_hash(),
+            digest.size_bytes(),
+        );
 
         let local_state = LocalState {
             resource_name,
