@@ -160,6 +160,6 @@ impl Fetch for FetchServer {
         &self,
         _grpc_request: Request<FetchDirectoryRequest>,
     ) -> Result<Response<FetchDirectoryResponse>, Status> {
-        todo!()
+        Err(Status::unimplemented("FetchDirectory not implemented"))
     }
 }

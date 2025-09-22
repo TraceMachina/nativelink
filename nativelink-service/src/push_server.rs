@@ -158,6 +158,6 @@ impl Push for PushServer {
         &self,
         _grpc_request: Request<PushDirectoryRequest>,
     ) -> Result<Response<PushDirectoryResponse>, Status> {
-        todo!()
+        Err(Status::unimplemented("PushDirectory not implemented"))
     }
 }
