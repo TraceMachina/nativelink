@@ -1,10 +1,10 @@
 // Copyright 2025 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -49,7 +49,7 @@ use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use rustls::{ClientConfig, RootCertStore};
-use rustls_pemfile::certs;
+use rustls_pemfile::certs as extract_certs;
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 use tracing::{Level, event, warn};
@@ -99,7 +99,7 @@ pub fn load_custom_certs(cert_path: &str) -> Result<Arc<ClientConfig>, Error> {
     );
 
     // Parse certificates
-    let certs = certs(&mut cert_reader)
+    let certs = extract_certs(&mut cert_reader)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| make_err!(Code::Internal, "Failed to parse certificates: {e:?}"))?;
 
@@ -163,7 +163,7 @@ where
             .app_name(aws_config::AppName::new("nativelink").expect("valid app name"))
             .http_client(http_client)
             .force_path_style(true)
-            .behavior_version(BehaviorVersion::v2025_01_17())
+            .behavior_version(BehaviorVersion::v2025_08_07())
             .timeout_config(
                 aws_config::timeout::TimeoutConfig::builder()
                     .connect_timeout(Duration::from_secs(30))
