@@ -180,6 +180,12 @@ When adding new tests:
 3. Update this README with new test descriptions
 4. Ensure all tests pass before submitting PR
 
-## License
+## 📜 License
 
-Apache License 2.0 - See LICENSE file in the root directory.
+Copyright 2020–2025 Trace Machina, Inc.
+
+Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License.
+SPDX identifier: `FSL-1.1-Apache-2.0`.
+
+After the second anniversary of the date this version was made available, you may use this
+software under the Apache License, Version 2.0.
