@@ -39,9 +39,11 @@ export class PersistentWorkerClient {
   }
 
   private initializeClient() {
-    const PROTO_PATH = path.join(__dirname, '../../..', 'nativelink-proto/build/bazel/remote/execution/v2/remote_execution.proto');
+    const allProtosDir = path.join(__dirname, '../../../', 'nativelink-proto');
+    const PROTO_PATH = "build/bazel/remote/execution/v2/remote_execution.proto";
 
     const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
+      includeDirs: [allProtosDir],
       keepCase: true,
       longs: String,
       enums: String,

@@ -1,3 +1,12 @@
+// Copyright 2025 The NativeLink Authors. All rights reserved.
+//
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    See LICENSE file for details
+//
+
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import * as path from 'path';
@@ -22,9 +31,11 @@ export class MockSchedulerServer {
   }
 
   private setupServices() {
-    const PROTO_PATH = path.join(__dirname, '../../..', 'nativelink-proto/build/bazel/remote/execution/v2/remote_execution.proto');
+    const allProtosDir = path.join(__dirname, '../../../', 'nativelink-proto');
+    const PROTO_PATH = "build/bazel/remote/execution/v2/remote_execution.proto";
 
     const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
+      includeDirs: [allProtosDir],
       keepCase: true,
       longs: String,
       enums: String,

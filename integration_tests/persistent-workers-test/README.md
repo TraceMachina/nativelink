@@ -14,10 +14,10 @@ persistent-workers-test/
 │   ├── persistent-worker-client.ts    # Client library for interacting with persistent workers
 │   ├── mock-scheduler-server.ts       # Mock scheduler for testing
 │   ├── persistent-worker.test.ts      # Unit and integration tests
-│   └── e2e.test.ts                   # End-to-end test suite
-├── package.json                        # Node.js dependencies
-├── tsconfig.json                       # TypeScript configuration
-└── jest.config.js                      # Jest test runner configuration
+│   └── e2e.test.ts                    # End-to-end test suite
+├── package.json                       # Node.js dependencies
+├── tsconfig.json                      # TypeScript configuration
+└── jest.config.js                     # Jest test runner configuration
 ```
 
 ## Running Tests

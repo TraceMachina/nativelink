@@ -1,8 +1,16 @@
-#!/usr/bin/env node
+// Copyright 2025 The NativeLink Authors. All rights reserved.
+//
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    See LICENSE file for details
+//
+
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { spawn, ChildProcess } from 'child_process';
+import { ChildProcess } from 'child_process';
 import { PersistentWorkerClient } from './persistent-worker-client';
 
 interface TestConfig {
