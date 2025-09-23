@@ -51,7 +51,7 @@ async fn simple_has_object_not_found() -> Result<(), Error> {
             .unwrap(),
     )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
@@ -111,7 +111,7 @@ async fn simple_has_retries() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
@@ -168,7 +168,7 @@ async fn has_with_expired_result() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
@@ -238,7 +238,7 @@ async fn simple_update_ac() -> Result<(), Error> {
         ));
 
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
@@ -351,7 +351,7 @@ async fn simple_get_ac() -> Result<(), Error> {
     )]);
 
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
@@ -408,7 +408,7 @@ async fn smoke_test_get_part() -> Result<(), Error> {
     );
 
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client.clone())
         .build();
@@ -444,7 +444,7 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
     let mock_client = StaticReplayClient::new(vec![]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
@@ -503,7 +503,7 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
         ]
     );
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client.clone())
         .build();
@@ -554,7 +554,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
 
     let mock_client = StaticReplayClient::new(vec![]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
@@ -707,7 +707,7 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
     );
 
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client.clone())
         .build();

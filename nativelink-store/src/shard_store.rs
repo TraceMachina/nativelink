@@ -146,6 +146,9 @@ impl StoreDriver for ShardStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        type KeyIdxVec = Vec<usize>;
+        type KeyVec<'a> = Vec<StoreKey<'a>>;
+
         if keys.len() == 1 {
             // Hot path: It is very common to lookup only one key.
             let store_idx = self.get_store_index(&keys[0]);
@@ -155,8 +158,6 @@ impl StoreDriver for ShardStore {
                 .await
                 .err_tip(|| "In ShardStore::has_with_results() for store {store_idx}}");
         }
-        type KeyIdxVec = Vec<usize>;
-        type KeyVec<'a> = Vec<StoreKey<'a>>;
         let mut keys_for_store: Vec<(KeyIdxVec, KeyVec)> = self
             .weights_and_stores
             .iter()

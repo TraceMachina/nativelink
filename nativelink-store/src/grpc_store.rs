@@ -568,6 +568,13 @@ impl StoreDriver for GrpcStore {
         reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        struct LocalState {
+            resource_name: String,
+            reader: DropCloserReadHalf,
+            did_error: bool,
+            bytes_received: i64,
+        }
+
         let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             return self.update_action_result_from_bytes(digest, reader).await;
@@ -579,6 +586,7 @@ impl StoreDriver for GrpcStore {
             .proto_digest_func()
             .as_str_name()
             .to_ascii_lowercase();
+
         let mut buf = Uuid::encode_buffer();
         let resource_name = format!(
             "{}/uploads/{}/blobs/{}/{}/{}",
@@ -588,13 +596,6 @@ impl StoreDriver for GrpcStore {
             digest.packed_hash(),
             digest.size_bytes(),
         );
-
-        struct LocalState {
-            resource_name: String,
-            reader: DropCloserReadHalf,
-            did_error: bool,
-            bytes_received: i64,
-        }
         let local_state = LocalState {
             resource_name,
             reader,
@@ -652,6 +653,13 @@ impl StoreDriver for GrpcStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
+        struct LocalState<'a> {
+            resource_name: String,
+            writer: &'a mut DropCloserWriteHalf,
+            read_offset: i64,
+            read_limit: i64,
+        }
+
         let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
@@ -675,6 +683,7 @@ impl StoreDriver for GrpcStore {
             .proto_digest_func()
             .as_str_name()
             .to_ascii_lowercase();
+
         let resource_name = format!(
             "{}/blobs/{}/{}/{}",
             &self.instance_name,
@@ -682,13 +691,6 @@ impl StoreDriver for GrpcStore {
             digest.packed_hash(),
             digest.size_bytes(),
         );
-
-        struct LocalState<'a> {
-            resource_name: String,
-            writer: &'a mut DropCloserWriteHalf,
-            read_offset: i64,
-            read_limit: i64,
-        }
 
         let local_state = LocalState {
             resource_name,
