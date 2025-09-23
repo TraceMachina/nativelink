@@ -24,7 +24,7 @@
   [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
   [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
   [![Slack](https://img.shields.io/badge/slack--channel-blue?logo=slack)](https://forms.gle/LtaWSixEC6bYi5xF7)
-  [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+  [![License](https://img.shields.io/badge/License-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
 </div>
 
 ## What's NativeLink?
@@ -135,4 +135,8 @@ Visit our [Contributing](https://github.com/tracemachina/nativelink/blob/main/CO
 
 Copyright 2020–2025 Trace Machina, Inc.
 
-Licensed under the Apache 2.0 License, SPDX identifier `Apache-2.0`.
+Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License.
+SPDX identifier: `FSL-1.1-Apache-2.0`.
+
+After the second anniversary of the date this version was made available, you may use this
+software under the Apache License, Version 2.0.

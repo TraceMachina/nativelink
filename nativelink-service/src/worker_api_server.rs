@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -27,7 +27,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     WorkerApi, WorkerApiServer as Server,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker
+    execute_result, ConnectWorkerRequest, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker
 };
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -258,19 +258,6 @@ impl WorkerApiServer {
         }
         Ok(Response::new(()))
     }
-
-    async fn inner_execution_complete(
-        &self,
-        execute_complete: ExecuteComplete,
-    ) -> Result<Response<()>, Error> {
-        let worker_id: WorkerId = execute_complete.worker_id.into();
-        let operation_id = OperationId::from(execute_complete.operation_id);
-        self.scheduler
-            .notify_complete(&worker_id, &operation_id)
-            .await
-            .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
-        Ok(Response::new(()))
-    }
 }
 
 #[tonic::async_trait]
@@ -341,22 +328,6 @@ impl WorkerApi for WorkerApiServer {
         grpc_request: Request<ExecuteResult>,
     ) -> Result<Response<()>, Status> {
         self.inner_execution_response(grpc_request.into_inner())
-            .await
-            .map_err(Into::into)
-    }
-
-    #[instrument(
-        err,
-        ret(level = Level::DEBUG),
-        level = Level::ERROR,
-        skip_all,
-        fields(request = ?grpc_request.get_ref())
-    )]
-    async fn execution_complete(
-        &self,
-        grpc_request: Request<ExecuteComplete>,
-    ) -> Result<Response<()>, Status> {
-        self.inner_execution_complete(grpc_request.into_inner())
             .await
             .map_err(Into::into)
     }

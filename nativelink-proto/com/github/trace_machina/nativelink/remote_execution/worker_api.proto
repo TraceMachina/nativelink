@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -57,10 +57,6 @@ service WorkerApi {
 
     /// Informs the scheduler about the result of an execution request.
     rpc ExecutionResponse(ExecuteResult) returns (google.protobuf.Empty);
-
-    /// Notify the scheduler that an execution request is in the upload phase
-    /// and therefore a new execution may be scheduled.
-    rpc ExecutionComplete(ExecuteComplete) returns (google.protobuf.Empty);
 }
 
 /// Request object for keep alive requests.
@@ -125,21 +121,6 @@ message ExecuteResult {
     }
 
     reserved 9; // NextId.
-}
-
-/// A notification that an ExecutionRequest is in the upload phase.
-message ExecuteComplete {
-    /// ID of the worker making the request.
-    string worker_id = 1;
-
-    /// The `instance_name` this task was initially assigned to. This is set by the client
-    /// that initially sent the job as part of the BRE protocol.
-    string instance_name = 2;
-
-    /// The operation ID that was executed.
-    string operation_id = 3;
-
-    reserved 4; // NextId.
 }
 
 /// Result sent back from the server when a node connects.

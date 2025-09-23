@@ -1,10 +1,10 @@
-// Copyright 2022 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -85,20 +85,6 @@ pub mod execute_result {
         #[prost(message, tag = "5")]
         InternalError(super::super::super::super::super::super::google::rpc::Status),
     }
-}
-/// / A notification that an ExecutionRequest is in the upload phase.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ExecuteComplete {
-    /// / ID of the worker making the request.
-    #[prost(string, tag = "1")]
-    pub worker_id: ::prost::alloc::string::String,
-    /// / The `instance_name` this task was initially assigned to. This is set by the client
-    /// / that initially sent the job as part of the BRE protocol.
-    #[prost(string, tag = "2")]
-    pub instance_name: ::prost::alloc::string::String,
-    /// / The operation ID that was executed.
-    #[prost(string, tag = "3")]
-    pub operation_id: ::prost::alloc::string::String,
 }
 /// / Result sent back from the server when a node connects.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -402,34 +388,6 @@ pub mod worker_api_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// / Notify the scheduler that an execution request is in the upload phase
-        /// / and therefore a new execution may be scheduled.
-        pub async fn execution_complete(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ExecuteComplete>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/com.github.trace_machina.nativelink.remote_execution.WorkerApi/ExecutionComplete",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "com.github.trace_machina.nativelink.remote_execution.WorkerApi",
-                        "ExecutionComplete",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
     }
 }
 /// Generated server implementations.
@@ -490,12 +448,6 @@ pub mod worker_api_server {
         async fn execution_response(
             &self,
             request: tonic::Request<super::ExecuteResult>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
-        /// / Notify the scheduler that an execution request is in the upload phase
-        /// / and therefore a new execution may be scheduled.
-        async fn execution_complete(
-            &self,
-            request: tonic::Request<super::ExecuteComplete>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
     }
     /// / This API describes how schedulers communicate with Worker nodes.
@@ -745,51 +697,6 @@ pub mod worker_api_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ExecutionResponseSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/com.github.trace_machina.nativelink.remote_execution.WorkerApi/ExecutionComplete" => {
-                    #[allow(non_camel_case_types)]
-                    struct ExecutionCompleteSvc<T: WorkerApi>(pub Arc<T>);
-                    impl<
-                        T: WorkerApi,
-                    > tonic::server::UnaryService<super::ExecuteComplete>
-                    for ExecutionCompleteSvc<T> {
-                        type Response = ();
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ExecuteComplete>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as WorkerApi>::execution_complete(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ExecutionCompleteSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

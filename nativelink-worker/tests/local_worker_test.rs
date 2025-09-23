@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -273,14 +273,10 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
-    // Now the RunningAction needs to send a series of state updates.
-    running_action.simple_expect_prepare_and_execute().await?;
-    test_context
-        .client
-        .expect_execution_complete(Ok(Response::new(())))
-        .await;
+    // Now the RunningAction needs to send a series of state updates. This shortcuts them
+    // into a single call (shortcut for prepare, execute, upload, collect_results, cleanup).
     running_action
-        .simple_expect_upload_and_complete(Ok(ActionResult::default()))
+        .simple_expect_get_finished_result(Ok(ActionResult::default()))
         .await?;
 
     // Expect the action to be updated in the action cache.
@@ -391,14 +387,10 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
-    // Now the RunningAction needs to send a series of state updates.
-    running_action.simple_expect_prepare_and_execute().await?;
-    test_context
-        .client
-        .expect_execution_complete(Ok(Response::new(())))
-        .await;
+    // Now the RunningAction needs to send a series of state updates. This shortcuts them
+    // into a single call (shortcut for prepare, execute, upload, collect_results, cleanup).
     running_action
-        .simple_expect_upload_and_complete(Ok(action_result.clone()))
+        .simple_expect_get_finished_result(Ok(action_result.clone()))
         .await?;
 
     // Expect the action to be updated in the action cache.
