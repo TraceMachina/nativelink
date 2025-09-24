@@ -6,7 +6,6 @@ All notable changes to this project will be documented in this file.
 ## [0.7.1](https://github.com/TraceMachina/nativelink/compare/v0.7.0..0.7.1) - 2025-09-23
 
 
-
 ### ⛰️  Features
 
 - Add worker_find_logging ([#1925](https://github.com/TraceMachina/nativelink/issues/1925)) - ([8b46fd8](https://github.com/TraceMachina/nativelink/commit/8b46fd848b68a3c4a43c3f79fa9baef26eef9174))
@@ -14,7 +13,7 @@ All notable changes to this project will be documented in this file.
 
 ### 🐛 Bug Fixes
 
-- a license to protect the team ([#1930](https://github.com/TraceMachina/nativelink/issues/1930)) - ([7fcee85](https://github.com/TraceMachina/nativelink/commit/7fcee85a0803958505431f310b23a07b558640a1))
+- Extended license to FSL-Apache ([#1930](https://github.com/TraceMachina/nativelink/issues/1930)) - ([7fcee85](https://github.com/TraceMachina/nativelink/commit/7fcee85a0803958505431f310b23a07b558640a1))
 
 ### 🧪 Testing & CI
 
