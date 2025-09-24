@@ -3,7 +3,40 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.7.0](https://github.com/TraceMachina/nativelink/compare/v0.6.0..0.7.0) - 2025-08-15
+## [0.7.1](https://github.com/TraceMachina/nativelink/compare/v0.7.0..0.7.1) - 2025-09-23
+
+
+### ⛰️  Features
+
+- Add worker_find_logging ([#1925](https://github.com/TraceMachina/nativelink/issues/1925)) - ([8b46fd8](https://github.com/TraceMachina/nativelink/commit/8b46fd848b68a3c4a43c3f79fa9baef26eef9174))
+- Add ONTAP S3 Store with existence cache ([#1630](https://github.com/TraceMachina/nativelink/issues/1630)) - ([b4c8216](https://github.com/TraceMachina/nativelink/commit/b4c82163190004a7469ed8a8d05680a59bc790d9))
+
+### 🐛 Bug Fixes
+
+- Extended license to FSL-Apache ([#1930](https://github.com/TraceMachina/nativelink/issues/1930)) - ([7fcee85](https://github.com/TraceMachina/nativelink/commit/7fcee85a0803958505431f310b23a07b558640a1))
+
+### 🧪 Testing & CI
+
+- Prepare `0.7.1` Release ([#1932](https://github.com/TraceMachina/nativelink/issues/1932)) - ([a36521e](https://github.com/TraceMachina/nativelink/commit/a36521ed342242c4bffef96406387e1afd6c790c))
+- Re-enable integration tests ([#1915](https://github.com/TraceMachina/nativelink/issues/1915)) - ([3f9e037](https://github.com/TraceMachina/nativelink/commit/3f9e037428ccbdb3d427f89bf6f447a790d44de5))
+
+### ⚙️ Miscellaneous
+
+- Merge branch 'main' into release-nativelink-v0.7.1 - ([cb25a42](https://github.com/TraceMachina/nativelink/commit/cb25a42c0e116e210f34675bb9e621e2438a8832))
+- Release Nativelink v0.7.1 - ([ed167db](https://github.com/TraceMachina/nativelink/commit/ed167dbf8e83a9c912441f89d7284d629fc0bcfc))
+- Revert ExecutionComplete early scheduling optimization ([#1929](https://github.com/TraceMachina/nativelink/issues/1929)) - ([d39eeb6](https://github.com/TraceMachina/nativelink/commit/d39eeb625b8900f466894199aee38b707b850d82))
+- Support pre-0.7.0 cacheable spelling ([#1926](https://github.com/TraceMachina/nativelink/issues/1926)) - ([32ef435](https://github.com/TraceMachina/nativelink/commit/32ef4350c2a017b57c149f4fb7546e2903efc6f7))
+- Format JSON files ([#1927](https://github.com/TraceMachina/nativelink/issues/1927)) - ([ecc6c1e](https://github.com/TraceMachina/nativelink/commit/ecc6c1e85a63d48c97c9809abfd10d72b448b93a))
+- Make the bazelrc warnings back to being actual warnings ([#1914](https://github.com/TraceMachina/nativelink/issues/1914)) - ([6180146](https://github.com/TraceMachina/nativelink/commit/6180146cd68d29feb16ef5863f42d56c63a68e5c))
+
+### ⬆️ Bumps & Version Updates
+
+- Update dependency astro to v5.13.2 [SECURITY] ([#1890](https://github.com/TraceMachina/nativelink/issues/1890)) - ([7010351](https://github.com/TraceMachina/nativelink/commit/7010351ac1a1ac7148508955c96b5a31536d7042))
+- Update product pricing p2 ([#1923](https://github.com/TraceMachina/nativelink/issues/1923)) - ([7cedb68](https://github.com/TraceMachina/nativelink/commit/7cedb68e304c2cf0e19c2e3e460a2d66abfc41d2))
+- Update the Nativelink pricing in the website ([#1921](https://github.com/TraceMachina/nativelink/issues/1921)) - ([e973aa1](https://github.com/TraceMachina/nativelink/commit/e973aa116b2bab6bdba915adedd66153172add83))
+- Update Rust crate tracing-subscriber to v0.3.20 [SECURITY] ([#1917](https://github.com/TraceMachina/nativelink/issues/1917)) - ([f380d7d](https://github.com/TraceMachina/nativelink/commit/f380d7d112ebc292cfd78a6d99660d3ad650279e))
+
+## [0.7.0](https://github.com/TraceMachina/nativelink/compare/v0.6.0..v0.7.0) - 2025-08-16
 
 
 
@@ -62,6 +95,7 @@ All notable changes to this project will be documented in this file.
 
 ### 📚 Documentation
 
+- Updating version in README and package manifests ([#1911](https://github.com/TraceMachina/nativelink/issues/1911)) - ([fe996ab](https://github.com/TraceMachina/nativelink/commit/fe996ab61dd26bcd13ff5c933efdbdadda841589))
 - Migrate tracing infrastructure to OpenTelemetry ([#1772](https://github.com/TraceMachina/nativelink/issues/1772)) - ([7a8f561](https://github.com/TraceMachina/nativelink/commit/7a8f561aaa4a2336a6a42d45e87cbadbad284997))
 - Add store README ([#1739](https://github.com/TraceMachina/nativelink/issues/1739)) - ([92ddb62](https://github.com/TraceMachina/nativelink/commit/92ddb62d3aa90132fbacb34a7bda2bae28471b9a))
 - Refactor `write_too_many_bytes_fails` test ([#1726](https://github.com/TraceMachina/nativelink/issues/1726)) - ([a0c5db0](https://github.com/TraceMachina/nativelink/commit/a0c5db0afbfc26bae02bd76bc59915ea76a75cb0))
@@ -92,7 +126,8 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Prepare 0.7.0-rc-2 - ([6555a59](https://github.com/TraceMachina/nativelink/commit/6555a59eeb97493a5577765b5d4a1c67ab6cb49c))
+- Prepare 0.7.0-rc-2 ([#1908](https://github.com/TraceMachina/nativelink/issues/1908)) - ([b23cf19](https://github.com/TraceMachina/nativelink/commit/b23cf19ce07f3415a82a4860641d7d6248a17bd6))
+- Modified the todos, though many will be removed ([#1909](https://github.com/TraceMachina/nativelink/issues/1909)) - ([0e9626c](https://github.com/TraceMachina/nativelink/commit/0e9626cefa4f234db7938c2379ac3e5322171ce8))
 - Dedupe fast slow ([#1905](https://github.com/TraceMachina/nativelink/issues/1905)) - ([66c383b](https://github.com/TraceMachina/nativelink/commit/66c383b936f817c073b842059107f3d1d606ae99))
 - Retry matching on failure ([#1892](https://github.com/TraceMachina/nativelink/issues/1892)) - ([e691bea](https://github.com/TraceMachina/nativelink/commit/e691bea24ba0b0b5827e9464a26cfd8988b61512))
 - Temporarily disable llre.yaml ([#1902](https://github.com/TraceMachina/nativelink/issues/1902)) - ([7c02e58](https://github.com/TraceMachina/nativelink/commit/7c02e589c6d0386db5e15487fd108a882fe97083))
@@ -164,6 +199,7 @@ All notable changes to this project will be documented in this file.
 
 ### ⬆️ Bumps & Version Updates
 
+- Retry on disconnect ([#1906](https://github.com/TraceMachina/nativelink/issues/1906)) - ([ea0e0ae](https://github.com/TraceMachina/nativelink/commit/ea0e0ae3927af505fc16b73af78ef306c9314118))
 - Update company.tsx ([#1901](https://github.com/TraceMachina/nativelink/issues/1901)) - ([1354bb0](https://github.com/TraceMachina/nativelink/commit/1354bb03d10d7009b596a897d3fe27bcf458469d))
 - Upgrades Mongo library to 3.x ([#1854](https://github.com/TraceMachina/nativelink/issues/1854)) - ([739613b](https://github.com/TraceMachina/nativelink/commit/739613b1a7d001da00a0acb2a46d5d8470383cd2))
 - Update ubuntu:22.04 Docker digest to 3c61d37 ([#1025](https://github.com/TraceMachina/nativelink/issues/1025)) - ([add1637](https://github.com/TraceMachina/nativelink/commit/add16372c9b919a653e55f54d19ce2394b6b8194))
