@@ -103,6 +103,7 @@ Eagan
 Mondal
 Gallaher
 Thirdwave
+Trendshift
 Norwest
 Databricks
 Datadog
