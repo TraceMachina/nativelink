@@ -67,6 +67,10 @@
     "start": "astro dev --open",
     "sync": "astro sync"
   },
-  "trustedDependencies": ["@biomejs/biome", "esbuild", "sharp"],
+  "trustedDependencies": [
+    "@biomejs/biome",
+    "esbuild",
+    "sharp"
+  ],
   "version": "0.0.1"
 }
