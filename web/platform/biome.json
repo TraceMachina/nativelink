@@ -12,13 +12,7 @@
     }
   },
   "files": {
-    "ignore": [
-      "*.astro",
-      "dist",
-      "node_modules",
-      "deno.d.ts",
-      ".lighthouseci"
-    ]
+    "ignore": ["*.astro", "dist", "node_modules", "deno.d.ts", ".lighthouseci"]
   },
   "formatter": {
     "enabled": true,
@@ -27,12 +21,7 @@
     "lineWidth": 80
   },
   "javascript": {
-    "globals": [
-      "Bun",
-      "Deno",
-      "Timer",
-      "React"
-    ]
+    "globals": ["Bun", "Deno", "Timer", "React"]
   },
   "linter": {
     "enabled": true,
