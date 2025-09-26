@@ -122,9 +122,15 @@ impl Drop for EncodedFilePath {
 
         let file_path = self.get_file_path().to_os_string();
         let shared_context = self.shared_context.clone();
-        shared_context
+        // .fetch_add returns previous value, so we add one to get approximate current value
+        let current_active_drop_spawns = shared_context
             .active_drop_spawns
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        debug!(
+            ?current_active_drop_spawns,
+            "Spawned a filesystem_delete_file"
+        );
         background_spawn!("filesystem_delete_file", async move {
             let result = fs::remove_file(&file_path)
                 .await
@@ -134,9 +140,15 @@ impl Drop for EncodedFilePath {
             } else {
                 debug!(?file_path, "File deleted",);
             }
-            shared_context
+            // .fetch_sub returns previous value, so we subtract one to get approximate current value
+            let current_active_drop_spawns = shared_context
                 .active_drop_spawns
-                .fetch_sub(1, Ordering::Relaxed);
+                .fetch_sub(1, Ordering::Relaxed)
+                - 1;
+            debug!(
+                ?current_active_drop_spawns,
+                "Dropped a filesystem_delete_file"
+            );
         });
     }
 }
