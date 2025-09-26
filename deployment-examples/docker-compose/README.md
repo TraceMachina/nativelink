@@ -111,6 +111,8 @@ the `docker-compose.yml` file under the `nativelink_scheduler` service.
 Worker instances are responsible for executing tasks. They're configured in the
 `docker-compose.yml` file under the `nativelink_executor` service.
 
+### Single Worker Setup
+
 ```yml
   nativelink_executor:
     image: trace_machina/nativelink:latest
@@ -131,6 +133,21 @@ Worker instances are responsible for executing tasks. They're configured in the
       SCHEDULER_ENDPOINT: nativelink_scheduler
     command: |
       nativelink /root/worker.json
+```
+
+### Multi-Worker Setup
+
+For distributed builds with multiple workers, see [MULTI_WORKER.md](MULTI_WORKER.md).
+
+**Critical**: All workers must share the same CAS storage to avoid "Object not found" errors.
+
+Quick start:
+```sh
+# Start 3 workers with shared CAS
+docker-compose -f docker-compose-multi-worker.yml up -d
+
+# Test the setup
+./test-multi-worker-bazel.sh
 ```
 
 ## Security

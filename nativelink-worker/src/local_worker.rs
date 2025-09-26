@@ -44,7 +44,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
-use tracing::{Level, debug, error, info, info_span, instrument, warn};
+use tracing::{Level, debug, error, event, info, info_span, instrument, warn};
 
 use crate::running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
@@ -452,6 +452,15 @@ pub async fn new_local_worker(
         .err_tip(|| "Expected store for LocalWorker's store to be a FastSlowStore")?
         .get_arc()
         .err_tip(|| "FastSlowStore's Arc doesn't exist")?;
+
+    // Log warning about CAS configuration for multi-worker setups
+    event!(
+        Level::INFO,
+        worker_name = %config.name,
+        "Starting worker '{}'. IMPORTANT: If running multiple workers, all workers \
+        must share the same CAS storage path to avoid 'Object not found' errors.",
+        config.name
+    );
 
     if let Ok(path) = fs::canonicalize(&config.work_directory).await {
         fs::remove_dir_all(path)
