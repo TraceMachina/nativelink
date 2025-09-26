@@ -342,7 +342,8 @@ impl StoreDriver for FastSlowStore {
             .ok_or_else(|| {
                 make_err!(
                     Code::NotFound,
-                    "Object {} not found in either fast or slow store",
+                    "Object {} not found in either fast or slow store. \
+                    If using multiple workers, ensure all workers share the same CAS storage path.",
                     key.as_str()
                 )
             })?;
