@@ -6,7 +6,7 @@ This guide explains how to run NativeLink with multiple workers using Docker Com
 
 1. Start the multi-worker deployment:
 ```sh
-docker-compose -f docker-compose-multi-worker.yml up -d
+docker compose -f docker-compose-multi-worker.yml up -d
 ```
 
 2. Test with Bazel:
