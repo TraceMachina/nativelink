@@ -21,6 +21,7 @@ use nativelink_config::schedulers::{
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
+use nativelink_store::mongo_store::ExperimentalMongoStore;
 use nativelink_store::redis_store::RedisStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::instant_wrapper::InstantWrapper;
@@ -142,6 +143,40 @@ fn simple_scheduler_factory(
                 Default::default,
             )
             .err_tip(|| "In state_manager_factory::redis_state_manager")?;
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
+                spec,
+                awaited_action_db,
+                task_change_notify,
+                maybe_origin_event_tx.cloned(),
+            );
+            Ok((Some(action_scheduler), Some(worker_scheduler)))
+        }
+        ExperimentalSimpleSchedulerBackend::Mongo(mongo_config) => {
+            let store = store_manager
+                .get_store(mongo_config.mongo_store.as_ref())
+                .err_tip(|| {
+                    format!(
+                        "'mongo_store': '{}' does not exist",
+                        mongo_config.mongo_store
+                    )
+                })?;
+            let task_change_notify = Arc::new(Notify::new());
+            let store = store
+                .into_inner()
+                .as_any_arc()
+                .downcast::<ExperimentalMongoStore>()
+                .map_err(|_| {
+                    make_input_err!(
+                        "Could not downcast to mongo store in MongoAwaitedActionDb::new"
+                    )
+                })?;
+            let awaited_action_db = StoreAwaitedActionDb::new(
+                store,
+                task_change_notify.clone(),
+                now_fn,
+                Default::default,
+            )
+            .err_tip(|| "In state_manager_factory::mongo_state_manager")?;
             let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
                 spec,
                 awaited_action_db,
