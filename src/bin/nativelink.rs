@@ -838,6 +838,16 @@ fn get_config() -> Result<CasConfig, Error> {
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
+    #[expect(clippy::disallowed_methods, reason = "starting main runtime")]
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
+    // The OTLP exporters need to run in a Tokio context
+    // Do this first so all the other logging works
+    #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
+    runtime.block_on(async { tokio::spawn(async { init_tracing() }).await? })?;
+
     if cfg!(feature = "worker_find_logging") {
         info!("worker_find_logging enabled");
     }
@@ -867,15 +877,6 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             .unwrap_or(ConfigDigestHashFunction::Sha256),
     ))?;
     set_default_digest_size_health_check(global_cfg.default_digest_size_health_check)?;
-
-    #[expect(clippy::disallowed_methods, reason = "starting main runtime")]
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-
-    // The OTLP exporters need to run in a Tokio context.
-    #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
-    runtime.block_on(async { tokio::spawn(async { init_tracing() }).await? })?;
 
     // Initiates the shutdown process by broadcasting the shutdown signal via the `oneshot::Sender` to all listeners.
     // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.
