@@ -48,6 +48,7 @@ rust_binary(
     ],
     deps = [
         "//nativelink-config",
+        "//nativelink-error",
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:bytes",
