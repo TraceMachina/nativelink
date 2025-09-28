@@ -4,6 +4,13 @@ This guide explains how to run NativeLink with multiple workers using Docker Com
 
 ## Quick Start
 
+0. Build the Docker container:
+
+```sh
+docker compose -f
+      docker-compose-multi-worker.yml build
+```
+
 1. Start the multi-worker deployment:
 ```sh
 docker compose -f docker-compose-multi-worker.yml up -d
@@ -183,9 +190,31 @@ all workers share the same CAS storage path.
 ## Testing Multi-Worker Setup
 
 ### Local Testing with All-in-One Configuration
+
+#### Option 1: Using Docker (Recommended)
 ```sh
+# Run nativelink using the Docker image you built
+docker run --rm -it \
+  -v $(pwd)/test-multi-worker-simple.json5:/config.json5 \
+  -p 50051:50051 \
+  -p 50052:50052 \
+  nativelink:latest /config.json5
+
+# In another terminal, test with Bazel
+bazel build //:nativelink \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50051 \
+  --remote_default_exec_properties=cpu_count=1 \
+  --jobs=3
+```
+
+#### Option 2: Build and Run Locally (Advanced)
+```sh
+# Build nativelink locally first
+cargo build --release
+
 # Start multi-worker server (3 workers, shared CAS)
-./target/debug/nativelink test-multi-worker-simple.json5
+./target/release/nativelink test-multi-worker-simple.json5
 
 # In another terminal, test with Bazel
 bazel build //:nativelink \

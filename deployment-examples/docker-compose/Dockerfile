@@ -57,7 +57,11 @@ WORKDIR /root/nativelink
 COPY . .
 ARG OPT_LEVEL
 ARG ADDITIONAL_BAZEL_FLAGS
-RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} nativelink && \
+# Add startup options to prevent Bazel server issues on ARM64
+RUN bazel \
+    --batch \
+    --output_base=/tmp/bazel_output \
+    build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} nativelink && \
     cp ./bazel-bin/nativelink /root/nativelink-bin
 
 # Go back to a fresh ubuntu container and copy only the compiled binary.
@@ -67,7 +71,15 @@ COPY --from=builder /root/nativelink-bin /usr/local/bin/nativelink
 
 ARG ADDITIONAL_SETUP_WORKER_CMD
 
-RUN bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}" \
+RUN apt-get update \
+    && if [ "${OS_VERSION}" = "24.04" ]; then \
+        apt-get install -y --no-install-recommends curl=8.5.0-2ubuntu10.5; \
+    elif [ "${OS_VERSION}" = "22.04" ]; then \
+        apt-get install -y --no-install-recommends curl=7.81.0-1ubuntu1.18; \
+    fi \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}" \
     && mkdir -p /root/.cache/nativelink
 
 EXPOSE 50051/tcp 50052/tcp
