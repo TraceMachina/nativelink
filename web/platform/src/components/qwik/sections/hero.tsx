@@ -13,6 +13,7 @@ export const Hero = component$(() => {
 
   useVisibleTask$(() => {
     const options = [
+      { text: "Hermiticity is Simplicity®", duration: 15000 },
       { text: "Accelerating Advanced CI", duration: 5000 },
       { text: "Remote Execution in Bazel", duration: 5000 },
       { text: "Remote Execution in Buck2", duration: 5000 },
