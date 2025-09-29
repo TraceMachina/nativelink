@@ -1,180 +1,277 @@
-# NativeLink's Docker Compose deployment
+# Multi-Worker Docker Compose Deployment
 
-This directory is a reference/starting point on creating a full Docker Compose
-deployment of NativeLink's cache and remote execution system.
+This guide explains how to run NativeLink with multiple workers using Docker Compose for distributed build execution.
 
-## Docker setup
+## Prerequisites
 
-1. Install [Docker](https://docs.docker.com/engine/install/) and
-   [Docker Compose](https://docs.docker.com/compose/install/) on your system.
-2. Open a terminal and run `docker compose up -d` in this directory to start the
-   services.
+- **Architecture**: This setup currently only works on **x86_64/amd64** architectures. ARM64/Apple Silicon isn't supported for the test client container.
+- **Google Cloud CLI**: If using the test client container from `gcr.io/bazel-public/bazel`, you'll need:
+  1. [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) installed
+  2. Authentication via `gcloud auth login`
+  3. Docker credential helper configured: `gcloud auth configure-docker`
 
-It will take some time to apply, when it's finished everything should be
-running. The endpoints are:
+  Alternatively, you can comment out the test-client service in the docker-compose file and run Bazel tests locally.
+
+## Quick Start
+
+0. Build the Docker container:
 
 ```sh
-CAS/AC: 0.0.0.0:50051 # Configures CAS & AC for SSL connections
-CAS/AC: 0.0.0.0:50071 # Configures CAS & AC for TLS connections
-Scheduler: 0.0.0.0:50052
+docker compose -f
+      docker-compose-multi-worker.yml build
 ```
 
-As a reference you should be able to compile this project using Bazel with
-something like:
-
+1. Start the multi-worker deployment:
 ```sh
-bazel test //... \
-  --extra_toolchains=@rust_toolchains//:all \
+docker compose -f docker-compose-multi-worker.yml up -d
+```
+
+2. Test with Bazel:
+```sh
+bazel build //... \
   --remote_cache=grpc://127.0.0.1:50051 \
   --remote_executor=grpc://127.0.0.1:50052 \
-  --remote_default_exec_properties=cpu_count=1
+  --remote_default_exec_properties=cpu_count=2
 ```
 
-> [!NOTE]
-> The `nativelink` repository doesn't register any toolchains by default. The
-> remote execution container in this example is currently a classic non-LRE
-> container, so you'll have to add `--extra_toolchains=@rust_toolchains//:all`
-> to the invocation to register `rules_rust`'s default toolchains. If you run
-> this example against another `rules_rust` project you'll likely have these
-> toolchains already registered in your `.bazelrc` or `MODULE.bazel` and can
-> omit the flag.
->
-> See: https://www.nativelink.com/docs/contribute/bazel
+## Configuration Requirements
 
-## Instances
+### Critical: Shared CAS Storage
 
-All instances use the same Docker image, `trace_machina/nativelink:latest`,
-built from the `Dockerfile` located at `./deployment-examples/docker-compose/Dockerfile`.
+**All workers MUST share the same CAS storage path.** This is the most common configuration error.
 
-### CAS
+**Important:** When starting workers, you'll see this validation warning:
+```
+Starting worker 'worker-1'. IMPORTANT: If running multiple workers, all workers
+must share the same CAS storage path to avoid 'Object not found' errors.
+```
 
-The CAS (Content Addressable Storage) service is used as a local cache for the
-NativeLink system. It's configured in the `docker-compose.yml` file under the
-`nativelink_local_cas` service.
-
-```yml
-  nativelink_local_cas:
-    image: trace_machina/nativelink:latest
-    build:
-      context: ../..
-      dockerfile: ./deployment-examples/docker-compose/Dockerfile
-      network: host
-      args:
-        - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
+✅ **Correct Configuration:**
+```yaml
+services:
+  worker-1:
     volumes:
-      - ${NATIVELINK_DIR:-~/.cache/nativelink}:/root/.cache/nativelink
-      - type: bind
-        source: .
-        target: /root
-    environment:
-      RUST_LOG: ${RUST_LOG:-warn}
-    ports:
-      [
-        "50051:50051/tcp",
-        "127.0.0.1:50061:50061",
-        "50071":50071/tcp",
-      ]
-    command: |
-      nativelink /root/local-storage-cas.json
-```
-
-### Scheduler
-
-The scheduler is currently the only single point of failure in the system. We
-currently only support one scheduler at a time. The scheduler service is
-responsible for scheduling tasks in the NativeLink system. It's configured in
-the `docker-compose.yml` file under the `nativelink_scheduler` service.
-
-```yml
-  nativelink_scheduler:
-    image: trace_machina/nativelink:latest
-    build:
-      context: ../..
-      dockerfile: ./deployment-examples/docker-compose/Dockerfile
-      network: host
-      args:
-        - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
+      - cas-data:/data/cas  # Shared volume
+  worker-2:
     volumes:
-      - type: bind
-        source: .
-        target: /root
-    environment:
-      RUST_LOG: ${RUST_LOG:-warn}
-      CAS_ENDPOINT: nativelink_local_cas
-    ports: [ "50052:50052/tcp" ]
-    command: |
-      nativelink /root/scheduler.json
-```
-
-### Workers
-
-Worker instances are responsible for executing tasks. They're configured in the
-`docker-compose.yml` file under the `nativelink_executor` service.
-
-### Single Worker Setup
-
-```yml
-  nativelink_executor:
-    image: trace_machina/nativelink:latest
-    build:
-      context: ../..
-      dockerfile: ./deployment-examples/docker-compose/Dockerfile
-      network: host
-      args:
-        - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
+      - cas-data:/data/cas  # Same shared volume
+  worker-3:
     volumes:
-      - ${NATIVELINK_DIR:-~/.cache/nativelink}:/root/.cache/nativelink
-      - type: bind
-        source: .
-        target: /root
-    environment:
-      RUST_LOG: ${RUST_LOG:-warn}
-      CAS_ENDPOINT: nativelink_local_cas
-      SCHEDULER_ENDPOINT: nativelink_scheduler
-    command: |
-      nativelink /root/worker.json
+      - cas-data:/data/cas  # Same shared volume
+
+volumes:
+  cas-data:  # Single shared volume for all workers
 ```
+
+❌ **Incorrect Configuration (causes "Object not found" errors):**
+```yaml
+services:
+  worker-1:
+    volumes:
+      - ./data/worker-1/cas:/data/cas  # Isolated path
+  worker-2:
+    volumes:
+      - ./data/worker-2/cas:/data/cas  # Different isolated path
+```
+
+### Worker Configuration ([worker-shared-cas.json5](./worker-shared-cas.json5))
+
+```json5
+{
+  stores: [
+    {
+      name: "SHARED_CAS",
+      filesystem: {
+        // All workers MUST use the same path
+        content_path: "/data/cas/content",
+        // Temp can be worker-specific
+        temp_path: "/tmp/${WORKER_NAME}/temp",
+        eviction_policy: {
+          max_bytes: 10000000000,
+        }
+      }
+    }
+  ],
+  workers: [
+    {
+      local: {
+        name: "${WORKER_NAME}",
+        cas_fast_slow_store: "SHARED_CAS",  // All workers use same store
+        // Work directory should be worker-specific
+        work_directory: "/tmp/${WORKER_NAME}/work",
+        platform_properties: {
+          cpu_count: { values: ["2"] },
+          memory_gb: { values: ["2"] }
+        }
+      }
+    }
+  ]
+}
+```
+
+## Configuration Files
 
 ### Multi-Worker Setup
+- [`docker-compose-multi-worker.yml`](./docker-compose-multi-worker.yml) - Docker Compose file for multi-worker deployment
+- [`test-multi-worker-simple.json5`](./test-multi-worker-simple.json5) - All-in-one configuration for testing multi-worker setup (validated working)
+- [`cas-server-multi-worker.json5`](./cas-server-multi-worker.json5) - CAS server configuration for multi-worker deployment
+- [`scheduler-multi-worker.json5`](./scheduler-multi-worker.json5) - Scheduler configuration for multi-worker deployment
+- [`worker-shared-cas.json5`](./worker-shared-cas.json5) - Worker configuration template with shared CAS storage
 
-For distributed builds with multiple workers, see [MULTI_WORKER.md](MULTI_WORKER.md).
+### Single Worker Setup
+- [`docker-compose.yml`](./docker-compose.yml) - Docker Compose file for single worker deployment
+- [`local-storage-cas.json5`](./local-storage-cas.json5) - Local storage CAS configuration for single worker
+- [`scheduler.json5`](./scheduler.json5) - Scheduler configuration for single worker deployment
+- [`worker.json5`](./worker.json5) - Worker configuration for single worker deployment
 
-**Critical**: All workers must share the same CAS storage to avoid "Object not found" errors.
+## Scaling Workers
 
-Quick start:
+### Dynamic Scaling
 ```sh
-# Start 3 workers with shared CAS
-docker-compose -f docker-compose-multi-worker.yml up -d
+# Scale to 5 workers
+docker-compose -f docker-compose-multi-worker.yml up -d --scale worker=5
 
-# Test the setup
-./test-multi-worker-bazel.sh
+# Scale down to 2 workers
+docker-compose -f docker-compose-multi-worker.yml up -d --scale worker=2
 ```
 
-## Security
+### Resource Limits
+Each worker is configured with:
+- CPU: 2 cores (configurable)
+- Memory: 2GB (configurable)
 
-The Docker Compose setup is configured to run all services locally and isn't
-suitable for production environments. The scheduler is a single point of failure
-in the system.
+Adjust in `docker-compose-multi-worker.yml`:
+```yaml
+deploy:
+  resources:
+    limits:
+      cpus: '4'    # Increase to 4 cores
+      memory: 4G   # Increase to 4GB
+```
 
-The Docker Compose setup doesn't automatically delete old data. This could lead
-to storage issues over time if not managed properly.
+## Monitoring
 
-If you decide to stop using this setup, you can use `docker compose down` to
-stop and remove all the containers. However, in a non-local setup, additional
-steps may be required to ensure that all data is securely deleted.
+### View Logs
+```sh
+# All workers
+docker-compose -f docker-compose-multi-worker.yml logs -f
 
-## Future work
+# Specific worker
+docker-compose -f docker-compose-multi-worker.yml logs -f worker-1
 
-The Docker Compose setup doesn't automatically scale services. This could be
-implemented using Docker Swarm or Kubernetes.
+# Scheduler
+docker-compose -f docker-compose-multi-worker.yml logs -f scheduler
+```
 
-The Docker Compose setup doesn't automatically delete old data. This could be
-implemented with a cleanup service or script.
+### Check Status
+```sh
+# View all containers
+docker-compose -f docker-compose-multi-worker.yml ps
 
-## Useful tips
+# Check CAS storage usage
+docker exec -it $(docker-compose -f docker-compose-multi-worker.yml ps -q worker-1) \
+  du -sh /data/cas/content
+```
 
-The Docker Compose setup can be modified for testing and development. For
-example, you can change the RUST_LOG environment variable to control the logging
-level of the services.
+## Troubleshooting
 
-<img referrerpolicy="no-referrer-when-downgrade" src="https://nativelink.matomo.cloud/matomo.php?idsite=2&amp;rec=1&amp;action_name=deployment-examples%20docker-compose%20Readme.md" style="border:0" alt="" />
+### "Object not found" Errors
+**Symptom:** Workers fail with enhanced error message:
+```
+Object 7fd25e01d12373a2d1712e446881c9246a9698da4e7eafecdaeeaaff62195a82-148
+not found in either fast or slow store. If using multiple workers, ensure
+all workers share the same CAS storage path.
+```
+
+**Cause:** Workers are using different CAS paths
+
+**Solution:**
+1. Check volume mounts: `docker inspect <worker-container> | grep -A 5 Mounts`
+2. Ensure all workers mount the same `cas-data` volume
+3. Verify `content_path` is identical in all worker configurations
+4. Use the validated `test-multi-worker-simple.json5` as reference
+
+### Workers Not Executing Jobs
+**Symptom:** Jobs queue but workers remain idle
+
+**Solution:**
+1. Check scheduler connectivity: `docker logs scheduler | grep -i error`
+2. Verify worker registration: `docker logs worker-1 | grep "Connected to scheduler"`
+3. Check network: `docker network ls`
+
+### Performance Issues
+**Symptom:** Builds slower with multiple workers
+
+**Solution:**
+1. Check disk I/O: `docker stats`
+2. Consider using SSD-backed storage
+3. Increase cache size in `eviction_policy`
+4. Monitor with: `docker-compose -f docker-compose-multi-worker.yml logs -f | grep -i slow`
+
+## Testing Multi-Worker Setup
+
+### Local Testing with All-in-One Configuration
+
+#### Option 1: Using Docker (Recommended)
+```sh
+# Run nativelink using the Docker image you built
+docker run --rm -it \
+  -v $(pwd)/test-multi-worker-simple.json5:/config.json5 \
+  -p 50051:50051 \
+  -p 50052:50052 \
+  nativelink:latest /config.json5
+
+# In another terminal, test with Bazel
+bazel build //:nativelink \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50051 \
+  --remote_default_exec_properties=cpu_count=1 \
+  --jobs=3
+```
+
+#### Option 2: Build and Run Locally (Advanced)
+```sh
+# Build nativelink locally first
+cargo build --release
+
+# Start multi-worker server (3 workers, shared CAS)
+./target/release/nativelink test-multi-worker-simple.json5
+
+# In another terminal, test with Bazel
+bazel build //:nativelink \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50051 \
+  --remote_default_exec_properties=cpu_count=1 \
+  --jobs=3
+```
+
+### Basic Test
+```sh
+# Build a simple target
+bazel build //src:hello_world \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50052
+
+# Check which worker executed
+docker-compose -f docker-compose-multi-worker.yml logs | grep "Executing action"
+```
+
+### Stress Test
+```sh
+# Build entire project with parallel jobs
+bazel build //... \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50052 \
+  --jobs=50  # High parallelism to distribute across workers
+```
+
+## Production Considerations
+
+For production deployments:
+1. Use persistent volumes backed by SSD
+2. Implement health checks in docker-compose.yml
+3. Use external storage (NFS, S3, etc.) for CAS
+4. Monitor worker metrics
+5. Set up log aggregation
+
+See [Kubernetes deployment](../kubernetes/) for production-grade configurations.

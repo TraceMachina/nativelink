@@ -73,9 +73,9 @@ ARG ADDITIONAL_SETUP_WORKER_CMD
 
 RUN apt-get update \
     && if [ "${OS_VERSION}" = "24.04" ]; then \
-        apt-get install -y --no-install-recommends curl=8.5.0-2ubuntu10.5; \
+        apt-get install -y --no-install-recommends curl=8.5.0-2ubuntu10.6; \
     elif [ "${OS_VERSION}" = "22.04" ]; then \
-        apt-get install -y --no-install-recommends curl=7.81.0-1ubuntu1.18; \
+        apt-get install -y --no-install-recommends curl=7.81.0-1ubuntu1.21; \
     fi \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
