@@ -850,6 +850,18 @@ pub struct EvictionPolicy {
     /// Default: 0. Zero means never evict based on count.
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_count: u64,
+
+    /// Grace period in seconds to prevent eviction of recently referenced items.
+    /// Items accessed within this time window will not be evicted, even if the
+    /// cache is full. This prevents premature eviction of items needed by
+    /// in-flight actions in multi-worker deployments.
+    /// Default: 1800 (30 minutes). Zero means no grace period.
+    #[serde(default = "default_eviction_grace_period", deserialize_with = "convert_duration_with_shellexpand")]
+    pub eviction_grace_period_seconds: u32,
+}
+
+fn default_eviction_grace_period() -> u32 {
+    1800 // 30 minutes
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

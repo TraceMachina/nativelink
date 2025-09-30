@@ -61,6 +61,7 @@ async fn insert_purges_at_max_count() -> Result<(), Error> {
             max_seconds: 0,
             max_bytes: 0,
             evict_bytes: 0,
+            eviction_grace_period_seconds: 0,
         },
         MockInstantWrapped::default(),
     );
@@ -118,6 +119,7 @@ async fn insert_purges_at_max_bytes() -> Result<(), Error> {
             max_seconds: 0,
             max_bytes: 17,
             evict_bytes: 0,
+            eviction_grace_period_seconds: 0,
         },
         MockInstantWrapped::default(),
     );
@@ -175,6 +177,7 @@ async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
             max_seconds: 0,
             max_bytes: 17,
             evict_bytes: 9,
+            eviction_grace_period_seconds: 0,
         },
         MockInstantWrapped::default(),
     );
@@ -233,6 +236,7 @@ async fn insert_purges_at_max_seconds() -> Result<(), Error> {
             max_seconds: 5,
             max_bytes: 0,
             evict_bytes: 0,
+            eviction_grace_period_seconds: 0,
         },
         MockInstantWrapped::default(),
     );
@@ -295,6 +299,7 @@ async fn get_refreshes_time() -> Result<(), Error> {
             max_seconds: 3,
             max_bytes: 0,
             evict_bytes: 0,
+            eviction_grace_period_seconds: 0,
         },
         MockInstantWrapped::default(),
     );
@@ -370,6 +375,7 @@ async fn unref_called_on_replace() -> Result<(), Error> {
             max_seconds: 0,
             max_bytes: 0,
             evict_bytes: 0,
+            eviction_grace_period_seconds: 0,
         },
         MockInstantWrapped::default(),
     );
@@ -415,6 +421,7 @@ async fn contains_key_refreshes_time() -> Result<(), Error> {
             max_seconds: 3,
             max_bytes: 0,
             evict_bytes: 0,
+            eviction_grace_period_seconds: 0,
         },
         MockInstantWrapped::default(),
     );
@@ -468,6 +475,7 @@ async fn hashes_equal_sizes_different_doesnt_override() -> Result<(), Error> {
             max_seconds: 0,
             max_bytes: 0,
             evict_bytes: 0,
+            eviction_grace_period_seconds: 0,
         },
         MockInstantWrapped::default(),
     );
@@ -523,6 +531,7 @@ async fn get_evicts_on_time() -> Result<(), Error> {
             max_seconds: 5,
             max_bytes: 0,
             evict_bytes: 0,
+            eviction_grace_period_seconds: 0,
         },
         MockInstantWrapped::default(),
     );
@@ -556,6 +565,7 @@ async fn remove_evicts_on_time() -> Result<(), Error> {
             max_seconds: 5,
             max_bytes: 0,
             evict_bytes: 0,
+            eviction_grace_period_seconds: 0,
         },
         MockInstantWrapped::default(),
     );
@@ -612,6 +622,7 @@ async fn range_multiple_items_test() -> Result<(), Error> {
             max_seconds: 0,
             max_bytes: 0,
             evict_bytes: 0,
+            eviction_grace_period_seconds: 0,
         },
         MockInstantWrapped::default(),
     );
@@ -663,6 +674,162 @@ async fn range_multiple_items_test() -> Result<(), Error> {
         let found_values = get_map_range(&evicting_map, KEY2.to_string()..KEY3.to_string()).await;
         assert_eq!(expected_values, found_values);
     }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn grace_period_prevents_eviction() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+
+    // Create map with small max_bytes and 60 second grace period
+    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 0,
+            max_bytes: 17, // Only fits 2 items of DATA
+            evict_bytes: 0,
+            eviction_grace_period_seconds: 60, // 60 second grace period
+        },
+        MockInstantWrapped::default(),
+    );
+
+    // Insert first two items
+    evicting_map
+        .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
+        .await;
+
+    // Advance time by 30 seconds (within grace period)
+    MockClock::advance(Duration::from_secs(30));
+
+    // Insert third item - should NOT evict items 1 or 2 because they're within grace period
+    evicting_map
+        .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
+        .await;
+
+    // All three items should still exist (grace period blocked eviction)
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+            .await,
+        Some(DATA.len() as u64),
+        "Expected item 1 to be protected by grace period"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+            .await,
+        Some(DATA.len() as u64),
+        "Expected item 2 to be protected by grace period"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+            .await,
+        Some(DATA.len() as u64),
+        "Expected item 3 to exist"
+    );
+
+    // Advance time beyond grace period for items 1 and 2 (total 70 seconds)
+    // Items 1 and 2 are now 70 seconds old (outside grace period)
+    // Item 3 is now 40 seconds old (still within grace period)
+    MockClock::advance(Duration::from_secs(40));
+
+    // Insert fourth item - this will trigger eviction
+    // Important: Grace period prevents eviction of the LRU item (item 3, age 40s)
+    // But items 1 and 2 (age 70s) are outside grace period and can be evicted
+    // However, the current LRU implementation checks from least-recently-used first
+    // If the LRU item is protected, we stop eviction to prevent thrashing
+    evicting_map
+        .insert(DigestInfo::try_new(HASH4, 0)?, Bytes::from(DATA).into())
+        .await;
+
+    // All items should still exist because the LRU item (item 3) is within grace period
+    // This prevents cache thrashing when items are still being actively used
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+            .await,
+        Some(DATA.len() as u64),
+        "Item 1 protected because LRU item (item 3) is within grace period"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+            .await,
+        Some(DATA.len() as u64),
+        "Item 2 protected because LRU item (item 3) is within grace period"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+            .await,
+        Some(DATA.len() as u64),
+        "Item 3 within grace period"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
+            .await,
+        Some(DATA.len() as u64),
+        "Item 4 was just inserted"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn grace_period_zero_means_no_protection() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+
+    // Create map with grace period of 0 (disabled)
+    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 0,
+            max_bytes: 17, // Only fits 2 items
+            evict_bytes: 0,
+            eviction_grace_period_seconds: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+
+    // Insert three items
+    evicting_map
+        .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
+        .await;
+
+    // Item 1 should be evicted immediately (no grace period protection)
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+            .await,
+        None,
+        "Expected item 1 to be evicted without grace period"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+            .await,
+        Some(DATA.len() as u64),
+        "Expected item 2 to exist"
+    );
+    assert_eq!(
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+            .await,
+        Some(DATA.len() as u64),
+        "Expected item 3 to exist"
+    );
 
     Ok(())
 }

@@ -1,0 +1,174 @@
+// Multi-worker configuration with eviction grace period enabled
+// This prevents premature eviction of recently accessed items, protecting
+// them from being evicted while still needed by in-flight actions.
+{
+  stores: [
+    {
+      name: "CAS_FS",
+      filesystem: {
+        content_path: "/tmp/nativelink-multi-test/cas/content",
+        temp_path: "/tmp/nativelink-multi-test/cas/temp",
+        eviction_policy: {
+          max_bytes: 10000000000, // 10GB
+
+          // Grace period: Items accessed in the last 30 minutes will NOT be evicted
+          // This prevents "Object not found" errors in multi-worker deployments
+          eviction_grace_period_seconds: 1800, // 30 minutes (default)
+        },
+      },
+    },
+    {
+      name: "CAS",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink-multi-test/cas/content",
+            temp_path: "/tmp/nativelink-multi-test/cas/temp",
+            eviction_policy: {
+              max_bytes: 1000000000, // 1GB fast cache
+
+              // Protect recently used items from eviction
+              eviction_grace_period_seconds: 1800, // 30 minutes
+            },
+          },
+        },
+        slow: {
+          filesystem: {
+            content_path: "/tmp/nativelink-multi-test/cas/content",
+            temp_path: "/tmp/nativelink-multi-test/cas/temp",
+            eviction_policy: {
+              max_bytes: 10000000000, // 10GB slow storage
+
+              // Slower storage can have a longer grace period
+              eviction_grace_period_seconds: 3600, // 1 hour
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "AC",
+      filesystem: {
+        content_path: "/tmp/nativelink-multi-test/ac/content",
+        temp_path: "/tmp/nativelink-multi-test/ac/temp",
+        eviction_policy: {
+          max_bytes: 1000000000, // 1GB
+          eviction_grace_period_seconds: 900, // 15 minutes for AC cache
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "SIMPLE",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        name: "worker-1",
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "CAS",
+        upload_action_result: {
+          ac_store: "AC",
+        },
+        work_directory: "/tmp/nativelink-multi-test/worker1/work",
+        platform_properties: {
+          cpu_count: {
+            values: [
+              "1",
+            ],
+          },
+        },
+      },
+    },
+    {
+      local: {
+        name: "worker-2",
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50062",
+        },
+        cas_fast_slow_store: "CAS",
+        upload_action_result: {
+          ac_store: "AC",
+        },
+        work_directory: "/tmp/nativelink-multi-test/worker2/work",
+        platform_properties: {
+          cpu_count: {
+            values: [
+              "1",
+            ],
+          },
+        },
+      },
+    },
+    {
+      local: {
+        name: "worker-3",
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50063",
+        },
+        cas_fast_slow_store: "CAS",
+        upload_action_result: {
+          ac_store: "AC",
+        },
+        work_directory: "/tmp/nativelink-multi-test/worker3/work",
+        platform_properties: {
+          cpu_count: {
+            values: [
+              "1",
+            ],
+          },
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: {
+          main: {
+            cas_store: "CAS",
+          },
+        },
+        ac: {
+          main: {
+            ac_store: "AC",
+          },
+        },
+        capabilities: {},
+        bytestream: {
+          cas_stores: {
+            main: "CAS",
+          },
+        },
+      },
+    },
+    {
+      name: "worker_endpoint",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "SIMPLE",
+        },
+      },
+    },
+  ],
+}
