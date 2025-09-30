@@ -53,7 +53,7 @@ async fn create_test_store(mock_client: StaticReplayClient) -> Result<Store, Err
         .to_string();
 
     let _test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
@@ -259,7 +259,7 @@ async fn test_cache_population() -> Result<(), Error> {
         .to_string();
 
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client.clone())
         .build();
@@ -430,7 +430,7 @@ async fn test_cache_sync_multiple_objects() -> Result<(), Error> {
         .to_string();
 
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client.clone())
         .build();

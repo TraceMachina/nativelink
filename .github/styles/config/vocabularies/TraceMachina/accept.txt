@@ -8,6 +8,7 @@ Bazelisk
 [Bb]oolean
 Cloudflare
 Colab
+composable
 CPUs
 [Dd]eduplication
 ELB
@@ -22,6 +23,8 @@ JDK
 JSON
 Kustomization
 Kustomizations
+LastMile
+LastMileAI
 LLD
 LLM
 LLMs
@@ -104,6 +107,7 @@ Eagan
 Mondal
 Gallaher
 Thirdwave
+Trendshift
 Norwest
 Databricks
 Datadog

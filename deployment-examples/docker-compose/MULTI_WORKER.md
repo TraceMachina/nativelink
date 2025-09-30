@@ -1,6 +1,6 @@
 # Multi-Worker Docker Compose Deployment
 
-This guide explains how to run NativeLink with multiple workers using Docker Compose for distributed build execution.
+This guide explains how to run NativeLink with multiple workers using Docker Compose for distributed build execution but for single workers you can use the [docker-compose.yml](./docker-compose.yml) instead.
 
 ## Prerequisites
 
@@ -74,7 +74,7 @@ services:
       - ./data/worker-2/cas:/data/cas  # Different isolated path
 ```
 
-### Worker Configuration ([worker-shared-cas.json5](./worker-shared-cas.json5))
+### Worker Configuration (worker-shared-cas.json5)
 
 ```json5
 {
@@ -109,20 +109,9 @@ services:
 }
 ```
 
-## Configuration Files
+## Files
 
-### Multi-Worker Setup
-- [`docker-compose-multi-worker.yml`](./docker-compose-multi-worker.yml) - Docker Compose file for multi-worker deployment
-- [`test-multi-worker-simple.json5`](./test-multi-worker-simple.json5) - All-in-one configuration for testing multi-worker setup (validated working)
-- [`cas-server-multi-worker.json5`](./cas-server-multi-worker.json5) - CAS server configuration for multi-worker deployment
-- [`scheduler-multi-worker.json5`](./scheduler-multi-worker.json5) - Scheduler configuration for multi-worker deployment
-- [`worker-shared-cas.json5`](./worker-shared-cas.json5) - Worker configuration template with shared CAS storage
-
-### Single Worker Setup
-- [`docker-compose.yml`](./docker-compose.yml) - Docker Compose file for single worker deployment
-- [`local-storage-cas.json5`](./local-storage-cas.json5) - Local storage CAS configuration for single worker
-- [`scheduler.json5`](./scheduler.json5) - Scheduler configuration for single worker deployment
-- [`worker.json5`](./worker.json5) - Worker configuration for single worker deployment
+- `test-multi-worker-simple.json5` - All-in-one configuration for testing (validated working configuration)
 
 ## Scaling Workers
 
