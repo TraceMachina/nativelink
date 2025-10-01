@@ -863,7 +863,7 @@ pub struct EvictionPolicy {
     pub eviction_grace_period_seconds: u32,
 }
 
-fn default_eviction_grace_period() -> u32 {
+const fn default_eviction_grace_period() -> u32 {
     1800 // 30 minutes
 }
 
