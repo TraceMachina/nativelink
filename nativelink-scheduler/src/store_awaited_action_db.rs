@@ -416,9 +416,12 @@ async fn inner_update_awaited_action(
         .await
         .err_tip(|| "In RedisAwaitedActionDb::update_awaited_action")?;
     if maybe_version.is_none() {
+        tracing::warn!(
+            "Could not update AwaitedAction because the version did not match for {operation_id}"
+        );
         return Err(make_err!(
             Code::Aborted,
-            "Could not update AwaitedAction because the version did not match for {operation_id:?}",
+            "Could not update AwaitedAction because the version did not match for {operation_id}",
         ));
     }
     Ok(())
@@ -655,11 +658,11 @@ where
                 .store
                 .update_data(UpdateOperationIdToAwaitedAction(awaited_action))
                 .await
-                .err_tip(|| "In RedisAwaitedActionDb::update_awaited_action")?
+                .err_tip(|| "In RedisAwaitedActionDb::add_action")?
                 .is_none()
             {
                 // The version was out of date, try again.
-                tracing::debug!(
+                tracing::info!(
                     "Version out of date for {:?} {operation_id} {version}, retrying.",
                     action_info.digest()
                 );
@@ -673,7 +676,7 @@ where
                     operation_id: operation_id.clone(),
                 })
                 .await
-                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe while adding client mapping")?;
+                .err_tip(|| "In RedisAwaitedActionDb::add_action while adding client mapping")?;
 
             return Ok(OperationSubscriber::new(
                 Some(client_operation_id),

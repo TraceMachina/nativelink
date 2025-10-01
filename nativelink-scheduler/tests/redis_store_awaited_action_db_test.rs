@@ -59,6 +59,7 @@ use nativelink_util::store_trait::{SchedulerStore, SchedulerSubscriptionManager}
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
 use tokio::sync::{Notify, mpsc};
+use tonic::Code;
 use utils::scheduler_utils::update_eq;
 
 mod utils {
@@ -385,6 +386,28 @@ impl Mocks for FakeRedisBackend {
     }
 }
 
+fn make_redis_store(sub_channel: &str, mocks: Arc<impl Mocks>) -> Arc<RedisStore> {
+    let mut builder = Builder::default_centralized();
+    builder.set_config(RedisConfig {
+        mocks: Some(mocks),
+        ..Default::default()
+    });
+    let (client_pool, subscriber_client) = make_clients(builder);
+    Arc::new(
+        RedisStore::new_from_builder_and_parts(
+            client_pool,
+            subscriber_client,
+            Some(sub_channel.into()),
+            mock_uuid_generator,
+            String::new(),
+            4064,
+            MAX_CHUNK_UPLOADS_PER_UPDATE,
+            SCAN_COUNT,
+        )
+        .unwrap(),
+    )
+}
+
 fn make_clients(mut builder: Builder) -> (RedisPool, SubscriberClient) {
     const CONNECTION_POOL_SIZE: usize = 1;
     let client_pool = builder
@@ -433,15 +456,9 @@ async fn setup_new_worker(
     Ok(rx)
 }
 
-#[nativelink_test]
-async fn add_action_smoke_test() -> Result<(), Error> {
-    const CLIENT_OPERATION_ID: &str = "my_client_operation_id";
-    const WORKER_OPERATION_ID: &str = "my_worker_operation_id";
-    static SUBSCRIPTION_MANAGER: Mutex<Option<Arc<RedisSubscriptionManager>>> = Mutex::new(None);
-    const SUB_CHANNEL: &str = "sub_channel";
-
-    let worker_awaited_action = AwaitedAction::new(
-        WORKER_OPERATION_ID.into(),
+fn make_awaited_action(operation_id: &str) -> AwaitedAction {
+    AwaitedAction::new(
+        operation_id.into(),
         Arc::new(ActionInfo {
             command_digest: DigestInfo::zero_digest(),
             input_root_digest: DigestInfo::zero_digest(),
@@ -457,7 +474,17 @@ async fn add_action_smoke_test() -> Result<(), Error> {
             }),
         }),
         MockSystemTime::now().into(),
-    );
+    )
+}
+
+#[nativelink_test]
+async fn add_action_smoke_test() -> Result<(), Error> {
+    const CLIENT_OPERATION_ID: &str = "my_client_operation_id";
+    const WORKER_OPERATION_ID: &str = "my_worker_operation_id";
+    static SUBSCRIPTION_MANAGER: Mutex<Option<Arc<RedisSubscriptionManager>>> = Mutex::new(None);
+    const SUB_CHANNEL: &str = "sub_channel";
+
+    let worker_awaited_action = make_awaited_action(WORKER_OPERATION_ID);
     let new_awaited_action = {
         let mut new_awaited_action = worker_awaited_action.clone();
         let mut new_state = new_awaited_action.state().as_ref().clone();
@@ -715,28 +742,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         )
         ;
 
-    let store = {
-        let mut builder = Builder::default_centralized();
-        let mocks = Arc::clone(&mocks);
-        builder.set_config(RedisConfig {
-            mocks: Some(mocks),
-            ..Default::default()
-        });
-        let (client_pool, subscriber_client) = make_clients(builder);
-        Arc::new(
-            RedisStore::new_from_builder_and_parts(
-                client_pool,
-                subscriber_client,
-                Some(SUB_CHANNEL.into()),
-                mock_uuid_generator,
-                String::new(),
-                4064,
-                MAX_CHUNK_UPLOADS_PER_UPDATE,
-                SCAN_COUNT,
-            )
-            .unwrap(),
-        )
-    };
+    let store = make_redis_store(SUB_CHANNEL, mocks);
     SUBSCRIPTION_MANAGER
         .lock()
         .replace(store.subscription_manager().unwrap());
@@ -823,28 +829,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
     });
 
     let mocks = Arc::new(FakeRedisBackend::new());
-    let store = {
-        let mut builder = Builder::default_centralized();
-        let mocks = Arc::clone(&mocks);
-        builder.set_config(RedisConfig {
-            mocks: Some(mocks),
-            ..Default::default()
-        });
-        let (client_pool, subscriber_client) = make_clients(builder);
-        Arc::new(
-            RedisStore::new_from_builder_and_parts(
-                client_pool,
-                subscriber_client,
-                Some(SUB_CHANNEL.into()),
-                mock_uuid_generator,
-                String::new(),
-                4064,
-                MAX_CHUNK_UPLOADS_PER_UPDATE,
-                SCAN_COUNT,
-            )
-            .unwrap(),
-        )
-    };
+    let store = make_redis_store(SUB_CHANNEL, mocks.clone());
     mocks.set_subscription_manager(store.subscription_manager().unwrap());
 
     let notifier = Arc::new(Notify::new());
@@ -985,6 +970,44 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         .await
         .expect("Unable to get state of operation");
     assert_eq!(state.stage, ActionStage::Queued);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_outdated_version() -> Result<(), Error> {
+    const CLIENT_OPERATION_ID: &str = "outdated_operation_id";
+    let worker_operation_id = Arc::new(Mutex::new(CLIENT_OPERATION_ID));
+    let worker_operation_id_clone = worker_operation_id.clone();
+
+    let mocks = Arc::new(FakeRedisBackend::new());
+
+    let store = make_redis_store("sub_channel", mocks);
+    let notifier = Arc::new(Notify::new());
+
+    let awaited_action_db = StoreAwaitedActionDb::new(
+        store.clone(),
+        notifier.clone(),
+        MockInstantWrapped::default,
+        move || worker_operation_id_clone.lock().clone().into(),
+    )
+    .unwrap();
+
+    let worker_awaited_action = make_awaited_action("WORKER_OPERATION_ID");
+
+    let update_res = awaited_action_db
+        .update_awaited_action(worker_awaited_action.clone())
+        .await;
+    assert_eq!(update_res, Ok(()));
+
+    let update_res2 = awaited_action_db
+        .update_awaited_action(worker_awaited_action.clone())
+        .await;
+    assert!(update_res2.is_err());
+    assert_eq!(
+        update_res2.unwrap_err(),
+        Error::new(Code::Aborted, "Could not update AwaitedAction because the version did not match for WORKER_OPERATION_ID".into())
+    );
 
     Ok(())
 }
