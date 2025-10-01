@@ -89,29 +89,16 @@ jobs:
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
 
-      - name: Start local NativeLink with grace period config
+      - name: Run Bazel tests
         run: >
           nix develop --impure --command
-          bash -c "bazel run //:nativelink -- \
-            deployment-examples/docker-compose/multi-worker-with-grace-period.json5 &
-            sleep 10"
-
-      - name: Build NativeLink with cold cache
-        run: >
-          nix develop --impure --command
-          bash -c "bazel build \
-            --remote_cache=grpc://localhost:50051 \
-            --remote_instance_name=main \
-            //:nativelink"
-
-      - name: Build NativeLink with warm cache
-        run: >
-          nix develop --impure --command
-          bash -c "bazel clean &&
-            bazel build \
-            --remote_cache=grpc://localhost:50051 \
-            --remote_instance_name=main \
-            //:nativelink"
+          bash -c "bazel test \
+            --remote_header=x-nativelink-api-key=$NL_COM_API_KEY \
+            --bes_backend=grpcs://tm-ci-bep.build-faster.nativelink.net \
+            --bes_header=x-nativelink-api-key=$NL_COM_API_KEY \
+            --bes_results_url=https://tm-ci-web.build-faster.nativelink.net/ \
+            ${{ github.ref == 'refs/heads/main' && '--remote_upload_local_results=true' || '--nogenerate_json_trace_profile --remote_upload_local_results=false' }} \
+            //..."
 
   # TODO(palfrey): Flaky. Fix.
   # docker-compose-compiles-nativelink:
