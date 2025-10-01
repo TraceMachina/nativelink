@@ -16,6 +16,7 @@ use core::borrow::Borrow;
 use core::fmt::Debug;
 use core::ops::Bound;
 use core::pin::Pin;
+use std::any::Any;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -25,11 +26,13 @@ use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+use nativelink_util::evicting_map::{EvictingMap, LenEntry, RemoveStateCallback};
 use nativelink_util::health_utils::{
     HealthRegistryBuilder, HealthStatusIndicator, default_health_status_indicator,
 };
-use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreKeyBorrow, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, UploadSizeInfo,
+};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -57,7 +60,7 @@ impl LenEntry for BytesWrapper {
 #[derive(Debug, MetricsComponent)]
 pub struct MemoryStore {
     #[metric(group = "evicting_map")]
-    evicting_map: EvictingMap<StoreKeyBorrow, BytesWrapper, SystemTime>,
+    evicting_map: EvictingMap<StoreKeyBorrow, StoreKey<'static>, BytesWrapper, SystemTime>,
 }
 
 impl MemoryStore {
@@ -75,8 +78,20 @@ impl MemoryStore {
         self.evicting_map.len_for_test().await
     }
 
-    pub async fn remove_entry(&self, key: StoreKey<'_>) -> bool {
+    pub async fn remove_entry(&self, key: StoreKey<'static>) -> bool {
         self.evicting_map.remove(&key).await
+    }
+}
+
+#[derive(Debug)]
+struct MemoryRemoveCallback {
+    callback_fn: Arc<Box<dyn RemoveItemCallback>>,
+}
+
+#[async_trait]
+impl RemoveStateCallback<StoreKey<'static>> for MemoryRemoveCallback {
+    async fn callback(&self, key: &StoreKey<'static>) {
+        self.callback_fn.callback(key).await;
     }
 }
 
@@ -84,11 +99,11 @@ impl MemoryStore {
 impl StoreDriver for MemoryStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'_>],
+        keys: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.evicting_map
-            .sizes_for_keys::<_, StoreKey<'_>, &StoreKey<'_>>(
+            .sizes_for_keys(
                 keys.iter(),
                 results,
                 false, /* peek */
@@ -108,7 +123,7 @@ impl StoreDriver for MemoryStore {
     async fn list(
         self: Pin<&Self>,
         range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
-        handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
+        handler: &mut (dyn for<'b> FnMut(&'b StoreKey) -> bool + Send + Sync + '_),
     ) -> Result<u64, Error> {
         let range = (
             range.0.map(StoreKey::into_owned),
@@ -147,7 +162,7 @@ impl StoreDriver for MemoryStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -189,16 +204,23 @@ impl StoreDriver for MemoryStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+    fn as_any<'b>(&'b self) -> &'b (dyn Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
-        self
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Sync + Send + 'static> {
+        self.clone()
     }
 
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        self.evicting_map
+            .add_remove_callback(Box::new(MemoryRemoveCallback {
+                callback_fn: callback.clone(),
+            }));
     }
 }
 

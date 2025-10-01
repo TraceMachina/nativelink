@@ -44,8 +44,8 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
-    BoolValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
-    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
+    BoolValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
+    SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
     SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
 };
 use nativelink_util::task::JoinHandleDropGuard;
@@ -337,7 +337,7 @@ impl RedisStore {
 impl StoreDriver for RedisStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'_>],
+        keys: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // TODO(palfrey) We could use pipeline here, but it makes retry more
@@ -548,7 +548,7 @@ impl StoreDriver for RedisStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -656,6 +656,10 @@ impl StoreDriver for RedisStore {
 
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        // As redis doesn't drop stuff, we can just ignore this
     }
 }
 

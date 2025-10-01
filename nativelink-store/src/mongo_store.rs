@@ -32,8 +32,8 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
-    BoolValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
-    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
+    BoolValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
+    SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
     SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
 };
 use nativelink_util::task::JoinHandleDropGuard;
@@ -288,7 +288,7 @@ impl ExperimentalMongoStore {
 impl StoreDriver for ExperimentalMongoStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'_>],
+        keys: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         for (key, result) in keys.iter().zip(results.iter_mut()) {
@@ -478,7 +478,7 @@ impl StoreDriver for ExperimentalMongoStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -572,6 +572,10 @@ impl StoreDriver for ExperimentalMongoStore {
 
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        // drop because we don't remove anything from Mongo
     }
 }
 

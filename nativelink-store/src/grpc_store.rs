@@ -46,7 +46,7 @@ use nativelink_util::proto_stream_utils::{
 };
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::{default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
 use parking_lot::Mutex;
@@ -499,7 +499,7 @@ impl StoreDriver for GrpcStore {
     // is incorrect.
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'_>],
+        keys: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
@@ -648,7 +648,7 @@ impl StoreDriver for GrpcStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -766,6 +766,10 @@ impl StoreDriver for GrpcStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        // TODO(palfrey): implement error because remove callbacks are incompatible with gRPC stores
     }
 }
 

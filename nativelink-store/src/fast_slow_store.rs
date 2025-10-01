@@ -32,8 +32,8 @@ use nativelink_util::buf_channel::{
 use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
-    slow_update_store_with_file,
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
+    UploadSizeInfo, slow_update_store_with_file,
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
@@ -87,10 +87,10 @@ impl FastSlowStore {
     /// cost function. Since the data itself is shared and not copied it should be fairly
     /// low cost to just discard the data, but does cost a few mutex locks while
     /// streaming.
-    pub async fn populate_fast_store(&self, key: StoreKey<'_>) -> Result<(), Error> {
+    pub async fn populate_fast_store(&self, key: StoreKey<'static>) -> Result<(), Error> {
         let maybe_size_info = self
             .fast_store
-            .has(key.borrow())
+            .has(key.clone())
             .await
             .err_tip(|| "While querying in populate_fast_store")?;
         if maybe_size_info.is_some() {
@@ -163,7 +163,7 @@ impl FastSlowStore {
 impl StoreDriver for FastSlowStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        key: &[StoreKey<'_>],
+        key: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // If our slow store is a noop store, it'll always return a 404,
@@ -314,19 +314,19 @@ impl StoreDriver for FastSlowStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
         // TODO(palfrey) Investigate if we should maybe ignore errors here instead of
         // forwarding the up.
-        if self.fast_store.has(key.borrow()).await?.is_some() {
+        if self.fast_store.has(key.clone()).await?.is_some() {
             self.metrics
                 .fast_store_hit_count
                 .fetch_add(1, Ordering::Acquire);
             self.fast_store
-                .get_part(key, writer.borrow_mut(), offset, length)
+                .get_part(key.clone(), writer.borrow_mut(), offset, length)
                 .await?;
             self.metrics
                 .fast_store_downloaded_bytes
@@ -334,9 +334,10 @@ impl StoreDriver for FastSlowStore {
             return Ok(());
         }
 
+        let err_key = key.clone();
         let sz = self
             .slow_store
-            .has(key.borrow())
+            .has(key.clone())
             .await
             .err_tip(|| "Failed to run has() on slow store")?
             .ok_or_else(|| {
@@ -344,7 +345,7 @@ impl StoreDriver for FastSlowStore {
                     Code::NotFound,
                     "Object {} not found in either fast or slow store. \
                     If using multiple workers, ensure all workers share the same CAS storage path.",
-                    key.as_str()
+                    err_key.as_str()
                 )
             })?;
         self.metrics
@@ -393,10 +394,10 @@ impl StoreDriver for FastSlowStore {
             }
         };
 
-        let slow_store_fut = self.slow_store.get(key.borrow(), slow_tx);
+        let slow_store_fut = self.slow_store.get(key.clone(), slow_tx);
         let fast_store_fut =
             self.fast_store
-                .update(key.borrow(), fast_rx, UploadSizeInfo::ExactSize(sz));
+                .update(key, fast_rx, UploadSizeInfo::ExactSize(sz));
 
         let (data_stream_res, slow_res, fast_res) =
             join!(data_stream_fut, slow_store_fut, fast_store_fut);
@@ -424,6 +425,11 @@ impl StoreDriver for FastSlowStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        self.fast_store.register_remove_callback(callback);
+        self.slow_store.register_remove_callback(callback);
     }
 }
 

@@ -39,7 +39,7 @@ const MAX_ACTION_MSG_SIZE: usize = 10 << 20; // 10mb.
 /// Attempts to fetch the digest contents from a store into the associated proto.
 pub async fn get_and_decode_digest<T: Message + Default + 'static>(
     store: &impl StoreLike,
-    key: StoreKey<'_>,
+    key: StoreKey<'static>,
 ) -> Result<T, Error> {
     get_size_and_decode_digest(store, key)
         .map_ok(|(v, _)| v)
@@ -49,16 +49,15 @@ pub async fn get_and_decode_digest<T: Message + Default + 'static>(
 /// Attempts to fetch the digest contents from a store into the associated proto.
 pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
     store: &impl StoreLike,
-    key: impl Into<StoreKey<'_>>,
+    key: StoreKey<'static>,
 ) -> Result<(T, u64), Error> {
-    let key = key.into();
     // Note: For unknown reasons we appear to be hitting:
     // https://github.com/rust-lang/rust/issues/92096
     // or a smiliar issue if we try to use the non-store driver function, so we
     // are using the store driver function here.
     let mut store_data_resp = store
         .as_store_driver_pin()
-        .get_part_unchunked(key.borrow(), 0, Some(MAX_ACTION_MSG_SIZE as u64))
+        .get_part_unchunked(key.clone(), 0, Some(MAX_ACTION_MSG_SIZE as u64))
         .await;
     if let Err(err) = &mut store_data_resp {
         if err.code == Code::NotFound {

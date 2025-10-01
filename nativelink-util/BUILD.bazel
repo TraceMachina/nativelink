@@ -48,7 +48,6 @@ rust_library(
         "//nativelink-error",
         "//nativelink-metric",
         "//nativelink-proto",
-        "@crates//:async-lock",
         "@crates//:base64",
         "@crates//:bitflags",
         "@crates//:blake3",

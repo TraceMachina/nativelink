@@ -14,7 +14,7 @@
 
 use core::borrow::{Borrow, BorrowMut};
 use core::convert::Into;
-use core::fmt::{self, Display};
+use core::fmt::{self, Debug, Display};
 use core::hash::{Hash, Hasher};
 use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
@@ -338,7 +338,7 @@ pub struct Store {
     inner: Arc<dyn StoreDriver>,
 }
 
-impl fmt::Debug for Store {
+impl Debug for Store {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Store").finish_non_exhaustive()
     }
@@ -348,9 +348,7 @@ impl Store {
     pub fn new(inner: Arc<dyn StoreDriver>) -> Self {
         Self { inner }
     }
-}
 
-impl Store {
     /// Returns the immediate inner store driver.
     /// Note: This does not recursively try to resolve underlying store drivers
     /// like `.inner_store()` does.
@@ -378,6 +376,11 @@ impl Store {
     #[inline]
     pub fn register_health(&self, registry: &mut HealthRegistryBuilder) {
         self.inner.clone().register_health(registry);
+    }
+
+    #[inline]
+    pub fn register_remove_callback(&self, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        self.inner.clone().register_remove_callback(callback);
     }
 }
 
@@ -425,9 +428,10 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     #[inline]
     fn has<'a>(
         &'a self,
-        digest: impl Into<StoreKey<'a>>,
+        digest: impl Into<StoreKey<'static>>,
     ) -> impl Future<Output = Result<Option<u64>, Error>> + 'a {
-        self.as_store_driver_pin().has(digest.into())
+        let store_key = digest.into();
+        self.as_store_driver_pin().has(store_key)
     }
 
     /// Look up a list of digests in the store and return a result for each in
@@ -437,7 +441,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     #[inline]
     fn has_many<'a>(
         &'a self,
-        digests: &'a [StoreKey<'a>],
+        digests: &'a [StoreKey<'static>],
     ) -> impl Future<Output = Result<Vec<Option<u64>>, Error>> + Send + 'a {
         self.as_store_driver_pin().has_many(digests)
     }
@@ -447,7 +451,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     #[inline]
     fn has_with_results<'a>(
         &'a self,
-        digests: &'a [StoreKey<'a>],
+        digests: &'a [StoreKey<'static>],
         results: &'a mut [Option<u64>],
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
         self.as_store_driver_pin()
@@ -533,7 +537,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     #[inline]
     fn get_part<'a>(
         &'a self,
-        digest: impl Into<StoreKey<'a>>,
+        digest: impl Into<StoreKey<'static>>,
         mut writer: impl BorrowMut<DropCloserWriteHalf> + Send + 'a,
         offset: u64,
         length: Option<u64>,
@@ -554,7 +558,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     #[inline]
     fn get<'a>(
         &'a self,
-        key: impl Into<StoreKey<'a>>,
+        key: impl Into<StoreKey<'static>>,
         writer: DropCloserWriteHalf,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
         self.as_store_driver_pin().get(key.into(), writer)
@@ -564,7 +568,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     #[inline]
     fn get_part_unchunked<'a>(
         &'a self,
-        key: impl Into<StoreKey<'a>>,
+        key: impl Into<StoreKey<'static>>,
         offset: u64,
         length: Option<u64>,
     ) -> impl Future<Output = Result<Bytes, Error>> + Send + 'a {
@@ -589,7 +593,7 @@ pub trait StoreDriver:
 {
     /// See: [`StoreLike::has`] for details.
     #[inline]
-    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {
+    async fn has(self: Pin<&Self>, key: StoreKey<'static>) -> Result<Option<u64>, Error> {
         let mut result = [None];
         self.has_with_results(&[key], &mut result).await?;
         Ok(result[0])
@@ -599,7 +603,7 @@ pub trait StoreDriver:
     #[inline]
     async fn has_many(
         self: Pin<&Self>,
-        digests: &[StoreKey<'_>],
+        digests: &[StoreKey<'static>],
     ) -> Result<Vec<Option<u64>>, Error> {
         let mut results = vec![None; digests.len()];
         self.has_with_results(digests, &mut results).await?;
@@ -609,7 +613,7 @@ pub trait StoreDriver:
     /// See: [`StoreLike::has_with_results`] for details.
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[StoreKey<'_>],
+        digests: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error>;
 
@@ -692,7 +696,7 @@ pub trait StoreDriver:
     /// See: [`StoreLike::get_part`] for details.
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -702,7 +706,7 @@ pub trait StoreDriver:
     #[inline]
     async fn get(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         mut writer: DropCloserWriteHalf,
     ) -> Result<(), Error> {
         self.get_part(key, &mut writer, 0, None).await
@@ -711,7 +715,7 @@ pub trait StoreDriver:
     /// See: [`StoreLike::get_part_unchunked`] for details.
     async fn get_part_unchunked(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         offset: u64,
         length: Option<u64>,
     ) -> Result<Bytes, Error> {
@@ -756,7 +760,7 @@ pub trait StoreDriver:
         let mut digest_hasher = default_digest_hasher_func().hasher();
         digest_hasher.update(&digest_data);
         let digest_data_len = digest_data.len() as u64;
-        let digest_info = StoreKey::from(digest_hasher.finalize_digest());
+        let digest_info: StoreKey<'static> = StoreKey::from(digest_hasher.finalize_digest());
 
         let digest_bytes = Bytes::copy_from_slice(&digest_data);
 
@@ -770,7 +774,7 @@ pub trait StoreDriver:
             );
         }
 
-        match self.has(digest_info.borrow()).await {
+        match self.has(digest_info.clone()).await {
             Ok(Some(s)) => {
                 if s != digest_data_len {
                     return HealthStatus::new_failed(
@@ -825,6 +829,13 @@ pub trait StoreDriver:
 
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
+
+    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>);
+}
+
+#[async_trait]
+pub trait RemoveItemCallback: Debug + Send + Sync {
+    async fn callback(&self, store_key: &StoreKey<'static>);
 }
 
 /// The instructions on how to decode a value from a Bytes & version into

@@ -25,7 +25,9 @@ use nativelink_error::{Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 
 #[derive(Debug, MetricsComponent)]
 struct StoreAndWeight {
@@ -143,7 +145,7 @@ impl ShardStore {
 impl StoreDriver for ShardStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'_>],
+        keys: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         type KeyIdxVec = Vec<usize>;
@@ -165,11 +167,12 @@ impl StoreDriver for ShardStore {
             .collect();
         // Bucket each key into the store that it belongs to.
         keys.iter()
+        .cloned()
             .enumerate()
-            .map(|(key_idx, key)| (key, key_idx, self.get_store_index(key)))
+            .map(|(key_idx, key)| (key.clone(), key_idx, self.get_store_index(&key)))
             .for_each(|(key, key_idx, store_idx)| {
                 keys_for_store[store_idx].0.push(key_idx);
-                keys_for_store[store_idx].1.push(key.borrow());
+                keys_for_store[store_idx].1.push(key);
             });
 
         // Build all our futures for each store.
@@ -211,7 +214,7 @@ impl StoreDriver for ShardStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -237,6 +240,12 @@ impl StoreDriver for ShardStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        for store in &self.weights_and_stores {
+            store.store.register_remove_callback(callback);
+        }
     }
 }
 

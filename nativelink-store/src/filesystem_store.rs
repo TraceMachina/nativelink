@@ -36,8 +36,9 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{
-    StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
+    RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
+use parking_lot::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{debug, error, warn};
@@ -414,8 +415,10 @@ pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_
 /// `add_files_to_cache`.
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
+type FsEvictingMap<Fe:FileEntry> = EvictingMap<StoreKeyBorrow, StoreKey<'static>, Arc<Fe>, SystemTime>;
+
 async fn add_files_to_cache<Fe: FileEntry>(
-    evicting_map: &EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>,
+    evicting_map: &FsEvictingMap<Fe>,
     anchor_time: &SystemTime,
     shared_context: &Arc<SharedContext>,
     block_size: u64,
@@ -423,7 +426,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
 ) -> Result<(), Error> {
     #[expect(clippy::too_many_arguments)]
     async fn process_entry<Fe: FileEntry>(
-        evicting_map: &EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>,
+        evicting_map: &FsEvictingMap<Fe>,
         file_name: &str,
         file_type: FileType,
         atime: SystemTime,
@@ -534,7 +537,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
     }
 
     async fn add_files_to_cache<Fe: FileEntry>(
-        evicting_map: &EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>,
+        evicting_map: &FsEvictingMap<Fe>,
         anchor_time: &SystemTime,
         shared_context: &Arc<SharedContext>,
         block_size: u64,
@@ -621,13 +624,14 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
     shared_context: Arc<SharedContext>,
     #[metric(group = "evicting_map")]
-    evicting_map: Arc<EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>>,
+    evicting_map: Arc<FsEvictingMap<Fe>>,
     #[metric(help = "Block size of the configured filesystem")]
     block_size: u64,
     #[metric(help = "Size of the configured read buffer size")]
     read_buffer_size: usize,
     weak_self: Weak<Self>,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
+    remove_callbacks: Mutex<Vec<Arc<Box<dyn RemoveItemCallback>>>>,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
@@ -692,6 +696,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             read_buffer_size,
             weak_self: weak_self.clone(),
             rename_fn,
+            remove_callbacks: Mutex::new(vec![]),
         }))
     }
 
@@ -701,7 +706,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
         self.evicting_map
-            .get::<StoreKey<'static>>(&digest.into())
+            .get(&digest.into())
             .await
             .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store. This may indicate the file was evicted due to cache pressure. Consider increasing 'max_bytes' in your filesystem store's eviction_policy configuration."))
     }
@@ -743,7 +748,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     }
 
     async fn emplace_file(&self, key: StoreKey<'static>, entry: Arc<Fe>) -> Result<(), Error> {
-        // This sequence of events is quite ticky to understand due to the amount of triggers that
+        // This sequence of events is quite tricky to understand due to the amount of triggers that
         // happen, async'ness of it and the locking. So here is a breakdown of what happens:
         // 1. Here will hold a write lock on any file operations of this FileEntry.
         // 2. Then insert the entry into the evicting map. This may trigger an eviction of other
@@ -818,11 +823,11 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'_>],
+        keys: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.evicting_map
-            .sizes_for_keys::<_, StoreKey<'_>, &StoreKey<'_>>(
+            .sizes_for_keys(
                 keys.iter(),
                 results,
                 false, /* peek */
@@ -917,13 +922,13 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
         if is_zero_digest(key.borrow()) {
-            self.has(key.borrow())
+            self.has(key)
                 .await
                 .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
             writer
@@ -987,6 +992,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        self.remove_callbacks.lock().push(callback.clone());
     }
 }
 

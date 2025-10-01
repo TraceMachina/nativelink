@@ -21,7 +21,9 @@ use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use tokio::join;
 
 #[derive(Debug, MetricsComponent)]
@@ -48,12 +50,12 @@ impl SizePartitioningStore {
 impl StoreDriver for SizePartitioningStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'_>],
+        keys: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         let mut non_digest_sample = None;
         let (lower_digests, upper_digests): (Vec<_>, Vec<_>) =
-            keys.iter().map(StoreKey::borrow).partition(|k| {
+            keys.iter().cloned().partition(|k| {
                 let StoreKey::Digest(digest) = k else {
                     non_digest_sample = Some(k.borrow().into_owned());
                     return false;
@@ -115,7 +117,7 @@ impl StoreDriver for SizePartitioningStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -158,6 +160,11 @@ impl StoreDriver for SizePartitioningStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        self.lower_store.register_remove_callback(callback);
+        self.upper_store.register_remove_callback(callback);
     }
 }
 

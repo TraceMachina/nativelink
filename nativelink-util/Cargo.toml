@@ -14,7 +14,6 @@ nativelink-error = { path = "../nativelink-error" }
 nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
 
-async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 async-trait = "0.1.88"
 base64 = { version = "0.22.1", default-features = false, features = ["std"] }
 bitflags = "2.9.0"
@@ -41,7 +40,7 @@ opentelemetry-semantic-conventions = { version = "0.29.0", default-features = fa
   "semconv_experimental",
 ] }
 opentelemetry_sdk = { version = "0.29.0", default-features = false }
-parking_lot = "0.12.3"
+parking_lot = { version = "0.12.3", features = ["send_guard"] }
 pin-project = "1.1.10"
 pin-project-lite = "0.2.16"
 prost = { version = "0.13.5", default-features = false }

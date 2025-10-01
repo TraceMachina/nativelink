@@ -26,7 +26,9 @@ use nativelink_util::common::PackedHash;
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use opentelemetry::context::Context;
 
 #[derive(Debug, MetricsComponent)]
@@ -146,7 +148,7 @@ impl VerifyStore {
 impl StoreDriver for VerifyStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[StoreKey<'_>],
+        digests: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.inner_store.has_with_results(digests, results).await
@@ -209,7 +211,7 @@ impl StoreDriver for VerifyStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -227,6 +229,10 @@ impl StoreDriver for VerifyStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        self.inner_store.register_remove_callback(callback);
     }
 }
 

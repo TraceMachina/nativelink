@@ -28,7 +28,7 @@ use nativelink_store::noop_store::NoopStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike};
+use nativelink_util::store_trait::{RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike};
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -240,7 +240,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
     impl StoreDriver for DropCheckStore {
         async fn has_with_results(
             self: Pin<&Self>,
-            digests: &[StoreKey<'_>],
+            digests: &[StoreKey<'static>],
             results: &mut [Option<u64>],
         ) -> Result<(), Error> {
             if let Some(has_digest) = self.digest {
@@ -276,7 +276,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
         async fn get_part(
             self: Pin<&Self>,
-            key: StoreKey<'_>,
+            key: StoreKey<'static>,
             writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
             offset: u64,
             length: Option<u64>,
@@ -299,6 +299,9 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
         fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
             self
+        }
+
+        fn register_remove_callback(self: Arc<Self>, _callback: &Arc<Box<dyn RemoveItemCallback>>) {
         }
     }
 

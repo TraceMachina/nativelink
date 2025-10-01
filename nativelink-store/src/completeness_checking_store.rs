@@ -28,7 +28,9 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tracing::warn;
@@ -132,14 +134,14 @@ impl CompletenessCheckingStore {
     /// are polled concurrently.
     async fn inner_has_with_results(
         &self,
-        action_result_digests: &[StoreKey<'_>],
+        action_result_digests: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // Holds shared state between the different futures.
         // This is how get around lifetime issues.
         struct State<'a> {
             results: &'a mut [Option<u64>],
-            digests_to_check: Vec<StoreKey<'a>>,
+            digests_to_check: Vec<StoreKey<'static>>,
             digests_to_check_idxs: Vec<usize>,
             notify: Arc<Notify>,
             done: bool,
@@ -166,7 +168,7 @@ impl CompletenessCheckingStore {
                     // Note: We don't err_tip here because often have NotFound here which is ok.
                     let (action_result, size) = get_size_and_decode_digest::<ProtoActionResult>(
                         &self.ac_store,
-                        digest.borrow(),
+                        digest.clone(),
                     )
                     .await?;
 
@@ -341,7 +343,7 @@ impl CompletenessCheckingStore {
 impl StoreDriver for CompletenessCheckingStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'_>],
+        keys: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.inner_has_with_results(keys, results).await
@@ -358,13 +360,13 @@ impl StoreDriver for CompletenessCheckingStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
         let results = &mut [None];
-        self.inner_has_with_results(&[key.borrow()], results)
+        self.inner_has_with_results(&[key.clone()], results)
             .await
             .err_tip(|| "when calling CompletenessCheckingStore::get_part")?;
         if results[0].is_none() {
@@ -386,6 +388,11 @@ impl StoreDriver for CompletenessCheckingStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        self.ac_store.register_remove_callback(callback);
+        self.cas_store.register_remove_callback(callback);
     }
 }
 

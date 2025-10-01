@@ -22,7 +22,9 @@ use nativelink_metric::{
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopStore;
@@ -47,7 +49,7 @@ impl NoopStore {
 impl StoreDriver for NoopStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        _keys: &[StoreKey<'_>],
+        _keys: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         results.iter_mut().for_each(|r| *r = None);
@@ -73,7 +75,7 @@ impl StoreDriver for NoopStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        _key: StoreKey<'_>,
+        _key: StoreKey<'static>,
         _writer: &mut DropCloserWriteHalf,
         _offset: u64,
         _length: Option<u64>,
@@ -91,6 +93,10 @@ impl StoreDriver for NoopStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        // does nothing, so drop
     }
 }
 

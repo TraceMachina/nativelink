@@ -26,7 +26,9 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
@@ -118,13 +120,13 @@ impl DedupStore {
         }))
     }
 
-    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {
+    async fn has(self: Pin<&Self>, key: StoreKey<'static>) -> Result<Option<u64>, Error> {
         // First we need to load the index that contains where the individual parts actually
         // can be fetched from.
         let index_entries = {
             let maybe_data = self
                 .index_store
-                .get_part_unchunked(key.borrow(), 0, None)
+                .get_part_unchunked(key.clone(), 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store");
             let data = match maybe_data {
@@ -169,7 +171,7 @@ impl DedupStore {
 impl StoreDriver for DedupStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[StoreKey<'_>],
+        digests: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         digests
@@ -181,7 +183,7 @@ impl StoreDriver for DedupStore {
                     return Ok(());
                 }
 
-                match self.has(key.borrow()).await {
+                match self.has(key.clone()).await {
                     Ok(maybe_size) => {
                         *result = maybe_size;
                         Ok(())
@@ -251,7 +253,7 @@ impl StoreDriver for DedupStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -375,6 +377,11 @@ impl StoreDriver for DedupStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        self.index_store.register_remove_callback(callback);
+        self.content_store.register_remove_callback(callback);
     }
 }
 

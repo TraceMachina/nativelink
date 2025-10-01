@@ -30,7 +30,9 @@ use nativelink_util::buf_channel::{
 };
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::cas_utils::is_zero_digest;
@@ -271,7 +273,7 @@ impl CompressionStore {
 impl StoreDriver for CompressionStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[StoreKey<'_>],
+        digests: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.inner_store.has_with_results(digests, results).await
@@ -411,7 +413,7 @@ impl StoreDriver for CompressionStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -638,6 +640,10 @@ impl StoreDriver for CompressionStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        self.inner_store.register_remove_callback(callback);
     }
 }
 

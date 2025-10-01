@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
@@ -34,7 +35,9 @@ use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::sync::RwLock;
@@ -51,7 +54,7 @@ struct CacheFile {
     timestamp: u64,
 }
 
-#[derive(Debug, MetricsComponent)]
+#[derive(MetricsComponent)]
 pub struct OntapS3ExistenceCache<I, NowFn>
 where
     I: InstantWrapper,
@@ -72,6 +75,59 @@ where
     cache_hits: CounterWithTime,
     #[metric(help = "Number of cache misses")]
     cache_misses: CounterWithTime,
+}
+
+struct OntapS3CacheCallback<I, NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
+{
+    cache: Arc<OntapS3ExistenceCache<I, NowFn>>,
+}
+
+impl<I, NowFn> Debug for OntapS3CacheCallback<I, NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OntapS3CacheCallback")
+            .field("cache", &self.cache)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl<I, NowFn> RemoveItemCallback for OntapS3CacheCallback<I, NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
+{
+    async fn callback(&self, store_key: &StoreKey<'static>) {
+        self.cache.callback(store_key);
+    }
+}
+
+impl<I, NowFn> Debug for OntapS3ExistenceCache<I, NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OntapS3ExistenceCache")
+            .field("inner_store", &self.inner_store)
+            .field("s3_client", &self.s3_client)
+            .field("bucket", &self.bucket)
+            .field("key_prefix", &self.key_prefix)
+            .field("index_path", &self.index_path)
+            .field("digests", &self.digests)
+            .field("sync_interval_seconds", &self.sync_interval_seconds)
+            .field("last_sync", &self.last_sync)
+            .field("sync_in_progress", &self.sync_in_progress)
+            .field("cache_hits", &self.cache_hits)
+            .field("cache_misses", &self.cache_misses)
+            .finish()
+    }
 }
 
 impl<I, NowFn> OntapS3ExistenceCache<I, NowFn>
@@ -299,6 +355,13 @@ where
             cache_misses: CounterWithTime::default(),
         });
 
+        let other_ref = cache.clone();
+        cache
+            .inner_store
+            .register_remove_callback(&Arc::new(Box::new(OntapS3CacheCallback {
+                cache: other_ref,
+            })));
+
         // Try to load existing cache file
         if let Ok(contents) = fs::read_to_string(&spec.index_path).await {
             let cache_file = serde_json::from_str::<CacheFile>(&contents)
@@ -372,7 +435,7 @@ where
 {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'_>],
+        keys: &[StoreKey<'static>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         let cache = self.digests.read().await;
@@ -394,7 +457,7 @@ where
                 continue;
             }
             // If in cache, check actual store
-            match self.inner_store.has(key.borrow()).await {
+            match self.inner_store.has(key.clone()).await {
                 Ok(size) => {
                     *result = size;
                     self.cache_hits.inc();
@@ -410,7 +473,7 @@ where
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'_>,
+        key: StoreKey<'static>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -460,6 +523,21 @@ where
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        self.inner_store.register_remove_callback(callback);
+    }
+}
+
+#[async_trait]
+impl<I, NowFn> RemoveItemCallback for OntapS3ExistenceCache<I, NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
+{
+    async fn callback(&self, store_key: &StoreKey<'static>) {
+        todo!()
     }
 }
 

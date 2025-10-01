@@ -162,3 +162,46 @@ async fn ensure_has_requests_eventually_do_let_evictions_happen() -> Result<(), 
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn copes_with_dropped_items() -> Result<(), Error> {
+    const VALUE: &str = "123";
+    let spec = ExistenceCacheSpec {
+        backend: StoreSpec::Noop(NoopSpec::default()), // Note: Not used.
+        eviction_policy: Option::default(),
+    };
+    let inner_store = Store::new(MemoryStore::new(&MemorySpec {
+        eviction_policy: Some(EvictionPolicy {
+            max_bytes: 1,
+            ..Default::default()
+        }),
+    }));
+    let store = ExistenceCacheStore::new(&spec, inner_store.clone());
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
+    store
+        .update_oneshot(digest, VALUE.into())
+        .await
+        .err_tip(|| "Failed to update store")?;
+
+    let inner_store_item = inner_store.has(digest).await;
+    assert!(
+        inner_store_item.is_ok(),
+        "Failed inner item: {inner_store_item:#?}",
+    );
+    let unwrapped_inner = inner_store_item.unwrap();
+    assert!(
+        unwrapped_inner.is_none(),
+        "Failed inner item: {unwrapped_inner:#?}"
+    );
+
+    let store_item = store.has(digest).await;
+    assert!(store_item.is_ok(), "Failed item: {store_item:#?}");
+    let unwrapped_store = store_item.unwrap();
+    assert!(
+        unwrapped_store.is_none(),
+        "Failed item: {unwrapped_store:#?}"
+    );
+
+    Ok(())
+}
