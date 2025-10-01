@@ -89,46 +89,6 @@
         },
       },
     },
-    {
-      local: {
-        name: "worker-2",
-        worker_api_endpoint: {
-          uri: "grpc://127.0.0.1:50062",
-        },
-        cas_fast_slow_store: "CAS",
-        upload_action_result: {
-          ac_store: "AC",
-        },
-        work_directory: "/tmp/nativelink-multi-test/worker2/work",
-        platform_properties: {
-          cpu_count: {
-            values: [
-              "1",
-            ],
-          },
-        },
-      },
-    },
-    {
-      local: {
-        name: "worker-3",
-        worker_api_endpoint: {
-          uri: "grpc://127.0.0.1:50063",
-        },
-        cas_fast_slow_store: "CAS",
-        upload_action_result: {
-          ac_store: "AC",
-        },
-        work_directory: "/tmp/nativelink-multi-test/worker3/work",
-        platform_properties: {
-          cpu_count: {
-            values: [
-              "1",
-            ],
-          },
-        },
-      },
-    },
   ],
   servers: [
     {

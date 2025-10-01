@@ -856,7 +856,10 @@ pub struct EvictionPolicy {
     /// cache is full. This prevents premature eviction of items needed by
     /// in-flight actions in multi-worker deployments.
     /// Default: 1800 (30 minutes). Zero means no grace period.
-    #[serde(default = "default_eviction_grace_period", deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(
+        default = "default_eviction_grace_period",
+        deserialize_with = "convert_duration_with_shellexpand"
+    )]
     pub eviction_grace_period_seconds: u32,
 }
 
