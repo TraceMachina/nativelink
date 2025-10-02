@@ -67,6 +67,7 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use parking_lot::Mutex;
 use rand::Rng;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -431,6 +432,8 @@ pub struct S3Store<NowFn> {
     max_retry_buffer_per_request: usize,
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
+
+    remove_callbacks: Arc<Mutex<Vec<Arc<Box<dyn RemoveItemCallback>>>>>,
 }
 
 impl<I, NowFn> S3Store<NowFn>
@@ -506,6 +509,7 @@ where
                 .common
                 .multipart_max_concurrent_uploads
                 .map_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS, |v| v),
+            remove_callbacks: Arc::new(Mutex::new(vec![])),
         }))
     }
 
@@ -513,7 +517,7 @@ where
         format!("{}{}", self.key_prefix, key.as_str(),)
     }
 
-    async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<u64>, Error> {
+    async fn has(self: Pin<&Self>, digest: &StoreKey<'static>) -> Result<Option<u64>, Error> {
         self.retrier
             .retry(unfold((), move |state| async move {
                 let result = self
@@ -530,6 +534,15 @@ where
                             if let Some(last_modified) = head_object_output.last_modified {
                                 let now_s = (self.now_fn)().unix_timestamp() as i64;
                                 if last_modified.secs() + self.consider_expired_after_s <= now_s {
+                                    let store_key = digest.clone().into_owned();
+                                    let remove_callbacks = self.remove_callbacks.lock_arc();
+                                    let callbacks = remove_callbacks
+                                        .iter()
+                                        .map(|callback| callback.callback(&store_key))
+                                        .collect::<Vec<_>>();
+                                    for callback in callbacks {
+                                        callback.await;
+                                    }
                                     return Some((RetryResult::Ok(None), state));
                                 }
                             }
@@ -978,9 +991,8 @@ where
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(self: Arc<Self>, _callback: &Arc<Box<dyn RemoveItemCallback>>) {
-        // FIXME(palfrey): Cope with the expiry timeout
-        todo!();
+    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+        self.remove_callbacks.lock_arc().push(callback.clone());
     }
 }
 
