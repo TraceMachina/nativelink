@@ -288,7 +288,7 @@ impl ExperimentalMongoStore {
 impl StoreDriver for ExperimentalMongoStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'static>],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         for (key, result) in keys.iter().zip(results.iter_mut()) {
@@ -478,7 +478,7 @@ impl StoreDriver for ExperimentalMongoStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,

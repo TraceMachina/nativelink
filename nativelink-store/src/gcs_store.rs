@@ -135,8 +135,8 @@ where
         }))
     }
 
-    async fn has(self: Pin<&Self>, key: &StoreKey<'_>) -> Result<Option<u64>, Error> {
-        let object_path = self.make_object_path(key);
+    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {
+        let object_path = self.make_object_path(&key);
         let client = &self.client;
         let consider_expired_after_s = self.consider_expired_after_s;
         let now_fn = &self.now_fn;
@@ -198,7 +198,7 @@ where
 {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'static>],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         keys.iter()
@@ -208,7 +208,7 @@ where
                     *result = Some(0);
                     return Ok(());
                 }
-                *result = self.has(key).await?;
+                *result = self.has(key.borrow()).await?;
                 Ok(())
             })
             .collect::<FuturesUnordered<_>>()
@@ -376,7 +376,7 @@ where
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,

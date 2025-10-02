@@ -223,60 +223,65 @@ where
         format!("{}{}", self.key_prefix, key.as_str())
     }
 
-    async fn has(self: Pin<&Self>, digest: &StoreKey<'static>) -> Result<Option<u64>, Error> {
+    async fn has(self: Pin<&Self>, digest: StoreKey<'_>) -> Result<Option<u64>, Error> {
+        let digest_clone = digest.into_owned();
         self.retrier
-            .retry(unfold((), move |state| async move {
-                let result = self
-                    .s3_client
-                    .head_object()
-                    .bucket(&self.bucket)
-                    .key(self.make_s3_path(&digest.borrow()))
-                    .send()
-                    .await;
+            .retry(unfold((), move |state| {
+                let local_digest = digest_clone.clone();
+                async move {
+                    let result = self
+                        .s3_client
+                        .head_object()
+                        .bucket(&self.bucket)
+                        .key(self.make_s3_path(&local_digest))
+                        .send()
+                        .await;
 
-                match result {
-                    Ok(head_object_output) => {
-                        if self.consider_expired_after_s != 0 {
-                            if let Some(last_modified) = head_object_output.last_modified {
-                                let now_s = (self.now_fn)().unix_timestamp() as i64;
-                                if last_modified.secs() + self.consider_expired_after_s <= now_s {
-                                    let store_key = digest.clone().into_owned();
-                                    let remove_callbacks = self.remove_callbacks.lock_arc();
-                                    let callbacks = remove_callbacks
-                                        .iter()
-                                        .map(|callback| callback.callback(&store_key))
-                                        .collect::<Vec<_>>();
-                                    for callback in callbacks {
-                                        callback.await;
+                    match result {
+                        Ok(head_object_output) => {
+                            if self.consider_expired_after_s != 0 {
+                                if let Some(last_modified) = head_object_output.last_modified {
+                                    let now_s = (self.now_fn)().unix_timestamp() as i64;
+                                    if last_modified.secs() + self.consider_expired_after_s <= now_s
+                                    {
+                                        let store_key = local_digest.borrow();
+                                        let remove_callbacks = self.remove_callbacks.lock_arc();
+                                        let callbacks = remove_callbacks
+                                            .iter()
+                                            .map(|callback| callback.callback(&store_key))
+                                            .collect::<Vec<_>>();
+                                        for callback in callbacks {
+                                            callback.await;
+                                        }
+                                        return Some((RetryResult::Ok(None), state));
                                     }
-                                    return Some((RetryResult::Ok(None), state));
                                 }
                             }
+                            let Some(length) = head_object_output.content_length else {
+                                return Some((RetryResult::Ok(None), state));
+                            };
+                            if length >= 0 {
+                                return Some((RetryResult::Ok(Some(length as u64)), state));
+                            }
+                            Some((
+                                RetryResult::Err(make_err!(
+                                    Code::InvalidArgument,
+                                    "Negative content length in ONTAP S3: {length:?}"
+                                )),
+                                state,
+                            ))
                         }
-                        let Some(length) = head_object_output.content_length else {
-                            return Some((RetryResult::Ok(None), state));
-                        };
-                        if length >= 0 {
-                            return Some((RetryResult::Ok(Some(length as u64)), state));
-                        }
-                        Some((
-                            RetryResult::Err(make_err!(
-                                Code::InvalidArgument,
-                                "Negative content length in ONTAP S3: {length:?}"
+                        Err(sdk_error) => match sdk_error.into_service_error() {
+                            HeadObjectError::NotFound(_) => Some((RetryResult::Ok(None), state)),
+                            other => Some((
+                                RetryResult::Retry(make_err!(
+                                    Code::Unavailable,
+                                    "Unhandled HeadObjectError in ONTAP S3: {other:?}"
+                                )),
+                                state,
                             )),
-                            state,
-                        ))
+                        },
                     }
-                    Err(sdk_error) => match sdk_error.into_service_error() {
-                        HeadObjectError::NotFound(_) => Some((RetryResult::Ok(None), state)),
-                        other => Some((
-                            RetryResult::Retry(make_err!(
-                                Code::Unavailable,
-                                "Unhandled HeadObjectError in ONTAP S3: {other:?}"
-                            )),
-                            state,
-                        )),
-                    },
                 }
             }))
             .await
@@ -291,7 +296,7 @@ where
 {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'static>],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         keys.iter()
@@ -302,7 +307,7 @@ where
                     return Ok::<_, Error>(());
                 }
 
-                match self.has(key).await {
+                match self.has(key.borrow()).await {
                     Ok(size) => {
                         *result = size;
                         if size.is_none() {
@@ -635,7 +640,7 @@ where
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,

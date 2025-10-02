@@ -68,9 +68,9 @@ impl ExistenceCacheStore<SystemTime> {
 
 #[async_trait]
 impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheStore<I> {
-    async fn callback(&self, store_key: &StoreKey<'static>) {
+    async fn callback(&self, store_key: &StoreKey<'_>) {
         debug!(?store_key, "Removing item from cache due to callback");
-        let new_key = store_key.clone();
+        let new_key = store_key.borrow();
         let deleted_key = self.existence_cache.remove(&new_key.into_digest()).await;
         if !deleted_key {
             info!(?store_key, "Failed to delete key from cache on callback");
@@ -85,9 +85,9 @@ struct ExistenceCacheCallback<I: InstantWrapper> {
 
 #[async_trait]
 impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
-    async fn callback(&self, store_key: &StoreKey<'static>) {
+    async fn callback(&self, store_key: &StoreKey<'_>) {
         if let Some(callbacks) = &mut *self.cache.pause_remove_callbacks.lock_arc() {
-            callbacks.push(store_key.clone());
+            callbacks.push(store_key.borrow().into_owned());
         } else {
             self.cache.callback(store_key).await;
         }
@@ -197,7 +197,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
 impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[StoreKey<'static>],
+        digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // TODO(palfrey) This is a bit of a hack to get around the lifetime issues with the
@@ -261,7 +261,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,

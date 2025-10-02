@@ -148,7 +148,7 @@ impl VerifyStore {
 impl StoreDriver for VerifyStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[StoreKey<'static>],
+        digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.inner_store.has_with_results(digests, results).await
@@ -211,12 +211,14 @@ impl StoreDriver for VerifyStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        self.inner_store.get_part(key, writer, offset, length).await
+        self.inner_store
+            .get_part(key.into_owned(), writer, offset, length)
+            .await
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {

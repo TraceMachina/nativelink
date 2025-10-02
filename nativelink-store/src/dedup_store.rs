@@ -120,13 +120,13 @@ impl DedupStore {
         }))
     }
 
-    async fn has(self: Pin<&Self>, key: StoreKey<'static>) -> Result<Option<u64>, Error> {
+    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {
         // First we need to load the index that contains where the individual parts actually
         // can be fetched from.
         let index_entries = {
             let maybe_data = self
                 .index_store
-                .get_part_unchunked(key.clone(), 0, None)
+                .get_part_unchunked(key.borrow(), 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store");
             let data = match maybe_data {
@@ -171,7 +171,7 @@ impl DedupStore {
 impl StoreDriver for DedupStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[StoreKey<'static>],
+        digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         digests
@@ -183,7 +183,7 @@ impl StoreDriver for DedupStore {
                     return Ok(());
                 }
 
-                match self.has(key.clone()).await {
+                match self.has(key.borrow()).await {
                     Ok(maybe_size) => {
                         *result = maybe_size;
                         Ok(())
@@ -253,7 +253,7 @@ impl StoreDriver for DedupStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,

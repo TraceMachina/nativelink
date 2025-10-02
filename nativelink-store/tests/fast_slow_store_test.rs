@@ -240,7 +240,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
     impl StoreDriver for DropCheckStore {
         async fn has_with_results(
             self: Pin<&Self>,
-            digests: &[StoreKey<'static>],
+            digests: &[StoreKey<'_>],
             results: &mut [Option<u64>],
         ) -> Result<(), Error> {
             if let Some(has_digest) = self.digest {
@@ -276,7 +276,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
         async fn get_part(
             self: Pin<&Self>,
-            key: StoreKey<'static>,
+            key: StoreKey<'_>,
             writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
             offset: u64,
             length: Option<u64>,

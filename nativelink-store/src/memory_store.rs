@@ -79,8 +79,8 @@ impl MemoryStore {
         self.evicting_map.len_for_test().await
     }
 
-    pub async fn remove_entry(&self, key: StoreKey<'static>) -> bool {
-        self.evicting_map.remove(&key).await
+    pub async fn remove_entry(&self, key: StoreKey<'_>) -> bool {
+        self.evicting_map.remove(&key.into_owned()).await
     }
 }
 
@@ -88,11 +88,15 @@ impl MemoryStore {
 impl StoreDriver for MemoryStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'static>],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        let own_keys = keys
+            .iter()
+            .map(|sk| sk.borrow().into_owned())
+            .collect::<Vec<_>>();
         self.evicting_map
-            .sizes_for_keys(keys.iter(), results, false /* peek */)
+            .sizes_for_keys(own_keys.iter(), results, false /* peek */)
             .await;
         // We need to do a special pass to ensure our zero digest exist.
         keys.iter()
@@ -147,7 +151,7 @@ impl StoreDriver for MemoryStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -157,7 +161,8 @@ impl StoreDriver for MemoryStore {
             .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
             .transpose()?;
 
-        if is_zero_digest(key.borrow()) {
+        let owned_key = key.into_owned();
+        if is_zero_digest(owned_key.clone()) {
             writer
                 .send_eof()
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
@@ -166,9 +171,9 @@ impl StoreDriver for MemoryStore {
 
         let value = self
             .evicting_map
-            .get(&key)
+            .get(&owned_key)
             .await
-            .err_tip_with_code(|_| (Code::NotFound, format!("Key {key:?} not found")))?;
+            .err_tip_with_code(|_| (Code::NotFound, format!("Key {owned_key:?} not found")))?;
         let default_len = usize::try_from(value.len())
             .err_tip(|| "Could not convert value.len() to usize")?
             .saturating_sub(offset);

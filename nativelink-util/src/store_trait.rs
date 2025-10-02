@@ -88,8 +88,9 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
         .err_tip(|| "Failed to rewind in upload_file_to_store")?;
     let (mut tx, rx) = make_buf_channel_pair();
 
+    let store_key = digest.into();
     let update_fut = store
-        .update(digest.into(), rx, upload_size)
+        .update(store_key, rx, upload_size)
         .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
     let read_data_fut = async move {
         loop {
@@ -429,12 +430,11 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     /// the store, or Some(size) if it does.
     /// Note: On an AC store the size will be incorrect and should not be used!
     #[inline]
-    fn has(
-        &self,
-        digest: impl Into<StoreKey<'static>>,
-    ) -> impl Future<Output = Result<Option<u64>, Error>> + '_ {
-        let store_key = digest.into();
-        self.as_store_driver_pin().has(store_key)
+    fn has<'a>(
+        &'a self,
+        digest: impl Into<StoreKey<'a>>,
+    ) -> impl Future<Output = Result<Option<u64>, Error>> + 'a {
+        self.as_store_driver_pin().has(digest.into())
     }
 
     /// Look up a list of digests in the store and return a result for each in
@@ -444,7 +444,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     #[inline]
     fn has_many<'a>(
         &'a self,
-        digests: &'a [StoreKey<'static>],
+        digests: &'a [StoreKey<'a>],
     ) -> impl Future<Output = Result<Vec<Option<u64>>, Error>> + Send + 'a {
         self.as_store_driver_pin().has_many(digests)
     }
@@ -454,7 +454,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     #[inline]
     fn has_with_results<'a>(
         &'a self,
-        digests: &'a [StoreKey<'static>],
+        digests: &'a [StoreKey<'a>],
         results: &'a mut [Option<u64>],
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
         self.as_store_driver_pin()
@@ -540,7 +540,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     #[inline]
     fn get_part<'a>(
         &'a self,
-        digest: impl Into<StoreKey<'static>>,
+        digest: impl Into<StoreKey<'a>>,
         mut writer: impl BorrowMut<DropCloserWriteHalf> + Send + 'a,
         offset: u64,
         length: Option<u64>,
@@ -559,22 +559,22 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
 
     /// Utility that works the same as `.get_part()`, but writes all the data.
     #[inline]
-    fn get(
-        &self,
-        key: impl Into<StoreKey<'static>>,
+    fn get<'a>(
+        &'a self,
+        key: impl Into<StoreKey<'a>>,
         writer: DropCloserWriteHalf,
-    ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
         self.as_store_driver_pin().get(key.into(), writer)
     }
 
     /// Utility that will return all the bytes at once instead of in a streaming manner.
     #[inline]
-    fn get_part_unchunked(
-        &self,
-        key: impl Into<StoreKey<'static>>,
+    fn get_part_unchunked<'a>(
+        &'a self,
+        key: impl Into<StoreKey<'a>>,
         offset: u64,
         length: Option<u64>,
-    ) -> impl Future<Output = Result<Bytes, Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Bytes, Error>> + Send + 'a {
         self.as_store_driver_pin()
             .get_part_unchunked(key.into(), offset, length)
     }
@@ -596,7 +596,7 @@ pub trait StoreDriver:
 {
     /// See: [`StoreLike::has`] for details.
     #[inline]
-    async fn has(self: Pin<&Self>, key: StoreKey<'static>) -> Result<Option<u64>, Error> {
+    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {
         let mut result = [None];
         self.has_with_results(&[key], &mut result).await?;
         Ok(result[0])
@@ -606,7 +606,7 @@ pub trait StoreDriver:
     #[inline]
     async fn has_many(
         self: Pin<&Self>,
-        digests: &[StoreKey<'static>],
+        digests: &[StoreKey<'_>],
     ) -> Result<Vec<Option<u64>>, Error> {
         let mut results = vec![None; digests.len()];
         self.has_with_results(digests, &mut results).await?;
@@ -616,7 +616,7 @@ pub trait StoreDriver:
     /// See: [`StoreLike::has_with_results`] for details.
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[StoreKey<'static>],
+        digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error>;
 
@@ -699,7 +699,7 @@ pub trait StoreDriver:
     /// See: [`StoreLike::get_part`] for details.
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -709,7 +709,7 @@ pub trait StoreDriver:
     #[inline]
     async fn get(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         mut writer: DropCloserWriteHalf,
     ) -> Result<(), Error> {
         self.get_part(key, &mut writer, 0, None).await
@@ -718,7 +718,7 @@ pub trait StoreDriver:
     /// See: [`StoreLike::get_part_unchunked`] for details.
     async fn get_part_unchunked(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         offset: u64,
         length: Option<u64>,
     ) -> Result<Bytes, Error> {
@@ -841,7 +841,7 @@ pub trait StoreDriver:
 
 #[async_trait]
 pub trait RemoveItemCallback: Debug + Send + Sync {
-    async fn callback(&self, store_key: &StoreKey<'static>);
+    async fn callback(&self, store_key: &StoreKey<'_>);
 }
 
 /// The instructions on how to decode a value from a Bytes & version into

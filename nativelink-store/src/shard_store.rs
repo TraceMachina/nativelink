@@ -145,7 +145,7 @@ impl ShardStore {
 impl StoreDriver for ShardStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'static>],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         type KeyIdxVec = Vec<usize>;
@@ -167,12 +167,11 @@ impl StoreDriver for ShardStore {
             .collect();
         // Bucket each key into the store that it belongs to.
         keys.iter()
-            .cloned()
             .enumerate()
-            .map(|(key_idx, key)| (key.clone(), key_idx, self.get_store_index(&key)))
+            .map(|(key_idx, key)| (key, key_idx, self.get_store_index(key)))
             .for_each(|(key, key_idx, store_idx)| {
                 keys_for_store[store_idx].0.push(key_idx);
-                keys_for_store[store_idx].1.push(key);
+                keys_for_store[store_idx].1.push(key.borrow());
             });
 
         // Build all our futures for each store.
@@ -214,7 +213,7 @@ impl StoreDriver for ShardStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,

@@ -134,14 +134,14 @@ impl CompletenessCheckingStore {
     /// are polled concurrently.
     async fn inner_has_with_results(
         &self,
-        action_result_digests: &[StoreKey<'static>],
+        action_result_digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // Holds shared state between the different futures.
         // This is how get around lifetime issues.
         struct State<'a> {
             results: &'a mut [Option<u64>],
-            digests_to_check: Vec<StoreKey<'static>>,
+            digests_to_check: Vec<StoreKey<'a>>,
             digests_to_check_idxs: Vec<usize>,
             notify: Arc<Notify>,
             done: bool,
@@ -168,7 +168,7 @@ impl CompletenessCheckingStore {
                     // Note: We don't err_tip here because often have NotFound here which is ok.
                     let (action_result, size) = get_size_and_decode_digest::<ProtoActionResult>(
                         &self.ac_store,
-                        digest.clone(),
+                        digest.borrow(),
                     )
                     .await?;
 
@@ -343,7 +343,7 @@ impl CompletenessCheckingStore {
 impl StoreDriver for CompletenessCheckingStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'static>],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.inner_has_with_results(keys, results).await
@@ -360,13 +360,13 @@ impl StoreDriver for CompletenessCheckingStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
         let results = &mut [None];
-        self.inner_has_with_results(&[key.clone()], results)
+        self.inner_has_with_results(&[key.borrow()], results)
             .await
             .err_tip(|| "when calling CompletenessCheckingStore::get_part")?;
         if results[0].is_none() {

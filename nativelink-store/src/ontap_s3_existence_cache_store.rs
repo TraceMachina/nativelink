@@ -103,7 +103,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
 {
-    async fn callback(&self, store_key: &StoreKey<'static>) {
+    async fn callback(&self, store_key: &StoreKey<'_>) {
         self.cache.callback(store_key).await;
     }
 }
@@ -435,7 +435,7 @@ where
 {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'static>],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         let cache = self.digests.read().await;
@@ -457,7 +457,7 @@ where
                 continue;
             }
             // If in cache, check actual store
-            match self.inner_store.has(key.clone()).await {
+            match self.inner_store.has(key.borrow()).await {
                 Ok(size) => {
                     *result = size;
                     self.cache_hits.inc();
@@ -473,7 +473,7 @@ where
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
@@ -539,8 +539,8 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
 {
-    async fn callback(&self, store_key: &StoreKey<'static>) {
-        let new_key = store_key.clone();
+    async fn callback(&self, store_key: &StoreKey<'_>) {
+        let new_key = store_key.borrow();
         self.digests.write().await.remove(&new_key.into_digest());
     }
 }

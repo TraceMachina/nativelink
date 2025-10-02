@@ -50,12 +50,12 @@ impl SizePartitioningStore {
 impl StoreDriver for SizePartitioningStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'static>],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         let mut non_digest_sample = None;
         let (lower_digests, upper_digests): (Vec<_>, Vec<_>) =
-            keys.iter().cloned().partition(|k| {
+            keys.iter().map(StoreKey::borrow).partition(|k| {
                 let StoreKey::Digest(digest) = k else {
                     non_digest_sample = Some(k.borrow().into_owned());
                     return false;
@@ -117,7 +117,7 @@ impl StoreDriver for SizePartitioningStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,

@@ -415,10 +415,10 @@ pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_
 /// `add_files_to_cache`.
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
-type FsEvictingMap<Fe> = EvictingMap<StoreKeyBorrow, StoreKey<'static>, Arc<Fe>, SystemTime>;
+type FsEvictingMap<'a, Fe> = EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime>;
 
 async fn add_files_to_cache<Fe: FileEntry>(
-    evicting_map: &FsEvictingMap<Fe>,
+    evicting_map: &FsEvictingMap<'_, Fe>,
     anchor_time: &SystemTime,
     shared_context: &Arc<SharedContext>,
     block_size: u64,
@@ -426,7 +426,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
 ) -> Result<(), Error> {
     #[expect(clippy::too_many_arguments)]
     async fn process_entry<Fe: FileEntry>(
-        evicting_map: &FsEvictingMap<Fe>,
+        evicting_map: &FsEvictingMap<'_, Fe>,
         file_name: &str,
         file_type: FileType,
         atime: SystemTime,
@@ -537,7 +537,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
     }
 
     async fn add_files_to_cache<Fe: FileEntry>(
-        evicting_map: &FsEvictingMap<Fe>,
+        evicting_map: &FsEvictingMap<'_, Fe>,
         anchor_time: &SystemTime,
         shared_context: &Arc<SharedContext>,
         block_size: u64,
@@ -624,7 +624,7 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
     shared_context: Arc<SharedContext>,
     #[metric(group = "evicting_map")]
-    evicting_map: Arc<FsEvictingMap<Fe>>,
+    evicting_map: Arc<FsEvictingMap<'static, Fe>>,
     #[metric(help = "Block size of the configured filesystem")]
     block_size: u64,
     #[metric(help = "Size of the configured read buffer size")]
@@ -809,7 +809,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 return Err(err);
             }
             encoded_file_path.path_type = PathType::Content;
-            encoded_file_path.key = key;
+            encoded_file_path.key = key.into_owned();
             Ok(())
         })
         .await
@@ -821,11 +821,15 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'static>],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        let own_keys = keys
+            .iter()
+            .map(|sk| sk.borrow().into_owned())
+            .collect::<Vec<_>>();
         self.evicting_map
-            .sizes_for_keys(keys.iter(), results, false /* peek */)
+            .sizes_for_keys(own_keys.iter(), results, false /* peek */)
             .await;
         // We need to do a special pass to ensure our zero files exist.
         // If our results failed and the result was a zero file, we need to
@@ -916,13 +920,13 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
         if is_zero_digest(key.borrow()) {
-            self.has(key)
+            self.has(key.borrow())
                 .await
                 .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
             writer
@@ -930,11 +934,12 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
             return Ok(());
         }
-        let entry = self.evicting_map.get(&key).await.ok_or_else(|| {
+        let owned_key = key.into_owned();
+        let entry = self.evicting_map.get(&owned_key).await.ok_or_else(|| {
             make_err!(
                 Code::NotFound,
                 "{} not found in filesystem store here",
-                key.as_str()
+                owned_key.as_str()
             )
         })?;
         let read_limit = length.unwrap_or(u64::MAX);
@@ -943,10 +948,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             if err.code == Code::NotFound {
                 error!(
                     ?err,
-                    ?key,
+                    key = ?owned_key,
                     "Entry was in our map, but not found on disk. Removing from map as a precaution, but process probably need restarted."
                 );
-                self.evicting_map.remove(&key).await;
+                self.evicting_map.remove(&owned_key).await;
             }
             Err(err)
         }).await?;

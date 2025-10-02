@@ -337,7 +337,7 @@ impl RedisStore {
 impl StoreDriver for RedisStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'static>],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // TODO(palfrey) We could use pipeline here, but it makes retry more
@@ -548,7 +548,7 @@ impl StoreDriver for RedisStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,

@@ -499,7 +499,7 @@ impl StoreDriver for GrpcStore {
     // is incorrect.
     async fn has_with_results(
         self: Pin<&Self>,
-        keys: &[StoreKey<'static>],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
@@ -648,7 +648,7 @@ impl StoreDriver for GrpcStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        key: StoreKey<'static>,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: u64,
         length: Option<u64>,

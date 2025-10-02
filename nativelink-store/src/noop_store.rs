@@ -49,7 +49,7 @@ impl NoopStore {
 impl StoreDriver for NoopStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        _keys: &[StoreKey<'static>],
+        _keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         results.iter_mut().for_each(|r| *r = None);
@@ -75,7 +75,7 @@ impl StoreDriver for NoopStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        _key: StoreKey<'static>,
+        _key: StoreKey<'_>,
         _writer: &mut DropCloserWriteHalf,
         _offset: u64,
         _length: Option<u64>,
