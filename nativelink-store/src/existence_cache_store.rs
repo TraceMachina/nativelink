@@ -86,7 +86,7 @@ struct ExistenceCacheCallback<I: InstantWrapper> {
 #[async_trait]
 impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
     async fn callback(&self, store_key: &StoreKey<'static>) {
-        if let Some(callbacks) = &mut *self.cache.pause_remove_callbacks.lock() {
+        if let Some(callbacks) = &mut *self.cache.pause_remove_callbacks.lock_arc() {
             callbacks.push(store_key.clone());
         } else {
             self.cache.callback(store_key).await;

@@ -26,7 +26,7 @@ use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::evicting_map::{EvictingMap, LenEntry, RemoveStateCallback};
+use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{
     HealthRegistryBuilder, HealthStatusIndicator, default_health_status_indicator,
 };
@@ -34,6 +34,7 @@ use nativelink_util::store_trait::{
     RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, UploadSizeInfo,
 };
 
+use crate::callback_utils::RemoveItemCallbackHolder;
 use crate::cas_utils::is_zero_digest;
 
 #[derive(Clone)]
@@ -80,18 +81,6 @@ impl MemoryStore {
 
     pub async fn remove_entry(&self, key: StoreKey<'static>) -> bool {
         self.evicting_map.remove(&key).await
-    }
-}
-
-#[derive(Debug)]
-struct MemoryRemoveCallback {
-    callback_fn: Arc<Box<dyn RemoveItemCallback>>,
-}
-
-#[async_trait]
-impl RemoveStateCallback<StoreKey<'static>> for MemoryRemoveCallback {
-    async fn callback(&self, key: &StoreKey<'static>) {
-        self.callback_fn.callback(key).await;
     }
 }
 
@@ -217,9 +206,7 @@ impl StoreDriver for MemoryStore {
         callback: &Arc<Box<dyn RemoveItemCallback>>,
     ) -> Result<(), Error> {
         self.evicting_map
-            .add_remove_callback(Box::new(MemoryRemoveCallback {
-                callback_fn: callback.clone(),
-            }));
+            .add_remove_callback(Box::new(RemoveItemCallbackHolder::new(callback)));
         Ok(())
     }
 }

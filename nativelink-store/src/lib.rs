@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod ac_utils;
+pub mod callback_utils;
 pub mod cas_utils;
 pub mod common_s3_utils;
 pub mod completeness_checking_store;

@@ -38,11 +38,11 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::store_trait::{
     RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
-use parking_lot::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{debug, error, warn};
 
+use crate::callback_utils::RemoveItemCallbackHolder;
 use crate::cas_utils::is_zero_digest;
 
 // Default size to allocate memory of the buffer when reading files.
@@ -631,7 +631,6 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     read_buffer_size: usize,
     weak_self: Weak<Self>,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
-    remove_callbacks: Mutex<Vec<Arc<Box<dyn RemoveItemCallback>>>>,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
@@ -696,7 +695,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             read_buffer_size,
             weak_self: weak_self.clone(),
             rename_fn,
-            remove_callbacks: Mutex::new(vec![]),
         }))
     }
 
@@ -994,7 +992,8 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self: Arc<Self>,
         callback: &Arc<Box<dyn RemoveItemCallback>>,
     ) -> Result<(), Error> {
-        self.remove_callbacks.lock().push(callback.clone());
+        self.evicting_map
+            .add_remove_callback(Box::new(RemoveItemCallbackHolder::new(callback)));
         Ok(())
     }
 }
