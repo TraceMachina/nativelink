@@ -232,7 +232,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             return Ok(());
         }
         {
-            let mut locked_callbacks = self.pause_remove_callbacks.lock();
+            let mut locked_callbacks = self.pause_remove_callbacks.lock_arc();
             if locked_callbacks.is_none() {
                 locked_callbacks.replace(vec![]);
             }
@@ -249,7 +249,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             }
         }
         {
-            let mut locked_callbacks = self.pause_remove_callbacks.lock();
+            let mut locked_callbacks = self.pause_remove_callbacks.lock_arc();
             if let Some(callbacks) = locked_callbacks.take() {
                 for store_key in callbacks {
                     self.callback(&store_key).await;

@@ -426,10 +426,10 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     /// the store, or Some(size) if it does.
     /// Note: On an AC store the size will be incorrect and should not be used!
     #[inline]
-    fn has<'a>(
-        &'a self,
+    fn has(
+        &self,
         digest: impl Into<StoreKey<'static>>,
-    ) -> impl Future<Output = Result<Option<u64>, Error>> + 'a {
+    ) -> impl Future<Output = Result<Option<u64>, Error>> + '_ {
         let store_key = digest.into();
         self.as_store_driver_pin().has(store_key)
     }
@@ -556,22 +556,22 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
 
     /// Utility that works the same as `.get_part()`, but writes all the data.
     #[inline]
-    fn get<'a>(
-        &'a self,
+    fn get(
+        &self,
         key: impl Into<StoreKey<'static>>,
         writer: DropCloserWriteHalf,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
+    ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
         self.as_store_driver_pin().get(key.into(), writer)
     }
 
     /// Utility that will return all the bytes at once instead of in a streaming manner.
     #[inline]
-    fn get_part_unchunked<'a>(
-        &'a self,
+    fn get_part_unchunked(
+        &self,
         key: impl Into<StoreKey<'static>>,
         offset: u64,
         length: Option<u64>,
-    ) -> impl Future<Output = Result<Bytes, Error>> + Send + 'a {
+    ) -> impl Future<Output = Result<Bytes, Error>> + Send + '_ {
         self.as_store_driver_pin()
             .get_part_unchunked(key.into(), offset, length)
     }

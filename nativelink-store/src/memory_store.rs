@@ -119,7 +119,7 @@ impl StoreDriver for MemoryStore {
     async fn list(
         self: Pin<&Self>,
         range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
-        handler: &mut (dyn for<'b> FnMut(&'b StoreKey) -> bool + Send + Sync + '_),
+        handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
     ) -> Result<u64, Error> {
         let range = (
             range.0.map(StoreKey::into_owned),
@@ -200,7 +200,7 @@ impl StoreDriver for MemoryStore {
         self
     }
 
-    fn as_any<'b>(&'b self) -> &'b (dyn Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn Any + Sync + Send + 'static) {
         self
     }
 
