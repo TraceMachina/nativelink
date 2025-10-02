@@ -809,7 +809,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 return Err(err);
             }
             encoded_file_path.path_type = PathType::Content;
-            encoded_file_path.key = key.into_owned();
+            encoded_file_path.key = key;
             Ok(())
         })
         .await

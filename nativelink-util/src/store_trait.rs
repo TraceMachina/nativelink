@@ -88,9 +88,8 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
         .err_tip(|| "Failed to rewind in upload_file_to_store")?;
     let (mut tx, rx) = make_buf_channel_pair();
 
-    let store_key = digest.into();
     let update_fut = store
-        .update(store_key, rx, upload_size)
+        .update(digest.into(), rx, upload_size)
         .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
     let read_data_fut = async move {
         loop {
@@ -763,7 +762,7 @@ pub trait StoreDriver:
         let mut digest_hasher = default_digest_hasher_func().hasher();
         digest_hasher.update(&digest_data);
         let digest_data_len = digest_data.len() as u64;
-        let digest_info: StoreKey<'static> = StoreKey::from(digest_hasher.finalize_digest());
+        let digest_info = StoreKey::from(digest_hasher.finalize_digest());
 
         let digest_bytes = Bytes::copy_from_slice(&digest_data);
 
@@ -777,7 +776,7 @@ pub trait StoreDriver:
             );
         }
 
-        match self.has(digest_info.clone()).await {
+        match self.has(digest_info.borrow()).await {
             Ok(Some(s)) => {
                 if s != digest_data_len {
                     return HealthStatus::new_failed(

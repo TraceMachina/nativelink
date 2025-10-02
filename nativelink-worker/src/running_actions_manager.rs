@@ -306,9 +306,9 @@ async fn upload_file(
             // Only upload if the digest doesn't already exist, this should be
             // a much cheaper operation than an upload.
             let cas_store = cas_store.as_store_driver_pin();
-            let store_key: nativelink_util::store_trait::StoreKey<'static> = digest.into();
+            let store_key: nativelink_util::store_trait::StoreKey<'_> = digest.into();
             if cas_store
-                .has(store_key.clone())
+                .has(store_key.borrow())
                 .await
                 .is_ok_and(|result| result.is_some())
             {

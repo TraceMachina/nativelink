@@ -135,7 +135,7 @@ where
         }))
     }
 
-    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {
+    async fn has(self: Pin<&Self>, key: &StoreKey<'_>) -> Result<Option<u64>, Error> {
         let object_path = self.make_object_path(&key);
         let client = &self.client;
         let consider_expired_after_s = self.consider_expired_after_s;
@@ -208,7 +208,7 @@ where
                     *result = Some(0);
                     return Ok(());
                 }
-                *result = self.has(key.borrow()).await?;
+                *result = self.has(key).await?;
                 Ok(())
             })
             .collect::<FuturesUnordered<_>>()

@@ -326,7 +326,7 @@ impl StoreDriver for FastSlowStore {
                 .fast_store_hit_count
                 .fetch_add(1, Ordering::Acquire);
             self.fast_store
-                .get_part(key.borrow(), writer.borrow_mut(), offset, length)
+                .get_part(key, writer.borrow_mut(), offset, length)
                 .await?;
             self.metrics
                 .fast_store_downloaded_bytes
@@ -334,7 +334,6 @@ impl StoreDriver for FastSlowStore {
             return Ok(());
         }
 
-        let err_key = key.borrow();
         let sz = self
             .slow_store
             .has(key.borrow())
@@ -345,7 +344,7 @@ impl StoreDriver for FastSlowStore {
                     Code::NotFound,
                     "Object {} not found in either fast or slow store. \
                     If using multiple workers, ensure all workers share the same CAS storage path.",
-                    err_key.as_str()
+                    key.as_str()
                 )
             })?;
         self.metrics
