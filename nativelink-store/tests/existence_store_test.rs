@@ -121,7 +121,7 @@ async fn get_part_caches_if_exact_size_set() -> Result<(), Error> {
 
 // Regression test for: https://github.com/TraceMachina/nativelink/issues/1199.
 #[nativelink_test]
-async fn ensure_has_requests_eventually_do_let_evictions_happen() -> Result<(), Error> {
+async fn ensure_has_requests_do_let_evictions_happen() -> Result<(), Error> {
     const VALUE: &str = "123";
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
@@ -133,7 +133,7 @@ async fn ensure_has_requests_eventually_do_let_evictions_happen() -> Result<(), 
         &ExistenceCacheSpec {
             backend: StoreSpec::Noop(NoopSpec::default()),
             eviction_policy: Some(EvictionPolicy {
-                max_seconds: 10,
+                max_seconds: 0, // Explicitly set this level to "don't timeout"
                 ..Default::default()
             }),
         },
@@ -148,16 +148,7 @@ async fn ensure_has_requests_eventually_do_let_evictions_happen() -> Result<(), 
     // it from the inner store.
     inner_store.remove_entry(digest.into()).await;
 
-    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len() as u64)));
-    MockClock::advance(Duration::from_secs(3));
-
-    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len() as u64)));
-    MockClock::advance(Duration::from_secs(3));
-
-    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len() as u64)));
-    MockClock::advance(Duration::from_secs(3));
-
-    // It should have been evicted from the existence cache by now.
+    // It should be immediately evicted from the existence cache.
     assert_eq!(store.has(digest).await, Ok(None));
 
     Ok(())

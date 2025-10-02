@@ -750,7 +750,6 @@ where
 
     fn register_remove_callback(self: Arc<Self>, _callback: &Arc<Box<dyn RemoveItemCallback>>) {
         // FIXME(palfrey): Cope with the expiry timeout
-        todo!();
     }
 }
 

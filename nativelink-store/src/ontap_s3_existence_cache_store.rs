@@ -104,7 +104,7 @@ where
     NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
 {
     async fn callback(&self, store_key: &StoreKey<'static>) {
-        self.cache.callback(store_key);
+        self.cache.callback(store_key).await;
     }
 }
 
@@ -537,7 +537,8 @@ where
     NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
 {
     async fn callback(&self, store_key: &StoreKey<'static>) {
-        todo!()
+        let new_key = store_key.clone();
+        self.digests.write().await.remove(&new_key.into_digest());
     }
 }
 

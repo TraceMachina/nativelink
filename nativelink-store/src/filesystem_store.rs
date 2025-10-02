@@ -415,7 +415,7 @@ pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_
 /// `add_files_to_cache`.
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
-type FsEvictingMap<Fe:FileEntry> = EvictingMap<StoreKeyBorrow, StoreKey<'static>, Arc<Fe>, SystemTime>;
+type FsEvictingMap<Fe> = EvictingMap<StoreKeyBorrow, StoreKey<'static>, Arc<Fe>, SystemTime>;
 
 async fn add_files_to_cache<Fe: FileEntry>(
     evicting_map: &FsEvictingMap<Fe>,

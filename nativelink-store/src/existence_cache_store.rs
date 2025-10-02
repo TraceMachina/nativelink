@@ -14,6 +14,7 @@
 
 use core::pin::Pin;
 use std::borrow::Cow;
+use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -29,7 +30,8 @@ use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::store_trait::{
     RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
-use tracing::debug;
+use parking_lot::Mutex;
+use tracing::{debug, info, trace};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -51,6 +53,12 @@ pub struct ExistenceCacheStore<I: InstantWrapper> {
     #[metric(group = "inner_store")]
     inner_store: Store,
     existence_cache: EvictingMap<DigestInfo, DigestInfo, ExistenceItem, I>,
+
+    // We need to pause them temporarily when inserting into the inner store
+    // as if it immediately expires them, we should only apply the remove callbacks
+    // afterwards. If this is None, we're not pausing; if it's Some it's the location to
+    // store them in temporarily
+    pause_remove_callbacks: Arc<Mutex<Option<Vec<StoreKey<'static>>>>>
 }
 
 impl ExistenceCacheStore<SystemTime> {
@@ -64,7 +72,10 @@ impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheStore<I> {
     async fn callback(&self, store_key: &StoreKey<'static>) {
         debug!(?store_key, "Removing item from cache due to callback");
         let new_key = store_key.clone();
-        self.existence_cache.remove(&new_key.into_digest()).await;
+        let deleted_key = self.existence_cache.remove(&new_key.into_digest()).await;
+        if !deleted_key {
+            info!(?store_key, "Failed to delete key from cache on callback");
+        }
     }
 }
 
@@ -76,7 +87,11 @@ struct ExistenceCacheCallback<I: InstantWrapper> {
 #[async_trait]
 impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
     async fn callback(&self, store_key: &StoreKey<'static>) {
-        self.cache.callback(store_key).await;
+        if let Some(callbacks) = self.cache.pause_remove_callbacks.lock().deref_mut() {
+            callbacks.push(store_key.clone());
+        } else {
+            self.cache.callback(store_key).await;
+        }
     }
 }
 
@@ -91,6 +106,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
         let existence_cache_store = Arc::new(Self {
             inner_store,
             existence_cache: EvictingMap::new(eviction_policy, anchor_time),
+            pause_remove_callbacks: Arc::new(Mutex::new(None))
         });
         let other_ref = existence_cache_store.clone();
         existence_cache_store
@@ -215,13 +231,29 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 .err_tip(|| "In ExistenceCacheStore::update")?;
             return Ok(());
         }
+        {
+            let mut locked_callbacks = self.pause_remove_callbacks.lock();
+            if locked_callbacks.is_none() {
+                locked_callbacks.replace(vec![]);
+            }
+        }
+        trace!(?digest, "Inserting into inner cache");
         let result = self.inner_store.update(digest, reader, size_info).await;
         if result.is_ok() {
+            trace!(?digest, "Inserting into existence cache");
             if let UploadSizeInfo::ExactSize(size) = size_info {
                 let _ = self
                     .existence_cache
                     .insert(digest, ExistenceItem(size))
                     .await;
+            }
+        }
+        {
+            let mut locked_callbacks = self.pause_remove_callbacks.lock();
+            if let Some(callbacks) = locked_callbacks.take() {
+                for store_key in callbacks {
+                    self.callback(&store_key).await;
+                }
             }
         }
         result
