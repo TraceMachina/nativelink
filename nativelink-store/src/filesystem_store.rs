@@ -990,8 +990,12 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
         self.remove_callbacks.lock().push(callback.clone());
+        Ok(())
     }
 }
 

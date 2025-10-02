@@ -212,11 +212,15 @@ impl StoreDriver for MemoryStore {
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
         self.evicting_map
             .add_remove_callback(Box::new(MemoryRemoveCallback {
                 callback_fn: callback.clone(),
             }));
+        Ok(())
     }
 }
 

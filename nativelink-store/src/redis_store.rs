@@ -658,8 +658,12 @@ impl StoreDriver for RedisStore {
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(self: Arc<Self>, _callback: &Arc<Box<dyn RemoveItemCallback>>) {
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
         // As redis doesn't drop stuff, we can just ignore this
+        Ok(())
     }
 }
 

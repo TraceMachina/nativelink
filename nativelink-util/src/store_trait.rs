@@ -379,8 +379,11 @@ impl Store {
     }
 
     #[inline]
-    pub fn register_remove_callback(&self, callback: &Arc<Box<dyn RemoveItemCallback>>) {
-        self.inner.clone().register_remove_callback(callback);
+    pub fn register_remove_callback(
+        &self,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.inner.clone().register_remove_callback(callback)
     }
 }
 
@@ -830,7 +833,10 @@ pub trait StoreDriver:
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
 
-    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>);
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error>;
 }
 
 #[async_trait]

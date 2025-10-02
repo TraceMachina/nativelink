@@ -95,8 +95,12 @@ impl StoreDriver for NoopStore {
         self
     }
 
-    fn register_remove_callback(self: Arc<Self>, _callback: &Arc<Box<dyn RemoveItemCallback>>) {
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
         // does nothing, so drop
+        Ok(())
     }
 }
 

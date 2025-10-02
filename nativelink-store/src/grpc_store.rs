@@ -52,7 +52,7 @@ use opentelemetry::context::Context;
 use parking_lot::Mutex;
 use prost::Message;
 use tokio::time::sleep;
-use tonic::{IntoRequest, Request, Response, Status, Streaming};
+use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
 use tracing::error;
 use uuid::Uuid;
 
@@ -768,8 +768,14 @@ impl StoreDriver for GrpcStore {
         self
     }
 
-    fn register_remove_callback(self: Arc<Self>, _callback: &Arc<Box<dyn RemoveItemCallback>>) {
-        // TODO(palfrey): implement error because remove callbacks are incompatible with gRPC stores
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        Err(Error::new(
+            Code::Internal,
+            "gRPC stores are incompatible with removal callbacks".to_string(),
+        ))
     }
 }
 

@@ -242,10 +242,14 @@ impl StoreDriver for ShardStore {
         self
     }
 
-    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
         for store in &self.weights_and_stores {
-            store.store.register_remove_callback(callback);
+            store.store.register_remove_callback(callback)?;
         }
+        Ok(())
     }
 }
 

@@ -93,7 +93,7 @@ impl RefStore {
             .err_tip(|| "Store manager is gone")?;
         if let Some(store) = store_manager.get_store(&self.name) {
             for callback in self.remove_callbacks.lock().unwrap().iter() {
-                store.register_remove_callback(callback);
+                store.register_remove_callback(callback)?;
             }
             unsafe {
                 *ref_store = Some(store);
@@ -156,17 +156,18 @@ impl StoreDriver for RefStore {
         self
     }
 
-    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
-        self.remove_callbacks
-            .lock()
-            .expect("Can unlock")
-            .push(callback.clone());
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.remove_callbacks.lock()?.push(callback.clone());
         let ref_store = self.inner.cell.0.get();
         unsafe {
             if let Some(ref store) = *ref_store {
-                store.register_remove_callback(callback);
+                store.register_remove_callback(callback)?;
             }
         };
+        Ok(())
     }
 }
 

@@ -642,8 +642,11 @@ impl StoreDriver for CompressionStore {
         self
     }
 
-    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
-        self.inner_store.register_remove_callback(callback);
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.inner_store.register_remove_callback(callback)
     }
 }
 

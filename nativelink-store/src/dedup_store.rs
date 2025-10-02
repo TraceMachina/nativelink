@@ -379,9 +379,13 @@ impl StoreDriver for DedupStore {
         self
     }
 
-    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
-        self.index_store.register_remove_callback(callback);
-        self.content_store.register_remove_callback(callback);
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.index_store.register_remove_callback(callback)?;
+        self.content_store.register_remove_callback(callback)?;
+        Ok(())
     }
 }
 

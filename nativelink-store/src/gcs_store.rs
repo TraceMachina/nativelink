@@ -444,9 +444,13 @@ where
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(self: Arc<Self>, _callback: &Arc<Box<dyn RemoveItemCallback>>) {
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
         // As we're backed by GCS, this store doesn't actually drop stuff
         // so we can actually just ignore this
+        Ok(())
     }
 }
 

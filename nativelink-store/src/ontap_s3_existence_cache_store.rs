@@ -360,7 +360,7 @@ where
             .inner_store
             .register_remove_callback(&Arc::new(Box::new(OntapS3CacheCallback {
                 cache: other_ref,
-            })));
+            })))?;
 
         // Try to load existing cache file
         if let Ok(contents) = fs::read_to_string(&spec.index_path).await {
@@ -525,8 +525,11 @@ where
         self
     }
 
-    fn register_remove_callback(self: Arc<Self>, callback: &Arc<Box<dyn RemoveItemCallback>>) {
-        self.inner_store.register_remove_callback(callback);
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.inner_store.register_remove_callback(callback)
     }
 }
 

@@ -574,8 +574,12 @@ impl StoreDriver for ExperimentalMongoStore {
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(self: Arc<Self>, _callback: &Arc<Box<dyn RemoveItemCallback>>) {
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
         // drop because we don't remove anything from Mongo
+        Ok(())
     }
 }
 
