@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::ops::DerefMut;
 use core::pin::Pin;
 use std::borrow::Cow;
-use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -58,7 +58,7 @@ pub struct ExistenceCacheStore<I: InstantWrapper> {
     // as if it immediately expires them, we should only apply the remove callbacks
     // afterwards. If this is None, we're not pausing; if it's Some it's the location to
     // store them in temporarily
-    pause_remove_callbacks: Arc<Mutex<Option<Vec<StoreKey<'static>>>>>
+    pause_remove_callbacks: Arc<Mutex<Option<Vec<StoreKey<'static>>>>>,
 }
 
 impl ExistenceCacheStore<SystemTime> {
@@ -106,7 +106,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
         let existence_cache_store = Arc::new(Self {
             inner_store,
             existence_cache: EvictingMap::new(eviction_policy, anchor_time),
-            pause_remove_callbacks: Arc::new(Mutex::new(None))
+            pause_remove_callbacks: Arc::new(Mutex::new(None)),
         });
         let other_ref = existence_cache_store.clone();
         existence_cache_store

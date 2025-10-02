@@ -827,11 +827,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.evicting_map
-            .sizes_for_keys(
-                keys.iter(),
-                results,
-                false, /* peek */
-            )
+            .sizes_for_keys(keys.iter(), results, false /* peek */)
             .await;
         // We need to do a special pass to ensure our zero files exist.
         // If our results failed and the result was a zero file, we need to

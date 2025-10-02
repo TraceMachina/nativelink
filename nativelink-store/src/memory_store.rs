@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::any::Any;
 use core::borrow::Borrow;
 use core::fmt::Debug;
 use core::ops::Bound;
 use core::pin::Pin;
-use std::any::Any;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -103,11 +103,7 @@ impl StoreDriver for MemoryStore {
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.evicting_map
-            .sizes_for_keys(
-                keys.iter(),
-                results,
-                false, /* peek */
-            )
+            .sizes_for_keys(keys.iter(), results, false /* peek */)
             .await;
         // We need to do a special pass to ensure our zero digest exist.
         keys.iter()

@@ -167,7 +167,7 @@ impl StoreDriver for ShardStore {
             .collect();
         // Bucket each key into the store that it belongs to.
         keys.iter()
-        .cloned()
+            .cloned()
             .enumerate()
             .map(|(key_idx, key)| (key.clone(), key_idx, self.get_store_index(&key)))
             .for_each(|(key, key_idx, store_idx)| {

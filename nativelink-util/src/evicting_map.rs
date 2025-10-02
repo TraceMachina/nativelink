@@ -442,7 +442,8 @@ where
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
         let items_to_unref = {
             let mut state = self.state.lock();
-            self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor).await
+            self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
+                .await
         };
 
         // Unref items outside of lock
@@ -473,7 +474,8 @@ where
 
         let items_to_unref = {
             let state = &mut self.state.lock();
-            self.inner_insert_many(state, inserts, self.anchor_time.elapsed().as_secs() as i32).await
+            self.inner_insert_many(state, inserts, self.anchor_time.elapsed().as_secs() as i32)
+                .await
         };
 
         // Unref items outside of lock

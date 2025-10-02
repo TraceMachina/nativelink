@@ -395,9 +395,9 @@ impl StoreDriver for FastSlowStore {
         };
 
         let slow_store_fut = self.slow_store.get(key.clone(), slow_tx);
-        let fast_store_fut =
-            self.fast_store
-                .update(key, fast_rx, UploadSizeInfo::ExactSize(sz));
+        let fast_store_fut = self
+            .fast_store
+            .update(key, fast_rx, UploadSizeInfo::ExactSize(sz));
 
         let (data_stream_res, slow_res, fast_res) =
             join!(data_stream_fut, slow_store_fut, fast_store_fut);
