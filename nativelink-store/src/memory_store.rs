@@ -205,7 +205,7 @@ impl StoreDriver for MemoryStore {
     }
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Sync + Send + 'static> {
-        self.clone()
+        self
     }
 
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {

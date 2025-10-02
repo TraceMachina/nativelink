@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::ops::DerefMut;
 use core::pin::Pin;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -87,7 +86,7 @@ struct ExistenceCacheCallback<I: InstantWrapper> {
 #[async_trait]
 impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
     async fn callback(&self, store_key: &StoreKey<'static>) {
-        if let Some(callbacks) = self.cache.pause_remove_callbacks.lock().deref_mut() {
+        if let Some(callbacks) = &mut *self.cache.pause_remove_callbacks.lock() {
             callbacks.push(store_key.clone());
         } else {
             self.cache.callback(store_key).await;
