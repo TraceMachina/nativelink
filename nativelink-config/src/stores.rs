@@ -49,10 +49,8 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "memory": {
-    ///     "eviction_policy": {
-    ///       // 10mb.
-    ///       "max_bytes": 10000000,
-    ///     }
+    ///   "eviction_policy": {
+    ///     "max_bytes": "10mb",
     ///   }
     /// }
     /// ```
@@ -171,13 +169,15 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "verify": {
-    ///   "memory": {
-    ///     "eviction_policy": {
-    ///       "max_bytes": 500000000 // 500mb.
-    ///     }
-    ///   },
+    ///   "backend": {
+    ///     "memory": {
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb"
+    ///       }
+    ///     },
+    ///   }
     ///   "verify_size": true,
-    ///   "hash_verification_function": "sha256"
+    ///   "verify_hash": true
     /// }
     /// ```
     ///
@@ -191,22 +191,21 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "completeness_checking": {
-    ///     "backend": {
-    ///       "filesystem": {
-    ///         "content_path": "~/.cache/nativelink/content_path-ac",
-    ///         "temp_path": "~/.cache/nativelink/tmp_path-ac",
-    ///         "eviction_policy": {
-    ///           // 500mb.
-    ///           "max_bytes": 500000000,
-    ///         }
-    ///       }
-    ///     },
-    ///     "cas_store": {
-    ///       "ref_store": {
-    ///         "name": "CAS_MAIN_STORE"
+    ///   "backend": {
+    ///     "filesystem": {
+    ///       "content_path": "~/.cache/nativelink/content_path-ac",
+    ///       "temp_path": "~/.cache/nativelink/tmp_path-ac",
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb",
     ///       }
     ///     }
+    ///   },
+    ///   "cas_store": {
+    ///     "ref_store": {
+    ///       "name": "CAS_MAIN_STORE"
+    ///     }
     ///   }
+    /// }
     /// ```
     ///
     CompletenessChecking(Box<CompletenessCheckingSpec>),
@@ -221,20 +220,19 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "compression": {
-    ///     "compression_algorithm": {
-    ///       "lz4": {}
-    ///     },
-    ///     "backend": {
-    ///       "filesystem": {
-    ///         "content_path": "/tmp/nativelink/data/content_path-cas",
-    ///         "temp_path": "/tmp/nativelink/data/tmp_path-cas",
-    ///         "eviction_policy": {
-    ///           // 2gb.
-    ///           "max_bytes": 2000000000,
-    ///         }
+    ///   "compression_algorithm": {
+    ///     "lz4": {}
+    ///   },
+    ///   "backend": {
+    ///     "filesystem": {
+    ///       "content_path": "/tmp/nativelink/data/content_path-cas",
+    ///       "temp_path": "/tmp/nativelink/data/tmp_path-cas",
+    ///       "eviction_policy": {
+    ///         "max_bytes": "2gb",
     ///       }
     ///     }
     ///   }
+    /// }
     /// ```
     ///
     Compression(Box<CompressionSpec>),
@@ -267,32 +265,31 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "dedup": {
-    ///     "index_store": {
-    ///       "memory_store": {
-    ///         "max_size": 1000000000, // 1GB
-    ///         "eviction_policy": "LeastRecentlyUsed"
-    ///       }
-    ///     },
-    ///     "content_store": {
-    ///       "compression": {
-    ///         "compression_algorithm": {
-    ///           "lz4": {}
-    ///         },
-    ///         "backend": {
-    ///           "fast_slow": {
-    ///             "fast": {
-    ///               "memory_store": {
-    ///                 "max_size": 500000000, // 500MB
-    ///                 "eviction_policy": "LeastRecentlyUsed"
-    ///               }
-    ///             },
-    ///             "slow": {
-    ///               "filesystem": {
-    ///                 "content_path": "/tmp/nativelink/data/content_path-content",
-    ///                 "temp_path": "/tmp/nativelink/data/tmp_path-content",
-    ///                 "eviction_policy": {
-    ///                   "max_bytes": 2000000000 // 2gb.
-    ///                 }
+    ///   "index_store": {
+    ///     "memory_store": {
+    ///       "max_size": "1GB",
+    ///       "eviction_policy": "LeastRecentlyUsed"
+    ///     }
+    ///   },
+    ///   "content_store": {
+    ///     "compression": {
+    ///       "compression_algorithm": {
+    ///         "lz4": {}
+    ///       },
+    ///       "backend": {
+    ///         "fast_slow": {
+    ///           "fast": {
+    ///             "memory_store": {
+    ///               "max_size": "500MB",
+    ///               "eviction_policy": "LeastRecentlyUsed"
+    ///             }
+    ///           },
+    ///           "slow": {
+    ///             "filesystem": {
+    ///               "content_path": "/tmp/nativelink/data/content_path-content",
+    ///               "temp_path": "/tmp/nativelink/data/tmp_path-content",
+    ///               "eviction_policy": {
+    ///                 "max_bytes": "2gb"
     ///               }
     ///             }
     ///           }
@@ -300,6 +297,7 @@ pub enum StoreSpec {
     ///       }
     ///     }
     ///   }
+    /// }
     /// ```
     ///
     Dedup(Box<DedupSpec>),
@@ -313,20 +311,18 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "existence_cache": {
-    ///     "backend": {
-    ///       "memory": {
-    ///         "eviction_policy": {
-    ///           // 500mb.
-    ///           "max_bytes": 500000000,
-    ///         }
-    ///       }
-    ///     },
-    ///     "cas_store": {
-    ///       "ref_store": {
-    ///         "name": "CAS_MAIN_STORE"
+    ///   "backend": {
+    ///     "memory": {
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb",
     ///       }
     ///     }
+    ///   },
+    ///   // Note this is the existence store policy, not the backend policy
+    ///   "eviction_policy": {
+    ///     "max_seconds": "100",
     ///   }
+    /// }
     /// ```
     ///
     ExistenceCache(Box<ExistenceCacheSpec>),
@@ -343,33 +339,31 @@ pub enum StoreSpec {
     /// for something like remote execution, be careful because this
     /// store will never check to see if the objects exist in the
     /// `slow` store if it exists in the `fast` store (ie: it assumes
-    /// that if an object exists `fast` store it will exist in `slow`
-    /// store).
+    /// that if an object exists in the `fast` store it will exist in
+    /// the `slow` store).
     ///
     /// ***Example JSON Config:***
     /// ```json
     /// "fast_slow": {
-    ///     "fast": {
-    ///       "filesystem": {
-    ///         "content_path": "/tmp/nativelink/data/content_path-index",
-    ///         "temp_path": "/tmp/nativelink/data/tmp_path-index",
-    ///         "eviction_policy": {
-    ///           // 500mb.
-    ///           "max_bytes": 500000000,
-    ///         }
+    ///   "fast": {
+    ///     "filesystem": {
+    ///       "content_path": "/tmp/nativelink/data/content_path-index",
+    ///       "temp_path": "/tmp/nativelink/data/tmp_path-index",
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb",
     ///       }
-    ///     },
-    ///     "slow": {
-    ///       "filesystem": {
-    ///         "content_path": "/tmp/nativelink/data/content_path-index",
-    ///         "temp_path": "/tmp/nativelink/data/tmp_path-index",
-    ///         "eviction_policy": {
-    ///           // 500mb.
-    ///           "max_bytes": 500000000,
-    ///         }
+    ///     }
+    ///   },
+    ///   "slow": {
+    ///     "filesystem": {
+    ///       "content_path": "/tmp/nativelink/data/content_path-index",
+    ///       "temp_path": "/tmp/nativelink/data/tmp_path-index",
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb",
     ///       }
     ///     }
     ///   }
+    /// }
     /// ```
     ///
     FastSlow(Box<FastSlowSpec>),
@@ -382,15 +376,16 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "shard": {
-    ///     "stores": [
-    ///         "memory": {
-    ///             "eviction_policy": {
-    ///                 // 10mb.
-    ///                 "max_bytes": 10000000
-    ///             },
-    ///             "weight": 1
-    ///         }
-    ///     ]
+    ///   "stores": [
+    ///     "store": {
+    ///       "memory": {
+    ///         "eviction_policy": {
+    ///             "max_bytes": "10mb"
+    ///         },
+    ///       }
+    ///       "weight": 1
+    ///     }
+    ///   ]
     /// }
     /// ```
     ///
@@ -404,12 +399,11 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "filesystem": {
-    ///     "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
-    ///     "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
-    ///     "eviction_policy": {
-    ///       // 10gb.
-    ///       "max_bytes": 10000000000,
-    ///     }
+    ///   "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
+    ///   "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
+    ///   "eviction_policy": {
+    ///     "max_bytes": "10gb",
+    ///   }
     /// }
     /// ```
     ///
@@ -424,7 +418,7 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "ref_store": {
-    ///     "name": "FS_CONTENT_STORE"
+    ///   "name": "FS_CONTENT_STORE"
     /// }
     /// ```
     ///
@@ -441,19 +435,19 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "size_partitioning": {
-    ///     "size": 134217728, // 128mib.
-    ///     "lower_store": {
-    ///       "memory": {
-    ///         "eviction_policy": {
-    ///           "max_bytes": "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100000000}"
-    ///         }
+    ///   "size": "128mib",
+    ///   "lower_store": {
+    ///     "memory": {
+    ///       "eviction_policy": {
+    ///         "max_bytes": "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100000000}"
     ///       }
-    ///     },
-    ///     "upper_store": {
-    ///       /// This store discards data larger than 128mib.
-    ///       "noop": {}
     ///     }
+    ///   },
+    ///   "upper_store": {
+    ///     /// This store discards data larger than 128mib.
+    ///     "noop": {}
     ///   }
+    /// }
     /// ```
     ///
     SizePartitioning(Box<SizePartitioningSpec>),
@@ -471,12 +465,12 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "grpc": {
-    ///     "instance_name": "main",
-    ///     "endpoints": [
-    ///       {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
-    ///     ],
-    ///     "store_type": "ac"
-    ///   }
+    ///   "instance_name": "main",
+    ///   "endpoints": [
+    ///     {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
+    ///   ],
+    ///   "store_type": "ac"
+    /// }
     /// ```
     ///
     Grpc(GrpcSpec),
@@ -490,9 +484,9 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "redis_store": {
-    ///     "addresses": [
-    ///         "redis://127.0.0.1:6379/",
-    ///     ]
+    ///   "addresses": [
+    ///     "redis://127.0.0.1:6379/",
+    ///   ]
     /// }
     /// ```
     ///
@@ -755,7 +749,7 @@ pub struct VerifySpec {
     /// computed hash. The hash function is automatically determined based
     /// request and if not set will use the global default.
     ///
-    /// This should be set to None for AC, but hashing function like `sha256` for CAS stores.
+    /// This should be set to false for AC, but true for CAS stores.
     #[serde(default)]
     pub verify_hash: bool,
 }
