@@ -4,7 +4,7 @@
   generate-bazel-rc,
   ...
 }: let
-  excludes = ["nativelink-proto/genproto" "native-cli/vendor"];
+  excludes = ["nativelink-proto/genproto" "native-cli/vendor" "integration_tests/persistent-workers-test/package-lock.json"];
 in {
   # Default hooks
   check-case-conflicts = {
@@ -186,6 +186,7 @@ in {
   };
 
   pretty-format-json = {
+    inherit excludes;
     enable = true;
     args = ["--autofix" "--top-keys" "name,type"];
   };

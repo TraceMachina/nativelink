@@ -45,6 +45,9 @@ pub mod build {
                 pub mod v2 {
                     include!("build.bazel.remote.execution.v2.pb.rs");
                 }
+                pub mod worker_protocol {
+                    include!("build.bazel.remote.execution.worker_protocol.pb.rs");
+                }
             }
         }
         pub mod semver {
