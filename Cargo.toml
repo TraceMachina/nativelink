@@ -136,7 +136,10 @@ pedantic = { level = "warn", priority = -1 }
 # Restriction Denies with default priority
 alloc-instead-of-core = "deny"
 as-underscore = "deny"
+elidable-lifetime-names = "deny"
+semicolon-if-nothing-returned = "deny"
 std-instead-of-core = "deny"
+todo = "deny"
 
 # Restriction Warnings with default priority
 dbg-macro = "warn"
@@ -144,7 +147,6 @@ decimal-literal-representation = "warn"
 get-unwrap = "allow"                    # TODO(jhpratt) Flip
 missing-docs-in-private-items = "allow" # TODO(jhpratt) Flip
 print-stdout = "warn"
-todo = "warn"
 unimplemented = "warn"
 unwrap-in-result = "allow"              # TODO(jhpratt) Flip
 unwrap-used = "allow"                   # TODO(jhpratt) Flip

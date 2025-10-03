@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::convert::Into;
+use std::sync::{MutexGuard, PoisonError};
 
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
@@ -183,6 +184,12 @@ impl From<core::num::TryFromIntError> for Error {
 
 impl From<tokio::task::JoinError> for Error {
     fn from(err: tokio::task::JoinError) -> Self {
+        make_err!(Code::Internal, "{}", err.to_string())
+    }
+}
+
+impl<T> From<PoisonError<MutexGuard<'_, T>>> for Error {
+    fn from(err: PoisonError<MutexGuard<'_, T>>) -> Self {
         make_err!(Code::Internal, "{}", err.to_string())
     }
 }

@@ -21,11 +21,12 @@ use core::ops::RangeBounds;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use async_lock::Mutex;
 use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_metric::MetricsComponent;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use tonic::async_trait;
 use tracing::{debug, info};
 
 use crate::instant_wrapper::InstantWrapper;
@@ -85,8 +86,20 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     }
 }
 
+// Callback to be called when the EvictingMap removes an item
+// either via eviction or direct deletion. This will be called with
+// whatever key type the EvictingMap uses.
+#[async_trait]
+pub trait RemoveStateCallback<Q>: Debug + Send + Sync {
+    async fn callback(&self, key: &Q);
+}
+
 #[derive(Debug, MetricsComponent)]
-struct State<K: Ord + Hash + Eq + Clone + Debug + Send, T: LenEntry + Debug + Send> {
+struct State<
+    K: Ord + Hash + Eq + Clone + Debug + Send + Borrow<Q>,
+    Q: Ord + Hash + Eq + Debug,
+    T: LenEntry + Debug + Send,
+> {
     lru: LruCache<K, EvictionItem<T>>,
     btree: Option<BTreeSet<K>>,
     #[metric(help = "Total size of all items in the store")]
@@ -102,18 +115,21 @@ struct State<K: Ord + Hash + Eq + Clone + Debug + Send, T: LenEntry + Debug + Se
     replaced_items: CounterWithTime,
     #[metric(help = "Number of bytes inserted into the store since it was created")]
     lifetime_inserted_bytes: Counter,
+
+    remove_callbacks: Arc<Mutex<Vec<Box<dyn RemoveStateCallback<Q>>>>>,
 }
 
-impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Sync + Send>
-    State<K, T>
+impl<
+    K: Ord + Hash + Eq + Clone + Debug + Send + Sync + Borrow<Q>,
+    Q: Ord + Hash + Eq + Debug + Sync,
+    T: LenEntry + Debug + Sync + Send,
+> State<K, Q, T>
 {
     /// Removes an item from the cache and returns the data for deferred cleanup.
     /// The caller is responsible for calling `unref()` on the returned data outside of the lock.
     #[must_use]
-    fn remove<Q>(&mut self, key: &Q, eviction_item: &EvictionItem<T>, replaced: bool) -> T
+    async fn remove(&mut self, key: &Q, eviction_item: &EvictionItem<T>, replaced: bool) -> T
     where
-        K: Borrow<Q>,
-        Q: Ord + Hash + Eq + Debug + Sync,
         T: Clone,
     {
         if let Some(btree) = &mut self.btree {
@@ -127,6 +143,12 @@ impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Syn
             self.evicted_items.inc();
             self.evicted_bytes.add(eviction_item.data.len());
         }
+
+        let locked_callbacks = self.remove_callbacks.lock_arc();
+        for callback in locked_callbacks.iter() {
+            callback.callback(key).await;
+        }
+
         // Return the data for deferred unref outside of lock
         eviction_item.data.clone()
     }
@@ -134,7 +156,7 @@ impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Syn
     /// Inserts a new item into the cache. If the key already exists, the old item is returned
     /// for deferred cleanup.
     #[must_use]
-    fn put(&mut self, key: &K, eviction_item: EvictionItem<T>) -> Option<T>
+    async fn put(&mut self, key: &K, eviction_item: EvictionItem<T>) -> Option<T>
     where
         K: Clone,
         T: Clone,
@@ -144,21 +166,26 @@ impl<K: Ord + Hash + Eq + Clone + Debug + Send + Sync, T: LenEntry + Debug + Syn
             btree.insert(key.clone());
         }
         if let Some(old_item) = self.lru.put(key.clone(), eviction_item) {
-            let old_data = self.remove(key, &old_item, true);
+            let old_data = self.remove(key.borrow(), &old_item, true).await;
             return Some(old_data);
         }
         None
+    }
+
+    fn add_remove_callback(&self, callback: Box<dyn RemoveStateCallback<Q>>) {
+        self.remove_callbacks.lock_arc().push(callback);
     }
 }
 
 #[derive(Debug, MetricsComponent)]
 pub struct EvictingMap<
-    K: Ord + Hash + Eq + Clone + Debug + Send,
+    K: Ord + Hash + Eq + Clone + Debug + Send + Borrow<Q>,
+    Q: Ord + Hash + Eq + Debug,
     T: LenEntry + Debug + Send,
     I: InstantWrapper,
 > {
     #[metric]
-    state: Mutex<State<K, T>>,
+    state: Arc<Mutex<State<K, Q, T>>>,
     anchor_time: I,
     #[metric(help = "Maximum size of the store in bytes")]
     max_bytes: u64,
@@ -170,9 +197,10 @@ pub struct EvictingMap<
     max_count: u64,
 }
 
-impl<K, T, I> EvictingMap<K, T, I>
+impl<K, Q, T, I> EvictingMap<K, Q, T, I>
 where
-    K: Ord + Hash + Eq + Clone + Debug + Send + Sync,
+    K: Ord + Hash + Eq + Clone + Debug + Send + Sync + Borrow<Q>,
+    Q: Ord + Hash + Eq + Debug + Sync,
     T: LenEntry + Debug + Clone + Send + Sync,
     I: InstantWrapper,
 {
@@ -180,7 +208,7 @@ where
         Self {
             // We use unbounded because if we use the bounded version we can't call the delete
             // function on the LenEntry properly.
-            state: Mutex::new(State {
+            state: Arc::new(Mutex::new(State {
                 lru: LruCache::unbounded(),
                 btree: None,
                 sum_store_size: 0,
@@ -189,7 +217,8 @@ where
                 replaced_bytes: Counter::default(),
                 replaced_items: CounterWithTime::default(),
                 lifetime_inserted_bytes: Counter::default(),
-            }),
+                remove_callbacks: Arc::new(Mutex::new(vec![])),
+            })),
             anchor_time,
             max_bytes: config.max_bytes as u64,
             evict_bytes: config.evict_bytes as u64,
@@ -199,13 +228,13 @@ where
     }
 
     pub async fn enable_filtering(&self) {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock_arc();
         if state.btree.is_none() {
             Self::rebuild_btree_index(&mut state);
         }
     }
 
-    fn rebuild_btree_index(state: &mut State<K, T>) {
+    fn rebuild_btree_index(state: &mut State<K, Q, T>) {
         state.btree = Some(state.lru.iter().map(|(k, _)| k).cloned().collect());
     }
 
@@ -213,13 +242,12 @@ where
     /// and return the number of items that were processed.
     /// The `handler` function should return `true` to continue processing the next item
     /// or `false` to stop processing.
-    pub async fn range<F, Q>(&self, prefix_range: impl RangeBounds<Q> + Send, mut handler: F) -> u64
+    pub async fn range<F>(&self, prefix_range: impl RangeBounds<Q> + Send, mut handler: F) -> u64
     where
         F: FnMut(&K, &T) -> bool + Send,
-        K: Borrow<Q> + Ord,
-        Q: Ord + Hash + Eq + Debug + Sync,
+        K: Ord,
     {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock_arc();
         let btree = if let Some(ref btree) = state.btree {
             btree
         } else {
@@ -241,7 +269,7 @@ where
     /// Returns the number of key-value pairs that are currently in the the cache.
     /// Function is not for production code paths.
     pub async fn len_for_test(&self) -> usize {
-        self.state.lock().await.lru.len()
+        self.state.lock_arc().lru.len()
     }
 
     fn should_evict(
@@ -264,7 +292,7 @@ where
     }
 
     #[must_use]
-    fn evict_items(&self, state: &mut State<K, T>) -> Vec<T> {
+    async fn evict_items(&self, state: &mut State<K, Q, T>) -> Vec<T> {
         let Some((_, mut peek_entry)) = state.lru.peek_lru() else {
             return Vec::new();
         };
@@ -290,7 +318,7 @@ where
                 .pop_lru()
                 .expect("Tried to peek() then pop() but failed");
             debug!(?key, "Evicting",);
-            let data = state.remove(&key, &eviction_item, false);
+            let data = state.remove(key.borrow(), &eviction_item, false).await;
             items_to_unref.push(data);
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
@@ -304,10 +332,9 @@ where
     }
 
     /// Return the size of a `key`, if not found `None` is returned.
-    pub async fn size_for_key<Q>(&self, key: &Q) -> Option<u64>
+    pub async fn size_for_key(&self, key: &Q) -> Option<u64>
     where
-        K: Borrow<Q>,
-        Q: Ord + Hash + Eq + Debug + Sync,
+        Q: Sync,
     {
         let mut results = [None];
         self.sizes_for_keys([key], &mut results[..], false).await;
@@ -320,7 +347,7 @@ where
     /// If no key is found in the internal map, `None` is filled in its place.
     /// If `peek` is set to `true`, the items are not promoted to the front of the
     /// LRU cache. Note: peek may still evict, but won't promote.
-    pub async fn sizes_for_keys<It, Q, R>(&self, keys: It, results: &mut [Option<u64>], peek: bool)
+    pub async fn sizes_for_keys<It, R>(&self, keys: It, results: &mut [Option<u64>], peek: bool)
     where
         It: IntoIterator<Item = R> + Send,
         // Note: It's not enough to have the inserts themselves be Send. The
@@ -331,11 +358,9 @@ where
         // * `R` (the input stream item type) must also be able to borrow `Q`
         // Note: That K and R do not need to be the same type, they just both need
         // to be able to borrow a `Q`.
-        K: Borrow<Q>,
         R: Borrow<Q> + Send,
-        Q: Ord + Hash + Eq + Debug + Sync,
     {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock_arc();
 
         let lru_len = state.lru.len();
         for (key, result) in keys.into_iter().zip(results.iter_mut()) {
@@ -353,7 +378,7 @@ where
                         *result = None;
                         if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
                             info!(?key, "Item expired, evicting");
-                            let data = state.remove(key.borrow(), &eviction_item, false);
+                            let data = state.remove(key.borrow(), &eviction_item, false).await;
                             // Store data for later unref - we can't drop state here as we're still iterating
                             // The unref will happen after the method completes
                             // For now, we just do inline unref
@@ -372,14 +397,10 @@ where
         }
     }
 
-    pub async fn get<Q>(&self, key: &Q) -> Option<T>
-    where
-        K: Borrow<Q>,
-        Q: Ord + Hash + Eq + Debug + Sync,
-    {
+    pub async fn get(&self, key: &Q) -> Option<T> {
         // Fast path: Check if we need eviction before acquiring lock for eviction
         let needs_eviction = {
-            let state = self.state.lock().await;
+            let state = self.state.lock_arc();
             if let Some((_, peek_entry)) = state.lru.peek_lru() {
                 self.should_evict(
                     state.lru.len(),
@@ -395,8 +416,8 @@ where
         // Perform eviction if needed
         if needs_eviction {
             let items_to_unref = {
-                let mut state = self.state.lock().await;
-                self.evict_items(&mut *state)
+                let mut state = self.state.lock_arc();
+                self.evict_items(&mut *state).await
             };
             // Unref items outside of lock
             for item in items_to_unref {
@@ -405,14 +426,17 @@ where
         }
 
         // Now get the item
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock_arc();
         let entry = state.lru.get_mut(key.borrow())?;
         entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
         Some(entry.data.clone())
     }
 
     /// Returns the replaced item if any.
-    pub async fn insert(&self, key: K, data: T) -> Option<T> {
+    pub async fn insert(&self, key: K, data: T) -> Option<T>
+    where
+        K: 'static,
+    {
         self.insert_with_time(key, data, self.anchor_time.elapsed().as_secs() as i32)
             .await
     }
@@ -420,8 +444,9 @@ where
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
         let items_to_unref = {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock_arc();
             self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
+                .await
         };
 
         // Unref items outside of lock
@@ -442,6 +467,7 @@ where
         // Note: It's not enough to have the inserts themselves be Send. The
         // returned iterator should be Send as well.
         <It as IntoIterator>::IntoIter: Send,
+        K: 'static,
     {
         let mut inserts = inserts.into_iter().peekable();
         // Shortcut for cases where there are no inserts, so we don't need to lock.
@@ -450,8 +476,9 @@ where
         }
 
         let items_to_unref = {
-            let state = &mut self.state.lock().await;
+            let state = &mut self.state.lock_arc();
             self.inner_insert_many(state, inserts, self.anchor_time.elapsed().as_secs() as i32)
+                .await
         };
 
         // Unref items outside of lock
@@ -464,9 +491,9 @@ where
         results
     }
 
-    fn inner_insert_many<It>(
+    async fn inner_insert_many<It>(
         &self,
-        state: &mut State<K, T>,
+        state: &mut State<K, Q, T>,
         inserts: It,
         seconds_since_anchor: i32,
     ) -> Vec<T>
@@ -484,7 +511,7 @@ where
                 data,
             };
 
-            if let Some(old_item) = state.put(&key, eviction_item) {
+            if let Some(old_item) = state.put(&key, eviction_item).await {
                 replaced_items.push(old_item);
             }
             state.sum_store_size += new_item_size;
@@ -492,7 +519,7 @@ where
         }
 
         // Perform eviction after all insertions
-        let items_to_unref = self.evict_items(state);
+        let items_to_unref = self.evict_items(state).await;
 
         // Note: We cannot drop the state lock here since we're borrowing it,
         // but the caller will handle unreffing these items after releasing the lock
@@ -503,20 +530,16 @@ where
         replaced_items
     }
 
-    pub async fn remove<Q>(&self, key: &Q) -> bool
-    where
-        K: Borrow<Q>,
-        Q: Ord + Hash + Eq + Debug + Sync,
-    {
+    pub async fn remove(&self, key: &Q) -> bool {
         let (items_to_unref, removed_item) = {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock_arc();
 
             // First perform eviction
-            let evicted_items = self.evict_items(&mut *state);
+            let evicted_items = self.evict_items(&mut *state).await;
 
             // Then try to remove the requested item
             let removed = if let Some(entry) = state.lru.pop(key.borrow()) {
-                Some(state.remove(key, &entry, false))
+                Some(state.remove(key, &entry, false).await)
             } else {
                 None
             };
@@ -540,23 +563,21 @@ where
 
     /// Same as `remove()`, but allows for a conditional to be applied to the
     /// entry before removal in an atomic fashion.
-    pub async fn remove_if<Q, F>(&self, key: &Q, cond: F) -> bool
+    pub async fn remove_if<F>(&self, key: &Q, cond: F) -> bool
     where
-        K: Borrow<Q>,
-        Q: Ord + Hash + Eq + Debug + Sync,
         F: FnOnce(&T) -> bool + Send,
     {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock_arc();
         if let Some(entry) = state.lru.get(key.borrow()) {
             if !cond(&entry.data) {
                 return false;
             }
             // First perform eviction
-            let evicted_items = self.evict_items(&mut state);
+            let evicted_items = self.evict_items(&mut state).await;
 
             // Then try to remove the requested item
             let removed_item = if let Some(entry) = state.lru.pop(key.borrow()) {
-                Some(state.remove(key, &entry, false))
+                Some(state.remove(key, &entry, false).await)
             } else {
                 None
             };
@@ -578,5 +599,9 @@ where
             return false;
         }
         false
+    }
+
+    pub fn add_remove_callback(&self, callback: Box<dyn RemoveStateCallback<Q>>) {
+        self.state.lock_arc().add_remove_callback(callback);
     }
 }
