@@ -18,7 +18,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::time::{interval, sleep};
-use tracing::{Level, event};
+use tracing::{Level, debug, event};
 
 use crate::cas_utils::is_zero_digest;
 use crate::common_s3_utils::TlsClient;
@@ -82,7 +82,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
 {
-    cache: Arc<OntapS3ExistenceCache<I, NowFn>>,
+    cache: Weak<OntapS3ExistenceCache<I, NowFn>>,
 }
 
 impl<I, NowFn> Debug for OntapS3CacheCallback<I, NowFn>
@@ -104,7 +104,12 @@ where
     NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
 {
     async fn callback(&self, store_key: &StoreKey<'_>) {
-        self.cache.callback(store_key).await;
+        let cache = self.cache.upgrade();
+        if let Some(local_cache) = cache {
+            local_cache.callback(store_key).await;
+        } else {
+            debug!("Cache dropped, so not doing callback");
+        }
     }
 }
 
@@ -355,7 +360,7 @@ where
             cache_misses: CounterWithTime::default(),
         });
 
-        let other_ref = cache.clone();
+        let other_ref = Arc::downgrade(&cache);
         cache
             .inner_store
             .register_remove_callback(&Arc::new(Box::new(OntapS3CacheCallback {

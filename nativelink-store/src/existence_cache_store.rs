@@ -14,7 +14,7 @@
 
 use core::pin::Pin;
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -80,16 +80,21 @@ impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheStore<I> {
 
 #[derive(Debug)]
 struct ExistenceCacheCallback<I: InstantWrapper> {
-    cache: Arc<ExistenceCacheStore<I>>,
+    cache: Weak<ExistenceCacheStore<I>>,
 }
 
 #[async_trait]
 impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
     async fn callback(&self, store_key: &StoreKey<'_>) {
-        if let Some(callbacks) = &mut *self.cache.pause_remove_callbacks.lock_arc() {
-            callbacks.push(store_key.borrow().into_owned());
+        let cache = self.cache.upgrade();
+        if let Some(local_cache) = cache {
+            if let Some(callbacks) = &mut *local_cache.pause_remove_callbacks.lock_arc() {
+                callbacks.push(store_key.borrow().into_owned());
+            } else {
+                local_cache.callback(store_key).await;
+            }
         } else {
-            self.cache.callback(store_key).await;
+            debug!("Cache dropped, so not doing callback");
         }
     }
 }
@@ -107,7 +112,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
             existence_cache: EvictingMap::new(eviction_policy, anchor_time),
             pause_remove_callbacks: Arc::new(Mutex::new(None)),
         });
-        let other_ref = existence_cache_store.clone();
+        let other_ref = Arc::downgrade(&existence_cache_store);
         existence_cache_store
             .inner_store
             .register_remove_callback(&Arc::new(Box::new(ExistenceCacheCallback {
