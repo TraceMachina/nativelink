@@ -838,6 +838,9 @@ pub trait StoreDriver:
     ) -> Result<(), Error>;
 }
 
+// Callback to be called when a store deletes an item. This is used so
+// compound stores can remove items from their internal state when their
+// underlying stores remove items e.g. caches
 #[async_trait]
 pub trait RemoveItemCallback: Debug + Send + Sync {
     async fn callback(&self, store_key: &StoreKey<'_>);

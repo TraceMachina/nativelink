@@ -18,6 +18,8 @@ use nativelink_util::evicting_map::RemoveStateCallback;
 use nativelink_util::store_trait::{RemoveItemCallback, StoreKey};
 use tonic::async_trait;
 
+// Generic struct to hold a RemoveItemCallback ref for the purposes
+// of a RemoveStateCallback call
 #[derive(Debug)]
 pub struct RemoveItemCallbackHolder {
     callback_fn: Arc<Box<dyn RemoveItemCallback>>,

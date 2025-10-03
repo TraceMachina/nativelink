@@ -86,6 +86,9 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     }
 }
 
+// Callback to be called when the EvictingMap removes an item
+// either via eviction or direct deletion. This will be called with
+// whatever key type the EvictingMap uses.
 #[async_trait]
 pub trait RemoveStateCallback<Q>: Debug + Send + Sync {
     async fn callback(&self, key: &Q);
