@@ -154,7 +154,7 @@ test --experimental_ui_max_stdouterr_bytes=104857600
 build:nightly --@rules_rust//rust/toolchain/channel=nightly
 
 # AddressSanitizer to detect memory leaks.
-build:asan --config=nightly --config=debug
+build:asan --config=nightly
 build:asan --@rules_rust//:extra_rustc_flags=-Zsanitizer=address
 # asan explicitly needs to _not_ use the Nix toolchains and so this
 # is needed to load the rust toolchains in Bazel
