@@ -154,12 +154,15 @@ test --experimental_ui_max_stdouterr_bytes=104857600
 build:nightly --@rules_rust//rust/toolchain/channel=nightly
 
 # AddressSanitizer to detect memory leaks.
-build:asan --config=nightly
+build:asan --config=nightly --config=debug
 build:asan --@rules_rust//:extra_rustc_flags=-Zsanitizer=address
+# asan explicitly needs to _not_ use the Nix toolchains and so this
+# is needed to load the rust toolchains in Bazel
+build:asan --extra_toolchains=@rust_toolchains//:all
 
 # ThreadSanitizer to detect data races. Tests under tsan shouldn't be cached
 # since they tend to produce irreproducible false negatives.
-build:tsan --config=nightly -c dbg
+build:tsan --config=nightly --config=debug
 build:tsan --@rules_rust//:extra_rustc_flags=-Zsanitizer=thread
 build:tsan --cache_test_results=no
 build:tsan --run_under=//tools:tsan.sh
