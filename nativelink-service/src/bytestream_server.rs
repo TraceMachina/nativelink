@@ -20,6 +20,7 @@ use core::time::Duration;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::future::{BoxFuture, pending};
 use futures::stream::unfold;
@@ -51,7 +52,7 @@ use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
 use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{Instrument, Level, debug, error, error_span, info, instrument, trace};
+use tracing::{Instrument, Level, debug, error, error_span, info, instrument, trace, warn};
 
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -177,6 +178,15 @@ impl Debug for ByteStreamServer {
 }
 
 impl ByteStreamServer {
+    /// Generate a unique UUID by appending a nanosecond timestamp to avoid collisions.
+    fn generate_unique_uuid(base_uuid: &str) -> String {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("{base_uuid}-{timestamp:x}")
+    }
+
     pub fn new(config: &ByteStreamConfig, store_manager: &StoreManager) -> Result<Self, Error> {
         let persist_stream_on_disconnect_timeout =
             if config.persist_stream_on_disconnect_timeout == 0 {
@@ -227,23 +237,51 @@ impl ByteStreamServer {
         Server::new(self).max_decoding_message_size(max_decoding_message_size)
     }
 
+    /// Creates or joins an upload stream for the given UUID.
+    ///
+    /// This function handles three scenarios:
+    /// 1. UUID doesn't exist - creates a new upload stream
+    /// 2. UUID exists but is idle - resumes the existing stream
+    /// 3. UUID exists and is active - generates a unique UUID by appending a nanosecond
+    ///    timestamp to avoid collision, then creates a new stream with that UUID
+    ///
+    /// The nanosecond timestamp ensures virtually zero probability of collision since
+    /// two concurrent uploads would need to both collide on the original UUID AND
+    /// generate the unique UUID in the exact same nanosecond.
     fn create_or_join_upload_stream(
         &self,
-        uuid: String,
+        uuid: &str,
         store: Store,
         digest: DigestInfo,
-    ) -> Result<ActiveStreamGuard<'_>, Error> {
-        let (uuid, bytes_received) = match self.active_uploads.lock().entry(uuid) {
+    ) -> ActiveStreamGuard<'_> {
+        let (uuid, bytes_received) = match self.active_uploads.lock().entry(uuid.to_string()) {
             Entry::Occupied(mut entry) => {
                 let maybe_idle_stream = entry.get_mut();
-                let Some(idle_stream) = maybe_idle_stream.1.take() else {
-                    return Err(make_input_err!("Cannot upload same UUID simultaneously"));
-                };
-                let bytes_received = maybe_idle_stream.0.clone();
-                info!(msg = "Joining existing stream", entry = ?entry.key());
-                return Ok(idle_stream.into_active_stream(bytes_received, self));
+                if let Some(idle_stream) = maybe_idle_stream.1.take() {
+                    // Case 2: Stream exists but is idle, we can resume it
+                    let bytes_received = maybe_idle_stream.0.clone();
+                    info!(msg = "Joining existing stream", entry = ?entry.key());
+                    return idle_stream.into_active_stream(bytes_received, self);
+                }
+                // Case 3: Stream is active - generate a unique UUID to avoid collision
+                // Using nanosecond timestamp makes collision probability essentially zero
+                let original_uuid = entry.key().clone();
+                let unique_uuid = Self::generate_unique_uuid(&original_uuid);
+                warn!(
+                    msg = "UUID collision detected, generating unique UUID to prevent conflict",
+                    original_uuid = ?original_uuid,
+                    unique_uuid = ?unique_uuid
+                );
+                // Entry goes out of scope here, releasing the lock
+
+                let bytes_received = Arc::new(AtomicU64::new(0));
+                let mut active_uploads = self.active_uploads.lock();
+                // Insert with the unique UUID - this should never collide due to nanosecond precision
+                active_uploads.insert(unique_uuid.clone(), (bytes_received.clone(), None));
+                (unique_uuid, bytes_received)
             }
             Entry::Vacant(entry) => {
+                // Case 1: UUID doesn't exist, create new stream
                 let bytes_received = Arc::new(AtomicU64::new(0));
                 let uuid = entry.key().clone();
                 // Our stream is "in use" if the key is in the map, but the value is None.
@@ -265,7 +303,7 @@ impl ByteStreamServer {
                 .update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes()))
                 .await
         });
-        Ok(ActiveStreamGuard {
+        ActiveStreamGuard {
             stream_state: Some(StreamState {
                 uuid,
                 tx,
@@ -273,7 +311,7 @@ impl ByteStreamServer {
             }),
             bytes_received,
             bytestream_server: self,
-        })
+        }
     }
 
     async fn inner_read(
@@ -497,9 +535,8 @@ impl ByteStreamServer {
             .resource_info
             .uuid
             .as_ref()
-            .ok_or_else(|| make_input_err!("UUID must be set if writing data"))?
-            .to_string();
-        let mut active_stream_guard = self.create_or_join_upload_stream(uuid, store, digest)?;
+            .ok_or_else(|| make_input_err!("UUID must be set if writing data"))?;
+        let mut active_stream_guard = self.create_or_join_upload_stream(uuid, store, digest);
         let expected_size = stream.resource_info.expected_size as u64;
 
         let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
