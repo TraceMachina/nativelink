@@ -216,9 +216,7 @@ impl StoreDriver for VerifyStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        self.inner_store
-            .get_part(key.into_owned(), writer, offset, length)
-            .await
+        self.inner_store.get_part(key, writer, offset, length).await
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {

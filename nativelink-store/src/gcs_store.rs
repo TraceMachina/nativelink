@@ -136,7 +136,7 @@ where
     }
 
     async fn has(self: Pin<&Self>, key: &StoreKey<'_>) -> Result<Option<u64>, Error> {
-        let object_path = self.make_object_path(&key);
+        let object_path = self.make_object_path(key);
         let client = &self.client;
         let consider_expired_after_s = self.consider_expired_after_s;
         let now_fn = &self.now_fn;
