@@ -171,7 +171,7 @@ jobs:
     strategy:
       matrix:
         # Which OS versions we will test on.
-        os_version: [ 24.04 ]
+        os_version: [ 22.04, 24.04 ]
     steps:
     - name: Checkout
       uses: >- # v4.2.2
