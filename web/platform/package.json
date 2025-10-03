@@ -11,7 +11,7 @@
     "@bazel/bazelisk": "^1.26.0",
     "@beoe/pan-zoom": "^0.0.4",
     "@beoe/rehype-mermaid": "^0.4.2",
-    "@biomejs/biome": "1.9.4",
+    "@biomejs/biome": "2.2.5",
     "@builder.io/qwik": "^1.13.0",
     "@deno/astro-adapter": "^0.2.1",
     "@lhci/cli": "^0.14.0",
