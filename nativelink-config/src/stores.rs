@@ -442,7 +442,7 @@ pub enum StoreSpec {
     ///   "lower_store": {
     ///     "memory": {
     ///       "eviction_policy": {
-    ///         "max_bytes": "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100000000}"
+    ///         "max_bytes": "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100mb}"
     ///       }
     ///     }
     ///   },
