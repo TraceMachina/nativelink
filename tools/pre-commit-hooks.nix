@@ -2,6 +2,7 @@
   pkgs,
   nightly-rust,
   generate-bazel-rc,
+  generate-stores-config,
   ...
 }: let
   excludes = ["nativelink-proto/genproto" "native-cli/vendor"];
@@ -192,6 +193,9 @@ in {
 
   # json5
   formatjson5 = {
+    excludes =
+      excludes
+      ++ ["nativelink-config/examples/stores-config.json5"];
     description = "Format json5 files";
     enable = true;
     entry = "${pkgs.formatjson5}/bin/formatjson5";
@@ -214,6 +218,16 @@ in {
     enable = true;
     entry = "${pkgs.cargo-machete}/bin/cargo-machete";
     args = ["."];
+    pass_filenames = false;
+  };
+
+  # Generate demo config to test stores.rs comments
+  generate-stores-config = {
+    description = "Generate stores config";
+    enable = true;
+    entry = "${generate-stores-config}/bin/generate-stores-config nativelink-config/src/stores.rs nativelink-config/examples/stores-config.json5";
+    name = "generate-stores-config";
+    files = "nativelink-config/src/stores.rs|nativelink-config/examples/stores-config.json5";
     pass_filenames = false;
   };
 }

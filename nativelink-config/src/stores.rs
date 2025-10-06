@@ -118,7 +118,7 @@ pub enum StoreSpec {
     ///    **Example JSON Config:**
     ///    ```json
     ///    "experimental_cloud_object_store": {
-    ///      "provider": "ontap"
+    ///      "provider": "ontap",
     ///      "endpoint": "https://ontap-s3-endpoint:443",
     ///      "vserver_name": "your-vserver",
     ///      "bucket": "your-bucket",
@@ -175,7 +175,7 @@ pub enum StoreSpec {
     ///         "max_bytes": "500mb"
     ///       }
     ///     },
-    ///   }
+    ///   },
     ///   "verify_size": true,
     ///   "verify_hash": true
     /// }
@@ -266,9 +266,10 @@ pub enum StoreSpec {
     /// ```json
     /// "dedup": {
     ///   "index_store": {
-    ///     "memory_store": {
-    ///       "max_size": "1GB",
-    ///       "eviction_policy": "LeastRecentlyUsed"
+    ///     "memory": {
+    ///       "eviction_policy": {
+    ///          "max_bytes": "1GB",
+    ///       }
     ///     }
     ///   },
     ///   "content_store": {
@@ -279,9 +280,10 @@ pub enum StoreSpec {
     ///       "backend": {
     ///         "fast_slow": {
     ///           "fast": {
-    ///             "memory_store": {
-    ///               "max_size": "500MB",
-    ///               "eviction_policy": "LeastRecentlyUsed"
+    ///             "memory": {
+    ///               "eviction_policy": {
+    ///                 "max_bytes": "500MB",
+    ///               }
     ///             }
     ///           },
     ///           "slow": {
@@ -320,7 +322,7 @@ pub enum StoreSpec {
     ///   },
     ///   // Note this is the existence store policy, not the backend policy
     ///   "eviction_policy": {
-    ///     "max_seconds": "100",
+    ///     "max_seconds": 100,
     ///   }
     /// }
     /// ```
@@ -377,15 +379,16 @@ pub enum StoreSpec {
     /// ```json
     /// "shard": {
     ///   "stores": [
+    ///    {
     ///     "store": {
     ///       "memory": {
     ///         "eviction_policy": {
     ///             "max_bytes": "10mb"
     ///         },
-    ///       }
-    ///       "weight": 1
-    ///     }
-    ///   ]
+    ///       },
+    ///     },
+    ///     "weight": 1
+    ///   }]
     /// }
     /// ```
     ///
