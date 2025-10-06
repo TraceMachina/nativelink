@@ -168,10 +168,6 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        # Which OS versions we will test on.
-        os_version: [ 24.04 ]
     steps:
     - name: Checkout
       uses: >- # v4.2.2
@@ -189,7 +185,6 @@ jobs:
         file: ./deployment-examples/docker-compose/Dockerfile
         build-args: |
           OPT_LEVEL=fastbuild
-          OS_VERSION=${{ matrix.os_version }}
           ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
         load: true # This brings the build into `docker images` from buildx.
         tags: trace_machina/nativelink:latest
