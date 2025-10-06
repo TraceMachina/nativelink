@@ -30,7 +30,9 @@ use nativelink_util::buf_channel::{
 };
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::cas_utils::is_zero_digest;
@@ -638,6 +640,13 @@ impl StoreDriver for CompressionStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.inner_store.register_remove_callback(callback)
     }
 }
 

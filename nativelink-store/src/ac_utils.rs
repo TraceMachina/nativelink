@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-// TODO(palfrey): IMPORTANT TODO: IMPORTING THIS SOMETMIES BREAKS
+// TODO(palfrey): IMPORTANT TODO: IMPORTING THIS SOMETIMES BREAKS
 //                    THREADSAFETY. FIGURE OUT WHY AND MOVE IT TO UTILS.
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 

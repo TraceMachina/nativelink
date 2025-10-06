@@ -367,6 +367,13 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
         tokio::task::yield_now().await;
     }
 
+    assert!(logs_contain(
+        "Spawned a filesystem_delete_file current_active_drop_spawns=1"
+    ));
+    assert!(logs_contain(
+        "Dropped a filesystem_delete_file current_active_drop_spawns=0"
+    ));
+
     check_temp_empty(&temp_path).await
 }
 

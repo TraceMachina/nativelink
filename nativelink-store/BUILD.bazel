@@ -11,6 +11,7 @@ rust_library(
     name = "nativelink-store",
     srcs = [
         "src/ac_utils.rs",
+        "src/callback_utils.rs",
         "src/cas_utils.rs",
         "src/common_s3_utils.rs",
         "src/completeness_checking_store.rs",

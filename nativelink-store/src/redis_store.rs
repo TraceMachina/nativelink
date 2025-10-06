@@ -44,8 +44,8 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
-    BoolValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
-    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
+    BoolValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
+    SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
     SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
 };
 use nativelink_util::task::JoinHandleDropGuard;
@@ -656,6 +656,14 @@ impl StoreDriver for RedisStore {
 
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        // As redis doesn't drop stuff, we can just ignore this
+        Ok(())
     }
 }
 

@@ -47,7 +47,8 @@ use nativelink_util::buf_channel::{
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use parking_lot::Mutex;
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pemfile::certs as extract_certs;
 use sha2::{Digest, Sha256};
@@ -87,6 +88,8 @@ pub struct OntapS3Store<NowFn> {
     max_retry_buffer_per_request: usize,
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
+
+    remove_callbacks: Arc<Mutex<Vec<Arc<Box<dyn RemoveItemCallback>>>>>,
 }
 
 pub fn load_custom_certs(cert_path: &str) -> Result<Arc<ClientConfig>, Error> {
@@ -212,6 +215,7 @@ where
                 .common
                 .multipart_max_concurrent_uploads
                 .unwrap_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS),
+            remove_callbacks: Arc::new(Mutex::new(vec![])),
         }))
     }
 
@@ -219,51 +223,65 @@ where
         format!("{}{}", self.key_prefix, key.as_str())
     }
 
-    async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<u64>, Error> {
+    async fn has(self: Pin<&Self>, digest: StoreKey<'_>) -> Result<Option<u64>, Error> {
+        let digest_clone = digest.into_owned();
         self.retrier
-            .retry(unfold((), move |state| async move {
-                let result = self
-                    .s3_client
-                    .head_object()
-                    .bucket(&self.bucket)
-                    .key(self.make_s3_path(&digest.borrow()))
-                    .send()
-                    .await;
+            .retry(unfold((), move |state| {
+                let local_digest = digest_clone.clone();
+                async move {
+                    let result = self
+                        .s3_client
+                        .head_object()
+                        .bucket(&self.bucket)
+                        .key(self.make_s3_path(&local_digest))
+                        .send()
+                        .await;
 
-                match result {
-                    Ok(head_object_output) => {
-                        if self.consider_expired_after_s != 0 {
-                            if let Some(last_modified) = head_object_output.last_modified {
-                                let now_s = (self.now_fn)().unix_timestamp() as i64;
-                                if last_modified.secs() + self.consider_expired_after_s <= now_s {
-                                    return Some((RetryResult::Ok(None), state));
+                    match result {
+                        Ok(head_object_output) => {
+                            if self.consider_expired_after_s != 0 {
+                                if let Some(last_modified) = head_object_output.last_modified {
+                                    let now_s = (self.now_fn)().unix_timestamp() as i64;
+                                    if last_modified.secs() + self.consider_expired_after_s <= now_s
+                                    {
+                                        let store_key = local_digest.borrow();
+                                        let remove_callbacks = self.remove_callbacks.lock_arc();
+                                        let callbacks = remove_callbacks
+                                            .iter()
+                                            .map(|callback| callback.callback(&store_key))
+                                            .collect::<Vec<_>>();
+                                        for callback in callbacks {
+                                            callback.await;
+                                        }
+                                        return Some((RetryResult::Ok(None), state));
+                                    }
                                 }
                             }
+                            let Some(length) = head_object_output.content_length else {
+                                return Some((RetryResult::Ok(None), state));
+                            };
+                            if length >= 0 {
+                                return Some((RetryResult::Ok(Some(length as u64)), state));
+                            }
+                            Some((
+                                RetryResult::Err(make_err!(
+                                    Code::InvalidArgument,
+                                    "Negative content length in ONTAP S3: {length:?}"
+                                )),
+                                state,
+                            ))
                         }
-                        let Some(length) = head_object_output.content_length else {
-                            return Some((RetryResult::Ok(None), state));
-                        };
-                        if length >= 0 {
-                            return Some((RetryResult::Ok(Some(length as u64)), state));
-                        }
-                        Some((
-                            RetryResult::Err(make_err!(
-                                Code::InvalidArgument,
-                                "Negative content length in ONTAP S3: {length:?}"
+                        Err(sdk_error) => match sdk_error.into_service_error() {
+                            HeadObjectError::NotFound(_) => Some((RetryResult::Ok(None), state)),
+                            other => Some((
+                                RetryResult::Retry(make_err!(
+                                    Code::Unavailable,
+                                    "Unhandled HeadObjectError in ONTAP S3: {other:?}"
+                                )),
+                                state,
                             )),
-                            state,
-                        ))
+                        },
                     }
-                    Err(sdk_error) => match sdk_error.into_service_error() {
-                        HeadObjectError::NotFound(_) => Some((RetryResult::Ok(None), state)),
-                        other => Some((
-                            RetryResult::Retry(make_err!(
-                                Code::Unavailable,
-                                "Unhandled HeadObjectError in ONTAP S3: {other:?}"
-                            )),
-                            state,
-                        )),
-                    },
                 }
             }))
             .await
@@ -289,7 +307,7 @@ where
                     return Ok::<_, Error>(());
                 }
 
-                match self.has(key).await {
+                match self.has(key.borrow()).await {
                     Ok(size) => {
                         *result = size;
                         if size.is_none() {
@@ -746,6 +764,14 @@ where
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.remove_callbacks.lock_arc().push(callback.clone());
+        Ok(())
     }
 }
 

@@ -417,11 +417,11 @@ async fn inner_update_awaited_action(
         .err_tip(|| "In RedisAwaitedActionDb::update_awaited_action")?;
     if maybe_version.is_none() {
         tracing::warn!(
-            "Could not update AwaitedAction because the version did not match for {operation_id:?}"
+            "Could not update AwaitedAction because the version did not match for {operation_id}"
         );
         return Err(make_err!(
             Code::Aborted,
-            "Could not update AwaitedAction because the version did not match for {operation_id:?}",
+            "Could not update AwaitedAction because the version did not match for {operation_id}",
         ));
     }
     Ok(())

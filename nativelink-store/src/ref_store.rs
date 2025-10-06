@@ -22,7 +22,9 @@ use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use tracing::error;
 
 use crate::store_manager::StoreManager;
@@ -45,6 +47,7 @@ pub struct RefStore {
     name: String,
     store_manager: Weak<StoreManager>,
     inner: StoreReference,
+    remove_callbacks: Mutex<Vec<Arc<Box<dyn RemoveItemCallback>>>>,
 }
 
 impl RefStore {
@@ -56,6 +59,7 @@ impl RefStore {
                 mux: Mutex::new(()),
                 cell: AlignedStoreCell(UnsafeCell::new(None)),
             },
+            remove_callbacks: Mutex::new(vec![]),
         })
     }
 
@@ -88,6 +92,9 @@ impl RefStore {
             .upgrade()
             .err_tip(|| "Store manager is gone")?;
         if let Some(store) = store_manager.get_store(&self.name) {
+            for callback in self.remove_callbacks.lock().unwrap().iter() {
+                store.register_remove_callback(callback)?;
+            }
             unsafe {
                 *ref_store = Some(store);
                 return Ok((*ref_store).as_ref().unwrap());
@@ -147,6 +154,20 @@ impl StoreDriver for RefStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.remove_callbacks.lock()?.push(callback.clone());
+        let ref_store = self.inner.cell.0.get();
+        unsafe {
+            if let Some(ref store) = *ref_store {
+                store.register_remove_callback(callback)?;
+            }
+        };
+        Ok(())
     }
 }
 

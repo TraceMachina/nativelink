@@ -202,13 +202,17 @@ mod data_size_tests {
                 r#"{"data_size": "999999999999999999999B"}"#,
                 "the value 999999999999999999999 exceeds the valid range",
             ),
+            (r#"{"data_size": ""}"#, "Missing value in a size field"),
         ];
 
         for (input, expected_error) in examples {
             let error = serde_json5::from_str::<DataSizeEntity>(input)
                 .unwrap_err()
                 .to_string();
-            assert!(error.contains(expected_error));
+            assert!(
+                error.contains(expected_error),
+                "Error: {error} Expected: {expected_error}"
+            );
         }
     }
 }

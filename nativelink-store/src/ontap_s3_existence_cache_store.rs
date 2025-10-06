@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
@@ -34,12 +35,14 @@ use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::time::{interval, sleep};
-use tracing::{Level, event};
+use tracing::{Level, debug, event};
 
 use crate::cas_utils::is_zero_digest;
 use crate::common_s3_utils::TlsClient;
@@ -51,7 +54,7 @@ struct CacheFile {
     timestamp: u64,
 }
 
-#[derive(Debug, MetricsComponent)]
+#[derive(MetricsComponent)]
 pub struct OntapS3ExistenceCache<I, NowFn>
 where
     I: InstantWrapper,
@@ -72,6 +75,64 @@ where
     cache_hits: CounterWithTime,
     #[metric(help = "Number of cache misses")]
     cache_misses: CounterWithTime,
+}
+
+struct OntapS3CacheCallback<I, NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
+{
+    cache: Weak<OntapS3ExistenceCache<I, NowFn>>,
+}
+
+impl<I, NowFn> Debug for OntapS3CacheCallback<I, NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OntapS3CacheCallback")
+            .field("cache", &self.cache)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl<I, NowFn> RemoveItemCallback for OntapS3CacheCallback<I, NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
+{
+    async fn callback(&self, store_key: &StoreKey<'_>) {
+        let cache = self.cache.upgrade();
+        if let Some(local_cache) = cache {
+            local_cache.callback(store_key).await;
+        } else {
+            debug!("Cache dropped, so not doing callback");
+        }
+    }
+}
+
+impl<I, NowFn> Debug for OntapS3ExistenceCache<I, NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OntapS3ExistenceCache")
+            .field("inner_store", &self.inner_store)
+            .field("s3_client", &self.s3_client)
+            .field("bucket", &self.bucket)
+            .field("key_prefix", &self.key_prefix)
+            .field("index_path", &self.index_path)
+            .field("digests", &self.digests)
+            .field("sync_interval_seconds", &self.sync_interval_seconds)
+            .field("last_sync", &self.last_sync)
+            .field("sync_in_progress", &self.sync_in_progress)
+            .field("cache_hits", &self.cache_hits)
+            .field("cache_misses", &self.cache_misses)
+            .finish()
+    }
 }
 
 impl<I, NowFn> OntapS3ExistenceCache<I, NowFn>
@@ -299,6 +360,13 @@ where
             cache_misses: CounterWithTime::default(),
         });
 
+        let other_ref = Arc::downgrade(&cache);
+        cache
+            .inner_store
+            .register_remove_callback(&Arc::new(Box::new(OntapS3CacheCallback {
+                cache: other_ref,
+            })))?;
+
         // Try to load existing cache file
         if let Ok(contents) = fs::read_to_string(&spec.index_path).await {
             let cache_file = serde_json::from_str::<CacheFile>(&contents)
@@ -460,6 +528,25 @@ where
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.inner_store.register_remove_callback(callback)
+    }
+}
+
+#[async_trait]
+impl<I, NowFn> RemoveItemCallback for OntapS3ExistenceCache<I, NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
+{
+    async fn callback(&self, store_key: &StoreKey<'_>) {
+        let new_key = store_key.borrow();
+        self.digests.write().await.remove(&new_key.into_digest());
     }
 }
 

@@ -14,7 +14,7 @@
 
 use core::borrow::{Borrow, BorrowMut};
 use core::convert::Into;
-use core::fmt::{self, Display};
+use core::fmt::{self, Debug, Display};
 use core::hash::{Hash, Hasher};
 use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
@@ -338,7 +338,7 @@ pub struct Store {
     inner: Arc<dyn StoreDriver>,
 }
 
-impl fmt::Debug for Store {
+impl Debug for Store {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Store").finish_non_exhaustive()
     }
@@ -348,9 +348,7 @@ impl Store {
     pub fn new(inner: Arc<dyn StoreDriver>) -> Self {
         Self { inner }
     }
-}
 
-impl Store {
     /// Returns the immediate inner store driver.
     /// Note: This does not recursively try to resolve underlying store drivers
     /// like `.inner_store()` does.
@@ -378,6 +376,14 @@ impl Store {
     #[inline]
     pub fn register_health(&self, registry: &mut HealthRegistryBuilder) {
         self.inner.clone().register_health(registry);
+    }
+
+    #[inline]
+    pub fn register_remove_callback(
+        &self,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.inner.clone().register_remove_callback(callback)
     }
 }
 
@@ -825,6 +831,19 @@ pub trait StoreDriver:
 
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error>;
+}
+
+// Callback to be called when a store deletes an item. This is used so
+// compound stores can remove items from their internal state when their
+// underlying stores remove items e.g. caches
+#[async_trait]
+pub trait RemoveItemCallback: Debug + Send + Sync {
+    async fn callback(&self, store_key: &StoreKey<'_>);
 }
 
 /// The instructions on how to decode a value from a Bytes & version into

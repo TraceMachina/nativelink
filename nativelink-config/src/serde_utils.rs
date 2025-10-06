@@ -237,6 +237,9 @@ where
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
             let expanded = shellexpand::env(v).map_err(de::Error::custom)?;
             let s = expanded.as_ref().trim();
+            if v.is_empty() {
+                return Err(de::Error::custom("Missing value in a size field"));
+            }
             let byte_size = Byte::parse_str(s, true).map_err(de::Error::custom)?;
             let bytes = byte_size.as_u128();
             T::try_from(bytes).map_err(de::Error::custom)
