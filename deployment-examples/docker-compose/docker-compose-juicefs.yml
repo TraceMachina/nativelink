@@ -1,0 +1,297 @@
+version: '3.8'
+
+# Multi-worker NativeLink deployment with JuiceFS distributed storage
+# This configuration provides:
+# - Shared CAS across all workers via JuiceFS
+# - Redis for JuiceFS metadata
+# - S3-compatible storage (MinIO) for JuiceFS data backend
+# - Scalable worker architecture
+
+services:
+  # Redis - JuiceFS metadata engine
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - nativelink-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # MinIO - S3-compatible object storage for JuiceFS backend
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    networks:
+      - nativelink-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # MinIO bucket initialization
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/nativelink-cas --ignore-existing;
+      mc anonymous set download myminio/nativelink-cas;
+      exit 0;
+      "
+    networks:
+      - nativelink-network
+
+  # JuiceFS formatter and mount service
+  # This container formats the JuiceFS volume and keeps it mounted
+  juicefs-mount:
+    image: juicedata/juicefs:latest
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    volumes:
+      - juicefs-cache:/var/jfsCache
+      - type: volume
+        source: juicefs-mount
+        target: /mnt/jfs
+        volume:
+          nocopy: true
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    command: >
+      sh -c "
+        # Format JuiceFS (only on first run)
+        juicefs format \
+          --storage minio \
+          --bucket http://minio:9000/nativelink-cas \
+          --access-key minioadmin \
+          --secret-key minioadmin \
+          redis://redis:6379/1 \
+          nativelink-cas || true;
+
+        # Mount JuiceFS
+        juicefs mount \
+          --cache-dir /var/jfsCache \
+          --cache-size 10240 \
+          --writeback \
+          --max-uploads 20 \
+          --max-deletes 10 \
+          --buffer-size 300 \
+          --prefetch 3 \
+          --open-cache 0 \
+          --attr-cache 1 \
+          --entry-cache 1 \
+          --dir-entry-cache 1 \
+          redis://redis:6379/1 \
+          /mnt/jfs;
+      "
+    networks:
+      - nativelink-network
+    healthcheck:
+      test: ["CMD", "sh", "-c", "[ -d /mnt/jfs/.stats ]"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # CAS/AC server
+  cas-server:
+    image: nativelink:latest
+    build:
+      context: ../..
+      dockerfile: deployment-examples/docker-compose/Dockerfile
+    volumes:
+      - ./cas-server-multi-worker.json5:/nativelink-config.json5
+    ports:
+      - "50051:50051"
+    environment:
+      - RUST_LOG=info,nativelink=debug
+    command: nativelink /nativelink-config.json5
+    networks:
+      - nativelink-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50051/status"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Scheduler
+  scheduler:
+    image: nativelink:latest
+    volumes:
+      - ./scheduler-multi-worker.json5:/nativelink-config.json5
+    ports:
+      - "50052:50052"
+      - "50061:50061"
+    environment:
+      - RUST_LOG=info,nativelink=debug
+      - CAS_ENDPOINT=cas-server
+    command: nativelink /nativelink-config.json5
+    depends_on:
+      cas-server:
+        condition: service_healthy
+    networks:
+      - nativelink-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50052/status"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Worker 1 - Uses JuiceFS shared storage
+  worker-1:
+    image: nativelink:latest
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    volumes:
+      - type: volume
+        source: juicefs-mount
+        target: /mnt/jfs
+        volume:
+          nocopy: true
+      - worker1-work:/tmp/worker1
+      - ./worker-juicefs.json5:/nativelink-config.json5
+    environment:
+      - RUST_LOG=info,nativelink=debug
+      - SCHEDULER_ENDPOINT=scheduler
+      - CAS_ENDPOINT=cas-server
+      - WORKER_NAME=worker-1
+      - WORKER_ID=1
+    command: nativelink /nativelink-config.json5
+    depends_on:
+      scheduler:
+        condition: service_healthy
+      juicefs-mount:
+        condition: service_healthy
+    networks:
+      - nativelink-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+
+  # Worker 2 - Uses JuiceFS shared storage
+  worker-2:
+    image: nativelink:latest
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    volumes:
+      - type: volume
+        source: juicefs-mount
+        target: /mnt/jfs
+        volume:
+          nocopy: true
+      - worker2-work:/tmp/worker2
+      - ./worker-juicefs.json5:/nativelink-config.json5
+    environment:
+      - RUST_LOG=info,nativelink=debug
+      - SCHEDULER_ENDPOINT=scheduler
+      - CAS_ENDPOINT=cas-server
+      - WORKER_NAME=worker-2
+      - WORKER_ID=2
+    command: nativelink /nativelink-config.json5
+    depends_on:
+      scheduler:
+        condition: service_healthy
+      juicefs-mount:
+        condition: service_healthy
+    networks:
+      - nativelink-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+
+  # Worker 3 - Uses JuiceFS shared storage
+  worker-3:
+    image: nativelink:latest
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    volumes:
+      - type: volume
+        source: juicefs-mount
+        target: /mnt/jfs
+        volume:
+          nocopy: true
+      - worker3-work:/tmp/worker3
+      - ./worker-juicefs.json5:/nativelink-config.json5
+    environment:
+      - RUST_LOG=info,nativelink=debug
+      - SCHEDULER_ENDPOINT=scheduler
+      - CAS_ENDPOINT=cas-server
+      - WORKER_NAME=worker-3
+      - WORKER_ID=3
+    command: nativelink /nativelink-config.json5
+    depends_on:
+      scheduler:
+        condition: service_healthy
+      juicefs-mount:
+        condition: service_healthy
+    networks:
+      - nativelink-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+
+networks:
+  nativelink-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+    driver: local
+  minio-data:
+    driver: local
+  juicefs-cache:
+    driver: local
+  juicefs-mount:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /tmp/juicefs-mount
+  worker1-work:
+    driver: local
+  worker2-work:
+    driver: local
+  worker3-work:
+    driver: local
