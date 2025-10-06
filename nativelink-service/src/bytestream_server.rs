@@ -25,7 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use futures::future::{BoxFuture, pending};
 use futures::stream::unfold;
 use futures::{Future, Stream, TryFutureExt, try_join};
-use nativelink_config::cas_server::ByteStreamConfig;
+use nativelink_config::cas_server::{ByteStreamConfig, InstanceName, WithInstanceName};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::google::bytestream::byte_stream_server::{
     ByteStream, ByteStreamServer as Server,
@@ -60,8 +60,26 @@ const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_se
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
 
-/// If this value changes update the documentation in the config definition.
-const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+type BytesWrittenAndIdleStream = (Arc<AtomicU64>, Option<IdleStream>);
+type SleepFn = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
+
+pub struct InstanceInfo {
+    store: Store,
+    // Max number of bytes to send on each grpc stream chunk.
+    max_bytes_per_stream: usize,
+    active_uploads: Arc<Mutex<HashMap<String, BytesWrittenAndIdleStream>>>,
+    sleep_fn: SleepFn,
+}
+
+impl Debug for InstanceInfo {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("InstanceInfo")
+            .field("store", &self.store)
+            .field("max_bytes_per_stream", &self.max_bytes_per_stream)
+            .field("active_uploads", &self.active_uploads)
+            .finish()
+    }
+}
 
 type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + 'static>>;
 type StoreUpdateFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
@@ -83,31 +101,29 @@ impl Debug for StreamState {
 /// If a stream is in this state, it will automatically be put back into an `IdleStream` and
 /// placed back into the `active_uploads` map as an `IdleStream` after it is dropped.
 /// To prevent it from being put back into an `IdleStream` you must call `.graceful_finish()`.
-struct ActiveStreamGuard<'a> {
+struct ActiveStreamGuard {
     stream_state: Option<StreamState>,
     bytes_received: Arc<AtomicU64>,
-    bytestream_server: &'a ByteStreamServer,
+    active_uploads: Arc<Mutex<HashMap<String, BytesWrittenAndIdleStream>>>,
+    sleep_fn: SleepFn,
 }
 
-impl ActiveStreamGuard<'_> {
+impl ActiveStreamGuard {
     /// Consumes the guard. The stream will be considered "finished", will
     /// remove it from the `active_uploads`.
     fn graceful_finish(mut self) {
         let stream_state = self.stream_state.take().unwrap();
-        self.bytestream_server
-            .active_uploads
-            .lock()
-            .remove(&stream_state.uuid);
+        self.active_uploads.lock().remove(&stream_state.uuid);
     }
 }
 
-impl Drop for ActiveStreamGuard<'_> {
+impl Drop for ActiveStreamGuard {
     fn drop(&mut self) {
         let Some(stream_state) = self.stream_state.take() else {
             return; // If None it means we don't want it put back into an IdleStream.
         };
-        let weak_active_uploads = Arc::downgrade(&self.bytestream_server.active_uploads);
-        let mut active_uploads = self.bytestream_server.active_uploads.lock();
+        let weak_active_uploads = Arc::downgrade(&self.active_uploads);
+        let mut active_uploads = self.active_uploads.lock();
         let uuid = stream_state.uuid.clone();
         let Some(active_uploads_slot) = active_uploads.get_mut(&uuid) else {
             error!(
@@ -116,7 +132,7 @@ impl Drop for ActiveStreamGuard<'_> {
             );
             return;
         };
-        let sleep_fn = self.bytestream_server.sleep_fn.clone();
+        let sleep_fn = self.sleep_fn.clone();
         active_uploads_slot.1 = Some(IdleStream {
             stream_state,
             _timeout_streaam_drop_guard: spawn!("bytestream_idle_stream_timeout", async move {
@@ -144,37 +160,20 @@ impl IdleStream {
     fn into_active_stream(
         self,
         bytes_received: Arc<AtomicU64>,
-        bytestream_server: &ByteStreamServer,
-    ) -> ActiveStreamGuard<'_> {
+        instance_info: &InstanceInfo,
+    ) -> ActiveStreamGuard {
         ActiveStreamGuard {
             stream_state: Some(self.stream_state),
             bytes_received,
-            bytestream_server,
+            active_uploads: instance_info.active_uploads.clone(),
+            sleep_fn: instance_info.sleep_fn.clone(),
         }
     }
 }
 
-type BytesWrittenAndIdleStream = (Arc<AtomicU64>, Option<IdleStream>);
-type SleepFn = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
-
+#[derive(Debug)]
 pub struct ByteStreamServer {
-    stores: HashMap<String, Store>,
-    // Max number of bytes to send on each grpc stream chunk.
-    max_bytes_per_stream: usize,
-    max_decoding_message_size: usize,
-    active_uploads: Arc<Mutex<HashMap<String, BytesWrittenAndIdleStream>>>,
-    sleep_fn: SleepFn,
-}
-
-impl Debug for ByteStreamServer {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ByteStreamServer")
-            .field("stores", &self.stores)
-            .field("max_bytes_per_stream", &self.max_bytes_per_stream)
-            .field("max_decoding_message_size", &self.max_decoding_message_size)
-            .field("active_uploads", &self.active_uploads)
-            .finish_non_exhaustive()
-    }
+    instance_infos: HashMap<InstanceName, InstanceInfo>,
 }
 
 impl ByteStreamServer {
@@ -187,54 +186,53 @@ impl ByteStreamServer {
         format!("{base_uuid}-{timestamp:x}")
     }
 
-    pub fn new(config: &ByteStreamConfig, store_manager: &StoreManager) -> Result<Self, Error> {
-        let persist_stream_on_disconnect_timeout =
-            if config.persist_stream_on_disconnect_timeout == 0 {
-                DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT
-            } else {
-                Duration::from_secs(config.persist_stream_on_disconnect_timeout as u64)
-            };
-        Self::new_with_sleep_fn(
-            config,
-            store_manager,
-            Arc::new(move || Box::pin(sleep(persist_stream_on_disconnect_timeout))),
-        )
+    pub fn new(
+        configs: &[WithInstanceName<ByteStreamConfig>],
+        store_manager: &StoreManager,
+    ) -> Result<Self, Error> {
+        let mut instance_infos: HashMap<String, InstanceInfo> = HashMap::new();
+        for config in configs {
+            let persist_stream_on_disconnect_timeout =
+                if config.persist_stream_on_disconnect_timeout == 0 {
+                    DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT
+                } else {
+                    Duration::from_secs(config.persist_stream_on_disconnect_timeout as u64)
+                };
+            let _old_value = instance_infos.insert(
+                config.instance_name.clone(),
+                Self::new_with_sleep_fn(
+                    config,
+                    store_manager,
+                    Arc::new(move || Box::pin(sleep(persist_stream_on_disconnect_timeout))),
+                )?,
+            );
+        }
+        Ok(Self { instance_infos })
     }
 
     pub fn new_with_sleep_fn(
-        config: &ByteStreamConfig,
+        config: &WithInstanceName<ByteStreamConfig>,
         store_manager: &StoreManager,
         sleep_fn: SleepFn,
-    ) -> Result<Self, Error> {
-        let mut stores = HashMap::with_capacity(config.cas_stores.len());
-        for (instance_name, store_name) in &config.cas_stores {
-            let store = store_manager
-                .get_store(store_name)
-                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", store_name))?;
-            stores.insert(instance_name.to_string(), store);
-        }
+    ) -> Result<InstanceInfo, Error> {
+        let store = store_manager
+            .get_store(&config.cas_store)
+            .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", config.cas_store))?;
         let max_bytes_per_stream = if config.max_bytes_per_stream == 0 {
             DEFAULT_MAX_BYTES_PER_STREAM
         } else {
             config.max_bytes_per_stream
         };
-        let max_decoding_message_size = if config.max_decoding_message_size == 0 {
-            DEFAULT_MAX_DECODING_MESSAGE_SIZE
-        } else {
-            config.max_decoding_message_size
-        };
-        Ok(Self {
-            stores,
+        Ok(InstanceInfo {
+            store,
             max_bytes_per_stream,
-            max_decoding_message_size,
             active_uploads: Arc::new(Mutex::new(HashMap::new())),
             sleep_fn,
         })
     }
 
     pub fn into_service(self) -> Server<Self> {
-        let max_decoding_message_size = self.max_decoding_message_size;
-        Server::new(self).max_decoding_message_size(max_decoding_message_size)
+        Server::new(self)
     }
 
     /// Creates or joins an upload stream for the given UUID.
@@ -251,17 +249,17 @@ impl ByteStreamServer {
     fn create_or_join_upload_stream(
         &self,
         uuid: &str,
-        store: Store,
+        instance: &InstanceInfo,
         digest: DigestInfo,
-    ) -> ActiveStreamGuard<'_> {
-        let (uuid, bytes_received) = match self.active_uploads.lock().entry(uuid.to_string()) {
+    ) -> ActiveStreamGuard {
+        let (uuid, bytes_received) = match instance.active_uploads.lock().entry(uuid.to_string()) {
             Entry::Occupied(mut entry) => {
                 let maybe_idle_stream = entry.get_mut();
                 if let Some(idle_stream) = maybe_idle_stream.1.take() {
                     // Case 2: Stream exists but is idle, we can resume it
                     let bytes_received = maybe_idle_stream.0.clone();
                     info!(msg = "Joining existing stream", entry = ?entry.key());
-                    return idle_stream.into_active_stream(bytes_received, self);
+                    return idle_stream.into_active_stream(bytes_received, instance);
                 }
                 // Case 3: Stream is active - generate a unique UUID to avoid collision
                 // Using nanosecond timestamp makes collision probability essentially zero
@@ -275,7 +273,7 @@ impl ByteStreamServer {
                 // Entry goes out of scope here, releasing the lock
 
                 let bytes_received = Arc::new(AtomicU64::new(0));
-                let mut active_uploads = self.active_uploads.lock();
+                let mut active_uploads = instance.active_uploads.lock();
                 // Insert with the unique UUID - this should never collide due to nanosecond precision
                 active_uploads.insert(unique_uuid.clone(), (bytes_received.clone(), None));
                 (unique_uuid, bytes_received)
@@ -295,6 +293,7 @@ impl ByteStreamServer {
         // unusable.
 
         let (tx, rx) = make_buf_channel_pair();
+        let store = instance.store.clone();
         let store_update_fut = Box::pin(async move {
             // We need to wrap `Store::update()` in a another future because we need to capture
             // `store` to ensure its lifetime follows the future and not the caller.
@@ -310,13 +309,14 @@ impl ByteStreamServer {
                 store_update_fut,
             }),
             bytes_received,
-            bytestream_server: self,
+            active_uploads: instance.active_uploads.clone(),
+            sleep_fn: instance.sleep_fn.clone(),
         }
     }
 
     async fn inner_read(
         &self,
-        store: Store,
+        instance: &InstanceInfo,
         digest: DigestInfo,
         read_request: ReadRequest,
     ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + Send + use<>, Error> {
@@ -339,9 +339,10 @@ impl ByteStreamServer {
         };
 
         // This allows us to call a destructor when the the object is dropped.
+        let store = instance.store.clone();
         let state = Some(ReaderState {
             rx,
-            max_bytes_per_stream: self.max_bytes_per_stream,
+            max_bytes_per_stream: instance.max_bytes_per_stream,
             maybe_get_part_result: None,
             get_part_fut: Box::pin(async move {
                 store
@@ -437,11 +438,11 @@ impl ByteStreamServer {
     #[instrument(
         ret(level = Level::DEBUG),
         level = Level::ERROR,
-        skip(self, store),
+        skip(self, instance_info),
     )]
     async fn inner_write(
         &self,
-        store: Store,
+        instance_info: &InstanceInfo,
         digest: DigestInfo,
         stream: WriteRequestStreamWrapper<impl Stream<Item = Result<WriteRequest, Status>> + Unpin>,
     ) -> Result<Response<WriteResponse>, Error> {
@@ -536,7 +537,8 @@ impl ByteStreamServer {
             .uuid
             .as_ref()
             .ok_or_else(|| make_input_err!("UUID must be set if writing data"))?;
-        let mut active_stream_guard = self.create_or_join_upload_stream(uuid, store, digest);
+        let mut active_stream_guard =
+            self.create_or_join_upload_stream(uuid, instance_info, digest);
         let expected_size = stream.resource_info.expected_size as u64;
 
         let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
@@ -565,16 +567,16 @@ impl ByteStreamServer {
     ) -> Result<Response<QueryWriteStatusResponse>, Error> {
         let mut resource_info = ResourceInfo::new(&query_request.resource_name, true)?;
 
-        let store_clone = self
-            .stores
+        let instance = self
+            .instance_infos
             .get(resource_info.instance_name.as_ref())
             .err_tip(|| {
                 format!(
                     "'instance_name' not configured for '{}'",
                     &resource_info.instance_name
                 )
-            })?
-            .clone();
+            })?;
+        let store_clone = instance.store.clone();
 
         let digest = DigestInfo::try_new(resource_info.hash.as_ref(), resource_info.expected_size)?;
 
@@ -591,7 +593,7 @@ impl ByteStreamServer {
             .ok_or_else(|| make_input_err!("UUID must be set if querying write status"))?;
 
         {
-            let active_uploads = self.active_uploads.lock();
+            let active_uploads = instance.active_uploads.lock();
             if let Some((received_bytes, _maybe_idle_stream)) = active_uploads.get(uuid.as_ref()) {
                 return Ok(Response::new(QueryWriteStatusResponse {
                     committed_size: received_bytes.load(Ordering::Acquire) as i64,
@@ -637,11 +639,11 @@ impl ByteStream for ByteStreamServer {
         let read_request = grpc_request.into_inner();
         let resource_info = ResourceInfo::new(&read_request.resource_name, false)?;
         let instance_name = resource_info.instance_name.as_ref();
-        let store = self
-            .stores
+        let instance = self
+            .instance_infos
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
-            .clone();
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+        let store = instance.store.clone();
 
         let digest = DigestInfo::try_new(resource_info.hash.as_ref(), resource_info.expected_size)?;
 
@@ -657,7 +659,7 @@ impl ByteStream for ByteStreamServer {
         )?;
 
         let resp = self
-            .inner_read(store, digest, read_request)
+            .inner_read(instance, digest, read_request)
             .instrument(error_span!("bytestream_read"))
             .with_context(
                 make_ctx_for_hash_func(digest_function).err_tip(|| "In BytestreamServer::read")?,
@@ -691,11 +693,11 @@ impl ByteStream for ByteStreamServer {
             .map_err(Into::<Status>::into)?;
 
         let instance_name = stream.resource_info.instance_name.as_ref();
-        let store = self
-            .stores
+        let instance = self
+            .instance_infos
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
-            .clone();
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+        let store = instance.store.clone();
 
         let digest = DigestInfo::try_new(
             &stream.resource_info.hash,
@@ -718,7 +720,7 @@ impl ByteStream for ByteStreamServer {
                 DigestHasherFunc::try_from,
             )?;
 
-        self.inner_write(store, digest, stream)
+        self.inner_write(instance, digest, stream)
             .instrument(error_span!("bytestream_write"))
             .with_context(
                 make_ctx_for_hash_func(digest_function).err_tip(|| "In BytestreamServer::write")?,
