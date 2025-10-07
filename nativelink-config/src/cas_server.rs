@@ -180,7 +180,7 @@ pub struct PushConfig {
 #[serde(deny_unknown_fields)]
 pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
-    pub cas_stores: HashMap<InstanceName, StoreRefName>,
+    pub cas_store: StoreRefName,
 
     /// Max number of bytes to send on each grpc stream chunk.
     /// According to <https://github.com/grpc/grpc.github.io/issues/371>
@@ -191,17 +191,27 @@ pub struct ByteStreamConfig {
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_bytes_per_stream: usize,
 
-    /// Maximum number of bytes to decode on each grpc stream chunk.
-    /// Default: 4 MiB
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
-    pub max_decoding_message_size: usize,
-
     /// In the event a client disconnects while uploading a blob, we will hold
     /// the internal stream open for this many seconds before closing it.
     /// This allows clients that disconnect to reconnect and continue uploading
     /// the same blob.
     ///
     /// Default: 10 (seconds)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub persist_stream_on_disconnect_timeout: usize,
+}
+
+// Older bytestream config. All fields are as per the newer docs, but this requires
+// the hashed cas_stores v.s. the WithInstanceName approach. This should _not_ be updated
+// with newer fields, and eventually dropped
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct OldByteStreamConfig {
+    pub cas_stores: HashMap<InstanceName, StoreRefName>,
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_bytes_per_stream: usize,
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_decoding_message_size: usize,
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub persist_stream_on_disconnect_timeout: usize,
 }
@@ -322,7 +332,8 @@ pub struct ServicesConfig {
     /// This is the service used to stream data to and from the CAS.
     /// Bazel's protocol strongly encourages users to use this streaming
     /// interface to interact with the CAS when the data is large.
-    pub bytestream: Option<ByteStreamConfig>,
+    #[serde(default, deserialize_with = "super::backcompat::opt_bytestream")]
+    pub bytestream: Option<Vec<WithInstanceName<ByteStreamConfig>>>,
 
     /// These two are collectively the Remote Asset protocol, but it's
     /// defined as two separate services
@@ -462,7 +473,7 @@ pub enum ListenerConfig {
     Http(HttpListener),
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct HttpListener {
     /// Address to listen on. Example: `127.0.0.1:8080` or `:8080` to listen
@@ -477,6 +488,11 @@ pub struct HttpListener {
     /// Advanced Http server configuration.
     #[serde(default)]
     pub advanced_http: HttpServerConfig,
+
+    /// Maximum number of bytes to decode on each grpc stream chunk.
+    /// Default: 4 MiB
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_decoding_message_size: usize,
 
     /// Tls Configuration for this server.
     /// If not set, the server will not use TLS.

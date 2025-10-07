@@ -142,6 +142,9 @@ impl RoutesExt for Routes {
     }
 }
 
+/// If this value changes update the documentation in the config definition.
+const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+
 async fn inner_main(
     cfg: CasConfig,
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
@@ -359,6 +362,14 @@ async fn inner_main(
                     .map_or(Ok(None), |cfg| {
                         ByteStreamServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
+                            // TODO(palfrey): generalise this to all the services
+                            let max_decoding_message_size =
+                                if http_config.max_decoding_message_size == 0 {
+                                    DEFAULT_MAX_DECODING_MESSAGE_SIZE
+                                } else {
+                                    http_config.max_decoding_message_size
+                                };
+                            service = service.max_decoding_message_size(max_decoding_message_size);
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
                                 into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
