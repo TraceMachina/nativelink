@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::warn;
 
-use crate::cas_server::WithInstanceName;
+use crate::cas_server::{ByteStreamConfig, OldByteStreamConfig, WithInstanceName};
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -12,7 +12,19 @@ enum WithInstanceNameBackCompat<T> {
     Vec(Vec<WithInstanceName<T>>),
 }
 
-/// Use `#[serde(default, deserialize_with = "backcompat::opt_vec_named_config")]` for backwards
+fn deprecated(old_map: &String, new_map: &String) {
+    warn!(
+        r"WARNING: Using deprecated map format for services. Please migrate to the new array format:
+// Old:
+{}
+// New:
+{}
+",
+        old_map, new_map
+    );
+}
+
+/// Use `#[serde(default, deserialize_with = "backcompat::opt_vec_with_instance_name")]` for backwards
 /// compatibility with map-based access. A deprecation warning will be written to stderr if the
 /// old format is used.
 pub(crate) fn opt_vec_with_instance_name<'de, D, T>(
@@ -38,21 +50,70 @@ where
                     config,
                 })
                 .collect();
-            warn!(
-                r"WARNING: Using deprecated map format for services. Please migrate to the new array format:
-// Old:
-{}
-// New:
-{}
-",
-                serde_map,
+            deprecated(
+                &serde_map,
                 // TODO(palfrey): ideally this would be serde_json5::to_string_pretty but that doesn't exist
                 // JSON is close enough to be workable for now
-                serde_json::to_string_pretty(&vec).expect("valid new map")
+                &serde_json::to_string_pretty(&vec).expect("valid new map"),
             );
             Ok(Some(vec))
         }
         WithInstanceNameBackCompat::Vec(vec) => Ok(Some(vec)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ByteStreamKind {
+    Old(OldByteStreamConfig),
+    New(Vec<WithInstanceName<ByteStreamConfig>>),
+}
+
+/// Use `#[serde(default, deserialize_with = "backcompat::opt_bytestream")]` for backwards
+/// compatibility with older bytestream config . A deprecation warning will be written to stderr if the
+/// old format is used.
+pub(crate) fn opt_bytestream<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<WithInstanceName<ByteStreamConfig>>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(back_compat) = Option::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+
+    match back_compat {
+        ByteStreamKind::Old(old_config) => {
+            if old_config.max_decoding_message_size != 0 {
+                warn!(
+                    "WARNING: max_decoding_message_size is ignored on Bytestream now. Please set on the HTTP listener instead"
+                );
+            }
+            // TODO(palfrey): ideally this would be serde_json5::to_string_pretty but that doesn't exist
+            // JSON is close enough to be workable for now
+            let serde_map = serde_json::to_string_pretty(&old_config).expect("valid map");
+            let names = old_config.cas_stores;
+            let vec: Vec<WithInstanceName<_>> = names
+                .iter()
+                .map(|(instance_name, cas_store)| WithInstanceName {
+                    instance_name: instance_name.clone(),
+                    config: ByteStreamConfig {
+                        cas_store: cas_store.clone(),
+                        max_bytes_per_stream: old_config.max_bytes_per_stream,
+                        persist_stream_on_disconnect_timeout: old_config
+                            .persist_stream_on_disconnect_timeout,
+                    },
+                })
+                .collect();
+            deprecated(
+                &serde_map,
+                // TODO(palfrey): ideally this would be serde_json5::to_string_pretty but that doesn't exist
+                // JSON is close enough to be workable for now
+                &serde_json::to_string_pretty(&vec).expect("valid new map"),
+            );
+            Ok(Some(vec))
+        }
+        ByteStreamKind::New(vec) => Ok(Some(vec)),
     }
 }
 
