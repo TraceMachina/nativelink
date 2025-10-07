@@ -678,6 +678,12 @@ async fn range_multiple_items_test() -> Result<(), Error> {
     Ok(())
 }
 
+// Here is an explanation of the test that follows in a table:
+// Item,    Age (after 4th insert),Expected Reason
+// 1       70s                    Exists   LRU (3) protected
+// 2       70s                    Exists   LRU (3) protected
+// 3       40s                    Exists   Within grace
+// 4       0s.                    Exists   Just inserted
 #[nativelink_test]
 async fn grace_period_prevents_eviction() -> Result<(), Error> {
     const DATA: &str = "12345678";

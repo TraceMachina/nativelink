@@ -171,7 +171,7 @@ pub struct EvictingMap<
     #[metric(help = "Maximum number of items to keep in the store")]
     max_count: u64,
     #[metric(help = "Grace period in seconds to prevent eviction of recently accessed items")]
-    eviction_grace_period_seconds: i32,
+    eviction_grace_period_seconds: u32,
 }
 
 impl<K, T, I> EvictingMap<K, T, I>

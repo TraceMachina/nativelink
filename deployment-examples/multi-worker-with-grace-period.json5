@@ -9,7 +9,7 @@
         content_path: "/tmp/nativelink-multi-test/cas/content",
         temp_path: "/tmp/nativelink-multi-test/cas/temp",
         eviction_policy: {
-          max_bytes: 10000000000, // 10GB
+          max_bytes: 10000000000, // 10GB, which is valid also
 
           // Grace period: Items accessed in the last 30 minutes will NOT be evicted
           // This prevents "Object not found" errors in multi-worker deployments
