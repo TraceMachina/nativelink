@@ -28,7 +28,7 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use rand::Rng;
 use tokio::time::sleep;
 
@@ -442,6 +442,15 @@ where
 
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        // As we're backed by GCS, this store doesn't actually drop stuff
+        // so we can actually just ignore this
+        Ok(())
     }
 }
 

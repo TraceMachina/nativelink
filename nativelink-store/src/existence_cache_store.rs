@@ -14,7 +14,7 @@
 
 use core::pin::Pin;
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -26,7 +26,11 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
+use parking_lot::Mutex;
+use tracing::{debug, info, trace};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -47,12 +51,51 @@ impl LenEntry for ExistenceItem {
 pub struct ExistenceCacheStore<I: InstantWrapper> {
     #[metric(group = "inner_store")]
     inner_store: Store,
-    existence_cache: EvictingMap<DigestInfo, ExistenceItem, I>,
+    existence_cache: EvictingMap<DigestInfo, DigestInfo, ExistenceItem, I>,
+
+    // We need to pause them temporarily when inserting into the inner store
+    // as if it immediately expires them, we should only apply the remove callbacks
+    // afterwards. If this is None, we're not pausing; if it's Some it's the location to
+    // store them in temporarily
+    pause_remove_callbacks: Arc<Mutex<Option<Vec<StoreKey<'static>>>>>,
 }
 
 impl ExistenceCacheStore<SystemTime> {
     pub fn new(spec: &ExistenceCacheSpec, inner_store: Store) -> Arc<Self> {
         Self::new_with_time(spec, inner_store, SystemTime::now())
+    }
+}
+
+#[async_trait]
+impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheStore<I> {
+    async fn callback(&self, store_key: &StoreKey<'_>) {
+        debug!(?store_key, "Removing item from cache due to callback");
+        let new_key = store_key.borrow();
+        let deleted_key = self.existence_cache.remove(&new_key.into_digest()).await;
+        if !deleted_key {
+            info!(?store_key, "Failed to delete key from cache on callback");
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ExistenceCacheCallback<I: InstantWrapper> {
+    cache: Weak<ExistenceCacheStore<I>>,
+}
+
+#[async_trait]
+impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
+    async fn callback(&self, store_key: &StoreKey<'_>) {
+        let cache = self.cache.upgrade();
+        if let Some(local_cache) = cache {
+            if let Some(callbacks) = &mut *local_cache.pause_remove_callbacks.lock_arc() {
+                callbacks.push(store_key.borrow().into_owned());
+            } else {
+                local_cache.callback(store_key).await;
+            }
+        } else {
+            debug!("Cache dropped, so not doing callback");
+        }
     }
 }
 
@@ -64,10 +107,19 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
     ) -> Arc<Self> {
         let empty_policy = EvictionPolicy::default();
         let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
-        Arc::new(Self {
+        let existence_cache_store = Arc::new(Self {
             inner_store,
             existence_cache: EvictingMap::new(eviction_policy, anchor_time),
-        })
+            pause_remove_callbacks: Arc::new(Mutex::new(None)),
+        });
+        let other_ref = Arc::downgrade(&existence_cache_store);
+        existence_cache_store
+            .inner_store
+            .register_remove_callback(&Arc::new(Box::new(ExistenceCacheCallback {
+                cache: other_ref,
+            })))
+            .expect("Register remove callback should work");
+        existence_cache_store
     }
 
     pub async fn exists_in_cache(&self, digest: &DigestInfo) -> bool {
@@ -184,13 +236,29 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 .err_tip(|| "In ExistenceCacheStore::update")?;
             return Ok(());
         }
+        {
+            let mut locked_callbacks = self.pause_remove_callbacks.lock_arc();
+            if locked_callbacks.is_none() {
+                locked_callbacks.replace(vec![]);
+            }
+        }
+        trace!(?digest, "Inserting into inner cache");
         let result = self.inner_store.update(digest, reader, size_info).await;
         if result.is_ok() {
+            trace!(?digest, "Inserting into existence cache");
             if let UploadSizeInfo::ExactSize(size) = size_info {
                 let _ = self
                     .existence_cache
                     .insert(digest, ExistenceItem(size))
                     .await;
+            }
+        }
+        {
+            let mut locked_callbacks = self.pause_remove_callbacks.lock_arc();
+            if let Some(callbacks) = locked_callbacks.take() {
+                for store_key in callbacks {
+                    self.callback(&store_key).await;
+                }
             }
         }
         result
@@ -227,6 +295,13 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.inner_store.register_remove_callback(callback)
     }
 }
 

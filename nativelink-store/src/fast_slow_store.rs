@@ -32,8 +32,8 @@ use nativelink_util::buf_channel::{
 use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
-    slow_update_store_with_file,
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
+    UploadSizeInfo, slow_update_store_with_file,
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
@@ -424,6 +424,15 @@ impl StoreDriver for FastSlowStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.fast_store.register_remove_callback(callback)?;
+        self.slow_store.register_remove_callback(callback)?;
+        Ok(())
     }
 }
 
