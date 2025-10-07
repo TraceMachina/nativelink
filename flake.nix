@@ -370,6 +370,7 @@
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
             generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
+            generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
 
             inherit (pkgs) buildstream buildbox mongodb wait4x bazelisk;
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
@@ -406,7 +407,7 @@
         pre-commit.settings = {
           hooks = import ./tools/pre-commit-hooks.nix {
             inherit pkgs;
-            inherit (packages) generate-bazel-rc;
+            inherit (packages) generate-bazel-rc generate-stores-config;
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
