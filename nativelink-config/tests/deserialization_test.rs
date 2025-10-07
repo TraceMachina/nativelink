@@ -46,6 +46,8 @@ struct OptionalStringEntity {
 }
 
 mod duration_tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
     #[test]
@@ -130,6 +132,8 @@ mod duration_tests {
 }
 
 mod data_size_tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
     #[test]
@@ -218,6 +222,8 @@ mod data_size_tests {
 }
 
 mod optional_values_tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
     #[test]
@@ -326,6 +332,8 @@ mod optional_values_tests {
 }
 
 mod shellexpand_tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
     #[test]
