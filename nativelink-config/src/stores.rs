@@ -854,7 +854,7 @@ pub struct EvictionPolicy {
     /// in-flight actions in multi-worker deployments.
     /// Default: 1800 (30 minutes). Zero means no grace period.
     #[serde(
-        default = "default_eviction_grace_period",
+        default = "default_eviction_grace_period_seconds",
         deserialize_with = "convert_duration_with_shellexpand"
     )]
     pub eviction_grace_period_seconds: u32,
