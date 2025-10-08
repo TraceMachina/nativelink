@@ -369,16 +369,17 @@ async fn unref_called_on_replace() -> Result<(), Error> {
     const DATA1: &str = "12345678";
     const DATA2: &str = "87654321";
 
-    let evicting_map = EvictingMap::<DigestInfo, Arc<MockEntry>, MockInstantWrapped>::new(
-        &EvictionPolicy {
-            max_count: 1,
-            max_seconds: 0,
-            max_bytes: 0,
-            evict_bytes: 0,
-            eviction_grace_period_seconds: 0,
-        },
-        MockInstantWrapped::default(),
-    );
+    let evicting_map =
+        EvictingMap::<DigestInfo, DigestInfo, Arc<MockEntry>, MockInstantWrapped>::new(
+            &EvictionPolicy {
+                max_count: 1,
+                max_seconds: 0,
+                max_bytes: 0,
+                evict_bytes: 0,
+                eviction_grace_period_seconds: 0,
+            },
+            MockInstantWrapped::default(),
+        );
 
     let (entry1, entry2) = {
         let entry1 = Arc::new(MockEntry {
@@ -689,7 +690,7 @@ async fn grace_period_prevents_eviction() -> Result<(), Error> {
     const DATA: &str = "12345678";
 
     // Create map with small max_bytes and 60 second grace period
-    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
         &EvictionPolicy {
             max_count: 0,
             max_seconds: 0,
@@ -792,7 +793,7 @@ async fn grace_period_zero_means_no_protection() -> Result<(), Error> {
     const DATA: &str = "12345678";
 
     // Create map with grace period of 0 (disabled)
-    let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
         &EvictionPolicy {
             max_count: 0,
             max_seconds: 0,

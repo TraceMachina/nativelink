@@ -198,7 +198,7 @@ pub struct EvictingMap<
     #[metric(help = "Maximum number of items to keep in the store")]
     max_count: u64,
     #[metric(help = "Grace period in seconds to prevent eviction of recently accessed items")]
-    eviction_grace_period_seconds: u32,
+    eviction_grace_period_seconds: i32,
 }
 
 impl<K, Q, T, I> EvictingMap<K, Q, T, I>
@@ -222,7 +222,6 @@ where
                 replaced_items: CounterWithTime::default(),
                 lifetime_inserted_bytes: Counter::default(),
                 grace_period_blocks: Counter::default(),
-            }),
                 remove_callbacks: Arc::new(Mutex::new(vec![])),
             })),
             anchor_time,
