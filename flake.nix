@@ -459,6 +459,7 @@
               # Development tooling
               pkgs.git
               pkgs.pre-commit
+              pkgs.git-cliff
 
               # Rust
               bazel

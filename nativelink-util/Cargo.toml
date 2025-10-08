@@ -3,7 +3,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-util"
-version = "0.7.1"
+version = "0.7.2"
 
 [features]
 worker_find_logging = []
