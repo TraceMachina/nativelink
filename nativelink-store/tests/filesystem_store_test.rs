@@ -31,7 +31,8 @@ use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
     DIGEST_FOLDER, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
-    STR_FOLDER, key_from_file,
+    STR_FOLDER, key_from_file, reset_temp_path_prune_interval_for_testing,
+    set_temp_path_prune_interval_for_testing,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, fs};
@@ -1131,6 +1132,79 @@ async fn get_file_size_uses_block_size() -> Result<(), Error> {
     store.update_oneshot(digest_5kb, value_5kb.into()).await?;
     let long_entry = store.get_file_entry_for_digest(&digest_5kb).await?;
     assert_eq!(long_entry.size_on_disk(), 8 * 1024);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn temp_pruner_removes_stale_digest_files() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    set_temp_path_prune_interval_for_testing(Duration::from_secs(1));
+
+    let store = Arc::new(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: None,
+            ..Default::default()
+        })
+        .await?,
+    );
+
+    let digest_temp_path = Path::new(&temp_path)
+        .join(DIGEST_FOLDER)
+        .join(format!("{digest}"));
+
+    fs::create_dir_all(digest_temp_path.parent().unwrap())
+        .await
+        .err_tip(|| "Failed to create temp digest directory")?;
+
+    {
+        let mut temp_file = fs::create_file(&digest_temp_path)
+            .await
+            .err_tip(|| "Failed to create temp digest file")?;
+        temp_file
+            .as_mut()
+            .write_all(VALUE1.as_bytes())
+            .await
+            .err_tip(|| "Failed to write temp digest content")?;
+    }
+
+    // Ensure the temp file initially exists.
+    fs::metadata(&digest_temp_path)
+        .await
+        .err_tip(|| "Expected temp digest file to exist before pruning")?;
+
+    // Allow the background pruner to run (interval is shortened under #[cfg(test)]) and wait for removal.
+    const MAX_ATTEMPTS: usize = 20;
+    for attempt in 0..MAX_ATTEMPTS {
+        match fs::metadata(&digest_temp_path).await {
+            Ok(_) => {
+                if attempt + 1 == MAX_ATTEMPTS {
+                    panic!(
+                        "Expected temp digest file to be pruned, but it still exists after waiting: {}",
+                        digest_temp_path.display()
+                    );
+                }
+                // Still present, give the pruner a little more time.
+                sleep(Duration::from_millis(150)).await;
+                continue;
+            }
+            Err(err) => {
+                assert_eq!(
+                    err.code,
+                    Code::NotFound,
+                    "Expected pruner to remove temp digest file"
+                );
+                break;
+            }
+        }
+    }
+
+    drop(store);
+    reset_temp_path_prune_interval_for_testing();
     Ok(())
 }
 

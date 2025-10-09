@@ -14,11 +14,13 @@
 
 use core::fmt::{Debug, Formatter};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
-use std::sync::{Arc, Weak};
-use std::time::SystemTime;
+use std::sync::{
+    Arc, Weak,
+    atomic::{AtomicU64, Ordering},
+};
+use std::time::{Duration, SystemTime};
 
 use async_lock::RwLock;
 use async_trait::async_trait;
@@ -49,6 +51,26 @@ use crate::cas_utils::is_zero_digest;
 const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
 // Default block size of all major filesystems is 4KB
 const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024;
+// Default interval between background temp-path prune passes.
+const DEFAULT_TEMP_PATH_PRUNE_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const DEFAULT_TEMP_PATH_PRUNE_SECS: u64 = DEFAULT_TEMP_PATH_PRUNE_INTERVAL.as_secs();
+static TEMP_PATH_PRUNE_INTERVAL_SECS: AtomicU64 = AtomicU64::new(DEFAULT_TEMP_PATH_PRUNE_SECS);
+
+fn temp_path_prune_interval() -> Duration {
+    Duration::from_secs(TEMP_PATH_PRUNE_INTERVAL_SECS.load(Ordering::Relaxed))
+}
+
+/// Internal helper to adjust the background prune cadence for tests.
+#[doc(hidden)]
+pub fn set_temp_path_prune_interval_for_testing(duration: Duration) {
+    let secs = duration.as_secs().max(1);
+    TEMP_PATH_PRUNE_INTERVAL_SECS.store(secs, Ordering::Relaxed);
+}
+
+#[doc(hidden)]
+pub fn reset_temp_path_prune_interval_for_testing() {
+    TEMP_PATH_PRUNE_INTERVAL_SECS.store(DEFAULT_TEMP_PATH_PRUNE_SECS, Ordering::Relaxed);
+}
 
 pub const STR_FOLDER: &str = "s";
 pub const DIGEST_FOLDER: &str = "d";
@@ -688,14 +710,34 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         } else {
             spec.read_buffer_size as usize
         };
-        Ok(Arc::new_cyclic(|weak_self| Self {
-            shared_context,
-            evicting_map,
+        let store = Arc::new_cyclic(|weak_self| Self {
+            shared_context: shared_context.clone(),
+            evicting_map: evicting_map.clone(),
             block_size,
             read_buffer_size,
             weak_self: weak_self.clone(),
             rename_fn,
-        }))
+        });
+        {
+            let temp_path = shared_context.temp_path.clone();
+            let weak_store = Arc::downgrade(&store);
+            background_spawn!("filesystem_store_prune_temp_path", async move {
+                loop {
+                    tokio::time::sleep(temp_path_prune_interval()).await;
+                    if weak_store.upgrade().is_none() {
+                        break;
+                    }
+                    if let Err(err) = prune_temp_path(&temp_path).await {
+                        warn!(
+                            ?err,
+                            ?temp_path,
+                            "Failed to prune filesystem store temp path"
+                        );
+                    }
+                }
+            });
+        }
+        Ok(store)
     }
 
     pub fn get_arc(&self) -> Option<Arc<Self>> {
