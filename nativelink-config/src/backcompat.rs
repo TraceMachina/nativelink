@@ -65,8 +65,8 @@ where
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum ByteStreamKind {
-    Old(OldByteStreamConfig),
     New(Vec<WithInstanceName<ByteStreamConfig>>),
+    Old(OldByteStreamConfig),
 }
 
 /// Use `#[serde(default, deserialize_with = "backcompat::opt_bytestream")]` for backwards
