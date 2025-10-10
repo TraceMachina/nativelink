@@ -894,6 +894,10 @@ pub struct ExperimentalGcsSpec {
     /// Common retry and upload configuration
     #[serde(flatten)]
     pub common: CommonObjectSpec,
+
+    /// Error if authentication was not found.
+    #[serde(default)]
+    pub authentication_required: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]

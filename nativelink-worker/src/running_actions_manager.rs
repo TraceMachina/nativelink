@@ -572,15 +572,16 @@ async fn process_side_channel_file(
 }
 
 async fn do_cleanup(
-    running_actions_manager: &RunningActionsManagerImpl,
+    running_actions_manager: &Arc<RunningActionsManagerImpl>,
     operation_id: &OperationId,
     action_directory: &str,
 ) -> Result<(), Error> {
     // Mark this operation as being cleaned up
-    {
-        let mut cleaning = running_actions_manager.cleaning_up_operations.lock();
-        cleaning.insert(operation_id.clone());
-    }
+    let Some(_cleaning_guard) = running_actions_manager.perform_cleanup(operation_id.clone())
+    else {
+        // Cleanup is already happening elsewhere.
+        return Ok(());
+    };
 
     debug!("Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
@@ -588,7 +589,7 @@ async fn do_cleanup(
         .await
         .err_tip(|| format!("Could not remove working directory {action_directory}"));
 
-    let cleanup_result = if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
+    if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
         error!(?operation_id, ?err, "Error cleaning up action");
         Result::<(), Error>::Err(err).merge(remove_dir_result)
     } else if let Err(err) = remove_dir_result {
@@ -596,18 +597,7 @@ async fn do_cleanup(
         Err(err)
     } else {
         Ok(())
-    };
-
-    // Remove from cleaning set and notify waiters
-    {
-        let mut cleaning = running_actions_manager.cleaning_up_operations.lock();
-        cleaning.remove(operation_id);
     }
-    running_actions_manager
-        .cleanup_complete_notify
-        .notify_waiters();
-
-    cleanup_result
 }
 
 pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
@@ -793,7 +783,7 @@ impl RunningActionImpl {
                 ))
                 .await?;
         }
-        debug!(?command, "Worker received command",);
+        debug!(?command, "Worker received command");
         {
             let mut state = self.state.lock();
             state.command_proto = Some(command);
@@ -1717,6 +1707,22 @@ pub struct RunningActionsManagerArgs<'a> {
     pub timeout_handled_externally: bool,
 }
 
+struct CleanupGuard {
+    manager: Weak<RunningActionsManagerImpl>,
+    operation_id: OperationId,
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        let Some(manager) = self.manager.upgrade() else {
+            return;
+        };
+        let mut cleaning = manager.cleaning_up_operations.lock();
+        cleaning.remove(&self.operation_id);
+        manager.cleanup_complete_notify.notify_waiters();
+    }
+}
+
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
 #[derive(Debug)]
@@ -1968,6 +1974,16 @@ impl RunningActionsManagerImpl {
                 );
             }
         }
+    }
+
+    fn perform_cleanup(self: &Arc<Self>, operation_id: OperationId) -> Option<CleanupGuard> {
+        let mut cleaning = self.cleaning_up_operations.lock();
+        cleaning
+            .insert(operation_id.clone())
+            .then_some(CleanupGuard {
+                manager: Arc::downgrade(self),
+                operation_id,
+            })
     }
 }
 

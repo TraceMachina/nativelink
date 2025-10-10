@@ -249,6 +249,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
                             let execute_request = start_execute.execute_request.as_ref();
                             let operation_id = start_execute.operation_id.clone();
+                            let operation_id_to_log = operation_id.clone();
                             let maybe_instance_name = execute_request.map(|v| v.instance_name.clone());
                             let action_digest = execute_request.and_then(|v| v.action_digest.clone());
                             let digest_hasher = execute_request
@@ -343,6 +344,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
                             info_span!(
                                 "worker_start_action_ctx",
+                                operation_id = operation_id_to_log,
                                 digest_function = %digest_hasher.to_string(),
                             ).in_scope(|| {
                                 let _guard = Context::current_with_value(digest_hasher)
