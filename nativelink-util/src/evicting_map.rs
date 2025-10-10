@@ -115,6 +115,8 @@ struct State<
     replaced_items: CounterWithTime,
     #[metric(help = "Number of bytes inserted into the store since it was created")]
     lifetime_inserted_bytes: Counter,
+    #[metric(help = "Number of eviction attempts blocked by grace period")]
+    grace_period_blocks: Counter,
 
     remove_callbacks: Arc<Mutex<Vec<Box<dyn RemoveStateCallback<Q>>>>>,
 }
@@ -195,6 +197,8 @@ pub struct EvictingMap<
     max_seconds: i32,
     #[metric(help = "Maximum number of items to keep in the store")]
     max_count: u64,
+    #[metric(help = "Grace period in seconds to prevent eviction of recently accessed items")]
+    eviction_grace_period_seconds: i32,
 }
 
 impl<K, Q, T, I> EvictingMap<K, Q, T, I>
@@ -217,6 +221,7 @@ where
                 replaced_bytes: Counter::default(),
                 replaced_items: CounterWithTime::default(),
                 lifetime_inserted_bytes: Counter::default(),
+                grace_period_blocks: Counter::default(),
                 remove_callbacks: Arc::new(Mutex::new(vec![])),
             })),
             anchor_time,
@@ -224,6 +229,7 @@ where
             evict_bytes: config.evict_bytes as u64,
             max_seconds: config.max_seconds as i32,
             max_count: config.max_count,
+            eviction_grace_period_seconds: config.eviction_grace_period_seconds as i32,
         }
     }
 
@@ -272,13 +278,28 @@ where
         self.state.lock_arc().lru.len()
     }
 
-    fn should_evict(
+    /// Returns (should_evict, within_grace_period)
+    fn should_evict_with_grace_check(
         &self,
         lru_len: usize,
         peek_entry: &EvictionItem<T>,
         sum_store_size: u64,
         max_bytes: u64,
-    ) -> bool {
+    ) -> (bool, bool) {
+        // Check if item is within grace period
+        let within_grace_period = if self.eviction_grace_period_seconds > 0 {
+            let current_time_seconds = self.anchor_time.elapsed().as_secs() as i32;
+            let item_age = current_time_seconds - peek_entry.seconds_since_anchor;
+            item_age < self.eviction_grace_period_seconds
+        } else {
+            false
+        };
+
+        // If within grace period, do not evict
+        if within_grace_period {
+            return (false, true);
+        }
+
         let is_over_size = max_bytes != 0 && sum_store_size >= max_bytes;
 
         let evict_older_than_seconds =
@@ -288,7 +309,7 @@ where
 
         let is_over_count = self.max_count != 0 && (lru_len as u64) > self.max_count;
 
-        is_over_size || old_item_exists || is_over_count
+        (is_over_size || old_item_exists || is_over_count, false)
     }
 
     #[must_use]
@@ -297,14 +318,14 @@ where
             return Vec::new();
         };
 
-        let max_bytes = if self.max_bytes != 0
-            && self.evict_bytes != 0
-            && self.should_evict(
-                state.lru.len(),
-                peek_entry,
-                state.sum_store_size,
-                self.max_bytes,
-            ) {
+        let (should_evict_initial, _within_grace) = self.should_evict_with_grace_check(
+            state.lru.len(),
+            peek_entry,
+            state.sum_store_size,
+            self.max_bytes,
+        );
+
+        let max_bytes = if self.max_bytes != 0 && self.evict_bytes != 0 && should_evict_initial {
             self.max_bytes.saturating_sub(self.evict_bytes)
         } else {
             self.max_bytes
@@ -312,7 +333,26 @@ where
 
         let mut items_to_unref = Vec::new();
 
-        while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, max_bytes) {
+        loop {
+            let (should_evict, within_grace_period) = self.should_evict_with_grace_check(
+                state.lru.len(),
+                peek_entry,
+                state.sum_store_size,
+                max_bytes,
+            );
+
+            if !should_evict {
+                if within_grace_period {
+                    // Track that grace period blocked an eviction
+                    state.grace_period_blocks.inc();
+                    info!(
+                        "Grace period preventing eviction of LRU item (age < {} seconds)",
+                        self.eviction_grace_period_seconds
+                    );
+                }
+                break;
+            }
+
             let (key, eviction_item) = state
                 .lru
                 .pop_lru()
@@ -374,7 +414,9 @@ where
                     // Note: We need to check eviction because the item might be expired
                     // based on the current time. In such case, we remove the item while
                     // we are here.
-                    if self.should_evict(lru_len, entry, 0, u64::MAX) {
+                    let (should_evict, _) =
+                        self.should_evict_with_grace_check(lru_len, entry, 0, u64::MAX);
+                    if should_evict {
                         *result = None;
                         if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
                             info!(?key, "Item expired, evicting");
@@ -402,12 +444,13 @@ where
         let needs_eviction = {
             let state = self.state.lock_arc();
             if let Some((_, peek_entry)) = state.lru.peek_lru() {
-                self.should_evict(
+                let (should_evict, _) = self.should_evict_with_grace_check(
                     state.lru.len(),
                     peek_entry,
                     state.sum_store_size,
                     self.max_bytes,
-                )
+                );
+                should_evict
             } else {
                 false
             }
