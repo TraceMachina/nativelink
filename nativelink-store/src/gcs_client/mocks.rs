@@ -17,7 +17,6 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use futures::Stream;
 use nativelink_error::{Code, Error, make_err};
@@ -273,7 +272,6 @@ impl MockGcsOperations {
     }
 }
 
-#[async_trait]
 impl GcsOperations for MockGcsOperations {
     async fn read_object_metadata(
         &self,
