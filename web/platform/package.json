@@ -24,7 +24,7 @@
     "@types/bun": "^1.2.12",
     "astro": "5.13.2",
     "clsx": "^2.1.1",
-    "dotenv": "^16.5.0",
+    "dotenv": "^17.0.0",
     "framer-motion": "^12.9.4",
     "mdast": "^3.0.0",
     "motion": "^12.9.4",
