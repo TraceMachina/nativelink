@@ -75,6 +75,8 @@ commit_parsers = [
   { message = "Build nativelink with musl", group = "<!-- 1 -->⛰️  Features" },
   { message = "Completeness checking store should not check if directory digests exist", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Create directory for action", group = "<!-- 1 -->⛰️  Features" },
+  { message = "De-dupe the fast-slow store", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Detect anonymous GCS auth and optionally quit", group = "<!-- 1 -->⛰️  Features" },
   { message = "Don't retry permanent failures", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Draw a General Purpose Diagram", group = "<!-- 3 -->📚 Documentation" },
   { message = "Evict on touch failure", group = "<!-- 2 -->🐛 Bug Fixes" },

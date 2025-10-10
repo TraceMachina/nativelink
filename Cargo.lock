@@ -2525,7 +2525,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nativelink"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-lock",
  "axum",
@@ -2551,7 +2551,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -2568,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "fred",
  "nativelink-metric",
@@ -2583,7 +2583,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2592,7 +2592,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -2612,7 +2612,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "derivative",
  "prost",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2659,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2699,7 +2699,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2761,7 +2761,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2812,7 +2812,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-lock",
  "bytes",
