@@ -44,8 +44,7 @@ fn to_store_key(digest: DigestInfo) -> StoreKey<'static> {
 async fn simple_has_object_found() -> Result<(), Error> {
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
-    let store = create_test_store(ops_as_trait).await?;
+    let store = create_test_store(mock_ops.clone()).await?;
 
     // Add a test object to the mock
     let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
@@ -73,9 +72,7 @@ async fn simple_has_object_found() -> Result<(), Error> {
 async fn simple_has_object_not_found() -> Result<(), Error> {
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
-
-    let store = create_test_store(ops_as_trait).await?;
+    let store = create_test_store(mock_ops.clone()).await?;
 
     // Test has method with a digest that doesn't exist
     let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
@@ -101,9 +98,7 @@ async fn simple_has_object_error() -> Result<(), Error> {
     let mock_ops = Arc::new(MockGcsOperations::new());
     // Mark it to fail
     mock_ops.set_should_fail(true);
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
-
-    let store = create_test_store(ops_as_trait).await?;
+    let store = create_test_store(mock_ops.clone()).await?;
 
     // Test has method with a digest that doesn't exist
     let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
@@ -132,8 +127,7 @@ async fn simple_has_object_error() -> Result<(), Error> {
 async fn has_with_results_test() -> Result<(), Error> {
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
-    let store = create_test_store(ops_as_trait).await?;
+    let store = create_test_store(mock_ops.clone()).await?;
 
     // Add a test object to the mock
     let digest1 = DigestInfo::try_new(VALID_HASH1, 100)?;
@@ -183,8 +177,7 @@ async fn simple_update() -> Result<(), Error> {
 
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
-    let store = create_test_store(ops_as_trait).await?;
+    let store = create_test_store(mock_ops.clone()).await?;
 
     // Create test data
     let mut send_data = BytesMut::new();
@@ -241,8 +234,7 @@ async fn simple_update() -> Result<(), Error> {
 async fn get_part_test() -> Result<(), Error> {
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
-    let store = create_test_store(ops_as_trait).await?;
+    let store = create_test_store(mock_ops.clone()).await?;
 
     // Add test data to the mock
     let digest = DigestInfo::try_new(VALID_HASH1, 11)?; // "hello world" length
@@ -290,8 +282,7 @@ async fn get_part_test() -> Result<(), Error> {
 async fn get_part_with_range() -> Result<(), Error> {
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
-    let store = create_test_store(ops_as_trait).await?;
+    let store = create_test_store(mock_ops.clone()).await?;
 
     // Add test data to the mock
     let digest = DigestInfo::try_new(VALID_HASH1, 11)?; // "hello world" length
@@ -350,8 +341,7 @@ async fn get_part_with_range() -> Result<(), Error> {
 async fn get_part_zero_digest() -> Result<(), Error> {
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
-    let store = create_test_store(ops_as_trait).await?;
+    let store = create_test_store(mock_ops.clone()).await?;
 
     // Create a zero digest
     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
@@ -388,11 +378,10 @@ async fn get_part_zero_digest() -> Result<(), Error> {
 async fn test_expired_object() -> Result<(), Error> {
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
 
     // Create a GCS store with the mock operations and expiration set to 2 days
     let expiration_seconds = 2 * 24 * 60 * 60;
-    let store = create_test_store_with_expiration(ops_as_trait, expiration_seconds).await?;
+    let store = create_test_store_with_expiration(mock_ops.clone(), expiration_seconds).await?;
 
     // Create a digest and object
     let digest = DigestInfo::try_new(VALID_HASH1, 5)?;
@@ -434,8 +423,7 @@ async fn large_file_update_test() -> Result<(), Error> {
 
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
-    let store = create_test_store(ops_as_trait).await?;
+    let store = create_test_store(mock_ops.clone()).await?;
 
     // Create test data
     let pattern: Vec<u8> = (0..100).map(|i| (i % 256) as u8).collect();
@@ -485,8 +473,7 @@ async fn large_file_update_test() -> Result<(), Error> {
 async fn test_content_type() -> Result<(), Error> {
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
-    let _store = create_test_store(ops_as_trait).await?;
+    let _store = create_test_store(mock_ops.clone()).await?;
 
     // Add a test object to the mock
     let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
@@ -511,8 +498,7 @@ async fn test_content_type() -> Result<(), Error> {
 async fn test_null_object_metadata() -> Result<(), Error> {
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());
-    let ops_as_trait: Arc<dyn GcsOperations> = mock_ops.clone();
-    let store = create_test_store(ops_as_trait).await?;
+    let store = create_test_store(mock_ops.clone()).await?;
 
     // Add a test object to the mock
     let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
@@ -566,8 +552,8 @@ async fn test_null_object_metadata() -> Result<(), Error> {
 
 // Helper function to create a test GCS store
 async fn create_test_store(
-    ops: Arc<dyn GcsOperations>,
-) -> Result<Arc<GcsStore<fn() -> MockInstantWrapped>>, Error> {
+    ops: Arc<MockGcsOperations>,
+) -> Result<Arc<GcsStore<MockGcsOperations, fn() -> MockInstantWrapped>>, Error> {
     GcsStore::new_with_ops(
         &ExperimentalGcsSpec {
             bucket: BUCKET_NAME.to_string(),
@@ -584,9 +570,9 @@ async fn create_test_store(
 
 // Helper function to create a test GCS store with expiration
 async fn create_test_store_with_expiration(
-    ops: Arc<dyn GcsOperations>,
+    ops: Arc<MockGcsOperations>,
     expiration_seconds: i64,
-) -> Result<Arc<GcsStore<fn() -> MockInstantWrapped>>, Error> {
+) -> Result<Arc<GcsStore<MockGcsOperations, fn() -> MockInstantWrapped>>, Error> {
     GcsStore::new_with_ops(
         &ExperimentalGcsSpec {
             bucket: BUCKET_NAME.to_string(),
