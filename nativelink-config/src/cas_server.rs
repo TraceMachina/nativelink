@@ -246,6 +246,10 @@ pub struct HealthConfig {
     /// Default: "/status"
     #[serde(default)]
     pub path: String,
+
+    // Timeout on health checks. Defaults to 5s.
+    #[serde(default)]
+    pub timeout_seconds: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug)]

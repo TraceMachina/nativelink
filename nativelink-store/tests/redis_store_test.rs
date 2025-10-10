@@ -33,6 +33,7 @@ use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::RedisStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::health_utils::HealthStatus;
 use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use tokio::sync::watch;
@@ -865,4 +866,37 @@ fn test_connection_errors() {
         err.messages[1],
         "Connection issue connecting to redis server with hosts: [\"non-existent-server:6379\"], username: None, database: 0"
     );
+}
+
+#[nativelink_test]
+fn test_health() {
+    let spec = RedisSpec {
+        addresses: vec!["redis://nativelink.com:6379/".to_string()],
+        ..Default::default()
+    };
+    let store = RedisStore::new(spec).expect("Working spec");
+    match store.check_health(std::borrow::Cow::Borrowed("foo")).await {
+        HealthStatus::Ok {
+            struct_name: _,
+            message: _,
+        } => {
+            panic!("Expected failure");
+        }
+        HealthStatus::Failed {
+            struct_name,
+            message,
+        } => {
+            assert_eq!(struct_name, "nativelink_store::redis_store::RedisStore");
+            assert_eq!(
+                message,
+                "Store.update_oneshot() failed: Error { code: DeadlineExceeded, messages: [\"Timeout Error: Request timed out.\", \"Connection issue connecting to redis server with hosts: [\\\"nativelink.com:6379\\\"], username: None, database: 0\"] }"
+            );
+            assert!(logs_contain(
+                "check_health Store.update_oneshot() failed e=Error { code: DeadlineExceeded, messages: [\"Timeout Error: Request timed out.\", \"Connection issue connecting to redis server with hosts: [\\\"nativelink.com:6379\\\"], username: None, database: 0\"] }"
+            ));
+        }
+        health_result => {
+            panic!("Other result: {health_result:?}");
+        }
+    }
 }
