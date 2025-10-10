@@ -581,7 +581,13 @@ where
         {
             Ok(maybe_action) => maybe_action,
             Err(err) if err.code == Code::NotFound => {
-                // The operation doesn't exist in the store, treat this as None
+                tracing::warn!(
+                    "Orphaned client operation mapping detected: client_id={} maps to operation_id={}, \
+                    but the operation does not exist in the store (NotFound). This typically happens when \
+                    an operation completes or times out but the client mapping persists.",
+                    client_operation_id,
+                    operation_id
+                );
                 None
             }
             Err(err) => {
