@@ -569,6 +569,40 @@ where
         let Some(operation_id) = maybe_operation_id else {
             return Ok(None);
         };
+
+        // Validate that the internal operation actually exists.
+        // If it doesn't, this is an orphaned client operation mapping that should be cleaned up.
+        // This can happen when an operation is deleted (completed/timed out) but the
+        // client_id -> operation_id mapping persists in the store.
+        let maybe_awaited_action = match self
+            .store
+            .get_and_decode(OperationIdToAwaitedAction(Cow::Borrowed(&operation_id)))
+            .await
+        {
+            Ok(maybe_action) => maybe_action,
+            Err(err) if err.code == Code::NotFound => {
+                // The operation doesn't exist in the store, treat this as None
+                None
+            }
+            Err(err) => {
+                // Some other error occurred
+                return Err(err).err_tip(
+                    || "In RedisAwaitedActionDb::get_awaited_action_by_id::validate_operation",
+                );
+            }
+        };
+
+        if maybe_awaited_action.is_none() {
+            tracing::warn!(
+                "Found orphaned client operation mapping: client_id={} -> operation_id={}, \
+                but operation no longer exists. Returning None to prevent client from polling \
+                a non-existent operation.",
+                client_operation_id,
+                operation_id
+            );
+            return Ok(None);
+        }
+
         Ok(Some(OperationSubscriber::new(
             Some(client_operation_id.clone()),
             OperationIdToAwaitedAction(Cow::Owned(operation_id)),
