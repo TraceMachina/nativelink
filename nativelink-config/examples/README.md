@@ -362,7 +362,9 @@ The `private` server consists of a `listener` object and a `services` object. Th
         "scheduler": "MAIN_SCHEDULER",
       },
       "admin": {},
-      "health": {},
+      "health": {
+        "timeout_seconds": 2
+      },
     }
   }],
   "global": {},

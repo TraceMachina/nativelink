@@ -445,7 +445,9 @@ Here is the final CAS Config JSON without the 99 extra shards for writing to S3.
         }
       },
       "services": {
-        "health": {}
+        "health": {
+          "timeout_seconds": 2
+        }
       }
     }
   ]
