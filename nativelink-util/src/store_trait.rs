@@ -33,6 +33,7 @@ use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tracing::warn;
 
 use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair};
 use crate::common::DigestInfo;
@@ -770,6 +771,7 @@ pub trait StoreDriver:
             .update_oneshot(digest_info.borrow(), digest_bytes.clone())
             .await
         {
+            warn!(?e, "check_health Store.update_oneshot() failed");
             return HealthStatus::new_failed(
                 self.get_ref(),
                 format!("Store.update_oneshot() failed: {e}").into(),

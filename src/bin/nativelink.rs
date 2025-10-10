@@ -496,7 +496,7 @@ async fn inner_main(
             } else {
                 &health_cfg.path
             };
-            svc = svc.route_service(path, HealthServer::new(health_registry));
+            svc = svc.route_service(path, HealthServer::new(health_registry, &health_cfg));
         }
 
         if let Some(admin_config) = services.admin {
