@@ -58,6 +58,7 @@ jobs:
     name: Cargo Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    environment: production
     steps:
       - name: Checkout
         uses: >- # v4.2.2
@@ -70,6 +71,8 @@ jobs:
         run: >
           nix develop --impure --command
           bash -c "cargo test --all --profile=smol"
+        env:
+          NATIVELINK_TEST_MONGO_URL: ${{ secrets.NATIVELINK_TEST_MONGO_URL  }}
 
   installation:
     strategy:
