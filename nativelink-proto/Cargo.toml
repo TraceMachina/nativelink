@@ -16,3 +16,7 @@ tonic = { version = "0.13.0", features = ["codegen", "prost", "transport", "tls-
 [dev-dependencies]
 prost-build = { version = "0.13.5", default-features = false }
 tonic-build = { version = "0.13.0", features = ["prost"], default-features = false }
+
+[package.metadata.cargo-machete]
+# Used by gen_protos_tool.rs
+ignored = ["prost-build", "tonic-build"]

@@ -62,3 +62,7 @@ pretty_assertions = { version = "1.4.1", features = ["std"] }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",
 ] }
+
+[package.metadata.cargo-machete]
+# Used by nativelink_test macro
+ignored = ["tracing-test"]
