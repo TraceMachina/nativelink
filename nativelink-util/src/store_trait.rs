@@ -867,6 +867,8 @@ pub trait SchedulerSubscriptionManager: Send + Sync {
     fn subscribe<K>(&self, key: K) -> Result<Self::Subscription, Error>
     where
         K: SchedulerStoreKeyProvider;
+
+    fn is_reliable() -> bool;
 }
 
 /// The API surface for a scheduler store.

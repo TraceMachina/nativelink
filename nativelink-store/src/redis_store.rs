@@ -1038,6 +1038,10 @@ impl SchedulerSubscriptionManager for RedisSubscriptionManager {
 
         Ok(subscription)
     }
+
+    fn is_reliable() -> bool {
+        false
+    }
 }
 
 impl SchedulerStore for RedisStore {

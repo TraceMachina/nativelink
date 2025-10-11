@@ -114,7 +114,7 @@ impl Mocks for MockRedisBackend {
             panic!("Didn't expect any more commands, but received {actual:?}");
         };
 
-        assert_eq!(actual, expected);
+        assert_eq!(expected, actual);
         if let Some(cb) = maybe_cb {
             (cb)();
         }
@@ -633,6 +633,24 @@ async fn add_action_smoke_test() -> Result<(), Error> {
             },
             Ok(0.into() /* unused */),
             Some(Box::new(|| SUBSCRIPTION_MANAGER.lock().as_ref().unwrap().notify_for_test(format!("aa_{CLIENT_OPERATION_ID}")))),
+        )
+        .expect(
+            MockCommand {
+                cmd: Str::from_static("HMGET"),
+                subcommand: None,
+                args: vec![
+                    format!("aa_{WORKER_OPERATION_ID}").as_bytes().into(),
+                    "version".as_bytes().into(),
+                    "data".as_bytes().into(),
+                ],
+            },
+            Ok(RedisValue::Array(vec![
+                // Version.
+                "1".into(),
+                // Data.
+                RedisValue::Bytes(Bytes::from(serde_json::to_string(&worker_awaited_action).unwrap())),
+            ])),
+            None,
         )
         .expect(
             MockCommand {
