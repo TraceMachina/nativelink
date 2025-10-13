@@ -25,55 +25,30 @@ import "google/rpc/status.proto";
 ///
 /// When a worker node comes online it must be pre-configured with the
 /// endpoint of the scheduler it will register with. Once the worker
-/// connects to the scheduler it must send a `RegisterSupportedProperties`
+/// connects to the scheduler it must send a `ConnectWorkerRequest`
 /// command to the scheduler. The scheduler will then use this information
 /// to determine which jobs the worker can process.
 service WorkerApi {
     /// Registers this worker and informs the scheduler what properties
     /// this worker supports. The response must be listened on the client
-    /// side for updates from the server. The first item sent will always be
-    /// a ConnectionResult, after that it is undefined.
-    rpc ConnectWorker(ConnectWorkerRequest) returns (stream UpdateForWorker);
-
-    /// Message used to let the scheduler know that it is still alive as
-    /// well as check to see if the scheduler is still alive. The scheduler
-    /// may close the connection if the worker has not sent any messages
-    /// after some amount of time (configured in the scheduler's
-    /// configuration).
-    rpc KeepAlive(KeepAliveRequest) returns (google.protobuf.Empty);
-
-    /// Informs the scheduler that the service is going offline and
-    /// should stop issuing any new actions on this worker.
-    ///
-    /// The worker may stay connected even after sending this command
-    /// and may even send an `ExecuteResult` after sending this command.
-    /// It is up to the scheduler implementation to decide how to handle
-    /// this case.
-    ///
-    /// Any job that was running on this instance likely needs to be
-    /// executed again, but up to the scheduler on how or when to handle
-    /// this case.
-    rpc GoingAway(GoingAwayRequest) returns (google.protobuf.Empty);
-
-    /// Informs the scheduler about the result of an execution request.
-    rpc ExecutionResponse(ExecuteResult) returns (google.protobuf.Empty);
-
-    /// Notify that the execution has completed, but result is uploading.
-    rpc ExecutionComplete(ExecuteComplete) returns (google.protobuf.Empty);
+    /// side for updates from the server.  This is performed as a single
+    /// bi-directional call to ensure that the worker is always talking to the
+    /// same scheduler instance even if there's a load balancer in front.
+    /// The first message on the UpdateForScheduler stream will be a
+    /// ConnectWorkerRequest which will notify the scheduler of the available
+    /// properties and the first response will be a ConnectionResult to tell
+    /// the worker what worker ID to place in action results.
+    rpc ConnectWorker(stream UpdateForScheduler) returns (stream UpdateForWorker);
 }
 
 /// Request object for keep alive requests.
 message KeepAliveRequest {
-    /// ID of the worker making the request.
-    string worker_id = 1;
-    reserved 2; // NextId.
+    reserved 1; // NextId.
 }
 
 /// Request object for going away requests.
 message GoingAwayRequest {
-    /// ID of the worker making the request.
-    string worker_id = 1;
-    reserved 2; // NextId.
+    reserved 1; // NextId.
 }
 
 /// Represents the initial request sent to the scheduler informing the
@@ -101,44 +76,39 @@ message ConnectWorkerRequest {
 
 /// The result of an ExecutionRequest.
 message ExecuteResult {
-    /// ID of the worker making the request.
-    string worker_id = 1;
-
     /// The `instance_name` this task was initially assigned to. This is set by the client
     /// that initially sent the job as part of the BRE protocol.
-    string instance_name = 6;
+    string instance_name = 1;
 
     /// The operation ID that was executed.
-    string operation_id = 8;
+    string operation_id = 2;
 
     /// The actual response data.
     oneof result {
         /// Result of the execution. See `build.bazel.remote.execution.v2.ExecuteResponse`
         /// for details.
-        build.bazel.remote.execution.v2.ExecuteResponse execute_response = 4;
+        build.bazel.remote.execution.v2.ExecuteResponse execute_response = 3;
 
         /// An internal error. This is only present when an internal error happened that
         /// was not recoverable. If the execution job failed but at no fault of the worker
         /// it should not use this field and should send the error via execute_response.
-        google.rpc.Status internal_error = 5;
+        google.rpc.Status internal_error = 4;
     }
 
-    reserved 9; // NextId.
+    reserved 5; // NextId.
 }
 
 /// The result of an ExecutionComplete.
 message ExecuteComplete {
-    /// ID of the worker making the request.
-    string worker_id = 1;
-
     /// The operation ID that was executed.
-    string operation_id = 2;
+    string operation_id = 1;
 }
 
 /// Result sent back from the server when a node connects.
 message ConnectionResult {
-    /// The internal ID given to the newly connected node.
+    /// The worker ID to place in the action results generated by this worker.
     string worker_id = 1;
+
     reserved 2; // NextId.
 }
 
@@ -172,6 +142,42 @@ message UpdateForWorker {
 
         /// Instructs the worker to kill a specific running operation.
         KillOperationRequest kill_operation_request = 5;
+    }
+    reserved 6; // NextId.
+}
+
+/// Communication from the worker to the scheduler.
+message UpdateForScheduler {
+    oneof update {
+        /// The initial request sent to the scheduler informing it of the
+        /// supported properties of this worker.
+        ConnectWorkerRequest connect_worker_request = 1;
+
+        /// Message used to let the scheduler know that it is still alive as
+        /// well as check to see if the scheduler is still alive. The scheduler
+        /// may close the connection if the worker has not sent any messages
+        /// after some amount of time (configured in the scheduler's
+        /// configuration).
+        KeepAliveRequest keep_alive_request = 2;
+
+        /// Informs the scheduler that the service is going offline and
+        /// should stop issuing any new actions on this worker.
+        ///
+        /// The worker may stay connected even after sending this command
+        /// and may even send an `ExecuteResult` after sending this command.
+        /// It is up to the scheduler implementation to decide how to handle
+        /// this case.
+        ///
+        /// Any job that was running on this instance likely needs to be
+        /// executed again, but up to the scheduler on how or when to handle
+        /// this case.
+        GoingAwayRequest going_away_request = 3;
+
+        /// Informs the scheduler about the result of an execution request.
+        ExecuteResult execute_result = 4;
+
+        /// Notify that the execution has completed, but result is uploading.
+        ExecuteComplete execute_complete = 5;
     }
     reserved 6; // NextId.
 }

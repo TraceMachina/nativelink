@@ -29,9 +29,10 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile,
     OutputDirectory, OutputFile, OutputSymlink,
 };
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_scheduler::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_server::WorkerApi;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ExecuteResult, KeepAliveRequest, execute_result, update_for_worker,
+    execute_result, update_for_worker, ConnectWorkerRequest, ExecuteResult, KeepAliveRequest, UpdateForScheduler
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
@@ -49,7 +50,7 @@ use pretty_assertions::assert_eq;
 use tokio::join;
 use tokio::sync::{Notify, mpsc};
 use tokio_stream::StreamExt;
-use tonic::Request;
+use tonic::{IntoStreamingRequest, Request};
 
 const BASE_NOW_S: u64 = 10;
 const BASE_WORKER_TIMEOUT_S: u64 = 100;
@@ -170,8 +171,15 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
     .err_tip(|| "Error creating WorkerApiServer")?;
 
     let connect_worker_request = ConnectWorkerRequest::default();
+    let (tx, rx) = mpsc::channel(1);
+    let _ = tx
+        .send(UpdateForScheduler {
+            update: Some(Update::ConnectWorkerRequest(connect_worker_request)),
+        })
+        .await;
+    let request = tokio_stream::wrappers::ReceiverStream::new(rx).into_streaming_request();
     let mut connection_worker_stream = worker_api_server
-        .connect_worker(Request::new(connect_worker_request))
+        .connect_worker(request)
         .await?
         .into_inner();
 
@@ -289,9 +297,7 @@ pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn 
         // Now send keep alive.
         test_context
             .worker_api_server
-            .keep_alive(Request::new(KeepAliveRequest {
-                worker_id: test_context.worker_id.to_string(),
-            }))
+            .keep_alive(Request::new(KeepAliveRequest {}))
             .await
             .err_tip(|| "Error sending keep alive")?;
     }
@@ -487,7 +493,6 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
     };
     let result = ExecuteResult {
         instance_name,
-        worker_id: test_context.worker_id.to_string(),
         operation_id: expected_operation_id.to_string(),
         result: Some(execute_result::Result::ExecuteResponse(
             execute_response.clone(),
