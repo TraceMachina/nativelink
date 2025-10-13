@@ -125,7 +125,7 @@ directory for details. Here are your options:
 
 | Config | Hermetic | Size | Description |
 | - | - | - | - |
-| `zig-cc` | yes | ~100Mb | Hermetic, but slow. The intended use for this toolchain are projects that need a baseline C++ toolchain, but aren't "real" C++ projects, such as Go projects with a limited number of C FFIs. |
+| `zig-cc` | yes | ~100Mb | Hermetic, but slow. The intended use for this toolchain are projects that need a baseline C++ toolchain, but aren't "real" C++ projects, such as Go projects with a limited number of C FFIs. Note you will also need to specify your platform. For example `--platforms @zig_sdk//platform:linux_amd64`|
 | `llvm` | no | ~1.5Gb | Not hermetic, but fast and standardized. This toolchain tends to be safe to use for C++ projects as long as you don't require full hermeticity. Your remote execution image needs to bundle `glibc <= 2.34` for this toolchain to work. |
 | `java` | yes | ? | This sets the JDK to use a remote JDK. Use this one for Java. |
 
@@ -184,6 +184,7 @@ nonexistent artifact hashes.
     ```bash
     bazel build //cpp \
         --config=zig-cc \
+        --platforms @zig_sdk//platform:linux_amd64 \
         --remote_cache=grpc://localhost:50051 \
         --remote_executor=grpc://localhost:50051
     ```
@@ -192,6 +193,7 @@ nonexistent artifact hashes.
     ```bash
     bazel build //cpp \
         --config=llvm \
+        --platforms=@toolchains_llvm//platforms:linux-x86_64 \
         --remote_cache=grpc://localhost:50051 \
         --remote_executor=grpc://localhost:50051
     ```
