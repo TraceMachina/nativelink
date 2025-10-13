@@ -20,14 +20,15 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::stream::unfold;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use nativelink_config::cas_server::WorkerApiConfig;
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_scheduler::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_server::{
     WorkerApi, WorkerApiServer as Server,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker
+    execute_result, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
 };
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -38,7 +39,7 @@ use nativelink_util::platform_properties::PlatformProperties;
 use rand::RngCore;
 use tokio::sync::mpsc;
 use tokio::time::interval;
-use tonic::{Request, Response, Status};
+use tonic::{Response, Status};
 use tracing::{debug, error, warn, instrument, Level};
 use uuid::Uuid;
 
@@ -49,7 +50,7 @@ pub type NowFn = Box<dyn Fn() -> Result<Duration, Error> + Send + Sync>;
 
 pub struct WorkerApiServer {
     scheduler: Arc<dyn WorkerScheduler>,
-    now_fn: NowFn,
+    now_fn: Arc<NowFn>,
     node_id: [u8; 6],
 }
 
@@ -129,7 +130,7 @@ impl WorkerApiServer {
             .clone();
         Ok(Self {
             scheduler,
-            now_fn,
+            now_fn: Arc::new(now_fn),
             node_id,
         })
     }
@@ -140,8 +141,24 @@ impl WorkerApiServer {
 
     async fn inner_connect_worker(
         &self,
-        connect_worker_request: ConnectWorkerRequest,
+        mut update_stream: impl Stream<Item = Result<UpdateForScheduler, Status>>
+        + Unpin
+        + Send
+        + 'static,
     ) -> Result<Response<ConnectWorkerStream>, Error> {
+        let first_message = update_stream
+            .next()
+            .await
+            .err_tip(|| "Missing first message for connect_worker")?
+            .err_tip(|| "Error reading first message for connect_worker")?;
+        let Some(Update::ConnectWorkerRequest(connect_worker_request)) = first_message.update
+        else {
+            return Err(make_err!(
+                Code::Internal,
+                "First message was not a ConnectWorkerRequest"
+            ));
+        };
+
         let (tx, rx) = mpsc::unbounded_channel();
 
         // First convert our proto platform properties into one our scheduler understands.
@@ -180,6 +197,13 @@ impl WorkerApiServer {
             worker_id
         };
 
+        WorkerConnection::start(
+            self.scheduler.clone(),
+            self.now_fn.clone(),
+            worker_id.clone(),
+            update_stream,
+        );
+
         Ok(Response::new(Box::pin(unfold(
             (rx, worker_id),
             move |state| async move {
@@ -196,85 +220,6 @@ impl WorkerApiServer {
             },
         ))))
     }
-
-    async fn inner_keep_alive(
-        &self,
-        keep_alive_request: KeepAliveRequest,
-    ) -> Result<Response<()>, Error> {
-        let worker_id: WorkerId = keep_alive_request.worker_id.into();
-        self.scheduler
-            .worker_keep_alive_received(&worker_id, (self.now_fn)()?.as_secs())
-            .await
-            .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
-        Ok(Response::new(()))
-    }
-
-    async fn inner_going_away(
-        &self,
-        going_away_request: GoingAwayRequest,
-    ) -> Result<Response<()>, Error> {
-        let worker_id: WorkerId = going_away_request.worker_id.into();
-        self.scheduler
-            .remove_worker(&worker_id)
-            .await
-            .err_tip(|| "While calling WorkerApiServer::inner_going_away")?;
-        Ok(Response::new(()))
-    }
-
-    async fn inner_execution_response(
-        &self,
-        execute_result: ExecuteResult,
-    ) -> Result<Response<()>, Error> {
-        let worker_id: WorkerId = execute_result.worker_id.into();
-        let operation_id = OperationId::from(execute_result.operation_id);
-
-        match execute_result
-            .result
-            .err_tip(|| "Expected result to exist in ExecuteResult")?
-        {
-            execute_result::Result::ExecuteResponse(finished_result) => {
-                let action_stage = finished_result
-                    .try_into()
-                    .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?;
-                self.scheduler
-                    .update_action(
-                        &worker_id,
-                        &operation_id,
-                        UpdateOperationType::UpdateWithActionStage(action_stage),
-                    )
-                    .await
-                    .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
-            }
-            execute_result::Result::InternalError(e) => {
-                self.scheduler
-                    .update_action(
-                        &worker_id,
-                        &operation_id,
-                        UpdateOperationType::UpdateWithError(e.into()),
-                    )
-                    .await
-                    .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
-            }
-        }
-        Ok(Response::new(()))
-    }
-
-    async fn execution_complete(
-        &self,
-        execute_complete: ExecuteComplete,
-    ) -> Result<Response<()>, Error> {
-        let worker_id: WorkerId = execute_complete.worker_id.into();
-        let operation_id = OperationId::from(execute_complete.operation_id);
-        self.scheduler
-            .update_action(
-                &worker_id,
-                &operation_id,
-                UpdateOperationType::ExecutionComplete,
-            )
-            .await
-            .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
-        Ok(Response::new(()))
-    }
 }
 
 #[tonic::async_trait]
@@ -289,7 +234,7 @@ impl WorkerApi for WorkerApiServer {
     )]
     async fn connect_worker(
         &self,
-        grpc_request: Request<ConnectWorkerRequest>,
+        grpc_request: tonic::Request<tonic::Streaming<UpdateForScheduler>>,
     ) -> Result<Response<Self::ConnectWorkerStream>, Status> {
         let resp = self
             .inner_connect_worker(grpc_request.into_inner())
@@ -300,68 +245,132 @@ impl WorkerApi for WorkerApiServer {
         }
         resp
     }
+}
 
-    #[instrument(
-        err,
-        ret(level = Level::DEBUG),
-        level = Level::DEBUG,
-        skip_all,
-        fields(request = ?grpc_request.get_ref())
-    )]
-    async fn keep_alive(
-        &self,
-        grpc_request: Request<KeepAliveRequest>,
-    ) -> Result<Response<()>, Status> {
-        self.inner_keep_alive(grpc_request.into_inner())
-            .await
-            .map_err(Into::into)
+struct WorkerConnection {
+    scheduler: Arc<dyn WorkerScheduler>,
+    now_fn: Arc<NowFn>,
+    worker_id: WorkerId,
+}
+
+impl WorkerConnection {
+    fn start(
+        scheduler: Arc<dyn WorkerScheduler>,
+        now_fn: Arc<NowFn>,
+        worker_id: WorkerId,
+        mut connection: impl Stream<Item = Result<UpdateForScheduler, Status>> + Unpin + Send + 'static,
+    ) {
+        let instance = Self {
+            scheduler,
+            now_fn,
+            worker_id,
+        };
+
+        background_spawn!("worker_api", async move {
+            let mut had_going_away = false;
+            while let Some(maybe_update) = connection.next().await {
+                let update = match maybe_update.map(|u| u.update) {
+                    Ok(Some(update)) => update,
+                    Ok(None) => {
+                        tracing::warn!(worker_id=?instance.worker_id, "Empty update");
+                        continue;
+                    }
+                    Err(err) => {
+                        tracing::warn!(worker_id=?instance.worker_id, ?err, "Error from worker");
+                        continue;
+                    }
+                };
+                let result = match update {
+                    Update::ConnectWorkerRequest(_connect_worker_request) => Err(make_err!(
+                        Code::Internal,
+                        "Got ConnectWorkerRequest after initial message for {}",
+                        instance.worker_id
+                    )),
+                    Update::KeepAliveRequest(keep_alive_request) => {
+                        instance.inner_keep_alive(keep_alive_request).await
+                    }
+                    Update::GoingAwayRequest(going_away_request) => {
+                        had_going_away = true;
+                        instance.inner_going_away(going_away_request).await
+                    }
+                    Update::ExecuteResult(execute_result) => {
+                        instance.inner_execution_response(execute_result).await
+                    }
+                    Update::ExecuteComplete(execute_complete) => {
+                        instance.execution_complete(execute_complete).await
+                    }
+                };
+                if let Err(err) = result {
+                    tracing::warn!(worker_id=?instance.worker_id, ?err, "Error processing worker message");
+                }
+            }
+            tracing::debug!(worker_id=?instance.worker_id, "Update for scheduler dropped");
+            if !had_going_away {
+                drop(instance.scheduler.remove_worker(&instance.worker_id).await);
+            }
+        });
     }
 
-    #[instrument(
-        err,
-        ret(level = Level::INFO),
-        level = Level::ERROR,
-        skip_all,
-        fields(request = ?grpc_request.get_ref())
-    )]
-    async fn going_away(
-        &self,
-        grpc_request: Request<GoingAwayRequest>,
-    ) -> Result<Response<()>, Status> {
-        self.inner_going_away(grpc_request.into_inner())
+    async fn inner_keep_alive(&self, _keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
+        self.scheduler
+            .worker_keep_alive_received(&self.worker_id, (self.now_fn)()?.as_secs())
             .await
-            .map_err(Into::into)
+            .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
+        Ok(())
     }
 
-    #[instrument(
-        err,
-        ret(level = Level::DEBUG),
-        level = Level::ERROR,
-        skip_all,
-        fields(request = ?grpc_request.get_ref())
-    )]
-    async fn execution_response(
-        &self,
-        grpc_request: Request<ExecuteResult>,
-    ) -> Result<Response<()>, Status> {
-        self.inner_execution_response(grpc_request.into_inner())
+    async fn inner_going_away(&self, _going_away_request: GoingAwayRequest) -> Result<(), Error> {
+        self.scheduler
+            .remove_worker(&self.worker_id)
             .await
-            .map_err(Into::into)
+            .err_tip(|| "While calling WorkerApiServer::inner_going_away")?;
+        Ok(())
     }
 
-    #[instrument(
-        err,
-        ret(level = Level::DEBUG),
-        level = Level::ERROR,
-        skip_all,
-        fields(request = ?grpc_request.get_ref())
-    )]
-    async fn execution_complete(
-        &self,
-        grpc_request: Request<ExecuteComplete>,
-    ) -> Result<Response<()>, Status> {
-        self.execution_complete(grpc_request.into_inner())
+    async fn inner_execution_response(&self, execute_result: ExecuteResult) -> Result<(), Error> {
+        let operation_id = OperationId::from(execute_result.operation_id);
+
+        match execute_result
+            .result
+            .err_tip(|| "Expected result to exist in ExecuteResult")?
+        {
+            execute_result::Result::ExecuteResponse(finished_result) => {
+                let action_stage = finished_result
+                    .try_into()
+                    .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?;
+                self.scheduler
+                    .update_action(
+                        &self.worker_id,
+                        &operation_id,
+                        UpdateOperationType::UpdateWithActionStage(action_stage),
+                    )
+                    .await
+                    .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
+            }
+            execute_result::Result::InternalError(e) => {
+                self.scheduler
+                    .update_action(
+                        &self.worker_id,
+                        &operation_id,
+                        UpdateOperationType::UpdateWithError(e.into()),
+                    )
+                    .await
+                    .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {
+        let operation_id = OperationId::from(execute_complete.operation_id);
+        self.scheduler
+            .update_action(
+                &self.worker_id,
+                &operation_id,
+                UpdateOperationType::ExecutionComplete,
+            )
             .await
-            .map_err(Into::into)
+            .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
+        Ok(())
     }
 }

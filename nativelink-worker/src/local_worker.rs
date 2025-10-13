@@ -152,12 +152,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             // We always send 2 keep alive requests per timeout. Http2 should manage most of our
             // timeout issues, this is a secondary check to ensure we can still send data.
             sleep(Duration::from_secs_f32(timeout / 2.)).await;
-            if let Err(e) = grpc_client
-                .keep_alive(KeepAliveRequest {
-                    worker_id: self.worker_id.clone(),
-                })
-                .await
-            {
+            if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
                 return Err(make_err!(
                     Code::Internal,
                     "Failed to send KeepAlive in LocalWorker : {:?}",
@@ -236,7 +231,6 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
                                     self.grpc_client.clone().execution_response(
                                         ExecuteResult{
-                                            worker_id: self.worker_id.clone(),
                                             instance_name,
                                             operation_id: start_execute.operation_id,
                                             result: Some(execute_result::Result::InternalError(make_err!(Code::ResourceExhausted, "Worker shutting down").into())),
@@ -265,7 +259,6 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 let running_actions_manager = self.running_actions_manager.clone();
                                 let mut grpc_client = self.grpc_client.clone();
                                 let complete = ExecuteComplete {
-                                    worker_id: worker_id.clone(),
                                     operation_id: operation_id.clone(),
                                 };
                                 self.metrics.clone().wrap(move |metrics| async move {
@@ -307,7 +300,6 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             let make_publish_future = {
                                 let mut grpc_client = self.grpc_client.clone();
 
-                                let worker_id = self.worker_id.clone();
                                 let running_actions_manager = self.running_actions_manager.clone();
                                 move |res: Result<ActionResult, Error>| async move {
                                     let instance_name = maybe_instance_name
@@ -327,7 +319,6 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             let action_stage = ActionStage::Completed(action_result);
                                             grpc_client.execution_response(
                                                 ExecuteResult{
-                                                    worker_id,
                                                     instance_name,
                                                     operation_id,
                                                     result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
@@ -338,7 +329,6 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                         },
                                         Err(e) => {
                                             grpc_client.execution_response(ExecuteResult{
-                                                worker_id,
                                                 instance_name,
                                                 operation_id,
                                                 result: Some(execute_result::Result::InternalError(e.into())),
@@ -402,7 +392,6 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 complete_msg = shutdown_rx.recv().fuse() => {
                     warn!("Worker loop received shutdown signal. Shutting down worker...",);
                     let mut grpc_client = self.grpc_client.clone();
-                    let worker_id = self.worker_id.clone();
                     let shutdown_guard = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?;
                     let actions_in_flight = actions_in_flight.clone();
                     let actions_notify = actions_notify.clone();
@@ -413,9 +402,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         }
                         // Sending this message immediately evicts all jobs from
                         // this worker, of which there should be none.
-                        if let Err(e) = grpc_client.going_away(GoingAwayRequest { worker_id }).await {
+                        if let Err(e) = grpc_client.going_away(GoingAwayRequest {}).await {
                             error!("Failed to send GoingAwayRequest: {e}",);
-                            return Err(e.into());
+                            return Err(e);
                         }
                         // Allow shutdown to occur now.
                         drop(shutdown_guard);

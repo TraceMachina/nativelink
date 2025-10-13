@@ -63,7 +63,7 @@ enum WorkerClientApiCalls {
 )]
 enum WorkerClientApiReturns {
     ConnectWorker(Result<Response<Streaming<UpdateForWorker>>, Status>),
-    ExecutionResponse(Result<Response<()>, Status>),
+    ExecutionResponse(Result<(), Error>),
 }
 
 #[derive(Clone)]
@@ -117,7 +117,7 @@ impl MockWorkerApiClient {
 
     pub(crate) async fn expect_execution_response(
         &self,
-        result: Result<Response<()>, Status>,
+        result: Result<(), Error>,
     ) -> ExecuteResult {
         let mut rx_call_lock = self.rx_call.lock().await;
         let req = match rx_call_lock
@@ -158,15 +158,15 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
         }
     }
 
-    async fn keep_alive(&mut self, _request: KeepAliveRequest) -> Result<Response<()>, Status> {
+    async fn keep_alive(&mut self, _request: KeepAliveRequest) -> Result<(), Error> {
         unreachable!();
     }
 
-    async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<Response<()>, Status> {
+    async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<(), Error> {
         unreachable!();
     }
 
-    async fn execution_response(&mut self, request: ExecuteResult) -> Result<Response<()>, Status> {
+    async fn execution_response(&mut self, request: ExecuteResult) -> Result<(), Error> {
         self.tx_call
             .send(WorkerClientApiCalls::ExecutionResponse(request))
             .expect("Could not send request to mpsc");
