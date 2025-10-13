@@ -340,6 +340,7 @@ impl ApiWorkerSchedulerImpl {
                         .await,
                 );
             }
+            Ok(())
         } else {
             warn!(
                 ?worker_id,
@@ -347,8 +348,15 @@ impl ApiWorkerSchedulerImpl {
                 ?action_info,
                 "Worker not found in worker map in worker_notify_run_action"
             );
+            // Ensure the operation is put back to queued state.
+            self.worker_state_manager
+                .update_operation(
+                    &operation_id,
+                    &worker_id,
+                    UpdateOperationType::UpdateWithDisconnect,
+                )
+                .await
         }
-        Ok(())
     }
 
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
