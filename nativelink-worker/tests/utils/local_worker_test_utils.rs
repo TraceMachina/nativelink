@@ -21,7 +21,8 @@ use hyper::body::Frame;
 use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
 use nativelink_error::Error;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
+    ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
+    UpdateForWorker,
 };
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -180,6 +181,13 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
                 panic!("execution_response expected ExecutionResponse response, received {resp:?}")
             }
         }
+    }
+
+    async fn execution_complete(
+        &mut self,
+        _request: ExecuteComplete,
+    ) -> Result<Response<()>, Status> {
+        Ok(Response::new(()))
     }
 }
 

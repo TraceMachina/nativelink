@@ -629,6 +629,13 @@ where
                     }
                 }
                 UpdateOperationType::UpdateWithDisconnect => ActionStage::Queued,
+                // We shouldn't get here, but we just ignore it if we do.
+                UpdateOperationType::ExecutionComplete => {
+                    tractin::warn!(
+                        "inner_update_operation got an ExecutionComplete, that's unexpected."
+                    );
+                    return Ok(());
+                }
             };
             let now = (self.now_fn)().now();
             if matches!(stage, ActionStage::Queued) {
