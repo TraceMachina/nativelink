@@ -77,7 +77,6 @@ jobs:
       matrix:
         os:
           - ubuntu-24.04
-          - macos-14
           - macos-15
     name: Installation / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
