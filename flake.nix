@@ -379,6 +379,9 @@
             mongo-with-nativelink-test = pkgs.callPackage integration_tests/mongo/mongo-with-nativelink-test.nix {
               inherit nativelink mongodb wait4x bazelisk;
             };
+            rbe-toolchain-with-nativelink-test = pkgs.callPackage toolchain-examples/rbe-toolchain-test.nix {
+              inherit nativelink bazelisk;
+            };
           }
           // (
             # It's not possible to crosscompile to darwin, not even between

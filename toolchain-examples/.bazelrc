@@ -1,6 +1,3 @@
-# Don't use the host's default PATH and LD_LIBRARY_PATH.
-build --incompatible_strict_action_env
-
 # Use rules_python's builtin script to emulate a bootstrap python.
 build --@rules_python//python/config_settings:bootstrap_impl=script
 
