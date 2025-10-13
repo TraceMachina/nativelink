@@ -41,6 +41,9 @@ jobs:
         run: rustup update && rustup default ${{ matrix.toolchain }}
         shell: bash
 
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Build on ${{ runner.os }}
         run: cargo build --all --profile=smol
 
