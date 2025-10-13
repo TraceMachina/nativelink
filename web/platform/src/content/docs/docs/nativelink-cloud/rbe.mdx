@@ -19,7 +19,7 @@ To enable RBE all you need to do is add the below flag to your Bazel builds:
 --remote_executor=grpcs://scheduler-YOUR_ACCOUNT_HERE.build-faster.nativelink.net:443
 ```
 
-This will run your builds on a Ubuntu 22.04 image *without any* dependencies installed.
+This will run your builds on a Ubuntu 24.04 image *without any* dependencies installed.
 For most users we don't expect this to work out of the box as your project most
 likely depends on installations like GCC/Java/etc. To remedy that, continue with the
 instructions below to pass in your own images.
@@ -29,7 +29,7 @@ To support most RBE builds you will most likely need to pass in your own image w
 correct toolchains installed to support your build. To use your own __*public*__ image you can pass
 it using this configuration:
 ```bash
---remote_default_exec_properties="container-image=docker://public.ecr.aws/ubuntu/ubuntu:22.04_stable"
+--remote_default_exec_properties="container-image=docker://public.ecr.aws/ubuntu/ubuntu:24.04_stable"
 ```
 Or a public image on Docker Hub is accessible via:
 ```bash
@@ -71,7 +71,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## Hermetic Bazel Builds
 An alternative option to passing in your own custom image is using a fully hermetic
-Bazel build. This will allow you to use our default Ubuntu 22.04 image and your Bazel
+Bazel build. This will allow you to use our default Ubuntu 24.04 image and your Bazel
 commands will install all needed dependencies.
 
 You can see a sample of that in the WORKSPACE file of our **Hermetic CC** example

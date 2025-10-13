@@ -76,7 +76,6 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-22.04
           - ubuntu-24.04
           - macos-14
           - macos-15

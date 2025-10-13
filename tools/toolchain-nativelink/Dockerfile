@@ -12,20 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM ubuntu:22.04@sha256:3c61d3759c2639d4b836d32a2d3c83fa0214e36f195a3421018dbaaf79cbe37f
+# https://hub.docker.com/layers/library/ubuntu/noble-20250925/images/sha256-78281ac7684a7caf02348780a1b5de85844548a3cc0505df924de98380a0eeea
+FROM ubuntu:noble-20250925
 
 # Set shell to bash and enable pipefail
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Get Ubuntu packages
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-    gcc=4:11.2.0-1ubuntu1 \
-    g++=4:11.2.0-1ubuntu1 \
-    python3=3.10.6-1~22.04 \
-    python3-minimal=3.10.6-1~22.04 \
-    libpython3-stdlib=3.10.6-1~22.04 \
-    curl=7.81.0-1ubuntu1.20 \
-    ca-certificates=20240203~22.04.1 \
+    gcc=4:13.2.0-7ubuntu1 \
+    g++=4:13.2.0-7ubuntu1 \
+    python3=3.12.3-0ubuntu2 \
+    python3-minimal=3.12.3-0ubuntu2 \
+    libpython3-stdlib=3.12.3-0ubuntu2 \
+    curl=8.5.0-2ubuntu10.6 \
+    ca-certificates=20240203 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

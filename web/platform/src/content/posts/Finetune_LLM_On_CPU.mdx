@@ -68,7 +68,7 @@ Logging and print statements that track progress (like "Starting to fine tune mo
 
 Most cloud infrastructure (including NativeLink) runs on x86_64 processors, while Apple Silicon Macs use ARM64. Dependencies such as PyTorch are built for specified architectures and setting up Bazel to handle platform-specific dependencies is complex.
 
-If you want to run this code and you only have a Mac, the simplest way would be to run this code via a cloud-based Linux VM (GCP/AWS). If you don't want to use a cloud server, you could create a minimal docker container for x86_64 (`FROM --platform=linux/amd64 ubuntu:22.04` with just `curl` and `Bazelisk` installed) with **Rosetta enabled** and run from your Mac's terminal using this container. However, we highly recommend against this approach; the correct approach here would be to use toolchain transitions from a local mac platform to the remote Linux runner, but that's outside of the scope of this article.
+If you want to run this code and you only have a Mac, the simplest way would be to run this code via a cloud-based Linux VM (GCP/AWS). If you don't want to use a cloud server, you could create a minimal docker container for x86_64 (`FROM --platform=linux/amd64 ubuntu:24.04` with just `curl` and `Bazelisk` installed) with **Rosetta enabled** and run from your Mac's terminal using this container. However, we highly recommend against this approach; the correct approach here would be to use toolchain transitions from a local mac platform to the remote Linux runner, but that's outside of the scope of this article.
 
 
 ## The NativeLink Difference
