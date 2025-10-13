@@ -837,6 +837,10 @@ impl SchedulerSubscriptionManager for ExperimentalMongoSubscriptionManager {
 
         Ok(subscription)
     }
+
+    fn is_reliable() -> bool {
+        true
+    }
 }
 
 impl SchedulerStore for ExperimentalMongoStore {
