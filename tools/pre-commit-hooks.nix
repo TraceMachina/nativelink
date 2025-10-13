@@ -217,7 +217,7 @@ in {
     description = "Detect unused cargo deps";
     enable = true;
     entry = "${pkgs.cargo-machete}/bin/cargo-machete";
-    args = ["."];
+    args = ["--with-metadata" "."];
     pass_filenames = false;
   };
 
