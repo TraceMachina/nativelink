@@ -437,3 +437,186 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
     );
     Ok(())
 }
+
+#[derive(MetricsComponent)]
+struct SemaphoreStore {
+    sem: Arc<tokio::sync::Semaphore>,
+    inner: Arc<MemoryStore>,
+}
+
+impl SemaphoreStore {
+    fn new(sem: Arc<tokio::sync::Semaphore>) -> Arc<Self> {
+        Arc::new(Self {
+            sem,
+            inner: MemoryStore::new(&MemorySpec::default()),
+        })
+    }
+
+    async fn get_permit(&self) -> Result<tokio::sync::SemaphorePermit<'_>, Error> {
+        self.sem
+            .acquire()
+            .await
+            .map_err(|e| make_err!(Code::Internal, "Failed to acquire permit: {e:?}"))
+    }
+}
+
+#[async_trait]
+impl StoreDriver for SemaphoreStore {
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        let _guard = self.get_permit().await?;
+        // Ensure this isn't returned in two or fewer writes as that is the buffer size.
+        let (second_writer, mut second_reader) = make_buf_channel_pair();
+        let write_fut = async move {
+            let data = second_reader.recv().await?;
+            if data.len() > 6 {
+                writer.send(data.slice(0..1)).await?;
+                writer.send(data.slice(1..2)).await?;
+                writer.send(data.slice(2..3)).await?;
+                writer.send(data.slice(3..4)).await?;
+                writer.send(data.slice(4..5)).await?;
+                writer.send(data.slice(5..)).await?;
+            } else {
+                writer.send(data).await?;
+            }
+            loop {
+                let data = second_reader.recv().await?;
+                if data.is_empty() {
+                    break;
+                }
+                writer.send(data).await?;
+            }
+            writer.send_eof()
+        };
+        let (res1, res2) = tokio::join!(
+            write_fut,
+            self.inner.get_part(key, second_writer, offset, length)
+        );
+        res1.merge(res2)
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        let _guard = self.get_permit().await?;
+        self.inner.has_with_results(digests, results).await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        mut reader: nativelink_util::buf_channel::DropCloserReadHalf,
+        upload_size: nativelink_util::store_trait::UploadSizeInfo,
+    ) -> Result<(), Error> {
+        let _guard = self.get_permit().await?;
+        let (mut second_writer, second_reader) = make_buf_channel_pair();
+        let write_fut = async move {
+            let data = reader.recv().await?;
+            if data.len() > 6 {
+                // We have two buffers each with two in so we have to chunk to cause a lock up.
+                second_writer.send(data.slice(0..1)).await?;
+                second_writer.send(data.slice(1..2)).await?;
+                second_writer.send(data.slice(2..3)).await?;
+                second_writer.send(data.slice(3..4)).await?;
+                second_writer.send(data.slice(4..5)).await?;
+                second_writer.send(data.slice(5..)).await?;
+            } else {
+                second_writer.send(data).await?;
+            }
+            loop {
+                let data = reader.recv().await?;
+                if data.is_empty() {
+                    break;
+                }
+                second_writer.send(data).await?;
+            }
+            second_writer.send_eof()
+        };
+        let (res1, res2) = tokio::join!(
+            write_fut,
+            self.inner.update(key, second_reader, upload_size)
+        );
+        res1.merge(res2)
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey<'_>>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: &Arc<Box<dyn RemoveItemCallback>>,
+    ) -> Result<(), Error> {
+        self.inner.clone().register_remove_callback(callback)
+    }
+}
+
+default_health_status_indicator!(SemaphoreStore);
+
+#[nativelink_test]
+async fn semaphore_deadlocks_handled() -> Result<(), Error> {
+    // Just enough semaphores for the action to function, one for each store.
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(2));
+    let fast_store = Store::new(SemaphoreStore::new(semaphore.clone()));
+    let slow_store = Store::new(SemaphoreStore::new(semaphore.clone()));
+    let fast_slow_store_config = FastSlowSpec {
+        fast: StoreSpec::Memory(MemorySpec::default()),
+        slow: StoreSpec::Noop(NoopSpec::default()),
+    };
+    let fast_slow_store = Arc::new(FastSlowStore::new_with_deadlock_timeout(
+        &fast_slow_store_config,
+        fast_store.clone(),
+        slow_store.clone(),
+        core::time::Duration::from_secs(1),
+    ));
+
+    let data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    // Upload some dummy data to the slow store.
+    slow_store
+        .update_oneshot(digest, data.clone().into())
+        .await?;
+
+    // Now try to get it back without a permit, this should deadlock.  We release the
+    // semaphore when it's released from the other store.
+    let guard = semaphore.clone().acquire_owned().await.unwrap();
+    let release_fut = async move {
+        // Wait for the store to get the last permit.
+        while semaphore.available_permits() > 0 {
+            tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+        }
+        // Now wait for it to be released.
+        let _second_guard = semaphore.acquire().await.unwrap();
+        // Now release all the permits.
+        drop(guard);
+    };
+    let (_, result) = tokio::join!(
+        release_fut,
+        tokio::time::timeout(
+            core::time::Duration::from_secs(10),
+            fast_slow_store.get_part_unchunked(digest, 0, None)
+        )
+    );
+    assert_eq!(
+        result.map_err(|_| make_err!(Code::Internal, "Semaphore deadlock"))?,
+        Ok(data.into())
+    );
+
+    Ok(())
+}

@@ -171,7 +171,10 @@ async fn test_resumable_upload() -> Result<(), Error> {
 
     // Start a resumable upload
     let upload_id = mock_ops.start_resumable_write(&object_path).await?;
-    assert!(!upload_id.is_empty(), "Expected non-empty upload ID");
+    assert!(
+        !upload_id.upload_ref.is_empty(),
+        "Expected non-empty upload ID"
+    );
 
     // Upload chunks
     let chunk1 = Bytes::from_static(b"first chunk ");

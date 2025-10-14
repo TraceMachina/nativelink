@@ -17,6 +17,7 @@ use core::cmp::{max, min};
 use core::ops::Range;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::sync::{Arc, Weak};
@@ -61,6 +62,9 @@ pub struct FastSlowStore {
     // actually it's faster because we're not downloading the file multiple
     // times are doing loads of duplicate IO.
     populating_digests: Mutex<HashMap<StoreKey<'static>, Loader>>,
+    // The amount of time to allow stores to start before determining that they
+    // have deadlocked and retrying.
+    deadlock_timeout: Duration,
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -114,12 +118,22 @@ impl Drop for LoaderGuard<'_> {
 
 impl FastSlowStore {
     pub fn new(_spec: &FastSlowSpec, fast_store: Store, slow_store: Store) -> Arc<Self> {
+        Self::new_with_deadlock_timeout(_spec, fast_store, slow_store, Duration::from_secs(5))
+    }
+
+    pub fn new_with_deadlock_timeout(
+        _spec: &FastSlowSpec,
+        fast_store: Store,
+        slow_store: Store,
+        deadlock_timeout: Duration,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| Self {
             fast_store,
             slow_store,
             weak_self: weak_self.clone(),
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
+            deadlock_timeout,
         })
     }
 
@@ -185,8 +199,62 @@ impl FastSlowStore {
         let send_range = offset..length.map_or(u64::MAX, |length| length + offset);
         let mut bytes_received: u64 = 0;
 
-        let (mut fast_tx, fast_rx) = make_buf_channel_pair();
-        let (slow_tx, mut slow_rx) = make_buf_channel_pair();
+        // There's a strong possibility of a deadlock here as we're working with multiple
+        // stores.  We need to be careful that we don't hold a get semaphore if we can't
+        // open the update.  This doesn't know anything about the downstream implementations,
+        // so simply makes use of a timeout to check that the reader and writers are set up.
+        let (stores_fut, mut slow_rx, mut fast_tx) = loop {
+            let (mut fast_tx, fast_rx) = make_buf_channel_pair();
+            let (slow_tx, mut slow_rx) = make_buf_channel_pair();
+
+            let slow_store_fut = self.slow_store.get(key.borrow(), slow_tx);
+            let fast_store_fut =
+                self.fast_store
+                    .update(key.borrow(), fast_rx, UploadSizeInfo::ExactSize(sz));
+            let mut stores_fut = futures::future::join(slow_store_fut, fast_store_fut);
+            let has_semaphores_fut = tokio::time::timeout(
+                self.deadlock_timeout,
+                futures::future::join(slow_rx.peek(), fast_tx.is_waiting()),
+            );
+            tokio::select! {
+                result = &mut stores_fut => {
+                    match result {
+                        (Ok(()), Ok(())) => {
+                            // Both stores completed without the writers, probably zero byte.
+                            return Ok(());
+                        }
+                        (Ok(()), Err(err)) | (Err(err), Ok(())) => {
+                            return Err(err);
+                        }
+                        (Err(err1), Err(err2)) => {
+                            return Err(err1.merge(err2));
+                        }
+                    }
+                }
+                result = has_semaphores_fut => {
+                    match result {
+                        Ok((Ok(_), Ok(()))) => {
+                            // Both sides have started reading/writing, we assume they hold
+                            // all the permits they require and it's safe to continue.
+                            break (stores_fut, slow_rx, fast_tx);
+                        }
+                        Ok((Ok(_), Err(err)) | (Err(err), Ok(()))) => {
+                            return Err(err);
+                        }
+                        Ok((Err(err1), Err(err2))) => {
+                            return Err(err1.merge(err2));
+                        }
+                        Err(_timeout) => {
+                            // There was probably a deadlock... we need to drop and try again.
+                            drop(stores_fut);
+                            tracing::warn!("Possible deadlock in fast-slow, retrying.");
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    }
+                }
+            };
+        };
+
         let data_stream_fut = async move {
             let mut maybe_writer_pin = maybe_writer.map(Pin::new);
             loop {
@@ -225,13 +293,7 @@ impl FastSlowStore {
             }
         };
 
-        let slow_store_fut = self.slow_store.get(key.borrow(), slow_tx);
-        let fast_store_fut =
-            self.fast_store
-                .update(key.borrow(), fast_rx, UploadSizeInfo::ExactSize(sz));
-
-        let (data_stream_res, slow_res, fast_res) =
-            join!(data_stream_fut, slow_store_fut, fast_store_fut);
+        let (data_stream_res, (slow_res, fast_res)) = join!(data_stream_fut, stores_fut);
         match data_stream_res {
             Ok((fast_eof_res, maybe_writer_pin)) =>
             // Sending the EOF will drop us almost immediately in bytestream_server
@@ -262,8 +324,7 @@ impl FastSlowStore {
         if maybe_size_info.is_some() {
             return Ok(());
         }
-        let loader = self.get_loader(key.borrow());
-        loader
+        self.get_loader(key.borrow())
             .get_or_try_init(|| {
                 Pin::new(self).populate_and_maybe_stream(key.borrow(), None, 0, None)
             })
@@ -474,9 +535,8 @@ impl StoreDriver for FastSlowStore {
             return Ok(());
         }
 
-        let loader = self.get_loader(key.borrow());
         let mut writer = Some(writer);
-        loader
+        self.get_loader(key.borrow())
             .get_or_try_init(|| {
                 writer
                     .take()
@@ -486,7 +546,6 @@ impl StoreDriver for FastSlowStore {
                     .expect("writer somehow became None")
             })
             .await?;
-        drop(loader);
 
         // If we didn't stream then re-enter which will stream from the fast
         // store, or retry the download.  We should not get in a loop here

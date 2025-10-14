@@ -261,8 +261,23 @@ where
         } else {
             None
         };
-        let mut upload_id: Option<String> = None;
         let client = &self.client;
+        let upload_id = self
+            .retrier
+            .retry(unfold((), |()| async {
+                match client.start_resumable_write(&object_path).await {
+                    Ok(id) => Some((RetryResult::Ok(id), ())),
+                    Err(e) => Some((
+                        RetryResult::Retry(make_err!(
+                            Code::Aborted,
+                            "Failed to start resumable upload: {:?}",
+                            e
+                        )),
+                        (),
+                    )),
+                }
+            }))
+            .await?;
 
         loop {
             let chunk = reader.consume(Some(self.max_chunk_size)).await?;
@@ -274,35 +289,12 @@ where
                 total_size = Some(offset + chunk.len() as u64);
             }
 
-            let upload_id_ref = if let Some(upload_id_ref) = &upload_id {
-                upload_id_ref
-            } else {
-                // Initiate the upload session on the first non-empty chunk.
-                upload_id = Some(
-                    self.retrier
-                        .retry(unfold((), |()| async {
-                            match client.start_resumable_write(&object_path).await {
-                                Ok(id) => Some((RetryResult::Ok(id), ())),
-                                Err(e) => Some((
-                                    RetryResult::Retry(make_err!(
-                                        Code::Aborted,
-                                        "Failed to start resumable upload: {:?}",
-                                        e
-                                    )),
-                                    (),
-                                )),
-                            }
-                        }))
-                        .await?,
-                );
-                upload_id.as_deref().unwrap()
-            };
-
             let current_offset = offset;
             offset += chunk.len() as u64;
 
             // Uploading the chunk with a retry
             let object_path_ref = &object_path;
+            let upload_id_ref = &upload_id;
             self.retrier
                 .retry(unfold(chunk, |chunk| async move {
                     match client
@@ -325,40 +317,30 @@ where
 
         // Handle the case that the stream was of unknown length and
         // happened to be an exact multiple of chunk size.
-        if let Some(upload_id_ref) = &upload_id {
-            if total_size.is_none() {
-                let object_path_ref = &object_path;
-                self.retrier
-                    .retry(unfold((), |()| async move {
-                        match client
-                            .upload_chunk(
-                                upload_id_ref,
-                                object_path_ref,
-                                Bytes::new(),
-                                offset,
-                                offset,
-                                Some(offset),
-                            )
-                            .await
-                        {
-                            Ok(()) => Some((RetryResult::Ok(()), ())),
-                            Err(e) => Some((RetryResult::Retry(e), ())),
-                        }
-                    }))
-                    .await?;
-            }
-        } else {
-            // Handle streamed empty file.
-            return self
-                .retrier
-                .retry(unfold((), |()| async {
-                    match client.write_object(&object_path, Vec::new()).await {
+        if total_size.is_none() {
+            let object_path_ref = &object_path;
+            let upload_id_ref = &upload_id;
+            self.retrier
+                .retry(unfold((), |()| async move {
+                    match client
+                        .upload_chunk(
+                            upload_id_ref,
+                            object_path_ref,
+                            Bytes::new(),
+                            offset,
+                            offset,
+                            Some(offset),
+                        )
+                        .await
+                    {
                         Ok(()) => Some((RetryResult::Ok(()), ())),
                         Err(e) => Some((RetryResult::Retry(e), ())),
                     }
                 }))
-                .await;
+                .await?;
         }
+        // Ensure we drop the permit before verifying.
+        drop(upload_id);
 
         // Verifying if the upload was successful
         self.retrier
