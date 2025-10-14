@@ -204,7 +204,7 @@ async fn simple_update_ac() -> Result<(), Error> {
     const CONTENT_LENGTH: usize = 50;
     let mut send_data = BytesMut::new();
     for i in 0..CONTENT_LENGTH {
-        send_data.put_u8(((i % 93) + 33) as u8); // Printable characters only.
+        send_data.put_u8(u8::try_from((i % 93) + 33).expect("printable ASCII range"));
     }
     let send_data = send_data.freeze();
 
@@ -456,9 +456,9 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
     const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
     const AC_ENTRY_SIZE: usize = MIN_MULTIPART_SIZE * 2 + 50;
 
-    let mut send_data = Vec::with_capacity(AC_ENTRY_SIZE);
+    let mut send_data: Vec<u8> = Vec::with_capacity(AC_ENTRY_SIZE);
     for i in 0..send_data.capacity() {
-        send_data.push(((i * 3) % 256) as u8);
+        send_data.push(u8::try_from((i * 3) % 256).expect("modulo 256 always fits in u8"));
     }
     let digest = DigestInfo::try_new(VALID_HASH1, send_data.len())?;
 

@@ -177,18 +177,22 @@ impl RedisStore {
                 spec.retry.jitter = DEFAULT_RETRY_JITTER;
             }
 
+            let to_ms = |secs: f32| -> u32 {
+                Duration::from_secs_f32(secs)
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u32::MAX)
+            };
+
             let max_retries = u32::try_from(spec.retry.max_retries)
                 .err_tip(|| "max_retries could not be converted to u32 in RedisStore::new")?;
-            let min_delay_ms = (spec.retry.delay * 1000.0) as u32;
-            let max_delay_ms = 8000;
-            let jitter = (spec.retry.jitter * spec.retry.delay * 1000.0) as u32;
 
-            let mut reconnect_policy = ReconnectPolicy::new_exponential(
-                max_retries,  /* max_retries, 0 is unlimited */
-                min_delay_ms, /* min_delay */
-                max_delay_ms, /* max_delay */
-                2,            /* mult */
-            );
+            let min_delay_ms = to_ms(spec.retry.delay);
+            let max_delay_ms = 8000;
+            let jitter = to_ms(spec.retry.jitter * spec.retry.delay);
+
+            let mut reconnect_policy =
+                ReconnectPolicy::new_exponential(max_retries, min_delay_ms, max_delay_ms, 2);
             reconnect_policy.set_jitter(jitter);
             reconnect_policy
         };
