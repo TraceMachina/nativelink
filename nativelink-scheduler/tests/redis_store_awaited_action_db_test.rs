@@ -247,7 +247,7 @@ impl Mocks for FakeRedisBackend {
                     }
                 }
             }
-            results[0] = ((results.len() - 1) as u32).into();
+            results[0] = u32::try_from(results.len() - 1).unwrap_or(u32::MAX).into();
             return Ok(RedisValue::Array(vec![
                 RedisValue::Array(results),
                 RedisValue::Integer(0), // Means no more items in cursor.
