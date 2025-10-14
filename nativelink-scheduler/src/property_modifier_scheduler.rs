@@ -16,7 +16,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_config::schedulers::{PropertyModification, PropertyModifierSpec};
+use nativelink_config::schedulers::{
+    PlatformPropertyReplacement, PropertyModification, PropertyModifierSpec,
+};
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{ActionInfo, OperationId};
@@ -71,7 +73,8 @@ impl PropertyModifierScheduler {
         );
         for modification in &self.modifications {
             match modification {
-                PropertyModification::Remove(name) => {
+                PropertyModification::Remove(name)
+                | PropertyModification::Replace(PlatformPropertyReplacement { name, .. }) => {
                     known_properties.insert(name.clone());
                 }
                 PropertyModification::Add(_) => (),
@@ -93,13 +96,36 @@ impl PropertyModifierScheduler {
         let action_info_mut = Arc::make_mut(&mut action_info);
         for modification in &self.modifications {
             match modification {
-                PropertyModification::Add(addition) => action_info_mut
-                    .platform_properties
-                    .insert(addition.name.clone(), addition.value.clone()),
-                PropertyModification::Remove(name) => {
-                    action_info_mut.platform_properties.remove(name)
+                PropertyModification::Add(addition) => {
+                    action_info_mut
+                        .platform_properties
+                        .insert(addition.name.clone(), addition.value.clone());
                 }
-            };
+                PropertyModification::Remove(name) => {
+                    action_info_mut.platform_properties.remove(name);
+                }
+                PropertyModification::Replace(replacement) => {
+                    if let Some((existing_name, existing_value)) = action_info_mut
+                        .platform_properties
+                        .remove_entry(&replacement.name)
+                    {
+                        if replacement
+                            .value
+                            .as_ref()
+                            .is_none_or(|value| *value == existing_value)
+                        {
+                            action_info_mut.platform_properties.insert(
+                                replacement.new_name.clone(),
+                                replacement.new_value.clone().unwrap_or(existing_value),
+                            );
+                        } else {
+                            action_info_mut
+                                .platform_properties
+                                .insert(existing_name, existing_value);
+                        }
+                    }
+                }
+            }
         }
         self.scheduler
             .add_action(client_operation_id, action_info)
