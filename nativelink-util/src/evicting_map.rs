@@ -34,13 +34,13 @@ use crate::metrics_utils::{Counter, CounterWithTime};
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 pub struct SerializedLRU<K> {
-    pub data: Vec<(K, i32)>,
+    pub data: Vec<(K, u32)>,
     pub anchor_time: u64,
 }
 
 #[derive(Debug)]
 struct EvictionItem<T: LenEntry + Debug> {
-    seconds_since_anchor: i32,
+    seconds_since_anchor: u32,
     data: T,
 }
 
@@ -194,11 +194,11 @@ pub struct EvictingMap<
     #[metric(help = "Number of bytes to evict when the store is full")]
     evict_bytes: u64,
     #[metric(help = "Maximum number of seconds to keep an item in the store")]
-    max_seconds: i32,
+    max_seconds: u32,
     #[metric(help = "Maximum number of items to keep in the store")]
     max_count: u64,
     #[metric(help = "Grace period in seconds to prevent eviction of recently accessed items")]
-    eviction_grace_period_seconds: i32,
+    eviction_grace_period_seconds: u32,
 }
 
 impl<K, Q, T, I> EvictingMap<K, Q, T, I>
@@ -227,9 +227,9 @@ where
             anchor_time,
             max_bytes: config.max_bytes as u64,
             evict_bytes: config.evict_bytes as u64,
-            max_seconds: config.max_seconds as i32,
+            max_seconds: config.max_seconds,
             max_count: config.max_count,
-            eviction_grace_period_seconds: config.eviction_grace_period_seconds as i32,
+            eviction_grace_period_seconds: config.eviction_grace_period_seconds,
         }
     }
 
@@ -279,31 +279,33 @@ where
     }
 
     /// Returns (should_evict, within_grace_period)
+    /// When force_evict is true, grace period is ignored (for critical disk situations)
     fn should_evict_with_grace_check(
         &self,
         lru_len: usize,
         peek_entry: &EvictionItem<T>,
         sum_store_size: u64,
         max_bytes: u64,
+        force_evict: bool,
     ) -> (bool, bool) {
-        // Check if item is within grace period
-        let within_grace_period = if self.eviction_grace_period_seconds > 0 {
-            let current_time_seconds = self.anchor_time.elapsed().as_secs() as i32;
-            let item_age = current_time_seconds - peek_entry.seconds_since_anchor;
+        // Check if item is within grace period (unless forced)
+        let within_grace_period = if !force_evict && self.eviction_grace_period_seconds > 0 {
+            let current_time_seconds = self.anchor_time.elapsed().as_secs() as u32;
+            let item_age = current_time_seconds.saturating_sub(peek_entry.seconds_since_anchor);
             item_age < self.eviction_grace_period_seconds
         } else {
             false
         };
 
-        // If within grace period, do not evict
+        // If within grace period and not forced, do not evict
         if within_grace_period {
             return (false, true);
         }
 
         let is_over_size = max_bytes != 0 && sum_store_size >= max_bytes;
 
-        let evict_older_than_seconds =
-            (self.anchor_time.elapsed().as_secs() as i32) - self.max_seconds;
+        let evict_older_than_seconds = (self.anchor_time.elapsed().as_secs() as u32)
+            .saturating_sub(self.max_seconds);
         let old_item_exists =
             self.max_seconds != 0 && peek_entry.seconds_since_anchor < evict_older_than_seconds;
 
@@ -318,15 +320,24 @@ where
             return Vec::new();
         };
 
-        let (should_evict_initial, _within_grace) = self.should_evict_with_grace_check(
-            state.lru.len(),
-            peek_entry,
-            state.sum_store_size,
-            self.max_bytes,
-        );
+        // Optimize: Only check eviction if we have eviction policies configured
+        // Calculate the eviction watermark (lower threshold to evict to)
+        let max_bytes = if self.max_bytes != 0 && self.evict_bytes != 0 {
+            // Check if we should start evicting
+            let (should_evict, _) = self.should_evict_with_grace_check(
+                state.lru.len(),
+                peek_entry,
+                state.sum_store_size,
+                self.max_bytes,
+                false, // Not forced yet
+            );
 
-        let max_bytes = if self.max_bytes != 0 && self.evict_bytes != 0 && should_evict_initial {
-            self.max_bytes.saturating_sub(self.evict_bytes)
+            // If evicting, set a lower watermark to reduce thrashing
+            if should_evict {
+                self.max_bytes.saturating_sub(self.evict_bytes)
+            } else {
+                self.max_bytes
+            }
         } else {
             self.max_bytes
         };
@@ -334,18 +345,24 @@ where
         let mut items_to_unref = Vec::new();
 
         loop {
+            // Force eviction only if we're at a critical threshold (150% of max_bytes)
+            // This prevents disk space issues while still respecting grace period under normal conditions
+            let force_evict = self.max_bytes != 0
+                && state.sum_store_size >= self.max_bytes.saturating_add(self.max_bytes / 2);
+
             let (should_evict, within_grace_period) = self.should_evict_with_grace_check(
                 state.lru.len(),
                 peek_entry,
                 state.sum_store_size,
                 max_bytes,
+                force_evict,
             );
 
             if !should_evict {
                 if within_grace_period {
                     // Track that grace period blocked an eviction
                     state.grace_period_blocks.inc();
-                    info!(
+                    debug!(
                         "Grace period preventing eviction of LRU item (age < {} seconds)",
                         self.eviction_grace_period_seconds
                     );
@@ -415,7 +432,7 @@ where
                     // based on the current time. In such case, we remove the item while
                     // we are here.
                     let (should_evict, _) =
-                        self.should_evict_with_grace_check(lru_len, entry, 0, u64::MAX);
+                        self.should_evict_with_grace_check(lru_len, entry, 0, u64::MAX, false);
                     if should_evict {
                         *result = None;
                         if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
@@ -429,7 +446,7 @@ where
                     } else {
                         if !peek {
                             entry.seconds_since_anchor =
-                                self.anchor_time.elapsed().as_secs() as i32;
+                                self.anchor_time.elapsed().as_secs() as u32;
                         }
                         *result = Some(entry.data.len());
                     }
@@ -449,6 +466,7 @@ where
                     peek_entry,
                     state.sum_store_size,
                     self.max_bytes,
+                    false,
                 );
                 should_evict
             } else {
@@ -471,7 +489,7 @@ where
         // Now get the item
         let mut state = self.state.lock_arc();
         let entry = state.lru.get_mut(key.borrow())?;
-        entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
+        entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as u32;
         Some(entry.data.clone())
     }
 
@@ -480,12 +498,12 @@ where
     where
         K: 'static,
     {
-        self.insert_with_time(key, data, self.anchor_time.elapsed().as_secs() as i32)
+        self.insert_with_time(key, data, self.anchor_time.elapsed().as_secs() as u32)
             .await
     }
 
     /// Returns the replaced item if any.
-    pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
+    pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: u32) -> Option<T> {
         let items_to_unref = {
             let mut state = self.state.lock_arc();
             self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
@@ -520,7 +538,7 @@ where
 
         let items_to_unref = {
             let state = &mut self.state.lock_arc();
-            self.inner_insert_many(state, inserts, self.anchor_time.elapsed().as_secs() as i32)
+            self.inner_insert_many(state, inserts, self.anchor_time.elapsed().as_secs() as u32)
                 .await
         };
 
@@ -538,7 +556,7 @@ where
         &self,
         state: &mut State<K, Q, T>,
         inserts: It,
-        seconds_since_anchor: i32,
+        seconds_since_anchor: u32,
     ) -> Vec<T>
     where
         It: IntoIterator<Item = (K, T)> + Send,
