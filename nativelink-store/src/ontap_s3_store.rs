@@ -73,6 +73,8 @@ const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 20 * 1024 * 1024; // 20MB
 // Default limit for concurrent part uploads per multipart upload
 const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: usize = 10;
 
+type RemoveCallback = Arc<dyn RemoveItemCallback>;
+
 #[derive(Debug, MetricsComponent)]
 pub struct OntapS3Store<NowFn> {
     s3_client: Arc<Client>,
@@ -89,7 +91,7 @@ pub struct OntapS3Store<NowFn> {
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
 
-    remove_callbacks: Arc<Mutex<Vec<Arc<Box<dyn RemoveItemCallback>>>>>,
+    remove_callbacks: Arc<Mutex<Vec<RemoveCallback>>>,
 }
 
 pub fn load_custom_certs(cert_path: &str) -> Result<Arc<ClientConfig>, Error> {
@@ -244,11 +246,12 @@ where
                                     let now_s = (self.now_fn)().unix_timestamp() as i64;
                                     if last_modified.secs() + self.consider_expired_after_s <= now_s
                                     {
-                                        let store_key = local_digest.borrow();
                                         let remove_callbacks = self.remove_callbacks.lock_arc();
                                         let callbacks = remove_callbacks
                                             .iter()
-                                            .map(|callback| callback.callback(&store_key))
+                                            .map(|callback| {
+                                                callback.callback(local_digest.borrow())
+                                            })
                                             .collect::<Vec<_>>();
                                         for callback in callbacks {
                                             callback.await;
@@ -768,9 +771,9 @@ where
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
-        self.remove_callbacks.lock_arc().push(callback.clone());
+        self.remove_callbacks.lock_arc().push(callback);
         Ok(())
     }
 }

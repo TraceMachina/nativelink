@@ -233,7 +233,7 @@ impl StoreDriver for VerifyStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
         self.inner_store.register_remove_callback(callback)
     }
