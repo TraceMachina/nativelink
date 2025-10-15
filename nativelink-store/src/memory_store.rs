@@ -61,7 +61,13 @@ impl LenEntry for BytesWrapper {
 #[derive(Debug, MetricsComponent)]
 pub struct MemoryStore {
     #[metric(group = "evicting_map")]
-    evicting_map: EvictingMap<StoreKeyBorrow, StoreKey<'static>, BytesWrapper, SystemTime>,
+    evicting_map: EvictingMap<
+        StoreKeyBorrow,
+        StoreKey<'static>,
+        BytesWrapper,
+        SystemTime,
+        RemoveItemCallbackHolder,
+    >,
 }
 
 impl MemoryStore {
@@ -208,10 +214,10 @@ impl StoreDriver for MemoryStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
         self.evicting_map
-            .add_remove_callback(Box::new(RemoveItemCallbackHolder::new(callback)));
+            .add_remove_callback(RemoveItemCallbackHolder::new(callback));
         Ok(())
     }
 }

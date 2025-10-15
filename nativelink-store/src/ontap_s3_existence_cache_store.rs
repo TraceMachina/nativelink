@@ -97,18 +97,23 @@ where
     }
 }
 
-#[async_trait]
 impl<I, NowFn> RemoveItemCallback for OntapS3CacheCallback<I, NowFn>
 where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
 {
-    async fn callback(&self, store_key: &StoreKey<'_>) {
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let cache = self.cache.upgrade();
         if let Some(local_cache) = cache {
-            local_cache.callback(store_key).await;
+            Box::pin(async move {
+                local_cache.callback(store_key).await;
+            })
         } else {
             debug!("Cache dropped, so not doing callback");
+            Box::pin(async {})
         }
     }
 }
@@ -363,9 +368,7 @@ where
         let other_ref = Arc::downgrade(&cache);
         cache
             .inner_store
-            .register_remove_callback(&Arc::new(Box::new(OntapS3CacheCallback {
-                cache: other_ref,
-            })))?;
+            .register_remove_callback(Arc::new(OntapS3CacheCallback { cache: other_ref }))?;
 
         // Try to load existing cache file
         if let Ok(contents) = fs::read_to_string(&spec.index_path).await {
@@ -532,21 +535,25 @@ where
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
         self.inner_store.register_remove_callback(callback)
     }
 }
 
-#[async_trait]
 impl<I, NowFn> RemoveItemCallback for OntapS3ExistenceCache<I, NowFn>
 where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
 {
-    async fn callback(&self, store_key: &StoreKey<'_>) {
-        let new_key = store_key.borrow();
-        self.digests.write().await.remove(&new_key.into_digest());
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let digest = store_key.borrow().into_digest();
+        Box::pin(async move {
+            self.digests.write().await.remove(&digest);
+        })
     }
 }
 

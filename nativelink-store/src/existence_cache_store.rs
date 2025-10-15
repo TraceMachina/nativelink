@@ -66,15 +66,19 @@ impl ExistenceCacheStore<SystemTime> {
     }
 }
 
-#[async_trait]
 impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheStore<I> {
-    async fn callback(&self, store_key: &StoreKey<'_>) {
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         debug!(?store_key, "Removing item from cache due to callback");
-        let new_key = store_key.borrow();
-        let deleted_key = self.existence_cache.remove(&new_key.into_digest()).await;
-        if !deleted_key {
-            info!(?store_key, "Failed to delete key from cache on callback");
-        }
+        let digest = store_key.borrow().into_digest();
+        Box::pin(async move {
+            let deleted_key = self.existence_cache.remove(&digest).await;
+            if !deleted_key {
+                info!(?store_key, "Failed to delete key from cache on callback");
+            }
+        })
     }
 }
 
@@ -83,19 +87,25 @@ struct ExistenceCacheCallback<I: InstantWrapper> {
     cache: Weak<ExistenceCacheStore<I>>,
 }
 
-#[async_trait]
 impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
-    async fn callback(&self, store_key: &StoreKey<'_>) {
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let cache = self.cache.upgrade();
         if let Some(local_cache) = cache {
             if let Some(callbacks) = &mut *local_cache.pause_remove_callbacks.lock_arc() {
-                callbacks.push(store_key.borrow().into_owned());
+                callbacks.push(store_key.into_owned());
             } else {
-                local_cache.callback(store_key).await;
+                let store_key = store_key.into_owned();
+                return Box::pin(async move {
+                    local_cache.callback(store_key).await;
+                });
             }
         } else {
             debug!("Cache dropped, so not doing callback");
         }
+        Box::pin(async {})
     }
 }
 
@@ -115,9 +125,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
         let other_ref = Arc::downgrade(&existence_cache_store);
         existence_cache_store
             .inner_store
-            .register_remove_callback(&Arc::new(Box::new(ExistenceCacheCallback {
-                cache: other_ref,
-            })))
+            .register_remove_callback(Arc::new(ExistenceCacheCallback { cache: other_ref }))
             .expect("Register remove callback should work");
         existence_cache_store
     }
@@ -257,7 +265,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             let mut locked_callbacks = self.pause_remove_callbacks.lock_arc();
             if let Some(callbacks) = locked_callbacks.take() {
                 for store_key in callbacks {
-                    self.callback(&store_key).await;
+                    self.callback(store_key).await;
                 }
             }
         }
@@ -299,7 +307,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
         self.inner_store.register_remove_callback(callback)
     }

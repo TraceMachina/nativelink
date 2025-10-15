@@ -17,16 +17,19 @@ use core::cmp::Eq;
 use core::fmt::Debug;
 use core::future::Future;
 use core::hash::Hash;
+use core::marker::PhantomData;
 use core::ops::RangeBounds;
+use core::pin::Pin;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_metric::MetricsComponent;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tonic::async_trait;
 use tracing::{debug, info};
 
 use crate::instant_wrapper::InstantWrapper;
@@ -89,9 +92,8 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
 // Callback to be called when the EvictingMap removes an item
 // either via eviction or direct deletion. This will be called with
 // whatever key type the EvictingMap uses.
-#[async_trait]
-pub trait RemoveStateCallback<Q>: Debug + Send + Sync {
-    async fn callback(&self, key: &Q);
+pub trait RemoveItemCallback<Q>: Debug + Send + Sync {
+    fn callback(&self, store_key: &Q) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 }
 
 #[derive(Debug, MetricsComponent)]
@@ -99,6 +101,7 @@ struct State<
     K: Ord + Hash + Eq + Clone + Debug + Send + Borrow<Q>,
     Q: Ord + Hash + Eq + Debug,
     T: LenEntry + Debug + Send,
+    C: RemoveItemCallback<Q>,
 > {
     lru: LruCache<K, EvictionItem<T>>,
     btree: Option<BTreeSet<K>>,
@@ -116,24 +119,33 @@ struct State<
     #[metric(help = "Number of bytes inserted into the store since it was created")]
     lifetime_inserted_bytes: Counter,
 
-    remove_callbacks: Arc<Mutex<Vec<Box<dyn RemoveStateCallback<Q>>>>>,
+    _key_type: PhantomData<Q>,
+    remove_callbacks: Mutex<Vec<C>>,
 }
+
+type RemoveFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 impl<
     K: Ord + Hash + Eq + Clone + Debug + Send + Sync + Borrow<Q>,
     Q: Ord + Hash + Eq + Debug + Sync,
     T: LenEntry + Debug + Sync + Send,
-> State<K, Q, T>
+    C: RemoveItemCallback<Q>,
+> State<K, Q, T, C>
 {
     /// Removes an item from the cache and returns the data for deferred cleanup.
     /// The caller is responsible for calling `unref()` on the returned data outside of the lock.
     #[must_use]
-    async fn remove(&mut self, key: &Q, eviction_item: &EvictionItem<T>, replaced: bool) -> T
+    fn remove(
+        &mut self,
+        key: &Q,
+        eviction_item: &EvictionItem<T>,
+        replaced: bool,
+    ) -> (T, Vec<RemoveFuture>)
     where
         T: Clone,
     {
         if let Some(btree) = &mut self.btree {
-            btree.remove(key.borrow());
+            btree.remove(key);
         }
         self.sum_store_size -= eviction_item.data.len();
         if replaced {
@@ -144,19 +156,21 @@ impl<
             self.evicted_bytes.add(eviction_item.data.len());
         }
 
-        let locked_callbacks = self.remove_callbacks.lock_arc();
-        for callback in locked_callbacks.iter() {
-            callback.callback(key).await;
-        }
+        let callbacks = self
+            .remove_callbacks
+            .lock()
+            .iter()
+            .map(|callback| callback.callback(key))
+            .collect();
 
         // Return the data for deferred unref outside of lock
-        eviction_item.data.clone()
+        (eviction_item.data.clone(), callbacks)
     }
 
     /// Inserts a new item into the cache. If the key already exists, the old item is returned
     /// for deferred cleanup.
     #[must_use]
-    async fn put(&mut self, key: &K, eviction_item: EvictionItem<T>) -> Option<T>
+    fn put(&mut self, key: &K, eviction_item: EvictionItem<T>) -> Option<(T, Vec<RemoveFuture>)>
     where
         K: Clone,
         T: Clone,
@@ -165,15 +179,22 @@ impl<
         if let Some(btree) = &mut self.btree {
             btree.insert(key.clone());
         }
-        if let Some(old_item) = self.lru.put(key.clone(), eviction_item) {
-            let old_data = self.remove(key.borrow(), &old_item, true).await;
-            return Some(old_data);
-        }
-        None
+        self.lru
+            .put(key.clone(), eviction_item)
+            .map(|old_item| self.remove(key.borrow(), &old_item, true))
     }
 
-    fn add_remove_callback(&self, callback: Box<dyn RemoveStateCallback<Q>>) {
-        self.remove_callbacks.lock_arc().push(callback);
+    fn add_remove_callback(&self, callback: C) {
+        self.remove_callbacks.lock().push(callback);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NoopRemove;
+
+impl<Q> RemoveItemCallback<Q> for NoopRemove {
+    fn callback(&self, _store_key: &Q) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async {})
     }
 }
 
@@ -183,9 +204,10 @@ pub struct EvictingMap<
     Q: Ord + Hash + Eq + Debug,
     T: LenEntry + Debug + Send,
     I: InstantWrapper,
+    C: RemoveItemCallback<Q> = NoopRemove,
 > {
     #[metric]
-    state: Arc<Mutex<State<K, Q, T>>>,
+    state: Arc<Mutex<State<K, Q, T, C>>>,
     anchor_time: I,
     #[metric(help = "Maximum size of the store in bytes")]
     max_bytes: u64,
@@ -197,12 +219,13 @@ pub struct EvictingMap<
     max_count: u64,
 }
 
-impl<K, Q, T, I> EvictingMap<K, Q, T, I>
+impl<K, Q, T, I, C> EvictingMap<K, Q, T, I, C>
 where
     K: Ord + Hash + Eq + Clone + Debug + Send + Sync + Borrow<Q>,
     Q: Ord + Hash + Eq + Debug + Sync,
     T: LenEntry + Debug + Clone + Send + Sync,
     I: InstantWrapper,
+    C: RemoveItemCallback<Q>,
 {
     pub fn new(config: &EvictionPolicy, anchor_time: I) -> Self {
         Self {
@@ -217,7 +240,8 @@ where
                 replaced_bytes: Counter::default(),
                 replaced_items: CounterWithTime::default(),
                 lifetime_inserted_bytes: Counter::default(),
-                remove_callbacks: Arc::new(Mutex::new(vec![])),
+                _key_type: PhantomData,
+                remove_callbacks: Mutex::new(Vec::new()),
             })),
             anchor_time,
             max_bytes: config.max_bytes as u64,
@@ -234,7 +258,7 @@ where
         }
     }
 
-    fn rebuild_btree_index(state: &mut State<K, Q, T>) {
+    fn rebuild_btree_index(state: &mut State<K, Q, T, C>) {
         state.btree = Some(state.lru.iter().map(|(k, _)| k).cloned().collect());
     }
 
@@ -292,9 +316,9 @@ where
     }
 
     #[must_use]
-    async fn evict_items(&self, state: &mut State<K, Q, T>) -> Vec<T> {
+    async fn evict_items(&self, state: &mut State<K, Q, T, C>) -> (Vec<T>, Vec<RemoveFuture>) {
         let Some((_, mut peek_entry)) = state.lru.peek_lru() else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
 
         let max_bytes = if self.max_bytes != 0
@@ -311,6 +335,7 @@ where
         };
 
         let mut items_to_unref = Vec::new();
+        let mut removal_futures = Vec::new();
 
         while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, max_bytes) {
             let (key, eviction_item) = state
@@ -318,8 +343,9 @@ where
                 .pop_lru()
                 .expect("Tried to peek() then pop() but failed");
             debug!(?key, "Evicting",);
-            let data = state.remove(key.borrow(), &eviction_item, false).await;
+            let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);
+            removal_futures.extend(futures.into_iter());
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
                 entry
@@ -328,14 +354,11 @@ where
             };
         }
 
-        items_to_unref
+        (items_to_unref, removal_futures)
     }
 
     /// Return the size of a `key`, if not found `None` is returned.
-    pub async fn size_for_key(&self, key: &Q) -> Option<u64>
-    where
-        Q: Sync,
-    {
+    pub async fn size_for_key(&self, key: &Q) -> Option<u64> {
         let mut results = [None];
         self.sizes_for_keys([key], &mut results[..], false).await;
         results[0]
@@ -378,10 +401,14 @@ where
                         *result = None;
                         if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
                             info!(?key, "Item expired, evicting");
-                            let data = state.remove(key.borrow(), &eviction_item, false).await;
+                            let (data, removal_futures) =
+                                state.remove(key.borrow(), &eviction_item, false);
                             // Store data for later unref - we can't drop state here as we're still iterating
                             // The unref will happen after the method completes
                             // For now, we just do inline unref
+                            let mut callbacks: FuturesUnordered<_> =
+                                removal_futures.into_iter().collect();
+                            while callbacks.next().await.is_some() {}
                             data.unref().await;
                         }
                     } else {
@@ -415,14 +442,16 @@ where
 
         // Perform eviction if needed
         if needs_eviction {
-            let items_to_unref = {
+            let (items_to_unref, removal_futures) = {
                 let mut state = self.state.lock_arc();
                 self.evict_items(&mut *state).await
             };
             // Unref items outside of lock
-            for item in items_to_unref {
-                item.unref().await;
-            }
+            let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
+            while callbacks.next().await.is_some() {}
+            let mut callbacks: FuturesUnordered<_> =
+                items_to_unref.iter().map(|item| item.unref()).collect();
+            while callbacks.next().await.is_some() {}
         }
 
         // Now get the item
@@ -443,20 +472,24 @@ where
 
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
-        let items_to_unref = {
+        let (items_to_unref, removal_futures) = {
             let mut state = self.state.lock_arc();
             self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
                 .await
         };
 
-        // Unref items outside of lock
-        let mut results = Vec::new();
-        for item in items_to_unref {
-            item.unref().await;
-            results.push(item);
-        }
+        let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+        while futures.next().await.is_some() {}
 
-        results.into_iter().next()
+        // Unref items outside of lock
+        let futures: FuturesUnordered<_> = items_to_unref
+            .into_iter()
+            .map(|item| async move {
+                item.unref().await;
+                item
+            })
+            .collect();
+        futures.collect::<Vec<_>>().await.into_iter().next()
     }
 
     /// Same as `insert()`, but optimized for multiple inserts.
@@ -475,28 +508,33 @@ where
             return Vec::new();
         }
 
-        let items_to_unref = {
+        let (items_to_unref, removal_futures) = {
             let state = &mut self.state.lock_arc();
             self.inner_insert_many(state, inserts, self.anchor_time.elapsed().as_secs() as i32)
                 .await
         };
 
-        // Unref items outside of lock
-        let mut results = Vec::new();
-        for item in items_to_unref {
-            item.unref().await;
-            results.push(item);
-        }
+        let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+        while futures.next().await.is_some() {}
 
-        results
+        // Unref items outside of lock
+        items_to_unref
+            .into_iter()
+            .map(|item| async move {
+                item.unref().await;
+                item
+            })
+            .collect::<FuturesUnordered<_>>()
+            .collect::<Vec<_>>()
+            .await
     }
 
     async fn inner_insert_many<It>(
         &self,
-        state: &mut State<K, Q, T>,
+        state: &mut State<K, Q, T, C>,
         inserts: It,
         seconds_since_anchor: i32,
-    ) -> Vec<T>
+    ) -> (Vec<T>, Vec<RemoveFuture>)
     where
         It: IntoIterator<Item = (K, T)> + Send,
         // Note: It's not enough to have the inserts themselves be Send. The
@@ -504,6 +542,7 @@ where
         <It as IntoIterator>::IntoIter: Send,
     {
         let mut replaced_items = Vec::new();
+        let mut removal_futures = Vec::new();
         for (key, data) in inserts {
             let new_item_size = data.len();
             let eviction_item = EvictionItem {
@@ -511,7 +550,8 @@ where
                 data,
             };
 
-            if let Some(old_item) = state.put(&key, eviction_item).await {
+            if let Some((old_item, futures)) = state.put(&key, eviction_item) {
+                removal_futures.extend(futures.into_iter());
                 replaced_items.push(old_item);
             }
             state.sum_store_size += new_item_size;
@@ -519,38 +559,42 @@ where
         }
 
         // Perform eviction after all insertions
-        let items_to_unref = self.evict_items(state).await;
+        let (items_to_unref, futures) = self.evict_items(state).await;
+        removal_futures.extend(futures.into_iter());
 
         // Note: We cannot drop the state lock here since we're borrowing it,
         // but the caller will handle unreffing these items after releasing the lock
-        for item in items_to_unref {
-            replaced_items.push(item);
-        }
+        replaced_items.extend(items_to_unref.into_iter());
 
-        replaced_items
+        (replaced_items, removal_futures)
     }
 
     pub async fn remove(&self, key: &Q) -> bool {
-        let (items_to_unref, removed_item) = {
+        let (items_to_unref, removed_item, removal_futures) = {
             let mut state = self.state.lock_arc();
 
             // First perform eviction
-            let evicted_items = self.evict_items(&mut *state).await;
+            let (evicted_items, mut removal_futures) = self.evict_items(&mut *state).await;
 
             // Then try to remove the requested item
             let removed = if let Some(entry) = state.lru.pop(key.borrow()) {
-                Some(state.remove(key, &entry, false).await)
+                let (removed_item, more_removal_futures) = state.remove(key, &entry, false);
+                removal_futures.extend(more_removal_futures.into_iter());
+                Some(removed_item)
             } else {
                 None
             };
 
-            (evicted_items, removed)
+            (evicted_items, removed, removal_futures)
         };
 
+        let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
+        while callbacks.next().await.is_some() {}
+
         // Unref evicted items outside of lock
-        for item in items_to_unref {
-            item.unref().await;
-        }
+        let mut callbacks: FuturesUnordered<_> =
+            items_to_unref.iter().map(|item| item.unref()).collect();
+        while callbacks.next().await.is_some() {}
 
         // Unref removed item if any
         if let Some(item) = removed_item {
@@ -573,11 +617,13 @@ where
                 return false;
             }
             // First perform eviction
-            let evicted_items = self.evict_items(&mut state).await;
+            let (evicted_items, mut removal_futures) = self.evict_items(&mut state).await;
 
             // Then try to remove the requested item
             let removed_item = if let Some(entry) = state.lru.pop(key.borrow()) {
-                Some(state.remove(key, &entry, false).await)
+                let (item, more_removal_futures) = state.remove(key, &entry, false);
+                removal_futures.extend(more_removal_futures.into_iter());
+                Some(item)
             } else {
                 None
             };
@@ -585,23 +631,27 @@ where
             // Drop the lock before unref operations
             drop(state);
 
+            let mut removal_futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+            while removal_futures.next().await.is_some() {}
+
             // Unref evicted items
-            for item in evicted_items {
-                item.unref().await;
-            }
+            let mut callbacks: FuturesUnordered<_> =
+                evicted_items.iter().map(|item| item.unref()).collect();
+            while callbacks.next().await.is_some() {}
 
             // Unref removed item if any
             if let Some(item) = removed_item {
                 item.unref().await;
-                return true;
+                true
+            } else {
+                false
             }
-
-            return false;
+        } else {
+            false
         }
-        false
     }
 
-    pub fn add_remove_callback(&self, callback: Box<dyn RemoveStateCallback<Q>>) {
+    pub fn add_remove_callback(&self, callback: C) {
         self.state.lock_arc().add_remove_callback(callback);
     }
 }

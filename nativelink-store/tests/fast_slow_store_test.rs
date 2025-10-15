@@ -303,7 +303,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
         fn register_remove_callback(
             self: Arc<Self>,
-            _callback: &Arc<Box<dyn RemoveItemCallback>>,
+            _callback: Arc<dyn RemoveItemCallback>,
         ) -> Result<(), Error> {
             Ok(())
         }
