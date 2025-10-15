@@ -2579,6 +2579,7 @@ dependencies = [
  "serde_json5",
  "tokio",
  "tonic 0.13.1",
+ "walkdir",
 ]
 
 [[package]]
@@ -2807,6 +2808,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "uuid",
+ "walkdir",
 ]
 
 [[package]]
