@@ -15,7 +15,7 @@
 use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::{Context, Poll};
-use std::fs::Metadata;
+use std::fs::{Metadata, Permissions};
 use std::io::{IoSlice, Seek};
 use std::path::{Path, PathBuf};
 
@@ -255,10 +255,7 @@ pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(
     call_with_permit(move |_| std::fs::hard_link(src, dst).map_err(Into::<Error>::into)).await
 }
 
-pub async fn set_permissions(
-    src: impl AsRef<Path>,
-    perm: std::fs::Permissions,
-) -> Result<(), Error> {
+pub async fn set_permissions(src: impl AsRef<Path>, perm: Permissions) -> Result<(), Error> {
     let src = src.as_ref().to_owned();
     call_with_permit(move |_| std::fs::set_permissions(src, perm).map_err(Into::<Error>::into))
         .await
@@ -361,7 +358,64 @@ pub async fn symlink_metadata(path: impl AsRef<Path>) -> Result<Metadata, Error>
     call_with_permit(move |_| std::fs::symlink_metadata(path).map_err(Into::<Error>::into)).await
 }
 
+// We can't just use the stock remove_dir_all as it falls over if someone's set readonly
+// permissions. This version walks the directories and fixes the permissions where needed
+// before deleting everything.
+#[cfg(not(target_family = "windows"))]
+fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
+    // Because otherwise Windows builds complain about these things not being used
+    use std::fs::exists;
+    use std::io::ErrorKind;
+    use std::os::unix::fs::PermissionsExt;
+
+    use tracing::debug;
+    use walkdir::WalkDir;
+
+    for entry in WalkDir::new(&path) {
+        let entry = match &entry {
+            Ok(val) => val,
+            Err(_e) => {
+                debug!("Can't get into {entry:?}, assuming already deleted");
+                continue;
+            }
+        };
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => {}
+                Err(e) => {
+                    if e.kind() == ErrorKind::PermissionDenied {
+                        std::fs::set_permissions(entry.path(), Permissions::from_mode(0o700))
+                            .err_tip(|| {
+                                format!("Setting permissions for {}", entry.path().display())
+                            })?;
+                    } else {
+                        return Err(Into::<Error>::into(e)
+                            .append(format!("Removing {}", entry.path().display())));
+                    }
+                }
+            }
+        } else if metadata.is_file() {
+            std::fs::set_permissions(entry.path(), Permissions::from_mode(0o600))
+                .err_tip(|| format!("Setting permissions for {}", entry.path().display()))?;
+        }
+    }
+    if exists(&path)? {
+        // should now be safe to delete after we fixed all the permissions in the walk loop
+        std::fs::remove_dir_all(&path)?;
+    }
+    Ok(())
+}
+
+// We can't set the permissions easily in Windows, so just fallback to
+// the stock Rust remove_dir_all
+#[cfg(target_family = "windows")]
+fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
+    std::fs::remove_dir_all(&path)?;
+    Ok(())
+}
+
 pub async fn remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
     let path = path.as_ref().to_owned();
-    call_with_permit(move |_| std::fs::remove_dir_all(path).map_err(Into::<Error>::into)).await
+    call_with_permit(move |_| internal_remove_dir_all(path)).await
 }

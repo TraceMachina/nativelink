@@ -277,6 +277,12 @@ impl From<Error> for tonic::Status {
     }
 }
 
+impl From<walkdir::Error> for Error {
+    fn from(value: walkdir::Error) -> Self {
+        Self::new(Code::Internal, value.to_string())
+    }
+}
+
 pub trait ResultExt<T> {
     /// # Errors
     ///
