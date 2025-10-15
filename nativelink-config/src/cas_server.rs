@@ -176,7 +176,12 @@ pub struct PushConfig {
     pub read_only: bool,
 }
 
-#[derive(Deserialize, Serialize, Debug, Default)]
+// From https://github.com/serde-rs/serde/issues/818#issuecomment-287438544
+fn default<T: Default + PartialEq>(t: &T) -> bool {
+    *t == Default::default()
+}
+
+#[derive(Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
@@ -188,7 +193,11 @@ pub struct ByteStreamConfig {
     ///
     ///
     /// Default: 64KiB
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_data_size_with_shellexpand",
+        skip_serializing_if = "default"
+    )]
     pub max_bytes_per_stream: usize,
 
     /// In the event a client disconnects while uploading a blob, we will hold
@@ -197,7 +206,11 @@ pub struct ByteStreamConfig {
     /// the same blob.
     ///
     /// Default: 10 (seconds)
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        skip_serializing_if = "default"
+    )]
     pub persist_stream_on_disconnect_timeout: usize,
 }
 
@@ -208,11 +221,23 @@ pub struct ByteStreamConfig {
 #[serde(deny_unknown_fields)]
 pub struct OldByteStreamConfig {
     pub cas_stores: HashMap<InstanceName, StoreRefName>,
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_data_size_with_shellexpand",
+        skip_serializing_if = "default"
+    )]
     pub max_bytes_per_stream: usize,
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_data_size_with_shellexpand",
+        skip_serializing_if = "default"
+    )]
     pub max_decoding_message_size: usize,
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        skip_serializing_if = "default"
+    )]
     pub persist_stream_on_disconnect_timeout: usize,
 }
 

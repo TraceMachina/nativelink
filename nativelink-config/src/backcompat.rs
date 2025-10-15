@@ -190,4 +190,45 @@ mod tests {
         let value: FullConfig = serde_json::from_value(json).unwrap();
         assert_eq!(value.cas, None);
     }
+
+    #[derive(Debug, Deserialize, Serialize, PartialEq)]
+    struct FullBytestreamConfig {
+        #[serde(default, deserialize_with = "opt_bytestream")]
+        pub bytestream: Option<Vec<WithInstanceName<ByteStreamConfig>>>,
+    }
+
+    #[test]
+    #[traced_test]
+    fn test_bytestream_old_config() {
+        let old_format = json!({
+            "bytestream": {
+                "cas_stores": {
+                    "": "WORKER_FAST_SLOW_STORE"
+            }}
+        });
+
+        let new_format = json!({
+            "bytestream": [
+                {
+                    "cas_store": "WORKER_FAST_SLOW_STORE",
+                },
+            ],
+        });
+
+        let old_format: FullBytestreamConfig = serde_json::from_value(old_format).unwrap();
+        let new_format: FullBytestreamConfig = serde_json::from_value(new_format).unwrap();
+
+        assert_eq!(old_format, new_format);
+
+        logs_assert(|lines: &[&str]| {
+            if lines.len() != 1 {
+                return Err(format!("Expected 1 log line, got: {lines:?}"));
+            }
+            let line = lines[0];
+            // TODO(palfrey): we should be checking the whole thing, but tracing-test is broken with multi-line items
+            // See https://github.com/dbrgn/tracing-test/issues/48
+            assert!(line.ends_with("WARNING: Using deprecated map format for services. Please migrate to the new array format:"));
+            Ok(())
+        });
+    }
 }
