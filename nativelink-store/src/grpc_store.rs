@@ -770,7 +770,7 @@ impl StoreDriver for GrpcStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        _callback: &Arc<Box<dyn RemoveItemCallback>>,
+        _callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
         Err(Error::new(
             Code::Internal,

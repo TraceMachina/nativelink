@@ -382,7 +382,7 @@ impl Store {
     #[inline]
     pub fn register_remove_callback(
         &self,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
         self.inner.clone().register_remove_callback(callback)
     }
@@ -836,16 +836,18 @@ pub trait StoreDriver:
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error>;
 }
 
 // Callback to be called when a store deletes an item. This is used so
 // compound stores can remove items from their internal state when their
 // underlying stores remove items e.g. caches
-#[async_trait]
 pub trait RemoveItemCallback: Debug + Send + Sync {
-    async fn callback(&self, store_key: &StoreKey<'_>);
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
 /// The instructions on how to decode a value from a Bytes & version into
