@@ -465,9 +465,12 @@ pub async fn new_local_worker(
     );
 
     if let Ok(path) = fs::canonicalize(&config.work_directory).await {
-        fs::remove_dir_all(path)
-            .await
-            .err_tip(|| "Could not remove work_directory in LocalWorker")?;
+        fs::remove_dir_all(&path).await.err_tip(|| {
+            format!(
+                "Could not remove work_directory '{}' in LocalWorker",
+                &path.as_path().to_str().unwrap_or("bad path")
+            )
+        })?;
     }
 
     fs::create_dir_all(&config.work_directory)

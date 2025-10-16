@@ -84,6 +84,7 @@ uuid = { version = "1.16.0", default-features = false, features = [
   "v4",
   "v6",
 ] }
+walkdir = { version = "2.5.0", default-features = false }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
