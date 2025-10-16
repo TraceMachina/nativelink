@@ -433,7 +433,7 @@ pub struct S3Store<NowFn> {
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
 
-    remove_callbacks: Arc<Mutex<Vec<Arc<Box<dyn RemoveItemCallback>>>>>,
+    remove_callbacks: Mutex<Vec<Arc<dyn RemoveItemCallback>>>,
 }
 
 impl<I, NowFn> S3Store<NowFn>
@@ -509,7 +509,7 @@ where
                 .common
                 .multipart_max_concurrent_uploads
                 .map_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS, |v| v),
-            remove_callbacks: Arc::new(Mutex::new(vec![])),
+            remove_callbacks: Mutex::new(Vec::new()),
         }))
     }
 
@@ -538,15 +538,14 @@ where
                                     let now_s = (self.now_fn)().unix_timestamp() as i64;
                                     if last_modified.secs() + self.consider_expired_after_s <= now_s
                                     {
-                                        let remove_callbacks = self.remove_callbacks.lock_arc();
-                                        let borrow_key = local_digest.borrow();
-                                        let callbacks = remove_callbacks
+                                        let remove_callbacks = self.remove_callbacks.lock().clone();
+                                        let mut callbacks: FuturesUnordered<_> = remove_callbacks
                                             .iter()
-                                            .map(|callback| callback.callback(&borrow_key))
-                                            .collect::<Vec<_>>();
-                                        for callback in callbacks {
-                                            callback.await;
-                                        }
+                                            .map(|callback| {
+                                                callback.callback(local_digest.borrow())
+                                            })
+                                            .collect();
+                                        while callbacks.next().await.is_some() {}
                                         return Some((RetryResult::Ok(None), state));
                                     }
                                 }
@@ -998,9 +997,9 @@ where
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
-        self.remove_callbacks.lock_arc().push(callback.clone());
+        self.remove_callbacks.lock().push(callback);
         Ok(())
     }
 }
