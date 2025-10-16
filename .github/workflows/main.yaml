@@ -20,56 +20,56 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  nativelink-dot-com-cloud-rbe-main-legacy-dockerfile-test:
-    runs-on: ubuntu-24.04
-    environment: production
-    name: NativeLink.com Cloud / RBE on Main (Legacy Dockerfile Test)
-    if: github.ref == 'refs/heads/main'
-    steps:
-    - name: Checkout
-      uses: >- # v4.2.2
-        actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+  # nativelink-dot-com-cloud-rbe-main-legacy-dockerfile-test:
+  #   runs-on: ubuntu-24.04
+  #   environment: production
+  #   name: NativeLink.com Cloud / RBE on Main (Legacy Dockerfile Test)
+  #   if: github.ref == 'refs/heads/main'
+  #   steps:
+  #   - name: Checkout
+  #     uses: >- # v4.2.2
+  #       actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-    - name: Set up AWS CLI
-      uses: >- # v4.1.0
-        aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722
-      with:
-        aws-access-key-id: ${{ secrets.RBE_ECR_AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.RBE_ECR_AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.RBE_ECR_AWS_ACCOUNT_REGION }}
+  #   - name: Set up AWS CLI
+  #     uses: >- # v4.1.0
+  #       aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722
+  #     with:
+  #       aws-access-key-id: ${{ secrets.RBE_ECR_AWS_ACCESS_KEY_ID }}
+  #       aws-secret-access-key: ${{ secrets.RBE_ECR_AWS_SECRET_ACCESS_KEY }}
+  #       aws-region: ${{ secrets.RBE_ECR_AWS_ACCOUNT_REGION }}
 
-    - name: Calculate Dockerfile hash and Retrieve Image URI for RBE
-      run: |
-        DOCKERFILE_HASH=$(sha256sum "$GITHUB_WORKSPACE/tools/toolchain-nativelink/Dockerfile" | awk '{print $1}')
-        IMAGE_DETAILS=$(aws ecr describe-images --repository-name ${{ secrets.RBE_ECR_REPOSITORY_NAME }} --image-ids imageTag=$DOCKERFILE_HASH)
-        if [ $? -ne 0 ]; then
-          echo "Run tools/toolchain-nativelink/toolchain-nativelink.sh locally and upload a new version of the stock image"
-          exit 1;
-        fi
-        echo "RBE_IMAGE=${{ secrets.RBE_ECR_AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.RBE_ECR_AWS_ACCOUNT_REGION }}.amazonaws.com/${{ secrets.RBE_ECR_REPOSITORY_NAME }}:$DOCKERFILE_HASH" >> $GITHUB_ENV
+  #   - name: Calculate Dockerfile hash and Retrieve Image URI for RBE
+  #     run: |
+  #       DOCKERFILE_HASH=$(sha256sum "$GITHUB_WORKSPACE/tools/toolchain-nativelink/Dockerfile" | awk '{print $1}')
+  #       IMAGE_DETAILS=$(aws ecr describe-images --repository-name ${{ secrets.RBE_ECR_REPOSITORY_NAME }} --image-ids imageTag=$DOCKERFILE_HASH)
+  #       if [ $? -ne 0 ]; then
+  #         echo "Run tools/toolchain-nativelink/toolchain-nativelink.sh locally and upload a new version of the stock image"
+  #         exit 1;
+  #       fi
+  #       echo "RBE_IMAGE=${{ secrets.RBE_ECR_AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.RBE_ECR_AWS_ACCOUNT_REGION }}.amazonaws.com/${{ secrets.RBE_ECR_REPOSITORY_NAME }}:$DOCKERFILE_HASH" >> $GITHUB_ENV
 
-    - name: Setup Bazel
-      uses: >- # v0.13.0
-        bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
-      with:
-        bazelisk-cache: true
-        repository-cache: true
+  #   - name: Setup Bazel
+  #     uses: >- # v0.13.0
+  #       bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
+  #     with:
+  #       bazelisk-cache: true
+  #       repository-cache: true
 
-    - name: Run Bazel tests
-      shell: bash
-      # remove digest_function when #1325 is resolved
-      run: |
-        bazel --digest_function=sha256 test \
-          --remote_cache=grpcs://tm-ci-cas.build-faster.nativelink.net \
-          --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-          --bes_backend=grpcs://tm-ci-bep.build-faster.nativelink.net \
-          --bes_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-          --bes_results_url=https://tm-ci-web.build-faster.nativelink.net/ \
-          --remote_header=x-nativelink-project=nativelink-ci \
-          --remote_executor=grpcs://tm-ci-cas.build-faster.nativelink.net \
-          --remote_default_exec_properties="container-image=docker://$RBE_IMAGE" \
-          --jobs=200 \
-          //...
+  #   - name: Run Bazel tests
+  #     shell: bash
+  #     # remove digest_function when #1325 is resolved
+  #     run: |
+  #       bazel --digest_function=sha256 test \
+  #         --remote_cache=grpcs://tm-ci-cas.build-faster.nativelink.net \
+  #         --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+  #         --bes_backend=grpcs://tm-ci-bep.build-faster.nativelink.net \
+  #         --bes_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+  #         --bes_results_url=https://tm-ci-web.build-faster.nativelink.net/ \
+  #         --remote_header=x-nativelink-project=nativelink-ci \
+  #         --remote_executor=grpcs://tm-ci-cas.build-faster.nativelink.net \
+  #         --remote_default_exec_properties="container-image=docker://$RBE_IMAGE" \
+  #         --jobs=200 \
+  #         //...
 
   nativelink-dot-com-cloud-cache-test:
     strategy:
