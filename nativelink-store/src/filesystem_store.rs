@@ -415,7 +415,8 @@ pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_
 /// `add_files_to_cache`.
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
-type FsEvictingMap<'a, Fe> = EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime>;
+type FsEvictingMap<'a, Fe> =
+    EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime, RemoveItemCallbackHolder>;
 
 async fn add_files_to_cache<Fe: FileEntry>(
     evicting_map: &FsEvictingMap<'_, Fe>,
@@ -995,10 +996,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
         self.evicting_map
-            .add_remove_callback(Box::new(RemoveItemCallbackHolder::new(callback)));
+            .add_remove_callback(RemoveItemCallbackHolder::new(callback));
         Ok(())
     }
 }

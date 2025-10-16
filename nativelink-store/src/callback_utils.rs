@@ -12,30 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::borrow::Borrow;
+use core::pin::Pin;
 use std::sync::Arc;
 
-use nativelink_util::evicting_map::RemoveStateCallback;
+use nativelink_util::evicting_map;
 use nativelink_util::store_trait::{RemoveItemCallback, StoreKey};
-use tonic::async_trait;
 
 // Generic struct to hold a RemoveItemCallback ref for the purposes
 // of a RemoveStateCallback call
 #[derive(Debug)]
 pub struct RemoveItemCallbackHolder {
-    callback_fn: Arc<Box<dyn RemoveItemCallback>>,
+    callback: Arc<dyn RemoveItemCallback>,
 }
 
 impl RemoveItemCallbackHolder {
-    pub fn new(callback: &Arc<Box<dyn RemoveItemCallback>>) -> Self {
-        Self {
-            callback_fn: callback.clone(),
-        }
+    pub fn new(callback: Arc<dyn RemoveItemCallback>) -> Self {
+        Self { callback }
     }
 }
 
-#[async_trait]
-impl RemoveStateCallback<StoreKey<'static>> for RemoveItemCallbackHolder {
-    async fn callback(&self, key: &StoreKey<'static>) {
-        self.callback_fn.callback(key).await;
+impl<'a, Q> evicting_map::RemoveItemCallback<Q> for RemoveItemCallbackHolder
+where
+    Q: Borrow<StoreKey<'a>>,
+{
+    fn callback(&self, store_key: &Q) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let callback = self.callback.clone();
+        let store_key: &StoreKey<'_> = Borrow::<StoreKey<'_>>::borrow(store_key);
+        let store_key = store_key.borrow().into_owned();
+        Box::pin(async move { callback.callback(store_key).await })
     }
 }

@@ -589,12 +589,10 @@ async fn range_multiple_items_test() -> Result<(), Error> {
         range: impl core::ops::RangeBounds<String> + Send,
     ) -> Vec<(String, Bytes)> {
         let mut found_values = Vec::new();
-        evicting_map
-            .range(range, |k, v: &BytesWrapper| {
-                found_values.push((k.clone(), v.0.clone()));
-                true
-            })
-            .await;
+        evicting_map.range(range, |k, v: &BytesWrapper| {
+            found_values.push((k.clone(), v.0.clone()));
+            true
+        });
         found_values
     }
 
