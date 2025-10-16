@@ -7,7 +7,7 @@ module(
     compatibility_level = 0,
 )
 
-bazel_dep(name = "platforms", version = "0.0.11")
+bazel_dep(name = "platforms", version = "1.0.0")
 
 # Use the starlark implementation of C++ rules instead of the builtin ones.
 bazel_dep(name = "rules_cc", version = "0.1.1")
