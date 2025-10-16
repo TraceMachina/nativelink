@@ -11,6 +11,7 @@ load(
 PROTO_NAMES = [
     "build.bazel.remote.asset.v1",
     "build.bazel.remote.execution.v2",
+    "build.bazel.remote.execution.worker_protocol",
     "build.bazel.semver",
     "com.github.trace_machina.nativelink.remote_execution",
     "com.github.trace_machina.nativelink.events",
@@ -80,6 +81,7 @@ genrule(
     srcs = [
         "build/bazel/remote/asset/v1/remote_asset.proto",
         "build/bazel/remote/execution/v2/remote_execution.proto",
+        "build/bazel/remote/execution/worker_protocol.proto",
         "build/bazel/semver/semver.proto",
         "com/github/trace_machina/nativelink/remote_execution/events.proto",
         "com/github/trace_machina/nativelink/remote_execution/worker_api.proto",

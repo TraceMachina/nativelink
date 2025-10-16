@@ -1,0 +1,51 @@
+load("@rules_java//java:defs.bzl", "java_library", "java_test")
+
+# Library containing the Calculator class
+java_library(
+    name = "calculator_lib",
+    srcs = ["Calculator.java"],
+    exec_properties = {
+        "persistentWorkerKey": "javac-calc",
+        "persistentWorkerTool": "javac",
+    },
+    tags = ["manual"],
+)
+
+# Library containing the StringUtils class
+java_library(
+    name = "string_utils_lib",
+    srcs = ["StringUtils.java"],
+    exec_properties = {
+        "persistentWorkerKey": "javac-utils",
+        "persistentWorkerTool": "javac",
+    },
+    tags = ["manual"],
+)
+
+# Test for Calculator
+java_test(
+    name = "calculator_test",
+    srcs = ["CalculatorTest.java"],
+    exec_properties = {
+        "persistentWorkerKey": "javac-test",
+        "persistentWorkerTool": "javac",
+    },
+    tags = ["manual"],
+    test_class = "com.example.CalculatorTest",
+    deps = [":calculator_lib"],
+)
+
+# Binary that uses both libraries
+java_library(
+    name = "main_app",
+    srcs = ["MainApp.java"],
+    exec_properties = {
+        "persistentWorkerKey": "javac-main",
+        "persistentWorkerTool": "javac",
+    },
+    tags = ["manual"],
+    deps = [
+        ":calculator_lib",
+        ":string_utils_lib",
+    ],
+)
