@@ -88,7 +88,7 @@ impl RefStore {
             .err_tip(|| "Store manager is gone")?;
         if let Some(store) = store_manager.get_store(&self.name) {
             let remove_callbacks = self.remove_callbacks.lock().clone();
-            for callback in remove_callbacks.into_iter() {
+            for callback in remove_callbacks {
                 store.register_remove_callback(callback)?;
             }
             unsafe {
