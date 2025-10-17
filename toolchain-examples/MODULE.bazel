@@ -56,7 +56,7 @@ bazel_dep(name = "rules_rust", version = "0.61.0")
 #
 # To test this toolchain, use for use with the config flag `--config=zig-cc`.
 #
-bazel_dep(name = "hermetic_cc_toolchain", version = "3.2.0")
+bazel_dep(name = "hermetic_cc_toolchain", version = "4.0.1")
 
 zig = use_extension("@hermetic_cc_toolchain//toolchain:ext.bzl", "toolchains")
 use_repo(
