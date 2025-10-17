@@ -24,12 +24,12 @@ writeShellScriptBin "rbe-toolchain-test" ''
     PLATFORM='arm64'
   fi
 
-  LLVM_PLATFORM="--platforms=@toolchains_llvm//platforms:linux-''${CPU_TYPE}"
-  ZIG_PLATFORM="--platforms @zig_sdk//platform:linux_''${PLATFORM}"
+  LLVM_PLATFORM="--config=llvm --platforms=@toolchains_llvm//platforms:linux-''${CPU_TYPE}"
+  ZIG_PLATFORM="--config=zig-cc --platforms @zig_sdk//platform:linux_''${PLATFORM}"
 
   # As per https://nativelink.com/docs/rbe/remote-execution-examples#minimal-example-targets
   COMMANDS=("test //cpp $ZIG_PLATFORM"
-            "test //cpp --config=llvm $LLVM_PLATFORM"
+            "test //cpp $LLVM_PLATFORM"
             "test //python"
             "test //go $ZIG_PLATFORM"
             # "test //rust $ZIG_PLATFORM" # rules_rust isn't RBE-compatible

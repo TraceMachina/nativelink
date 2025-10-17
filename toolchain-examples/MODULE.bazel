@@ -62,11 +62,6 @@ zig = use_extension("@hermetic_cc_toolchain//toolchain:ext.bzl", "toolchains")
 use_repo(
     zig,
     "zig_sdk",
-    "zig_sdk-linux-amd64",
-    "zig_sdk-linux-arm64",
-    "zig_sdk-macos-amd64",
-    "zig_sdk-macos-arm64",
-    "zig_sdk-windows-amd64",
 )
 
 # C++ toolchain via contrib/toolchains_llvm.
