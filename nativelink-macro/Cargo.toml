@@ -1,3 +1,4 @@
+#:schema ../tools/cargo-with-detailed-deps.json
 lints.workspace = true
 
 [package]
