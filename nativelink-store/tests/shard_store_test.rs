@@ -81,7 +81,7 @@ async fn verify_weights(
     }
 
     for (index, (store, expected_hit)) in stores.iter().zip(expected_hits.iter()).enumerate() {
-        let total_hits = store.len_for_test().await;
+        let total_hits = store.len_for_test();
         #[expect(clippy::print_stdout, reason = "improves debugging")]
         if print_results {
             println!("expected_hit: {expected_hit} - total_hits: {total_hits}");

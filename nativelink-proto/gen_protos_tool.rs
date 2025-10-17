@@ -37,12 +37,8 @@ fn main() -> std::io::Result<()> {
     ];
 
     for struct_name in structs_with_data_to_ignore {
-        config.type_attribute(struct_name, "#[derive(::derivative::Derivative)]");
-        config.type_attribute(struct_name, "#[derivative(Debug)]");
-        config.field_attribute(
-            format!("{struct_name}.data"),
-            "#[derivative(Debug=\"ignore\")]",
-        );
+        config.type_attribute(struct_name, "#[derive(::derive_more::Debug)]");
+        config.field_attribute(format!("{struct_name}.data"), "#[debug(ignore)]");
     }
 
     config.skip_debug(structs_with_data_to_ignore);

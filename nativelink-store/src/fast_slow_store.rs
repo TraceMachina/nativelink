@@ -574,9 +574,9 @@ impl StoreDriver for FastSlowStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
-        self.fast_store.register_remove_callback(callback)?;
+        self.fast_store.register_remove_callback(callback.clone())?;
         self.slow_store.register_remove_callback(callback)?;
         Ok(())
     }

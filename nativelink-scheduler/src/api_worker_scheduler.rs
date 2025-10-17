@@ -259,6 +259,12 @@ impl ApiWorkerSchedulerImpl {
                 (true, err.code == Code::ResourceExhausted)
             }
             UpdateOperationType::UpdateWithDisconnect => (true, false),
+            UpdateOperationType::ExecutionComplete => {
+                // No update here, just restoring platform properties.
+                worker.execution_complete(operation_id);
+                self.worker_change_notify.notify_one();
+                return Ok(());
+            }
         };
 
         // Update the operation in the worker state manager.

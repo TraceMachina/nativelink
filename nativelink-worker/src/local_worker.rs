@@ -28,7 +28,8 @@ use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker, execute_result,
+    ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
+    execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -69,7 +70,7 @@ const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 /// If this value gets modified the documentation in `cas_server.rs` must also be updated.
 const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_secs(1200); // 20 mins.
 
-struct LocalWorkerImpl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> {
+struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
     config: &'a LocalWorkerConfig,
     // According to the tonic documentation it is a cheap operation to clone this.
     grpc_client: T,
@@ -115,7 +116,7 @@ async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Er
     }
 }
 
-impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, T, U> {
+impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorkerImpl<'a, T, U> {
     fn new(
         config: &'a LocalWorkerConfig,
         grpc_client: T,
@@ -151,12 +152,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
             // We always send 2 keep alive requests per timeout. Http2 should manage most of our
             // timeout issues, this is a secondary check to ensure we can still send data.
             sleep(Duration::from_secs_f32(timeout / 2.)).await;
-            if let Err(e) = grpc_client
-                .keep_alive(KeepAliveRequest {
-                    worker_id: self.worker_id.clone(),
-                })
-                .await
-            {
+            if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
                 return Err(make_err!(
                     Code::Internal,
                     "Failed to send KeepAlive in LocalWorker : {:?}",
@@ -235,7 +231,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
                                     self.grpc_client.clone().execution_response(
                                         ExecuteResult{
-                                            worker_id: self.worker_id.clone(),
                                             instance_name,
                                             operation_id: start_execute.operation_id,
                                             result: Some(execute_result::Result::InternalError(make_err!(Code::ResourceExhausted, "Worker shutting down").into())),
@@ -262,6 +257,10 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 let actions_in_transit = self.actions_in_transit.clone();
                                 let worker_id = self.worker_id.clone();
                                 let running_actions_manager = self.running_actions_manager.clone();
+                                let mut grpc_client = self.grpc_client.clone();
+                                let complete = ExecuteComplete {
+                                    operation_id: operation_id.clone(),
+                                };
                                 self.metrics.clone().wrap(move |metrics| async move {
                                     metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
                                     .and_then(|()| running_actions_manager.create_and_add_action(worker_id, start_execute))
@@ -280,6 +279,11 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                             .clone()
                                             .prepare_action()
                                             .and_then(RunningAction::execute)
+                                            .and_then(|result| async move {
+                                                // Notify that execution has completed so it can schedule a new action.
+                                                drop(grpc_client.execution_complete(complete).await);
+                                                Ok(result)
+                                            })
                                             .and_then(RunningAction::upload_results)
                                             .and_then(RunningAction::get_finished_result)
                                             // Note: We need ensure we run cleanup even if one of the other steps fail.
@@ -296,7 +300,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let make_publish_future = {
                                 let mut grpc_client = self.grpc_client.clone();
 
-                                let worker_id = self.worker_id.clone();
                                 let running_actions_manager = self.running_actions_manager.clone();
                                 move |res: Result<ActionResult, Error>| async move {
                                     let instance_name = maybe_instance_name
@@ -316,7 +319,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                             let action_stage = ActionStage::Completed(action_result);
                                             grpc_client.execution_response(
                                                 ExecuteResult{
-                                                    worker_id,
                                                     instance_name,
                                                     operation_id,
                                                     result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
@@ -327,7 +329,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         },
                                         Err(e) => {
                                             grpc_client.execution_response(ExecuteResult{
-                                                worker_id,
                                                 instance_name,
                                                 operation_id,
                                                 result: Some(execute_result::Result::InternalError(e.into())),
@@ -391,7 +392,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                 complete_msg = shutdown_rx.recv().fuse() => {
                     warn!("Worker loop received shutdown signal. Shutting down worker...",);
                     let mut grpc_client = self.grpc_client.clone();
-                    let worker_id = self.worker_id.clone();
                     let shutdown_guard = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?;
                     let actions_in_flight = actions_in_flight.clone();
                     let actions_notify = actions_notify.clone();
@@ -402,9 +402,9 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                         }
                         // Sending this message immediately evicts all jobs from
                         // this worker, of which there should be none.
-                        if let Err(e) = grpc_client.going_away(GoingAwayRequest { worker_id }).await {
+                        if let Err(e) = grpc_client.going_away(GoingAwayRequest {}).await {
                             error!("Failed to send GoingAwayRequest: {e}",);
-                            return Err(e.into());
+                            return Err(e);
                         }
                         // Allow shutdown to occur now.
                         drop(shutdown_guard);
@@ -421,7 +421,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
 type ConnectionFactory<T> = Box<dyn Fn() -> BoxFuture<'static, Result<T, Error>> + Send + Sync>;
 
-pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
+pub struct LocalWorker<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
     config: Arc<LocalWorkerConfig>,
     running_actions_manager: Arc<U>,
     connection_factory: ConnectionFactory<T>,
@@ -429,8 +429,10 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
     metrics: Arc<Metrics>,
 }
 
-impl<T: WorkerApiClientTrait + core::fmt::Debug, U: RunningActionsManager + core::fmt::Debug>
-    core::fmt::Debug for LocalWorker<T, U>
+impl<
+    T: WorkerApiClientTrait + core::fmt::Debug + 'static,
+    U: RunningActionsManager + core::fmt::Debug,
+> core::fmt::Debug for LocalWorker<T, U>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LocalWorker")
@@ -465,9 +467,12 @@ pub async fn new_local_worker(
     );
 
     if let Ok(path) = fs::canonicalize(&config.work_directory).await {
-        fs::remove_dir_all(path)
-            .await
-            .err_tip(|| "Could not remove work_directory in LocalWorker")?;
+        fs::remove_dir_all(&path).await.err_tip(|| {
+            format!(
+                "Could not remove work_directory '{}' in LocalWorker",
+                &path.as_path().to_str().unwrap_or("bad path")
+            )
+        })?;
     }
 
     fs::create_dir_all(&config.work_directory)
@@ -532,7 +537,7 @@ pub async fn new_local_worker(
     Ok(local_worker)
 }
 
-impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
+impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T, U> {
     pub fn new_with_connection_factory_and_actions_manager(
         config: Arc<LocalWorkerConfig>,
         running_actions_manager: Arc<U>,

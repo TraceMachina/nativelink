@@ -196,12 +196,29 @@ pub struct PlatformPropertyAddition {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformPropertyReplacement {
+    /// The name of the property to replace.
+    pub name: String,
+    /// The the value to match against, if unset then any instance matches.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// The new name of the property.
+    pub new_name: String,
+    /// The value to assign to the property, if unset will remain the same.
+    #[serde(default)]
+    pub new_value: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum PropertyModification {
     /// Add a property to the action properties.
     Add(PlatformPropertyAddition),
     /// Remove a named property from the action.
     Remove(String),
+    /// If a property is found, then replace it with another one.
+    Replace(PlatformPropertyReplacement),
 }
 
 #[derive(Deserialize, Serialize, Debug)]

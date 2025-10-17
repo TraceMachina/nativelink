@@ -71,7 +71,7 @@ fn otlp_filter() -> EnvFilter {
 
 // Create a tracing layer intended for stdout printing.
 //
-// The output of this layer is configurable via the `NL_LOG_FMT` environment
+// The output of this layer is configurable via the `NL_LOG` environment
 // variable.
 fn tracing_stdout_layer() -> impl Layer<Registry> {
     let nl_log_fmt = env::var("NL_LOG").unwrap_or_else(|_| "pretty".to_string());

@@ -392,9 +392,9 @@ impl StoreDriver for CompletenessCheckingStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
-        self.ac_store.register_remove_callback(callback)?;
+        self.ac_store.register_remove_callback(callback.clone())?;
         self.cas_store.register_remove_callback(callback)?;
         Ok(())
     }

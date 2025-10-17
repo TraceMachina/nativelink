@@ -22,16 +22,16 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::cas_server::WorkerApiConfig;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile,
     OutputDirectory, OutputFile, OutputSymlink,
 };
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_server::WorkerApi;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_scheduler::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ExecuteResult, KeepAliveRequest, execute_result, update_for_worker,
+    execute_result, update_for_worker, ConnectWorkerRequest, ExecuteResult, KeepAliveRequest, UpdateForScheduler
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
@@ -49,7 +49,6 @@ use pretty_assertions::assert_eq;
 use tokio::join;
 use tokio::sync::{Notify, mpsc};
 use tokio_stream::StreamExt;
-use tonic::Request;
 
 const BASE_NOW_S: u64 = 10;
 const BASE_WORKER_TIMEOUT_S: u64 = 100;
@@ -128,9 +127,10 @@ impl WorkerStateManager for MockWorkerStateManager {
 struct TestContext {
     scheduler: Arc<ApiWorkerScheduler>,
     state_manager: Arc<MockWorkerStateManager>,
-    worker_api_server: WorkerApiServer,
+    _worker_api_server: WorkerApiServer,
     connection_worker_stream: ConnectWorkerStream,
     worker_id: WorkerId,
+    worker_stream: mpsc::Sender<Update>,
 }
 
 #[expect(
@@ -170,8 +170,20 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
     .err_tip(|| "Error creating WorkerApiServer")?;
 
     let connect_worker_request = ConnectWorkerRequest::default();
+    let (tx, rx) = mpsc::channel(1);
+    tx.send(Update::ConnectWorkerRequest(connect_worker_request))
+        .await
+        .unwrap();
+    let update_stream = Box::pin(futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|update| {
+            let update = Ok(UpdateForScheduler {
+                update: Some(update),
+            });
+            (update, rx)
+        })
+    }));
     let mut connection_worker_stream = worker_api_server
-        .connect_worker(Request::new(connect_worker_request))
+        .inner_connect_worker_for_testing(update_stream)
         .await?
         .into_inner();
 
@@ -201,9 +213,10 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
     Ok(TestContext {
         scheduler,
         state_manager,
-        worker_api_server,
+        _worker_api_server: worker_api_server,
         connection_worker_stream,
         worker_id: worker_id.into(),
+        worker_stream: tx,
     })
 }
 
@@ -288,12 +301,12 @@ pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn 
     {
         // Now send keep alive.
         test_context
-            .worker_api_server
-            .keep_alive(Request::new(KeepAliveRequest {
-                worker_id: test_context.worker_id.to_string(),
-            }))
+            .worker_stream
+            .send(Update::KeepAliveRequest(KeepAliveRequest {}))
             .await
-            .err_tip(|| "Error sending keep alive")?;
+            .map_err(|e| make_err!(tonic::Code::Internal, "Error sending keep alive {e}"))?;
+        // Wait for a moment to allow it to be processed.
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     {
         // Now add 1 second and our worker should still exist in our map.
@@ -487,7 +500,6 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
     };
     let result = ExecuteResult {
         instance_name,
-        worker_id: test_context.worker_id.to_string(),
         operation_id: expected_operation_id.to_string(),
         result: Some(execute_result::Result::ExecuteResponse(
             execute_response.clone(),
@@ -510,11 +522,11 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
         // Ensure our state manager got the same result as the server.
         let (execution_response_result, (operation_id, worker_id, client_given_update)) = join!(
             test_context
-                .worker_api_server
-                .execution_response(Request::new(result.clone())),
+                .worker_stream
+                .send(Update::ExecuteResult(result.clone())),
             test_context.state_manager.expect_update_operation(Ok(())),
         );
-        execution_response_result.unwrap();
+        execution_response_result?;
 
         assert_eq!(operation_id, expected_operation_id);
         assert_eq!(worker_id, test_context.worker_id);
