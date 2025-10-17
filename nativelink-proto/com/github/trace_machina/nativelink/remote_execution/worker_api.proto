@@ -57,6 +57,9 @@ service WorkerApi {
 
     /// Informs the scheduler about the result of an execution request.
     rpc ExecutionResponse(ExecuteResult) returns (google.protobuf.Empty);
+
+    /// Notify that the execution has completed, but result is uploading.
+    rpc ExecutionComplete(ExecuteComplete) returns (google.protobuf.Empty);
 }
 
 /// Request object for keep alive requests.
@@ -121,6 +124,15 @@ message ExecuteResult {
     }
 
     reserved 9; // NextId.
+}
+
+/// The result of an ExecutionComplete.
+message ExecuteComplete {
+    /// ID of the worker making the request.
+    string worker_id = 1;
+
+    /// The operation ID that was executed.
+    string operation_id = 2;
 }
 
 /// Result sent back from the server when a node connects.
