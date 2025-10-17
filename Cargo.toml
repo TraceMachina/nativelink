@@ -148,7 +148,10 @@ pedantic = { level = "warn", priority = -1 }
 # Restriction Denies with default priority
 alloc-instead-of-core = "deny"
 as-underscore = "deny"
+await-holding-lock = "deny"
 elidable-lifetime-names = "deny"
+explicit-into-iter-loop = "deny"
+redundant-closure-for-method-calls = "deny"
 semicolon-if-nothing-returned = "deny"
 std-instead-of-core = "deny"
 todo = "deny"
