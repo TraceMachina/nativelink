@@ -32,7 +32,7 @@ writeShellScriptBin "rbe-toolchain-test" ''
             "test //cpp $LLVM_PLATFORM"
             "test //python"
             "test //go $ZIG_PLATFORM"
-            # "test //rust $ZIG_PLATFORM" # rules_rust isn't RBE-compatible
+            "test //rust $ZIG_PLATFORM"
             "test //java:HelloWorld --config=java"
             "build @curl//... $ZIG_PLATFORM"
             "build @zstd//... $ZIG_PLATFORM"

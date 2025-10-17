@@ -233,22 +233,11 @@ bazel test //go \
 
 ### Rust
 
-:::caution
-This one *shouldn't* work as `rules_rust` doesn't support remote execution.
-If this build passes there is a high chance that you have an hermeticity issue
-in your worker image.
-:::
-
 ```bash
 bazel test //rust \
     --config=zig-cc \
     --remote_cache=grpc://localhost:50051 \
     --remote_executor=grpc://localhost:50051
-
-# Should raise and error like this if your toolchain is correctly hermetic:
-#
-# error: the self-contained linker was requested, but it wasn't found in the
-# target's sysroot, or in rustc's sysroot
 ```
 
 ### Java
