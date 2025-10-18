@@ -113,6 +113,8 @@ mod tests {
             &FastSlowSpec {
                 fast: StoreSpec::Filesystem(fast_config),
                 slow: StoreSpec::Memory(slow_config),
+                fast_direction: Default::default(),
+                slow_direction: Default::default(),
             },
             Store::new(fast_store.clone()),
             Store::new(slow_store.clone()),
