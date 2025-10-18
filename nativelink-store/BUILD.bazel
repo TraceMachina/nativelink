@@ -84,6 +84,8 @@ rust_library(
         "@crates//:prost",
         "@crates//:rand",
         "@crates//:regex",
+        "@crates//:reqwest",
+        "@crates//:reqwest-middleware",
         "@crates//:rustls",
         "@crates//:rustls-pemfile",
         "@crates//:serde",

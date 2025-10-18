@@ -100,10 +100,10 @@ where
         let max_chunk_size =
             core::cmp::min(spec.resumable_chunk_size.unwrap_or(CHUNK_SIZE), CHUNK_SIZE);
 
-        let max_chunk_size = if max_chunk_size % CHUNK_MULTIPLE != 0 {
-            ((max_chunk_size + CHUNK_MULTIPLE / 2) / CHUNK_MULTIPLE) * CHUNK_MULTIPLE
-        } else {
+        let max_chunk_size = if max_chunk_size.is_multiple_of(CHUNK_MULTIPLE) {
             max_chunk_size
+        } else {
+            ((max_chunk_size + CHUNK_MULTIPLE / 2) / CHUNK_MULTIPLE) * CHUNK_MULTIPLE
         };
 
         let max_retry_buffer_size = spec

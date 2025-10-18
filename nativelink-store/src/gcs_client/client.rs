@@ -108,6 +108,28 @@ pub struct GcsClient {
 }
 
 impl GcsClient {
+    fn create_client_config(spec: &ExperimentalGcsSpec) -> Result<ClientConfig, Error> {
+        let mut client_config = ClientConfig::default();
+        let connect_timeout = if spec.connection_timeout_s > 0 {
+            Duration::from_secs(spec.connection_timeout_s)
+        } else {
+            Duration::from_secs(3)
+        };
+        let read_timeout = if spec.read_timeout_s > 0 {
+            Duration::from_secs(spec.read_timeout_s)
+        } else {
+            Duration::from_secs(3)
+        };
+        let client = reqwest::ClientBuilder::new()
+            .connect_timeout(connect_timeout)
+            .read_timeout(read_timeout)
+            .build()
+            .map_err(|e| make_err!(Code::Internal, "Unable to create GCS client: {e:?}"))?;
+        let mid_client = reqwest_middleware::ClientBuilder::new(client).build();
+        client_config.http = Some(mid_client);
+        Ok(client_config)
+    }
+
     /// Create a new GCS client from the provided spec
     pub async fn new(spec: &ExperimentalGcsSpec) -> Result<Self, Error> {
         // Attempt to get the authentication from a file with the environment
@@ -115,8 +137,12 @@ impl GcsClient {
         // environment in variable GOOGLE_APPLICATION_CREDENTIALS_JSON.  If that
         // fails, attempt to get authentication from the environment.
         let maybe_client_config = match CredentialsFile::new().await {
-            Ok(credentials) => ClientConfig::default().with_credentials(credentials).await,
-            Err(_) => ClientConfig::default().with_auth().await,
+            Ok(credentials) => {
+                Self::create_client_config(spec)?
+                    .with_credentials(credentials)
+                    .await
+            }
+            Err(_) => Self::create_client_config(spec)?.with_auth().await,
         }
         .map_err(|e| {
             make_err!(
@@ -129,7 +155,8 @@ impl GcsClient {
         let client_config = if spec.authentication_required {
             maybe_client_config.err_tip(|| "Authentication required and none found.")?
         } else {
-            maybe_client_config.unwrap_or_else(|_| ClientConfig::default().anonymous())
+            maybe_client_config
+                .or_else(|_| Self::create_client_config(spec).map(ClientConfig::anonymous))?
         };
 
         // Creating client with the configured authentication
