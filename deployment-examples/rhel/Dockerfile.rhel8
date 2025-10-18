@@ -22,16 +22,16 @@ ARG ADDITIONAL_SETUP_WORKER_CMD=
 
 # RHEL8-equivalent image
 # see https://www.redhat.com/en/blog/introducing-red-hat-universal-base-image
-FROM redhat/ubi8:8.10-1756195303 AS dependencies
+FROM redhat/ubi8:8.10-1756195303@sha256:534c2c0efa4150ede18e3f9d7480d3b9ec2a52e62bc91cd54e08ee7336819619 AS dependencies
 ARG OS_VERSION
-RUN yum update && \
+RUN yum update --assumeyes && \
     yum install --assumeyes \
-        npm \
-        git \
-        gcc \
-        gcc-c++ \
-        python3.12 \
-        ca-certificates \
+        npm-1:6.14.11 \
+        git-2.43.7 \
+        gcc-8.5.0 \
+        gcc-c++-8.5.0 \
+        python3.12-3.12.11 \
+        ca-certificates-2024.2.69_v8.0.303 \
     && npm install -g @bazel/bazelisk@1.25.0
 
 # Build the binary.
