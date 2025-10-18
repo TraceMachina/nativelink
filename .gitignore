@@ -24,3 +24,4 @@ darwin.bazelrc
 nativelink.bazelrc
 integration_tests/**/*.log
 toolchain-examples/*.log
+buck-out/
