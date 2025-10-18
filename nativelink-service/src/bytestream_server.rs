@@ -494,9 +494,10 @@ impl ByteStreamServer {
                         }
                         continue;
                     }
-                    write_request
-                        .data
-                        .slice((tx.get_bytes_written() - write_offset) as usize..)
+                    write_request.data.slice(
+                        usize::try_from(tx.get_bytes_written() - write_offset)
+                            .unwrap_or(usize::MAX)..,
+                    )
                 } else {
                     if write_offset != tx.get_bytes_written() {
                         return Err(make_input_err!(

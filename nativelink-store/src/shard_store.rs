@@ -67,8 +67,11 @@ impl ShardStore {
             .stores
             .iter()
             .map(|shard_config| {
-                (u64::from(u32::MAX) * u64::from(shard_config.weight.unwrap_or(1)) / total_weight)
-                    as u32
+                u32::try_from(
+                    u64::from(u32::MAX) * u64::from(shard_config.weight.unwrap_or(1))
+                        / total_weight,
+                )
+                .unwrap_or(u32::MAX)
             })
             .scan(0, |state, weight| {
                 *state += weight;

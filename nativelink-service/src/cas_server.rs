@@ -278,9 +278,12 @@ impl CasServer {
                     .err_tip(|| "In Directory::file::digest")?;
                 deque.push_back(digest);
             }
+
+            let page_size_usize = usize::try_from(page_size).unwrap_or(usize::MAX);
+
             if page_token_matched {
                 directories.push(directory);
-                if directories.len() as i32 == page_size {
+                if directories.len() == page_size_usize {
                     break;
                 }
             }

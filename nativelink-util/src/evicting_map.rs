@@ -305,12 +305,14 @@ where
     ) -> bool {
         let is_over_size = max_bytes != 0 && sum_store_size >= max_bytes;
 
-        let evict_older_than_seconds =
-            (self.anchor_time.elapsed().as_secs() as i32) - self.max_seconds;
+        let elapsed_seconds =
+            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+        let evict_older_than_seconds = elapsed_seconds.saturating_sub(self.max_seconds);
         let old_item_exists =
             self.max_seconds != 0 && peek_entry.seconds_since_anchor < evict_older_than_seconds;
 
-        let is_over_count = self.max_count != 0 && (lru_len as u64) > self.max_count;
+        let is_over_count =
+            self.max_count != 0 && u64::try_from(lru_len).unwrap_or(u64::MAX) > self.max_count;
 
         is_over_size || old_item_exists || is_over_count
     }
@@ -413,7 +415,8 @@ where
                         } else {
                             if !peek {
                                 entry.seconds_since_anchor =
-                                    self.anchor_time.elapsed().as_secs() as i32;
+                                    i32::try_from(self.anchor_time.elapsed().as_secs())
+                                        .unwrap_or(i32::MAX);
                             }
                             *result = Some(entry.data.len());
                         }
@@ -465,7 +468,8 @@ where
         // Now get the item
         let mut state = self.state.lock();
         let entry = state.lru.get_mut(key.borrow())?;
-        entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
+        entry.seconds_since_anchor =
+            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
         Some(entry.data.clone())
     }
 
@@ -474,8 +478,12 @@ where
     where
         K: 'static,
     {
-        self.insert_with_time(key, data, self.anchor_time.elapsed().as_secs() as i32)
-            .await
+        self.insert_with_time(
+            key,
+            data,
+            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX),
+        )
+        .await
     }
 
     /// Returns the replaced item if any.
@@ -520,7 +528,7 @@ where
             self.inner_insert_many(
                 &mut state,
                 inserts,
-                self.anchor_time.elapsed().as_secs() as i32,
+                i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX),
             )
         };
 

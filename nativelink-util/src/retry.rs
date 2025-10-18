@@ -130,7 +130,7 @@ impl Retrier {
     }
 
     fn get_retry_config(&self) -> impl Iterator<Item = Duration> + '_ {
-        ExponentialBackoff::new(Duration::from_millis(self.config.delay as u64))
+        ExponentialBackoff::new(Duration::from_secs_f32(self.config.delay))
             .map(|d| (self.jitter_fn)(d))
             .take(self.config.max_retries) // Remember this is number of retries, so will run max_retries + 1.
     }

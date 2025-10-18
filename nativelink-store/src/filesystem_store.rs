@@ -454,7 +454,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
             .insert_with_time(
                 key.into_owned().into(),
                 Arc::new(file_entry),
-                time_since_anchor.as_secs() as i32,
+                i32::try_from(time_since_anchor.as_secs()).unwrap_or(i32::MAX),
             )
             .await;
         Ok(())

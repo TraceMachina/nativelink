@@ -518,7 +518,7 @@ impl StoreDriver for ExperimentalMongoStore {
             }
         };
 
-        let offset = offset as usize;
+        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
         let data_len = data.len();
 
         if offset > data_len {
@@ -531,7 +531,10 @@ impl StoreDriver for ExperimentalMongoStore {
         }
 
         let end = if let Some(len) = length {
-            cmp::min(offset + len as usize, data_len)
+            cmp::min(
+                offset.saturating_add(usize::try_from(len).unwrap_or(usize::MAX)),
+                data_len,
+            )
         } else {
             data_len
         };

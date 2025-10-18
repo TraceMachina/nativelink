@@ -238,7 +238,7 @@ where
         // For small files with exact size, we'll use simple upload
         if let UploadSizeInfo::ExactSize(size) = upload_size {
             if size < MIN_MULTIPART_SIZE {
-                let content = reader.consume(Some(size as usize)).await?;
+                let content = reader.consume(Some(usize::try_from(size)?)).await?;
                 let client = &self.client;
 
                 return self

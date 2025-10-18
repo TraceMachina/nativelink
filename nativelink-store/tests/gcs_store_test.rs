@@ -182,7 +182,7 @@ async fn simple_update() -> Result<(), Error> {
     // Create test data
     let mut send_data = BytesMut::new();
     for i in 0..DATA_SIZE {
-        send_data.put_u8(((i % 93) + 33) as u8);
+        send_data.put_u8(u8::try_from((i % 93) + 33).expect("printable ASCII range"));
     }
     let send_data = send_data.freeze();
 
@@ -426,7 +426,9 @@ async fn large_file_update_test() -> Result<(), Error> {
     let store = create_test_store(mock_ops.clone()).await?;
 
     // Create test data
-    let pattern: Vec<u8> = (0..100).map(|i| (i % 256) as u8).collect();
+    let pattern: Vec<u8> = (0..100)
+        .map(|i| u8::try_from(i % 256).expect("modulo 256 fits in u8"))
+        .collect();
 
     // Create a digest and channel pair
     let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE as u64)?;
@@ -578,7 +580,8 @@ async fn create_test_store_with_expiration(
             bucket: BUCKET_NAME.to_string(),
             common: CommonObjectSpec {
                 key_prefix: Some(KEY_PREFIX.to_string()),
-                consider_expired_after_s: expiration_seconds as u32,
+                consider_expired_after_s: u32::try_from(expiration_seconds)
+                    .expect("expiration_seconds exceeds u32::MAX"),
                 ..Default::default()
             },
             ..Default::default()
