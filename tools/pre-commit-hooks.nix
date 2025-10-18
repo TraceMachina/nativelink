@@ -142,9 +142,18 @@ in {
     packageOverrides.cargo = nightly-rust.cargo;
     packageOverrides.rustfmt = nightly-rust.rustfmt;
   };
+
+  # Taplo fmt
   taplo = {
     enable = true;
-    excludes = ["nativelink-proto"];
+    types = ["toml"];
+  };
+
+  # Taplo validate
+  taplo-validate = {
+    enable = true;
+    entry = "${pkgs.taplo}/bin/taplo validate";
+    name = "taplo validate";
     types = ["toml"];
   };
 
@@ -217,7 +226,7 @@ in {
     description = "Detect unused cargo deps";
     enable = true;
     entry = "${pkgs.cargo-machete}/bin/cargo-machete";
-    args = ["."];
+    args = ["--with-metadata" "."];
     pass_filenames = false;
   };
 

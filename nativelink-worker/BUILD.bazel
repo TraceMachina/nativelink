@@ -95,7 +95,6 @@ rust_test(
     ],
     deps = [
         "@crates//:hyper",
-        "@crates//:hyper-util",
         "@crates//:pretty_assertions",
         "@crates//:prost-types",
         "@crates//:rand",

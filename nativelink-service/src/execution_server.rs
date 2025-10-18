@@ -216,15 +216,9 @@ impl ExecutionServer {
                 match action_listener.changed().await {
                     Ok((action_update, _maybe_origin_metadata)) => {
                         debug!(?action_update, "Execute Resp Stream");
-                        // If the action is finished we won't be sending any more updates.
-                        let maybe_action_listener = if action_update.stage.is_finished() {
-                            None
-                        } else {
-                            Some(action_listener)
-                        };
                         Some((
                             Ok(action_update.as_operation(client_operation_id)),
-                            maybe_action_listener,
+                            (!action_update.stage.is_finished()).then_some(action_listener),
                         ))
                     }
                     Err(err) => {

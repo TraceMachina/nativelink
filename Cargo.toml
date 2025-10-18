@@ -1,3 +1,4 @@
+#:schema tools/cargo-with-detailed-deps.json
 [workspace]
 exclude = [
   "nativelink-config/generate-stores-config",
@@ -9,7 +10,7 @@ resolver = "2"
 edition = "2024"
 name = "nativelink"
 rust-version = "1.87.0"
-version = "0.7.2"
+version = "0.7.3"
 
 [profile.release]
 lto = true
@@ -47,11 +48,19 @@ nativelink-worker = { path = "nativelink-worker" }
 
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 axum = { version = "0.8.3", default-features = false }
-clap = { version = "4.5.35", features = ["derive"] }
+clap = { version = "4.5.35", features = [
+  "color",
+  "derive",
+  "error-context",
+  "help",
+  "std",
+  "suggestions",
+  "usage",
+], default-features = false }
 futures = { version = "0.3.31", default-features = false }
-hyper = "1.6.0"
-hyper-util = "0.1.11"
-mimalloc = "0.1.44"
+hyper = { version = "1.6.0", default-features = false }
+hyper-util = { version = "0.1.11", default-features = false }
+mimalloc = { version = "0.1.44", default-features = false }
 rustls-pemfile = { version = "2.2.0", features = [
   "std",
 ], default-features = false }
@@ -139,7 +148,10 @@ pedantic = { level = "warn", priority = -1 }
 # Restriction Denies with default priority
 alloc-instead-of-core = "deny"
 as-underscore = "deny"
+await-holding-lock = "deny"
 elidable-lifetime-names = "deny"
+explicit-into-iter-loop = "deny"
+redundant-closure-for-method-calls = "deny"
 semicolon-if-nothing-returned = "deny"
 std-instead-of-core = "deny"
 todo = "deny"

@@ -40,8 +40,8 @@ use crate::gcs_client::types::{
 };
 
 #[derive(MetricsComponent, Debug)]
-pub struct GcsStore<NowFn> {
-    client: Arc<dyn GcsOperations>,
+pub struct GcsStore<Client: GcsOperations, NowFn> {
+    client: Arc<Client>,
     now_fn: NowFn,
     #[metric(help = "The bucket name for the GCS store")]
     bucket: String,
@@ -58,22 +58,27 @@ pub struct GcsStore<NowFn> {
     max_concurrent_uploads: usize,
 }
 
-impl<I, NowFn> GcsStore<NowFn>
+impl<I, NowFn> GcsStore<GcsClient, NowFn>
 where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
     pub async fn new(spec: &ExperimentalGcsSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
-        let client = GcsClient::new(spec).await?;
-        let client: Arc<dyn GcsOperations> = Arc::new(client);
-
+        let client = Arc::new(GcsClient::new(spec).await?);
         Self::new_with_ops(spec, client, now_fn)
     }
+}
 
+impl<I, Client, NowFn> GcsStore<Client, NowFn>
+where
+    I: InstantWrapper,
+    Client: GcsOperations + Send + Sync,
+    NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
+{
     // Primarily used for injecting a mock or real operations implementation
     pub fn new_with_ops(
         spec: &ExperimentalGcsSpec,
-        client: Arc<dyn GcsOperations>,
+        client: Arc<Client>,
         now_fn: NowFn,
     ) -> Result<Arc<Self>, Error> {
         // Chunks must be a multiple of 256kb according to the documentation.
@@ -95,10 +100,10 @@ where
         let max_chunk_size =
             core::cmp::min(spec.resumable_chunk_size.unwrap_or(CHUNK_SIZE), CHUNK_SIZE);
 
-        let max_chunk_size = if max_chunk_size % CHUNK_MULTIPLE != 0 {
-            ((max_chunk_size + CHUNK_MULTIPLE / 2) / CHUNK_MULTIPLE) * CHUNK_MULTIPLE
-        } else {
+        let max_chunk_size = if max_chunk_size.is_multiple_of(CHUNK_MULTIPLE) {
             max_chunk_size
+        } else {
+            ((max_chunk_size + CHUNK_MULTIPLE / 2) / CHUNK_MULTIPLE) * CHUNK_MULTIPLE
         };
 
         let max_retry_buffer_size = spec
@@ -191,9 +196,10 @@ where
 }
 
 #[async_trait]
-impl<I, NowFn> StoreDriver for GcsStore<NowFn>
+impl<I, Client, NowFn> StoreDriver for GcsStore<Client, NowFn>
 where
     I: InstantWrapper,
+    Client: GcsOperations + 'static,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
     async fn has_with_results(
@@ -446,7 +452,7 @@ where
 
     fn register_remove_callback(
         self: Arc<Self>,
-        _callback: &Arc<Box<dyn RemoveItemCallback>>,
+        _callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
         // As we're backed by GCS, this store doesn't actually drop stuff
         // so we can actually just ignore this
@@ -455,9 +461,10 @@ where
 }
 
 #[async_trait]
-impl<I, NowFn> HealthStatusIndicator for GcsStore<NowFn>
+impl<I, Client, NowFn> HealthStatusIndicator for GcsStore<Client, NowFn>
 where
     I: InstantWrapper,
+    Client: GcsOperations + 'static,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
     fn get_name(&self) -> &'static str {

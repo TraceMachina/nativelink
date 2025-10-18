@@ -660,7 +660,7 @@ impl StoreDriver for RedisStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        _callback: &Arc<Box<dyn RemoveItemCallback>>,
+        _callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
         // As redis doesn't drop stuff, we can just ignore this
         Ok(())
@@ -1037,6 +1037,10 @@ impl SchedulerSubscriptionManager for RedisSubscriptionManager {
             .mark_changed();
 
         Ok(subscription)
+    }
+
+    fn is_reliable() -> bool {
+        false
     }
 }
 

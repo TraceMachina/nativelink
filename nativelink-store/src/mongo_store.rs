@@ -576,7 +576,7 @@ impl StoreDriver for ExperimentalMongoStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        _callback: &Arc<Box<dyn RemoveItemCallback>>,
+        _callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
         // drop because we don't remove anything from Mongo
         Ok(())
@@ -836,6 +836,10 @@ impl SchedulerSubscriptionManager for ExperimentalMongoSubscriptionManager {
             .mark_changed();
 
         Ok(subscription)
+    }
+
+    fn is_reliable() -> bool {
+        true
     }
 }
 

@@ -164,9 +164,10 @@ impl StoreDriver for SizePartitioningStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
-        self.lower_store.register_remove_callback(callback)?;
+        self.lower_store
+            .register_remove_callback(callback.clone())?;
         self.upper_store.register_remove_callback(callback)?;
         Ok(())
     }

@@ -259,6 +259,12 @@ impl ApiWorkerSchedulerImpl {
                 (true, err.code == Code::ResourceExhausted)
             }
             UpdateOperationType::UpdateWithDisconnect => (true, false),
+            UpdateOperationType::ExecutionComplete => {
+                // No update here, just restoring platform properties.
+                worker.execution_complete(operation_id);
+                self.worker_change_notify.notify_one();
+                return Ok(());
+            }
         };
 
         // Update the operation in the worker state manager.
@@ -340,6 +346,7 @@ impl ApiWorkerSchedulerImpl {
                         .await,
                 );
             }
+            Ok(())
         } else {
             warn!(
                 ?worker_id,
@@ -347,8 +354,15 @@ impl ApiWorkerSchedulerImpl {
                 ?action_info,
                 "Worker not found in worker map in worker_notify_run_action"
             );
+            // Ensure the operation is put back to queued state.
+            self.worker_state_manager
+                .update_operation(
+                    &operation_id,
+                    &worker_id,
+                    UpdateOperationType::UpdateWithDisconnect,
+                )
+                .await
         }
-        Ok(())
     }
 
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.

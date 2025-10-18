@@ -33,6 +33,7 @@ use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tracing::warn;
 
 use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair};
 use crate::common::DigestInfo;
@@ -381,7 +382,7 @@ impl Store {
     #[inline]
     pub fn register_remove_callback(
         &self,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
         self.inner.clone().register_remove_callback(callback)
     }
@@ -770,6 +771,7 @@ pub trait StoreDriver:
             .update_oneshot(digest_info.borrow(), digest_bytes.clone())
             .await
         {
+            warn!(?e, "check_health Store.update_oneshot() failed");
             return HealthStatus::new_failed(
                 self.get_ref(),
                 format!("Store.update_oneshot() failed: {e}").into(),
@@ -834,16 +836,18 @@ pub trait StoreDriver:
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error>;
 }
 
 // Callback to be called when a store deletes an item. This is used so
 // compound stores can remove items from their internal state when their
 // underlying stores remove items e.g. caches
-#[async_trait]
 pub trait RemoveItemCallback: Debug + Send + Sync {
-    async fn callback(&self, store_key: &StoreKey<'_>);
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
 /// The instructions on how to decode a value from a Bytes & version into
@@ -865,6 +869,8 @@ pub trait SchedulerSubscriptionManager: Send + Sync {
     fn subscribe<K>(&self, key: K) -> Result<Self::Subscription, Error>
     where
         K: SchedulerStoreKeyProvider;
+
+    fn is_reliable() -> bool;
 }
 
 /// The API surface for a scheduler store.

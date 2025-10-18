@@ -12,17 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM ubuntu:22.04@sha256:3c61d3759c2639d4b836d32a2d3c83fa0214e36f195a3421018dbaaf79cbe37f AS dependencies
-# hadolint ignore=DL3009
+FROM ubuntu:noble-20250925 AS dependencies
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
     apt-get install --no-install-recommends -y \
-        git=1:2.34.1-1ubuntu1.11 \
-        ca-certificates=20230311ubuntu0.22.04.1 && \
-        update-ca-certificates
+        git=1:2.43.0-1ubuntu7.3 \
+        ca-certificates=20240203 \
+        && apt-get clean \
+        && rm -rf /var/lib/apt/lists/* \
+        && update-ca-certificates
 
 FROM dependencies AS final
 
 # hadolint ignore=DL3003
-RUN git clone https://github.com/blakehatch/drake.git && \
+RUN git clone https://github.com/RobotLocomotion/drake.git && \
     cd drake && \
     DEBIAN_FRONTEND=noninteractive ./setup/ubuntu/install_prereqs.sh --with-bazel -y

@@ -14,17 +14,18 @@
 
 use core::cell::UnsafeCell;
 use core::pin::Pin;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use nativelink_config::stores::RefSpec;
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
     RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
+use parking_lot::Mutex;
 use tracing::error;
 
 use crate::store_manager::StoreManager;
@@ -47,7 +48,7 @@ pub struct RefStore {
     name: String,
     store_manager: Weak<StoreManager>,
     inner: StoreReference,
-    remove_callbacks: Mutex<Vec<Arc<Box<dyn RemoveItemCallback>>>>,
+    remove_callbacks: Mutex<Vec<Arc<dyn RemoveItemCallback>>>,
 }
 
 impl RefStore {
@@ -80,19 +81,14 @@ impl RefStore {
         }
         // This should protect us against multiple writers writing the same location at the same
         // time.
-        let _lock = self.inner.mux.lock().map_err(|e| {
-            make_err!(
-                Code::Internal,
-                "Failed to lock mutex in ref_store : {:?}",
-                e
-            )
-        })?;
+        let _lock = self.inner.mux.lock();
         let store_manager = self
             .store_manager
             .upgrade()
             .err_tip(|| "Store manager is gone")?;
         if let Some(store) = store_manager.get_store(&self.name) {
-            for callback in self.remove_callbacks.lock().unwrap().iter() {
+            let remove_callbacks = self.remove_callbacks.lock().clone();
+            for callback in remove_callbacks {
                 store.register_remove_callback(callback)?;
             }
             unsafe {
@@ -158,15 +154,15 @@ impl StoreDriver for RefStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: &Arc<Box<dyn RemoveItemCallback>>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
-        self.remove_callbacks.lock()?.push(callback.clone());
+        self.remove_callbacks.lock().push(callback.clone());
         let ref_store = self.inner.cell.0.get();
         unsafe {
             if let Some(ref store) = *ref_store {
                 store.register_remove_callback(callback)?;
             }
-        };
+        }
         Ok(())
     }
 }

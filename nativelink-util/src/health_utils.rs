@@ -14,6 +14,7 @@
 
 use core::fmt::Debug;
 use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,6 +23,8 @@ use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 use serde::Serialize;
+use tokio::time::timeout;
+use tracing::warn;
 
 /// Struct name health indicator component.
 type StructName = str;
@@ -46,6 +49,9 @@ pub enum HealthStatus {
     Failed {
         struct_name: &'static StructName,
         message: Cow<'static, Message>,
+    },
+    Timeout {
+        struct_name: &'static StructName,
     },
 }
 
@@ -189,6 +195,7 @@ impl Debug for HealthRegistry {
 pub trait HealthStatusReporter {
     fn health_status_report(
         &self,
+        timeout: &Duration,
     ) -> Pin<Box<dyn Stream<Item = HealthStatusDescription> + Send + '_>>;
 }
 
@@ -197,15 +204,28 @@ pub trait HealthStatusReporter {
 impl HealthStatusReporter for HealthRegistry {
     fn health_status_report(
         &self,
+        timeout_limit: &Duration,
     ) -> Pin<Box<dyn Stream<Item = HealthStatusDescription> + Send + '_>> {
-        Box::pin(futures::stream::iter(self.indicators.iter()).then(
-            |(namespace, indicator)| async move {
+        let local_timeout_limit = Arc::new(*timeout_limit);
+        Box::pin(
+            futures::stream::iter(
+                self.indicators
+                    .iter()
+                    .zip(core::iter::repeat(local_timeout_limit)),
+            )
+            .then(|((namespace, indicator), internal_timeout)| async move {
+                let status_res =
+                    timeout(*internal_timeout, indicator.check_health(namespace.clone())).await;
                 HealthStatusDescription {
                     namespace: namespace.clone(),
-                    status: indicator.check_health(namespace.clone()).await,
+                    status: status_res.unwrap_or_else(|_| {
+                        let struct_name = indicator.struct_name();
+                        warn!(struct_name, "Timeout during health check");
+                        HealthStatus::Timeout { struct_name }
+                    }),
                 }
-            },
-        ))
+            }),
+        )
     }
 }
 

@@ -1,9 +1,12 @@
+#:schema ../../tools/cargo-with-detailed-deps.json
 [package]
 edition = "2024"
 name = "generate-stores-config"
 version = "0.1.0"
 
 [dependencies]
-regex = "1.11.3"
+regex = { version = "1.11.3", default-features = false, features = [
+  "unicode-perl",
+] }
 
 [workspace]

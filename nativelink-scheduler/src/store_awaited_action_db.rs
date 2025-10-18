@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::mem::Discriminant;
 use core::ops::Bound;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
@@ -60,6 +61,10 @@ pub struct OperationSubscriber<S: SchedulerStore, I: InstantWrapper, NowFn: Fn()
     >,
     last_known_keepalive_ts: AtomicU64,
     now_fn: NowFn,
+    // If the SchedulerSubscriptionManager is not reliable, then this is populated
+    // when the state is set to subscribed.  When set it causes the state to be polled
+    // as well as listening for the publishing.
+    maybe_last_stage: Option<Discriminant<ActionStage>>,
 }
 
 impl<S: SchedulerStore, I: InstantWrapper, NowFn: Fn() -> I + core::fmt::Debug> core::fmt::Debug
@@ -99,6 +104,7 @@ where
             last_known_keepalive_ts: AtomicU64::new(0),
             state: OperationSubscriberState::Unsubscribed,
             now_fn,
+            maybe_last_stage: None,
         }
     }
 
@@ -158,6 +164,7 @@ where
             .upgrade()
             .err_tip(|| "Store gone in OperationSubscriber::get_awaited_action")?;
         let subscription = match &mut self.state {
+            OperationSubscriberState::Subscribed(subscription) => subscription,
             OperationSubscriberState::Unsubscribed => {
                 let subscription = store
                     .subscription_manager()
@@ -165,28 +172,42 @@ where
                     .subscribe(self.subscription_key.borrow())
                     .err_tip(|| "In OperationSubscriber::changed::subscribe")?;
                 self.state = OperationSubscriberState::Subscribed(subscription);
+                // When we've just subscribed, there may have been changes before now.
+                let action = Self::inner_get_awaited_action(
+                    store.as_ref(),
+                    self.subscription_key.borrow(),
+                    self.maybe_client_operation_id.clone(),
+                    &self.last_known_keepalive_ts,
+                )
+                .await
+                .err_tip(|| "In OperationSubscriber::changed")?;
+                if !<S as SchedulerStore>::SubscriptionManager::is_reliable() {
+                    self.maybe_last_stage = Some(core::mem::discriminant(&action.state().stage));
+                }
+                // Existing changes are only interesting if the state is past queued.
+                if !matches!(action.state().stage, ActionStage::Queued) {
+                    return Ok(action);
+                }
                 let OperationSubscriberState::Subscribed(subscription) = &mut self.state else {
                     unreachable!("Subscription should be in Subscribed state");
                 };
                 subscription
             }
-            OperationSubscriberState::Subscribed(subscription) => subscription,
         };
 
         let changed_fut = subscription.changed();
         tokio::pin!(changed_fut);
         loop {
-            let mut retries = 0;
-            loop {
+            // This is set if the maybe_last_state doesn't match the state in the store.
+            let mut maybe_changed_action = None;
+            for attempt in 1..=MAX_RETRIES_FOR_CLIENT_KEEPALIVE {
                 let last_known_keepalive_ts = self.last_known_keepalive_ts.load(Ordering::Acquire);
                 if I::from_secs(last_known_keepalive_ts).elapsed() <= CLIENT_KEEPALIVE_DURATION {
                     break; // We are still within the keep alive duration.
                 }
-                if retries > MAX_RETRIES_FOR_CLIENT_KEEPALIVE {
-                    return Err(make_err!(
-                        Code::Aborted,
-                        "Could not update client keep alive for AwaitedAction",
-                    ));
+                if attempt > 1 {
+                    // Wait a tick before retrying.
+                    (self.now_fn)().sleep(Duration::from_millis(100)).await;
                 }
                 let mut awaited_action = Self::inner_get_awaited_action(
                     store.as_ref(),
@@ -197,38 +218,62 @@ where
                 .await
                 .err_tip(|| "In OperationSubscriber::changed")?;
                 awaited_action.update_client_keep_alive((self.now_fn)().now());
-                let update_res = inner_update_awaited_action(store.as_ref(), awaited_action)
-                    .await
-                    .err_tip(|| "In OperationSubscriber::changed");
-                if update_res.is_ok() {
-                    break;
+                // If this is set to Some then the action changed without being published.
+                maybe_changed_action = self
+                    .maybe_last_stage
+                    .as_ref()
+                    .is_some_and(|last_stage| {
+                        *last_stage != core::mem::discriminant(&awaited_action.state().stage)
+                    })
+                    .then(|| awaited_action.clone());
+                match inner_update_awaited_action(store.as_ref(), awaited_action).await {
+                    Ok(()) => break,
+                    err if attempt == MAX_RETRIES_FOR_CLIENT_KEEPALIVE => {
+                        err.err_tip_with_code(|_| {
+                            (Code::Aborted, "Could not update client keep alive")
+                        })?;
+                    }
+                    _ => (),
                 }
-                retries += 1;
-                // Wait a tick before retrying.
-                (self.now_fn)().sleep(Duration::from_millis(100)).await;
             }
-            let sleep_fut = (self.now_fn)().sleep(CLIENT_KEEPALIVE_DURATION);
+            // If the polling shows that it's changed state then publish now.
+            if let Some(changed_action) = maybe_changed_action {
+                self.maybe_last_stage =
+                    Some(core::mem::discriminant(&changed_action.state().stage));
+                return Ok(changed_action);
+            }
+            // Determine the sleep time based on the last client keep alive.
+            let sleep_time = CLIENT_KEEPALIVE_DURATION
+                .checked_sub(
+                    I::from_secs(self.last_known_keepalive_ts.load(Ordering::Acquire)).elapsed(),
+                )
+                .unwrap_or(Duration::from_millis(100));
             tokio::select! {
                 result = &mut changed_fut => {
                     result?;
                     break;
                 }
-                () = sleep_fut => {
+                () = (self.now_fn)().sleep(sleep_time) => {
                     // If we haven't received any updates for a while, we should
                     // let the database know that we are still listening to prevent
-                    // the action from being dropped.
+                    // the action from being dropped.  Also poll for updates if the
+                    // subscription manager is unreliable.
                 }
             }
         }
 
-        Self::inner_get_awaited_action(
+        let awaited_action = Self::inner_get_awaited_action(
             store.as_ref(),
             self.subscription_key.borrow(),
             self.maybe_client_operation_id.clone(),
             &self.last_known_keepalive_ts,
         )
         .await
-        .err_tip(|| "In OperationSubscriber::changed")
+        .err_tip(|| "In OperationSubscriber::changed")?;
+        if self.maybe_last_stage.is_some() {
+            self.maybe_last_stage = Some(core::mem::discriminant(&awaited_action.state().stage));
+        }
+        Ok(awaited_action)
     }
 
     async fn borrow(&self) -> Result<AwaitedAction, Error> {
