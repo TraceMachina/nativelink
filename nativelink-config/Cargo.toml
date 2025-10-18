@@ -1,3 +1,4 @@
+#:schema ../tools/cargo-with-detailed-deps.json
 lints.workspace = true
 
 [package]
@@ -9,7 +10,7 @@ version = "0.7.3"
 nativelink-error = { path = "../nativelink-error" }
 
 byte-unit = { version = "5.1.6", default-features = false, features = ["byte"] }
-humantime = "2.2.0"
+humantime = { version = "2.2.0", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
@@ -17,14 +18,16 @@ serde = { version = "1.0.219", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0.140", default-features = false, features = [
   "std",
 ] }
-serde_json5 = "0.2.1"
+serde_json5 = { version = "0.2.1", default-features = false }
 shellexpand = { version = "3.1.0", default-features = false, features = [
   "base-0",
 ] }
 tracing = { version = "0.1.41", default-features = false }
 
 [dev-dependencies]
-pretty_assertions = { version = "1.4.1", features = ["std"] }
+pretty_assertions = { version = "1.4.1", features = [
+  "std",
+], default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",
 ] }
