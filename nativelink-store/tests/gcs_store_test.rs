@@ -21,6 +21,7 @@ use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::{CommonObjectSpec, ExperimentalGcsSpec};
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::gcs_client::client::GcsOperations;
 use nativelink_store::gcs_client::mocks::{MockGcsOperations, MockRequest};
 use nativelink_store::gcs_client::types::{DEFAULT_CONTENT_TYPE, ObjectPath};
@@ -225,6 +226,83 @@ async fn simple_update() -> Result<(), Error> {
     assert_eq!(
         *write_requests[0].1, DATA_SIZE,
         "Expected content length to match DATA_SIZE"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn update_zero_length() -> Result<(), Error> {
+    // Create mock GCS operations
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store = create_test_store(mock_ops.clone()).await?;
+
+    let digest = ZERO_BYTE_DIGESTS[0];
+    let store_key: StoreKey = to_store_key(digest);
+    let (mut tx, rx) = make_buf_channel_pair();
+
+    // Start update operation
+    let store_clone = store.clone();
+    let update_fut = nativelink_util::spawn!("update_task", async move {
+        store_clone
+            .update(store_key, rx, UploadSizeInfo::ExactSize(0))
+            .await
+    });
+
+    tx.send_eof()?;
+    update_fut.await??;
+
+    // Verify the mock operations were called correctly
+    let requests = mock_ops.get_requests().await;
+    let write_requests = requests.iter().filter_map(|req| {
+        if let MockRequest::Write {
+            object_path,
+            content_len,
+        } = req
+        {
+            Some((object_path, content_len))
+        } else {
+            None
+        }
+    });
+
+    assert_eq!(write_requests.count(), 0, "Expected no write request");
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn update_zero_digest_with_data() -> Result<(), Error> {
+    const DATA_SIZE: usize = 50;
+
+    // Create mock GCS operations
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store = create_test_store(mock_ops.clone()).await?;
+
+    // Create test data
+    let mut send_data = BytesMut::new();
+    for i in 0..DATA_SIZE {
+        send_data.put_u8(u8::try_from((i % 93) + 33).unwrap());
+    }
+    let send_data = send_data.freeze();
+
+    let digest = ZERO_BYTE_DIGESTS[0];
+    let store_key: StoreKey = to_store_key(digest);
+    let (mut tx, rx) = make_buf_channel_pair();
+
+    // Start update operation
+    let store_clone = store.clone();
+    let update_fut = nativelink_util::spawn!("update_task", async move {
+        store_clone
+            .update(store_key, rx, UploadSizeInfo::ExactSize(DATA_SIZE as u64))
+            .await
+    });
+
+    tx.send(send_data).await?;
+    tx.send_eof()?;
+    assert!(
+        update_fut.await?.is_err(),
+        "No error for zero byte digest with data"
     );
 
     Ok(())
