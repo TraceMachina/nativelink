@@ -297,7 +297,8 @@ async fn check_header_test() -> Result<(), Error> {
         );
         let upload_size = reader.read_u32_le().await?;
         assert_eq!(
-            upload_size, MAX_SIZE_INPUT as u32,
+            u64::from(upload_size),
+            MAX_SIZE_INPUT,
             "Expected upload size to match"
         );
     }
@@ -452,7 +453,7 @@ async fn check_footer_test() -> Result<(), Error> {
                     position_from_prev_index: v
                 })
                 .to_vec(),
-            index_count: EXPECTED_INDEXES.len() as u32,
+            index_count: u32::try_from(EXPECTED_INDEXES.len()).unwrap_or(u32::MAX),
             uncompressed_data_size: data_len as u64,
             config: Lz4Config {
                 block_size: BLOCK_SIZE

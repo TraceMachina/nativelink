@@ -233,9 +233,12 @@ impl GcsClient {
         reader: &mut DropCloserReadHalf,
         max_size: u64,
     ) -> Result<(), Error> {
-        let initial_capacity = core::cmp::min(max_size as usize, 10 * 1024 * 1024);
+        let initial_capacity = core::cmp::min(
+            usize::try_from(max_size).unwrap_or(usize::MAX),
+            10 * 1024 * 1024,
+        );
         let mut data = Vec::with_capacity(initial_capacity);
-        let max_size = max_size as usize;
+        let max_size = usize::try_from(max_size).unwrap_or(usize::MAX);
         let mut total_size = 0usize;
 
         while total_size < max_size {
@@ -286,7 +289,7 @@ impl GcsClient {
 
             // Upload data in chunks
             let mut offset: u64 = 0;
-            let max_size = max_size as usize;
+            let max_size = usize::try_from(max_size).unwrap_or(usize::MAX);
             let mut total_uploaded = 0usize;
 
             while total_uploaded < max_size {
@@ -559,7 +562,11 @@ impl GcsOperations for GcsClient {
 
                     let mut rng = rand::rng();
                     let jitter_factor = rng.random::<f64>().mul_add(0.4, 0.8);
-                    retry_delay = (retry_delay as f64 * jitter_factor) as u64;
+                    retry_delay = Duration::from_millis(retry_delay)
+                        .mul_f64(jitter_factor)
+                        .as_millis()
+                        .try_into()
+                        .unwrap_or(u64::MAX);
 
                     retry_count += 1;
                 }
