@@ -40,7 +40,7 @@ use nativelink_util::store_trait::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::callback_utils::RemoveItemCallbackHolder;
 use crate::cas_utils::is_zero_digest;
@@ -129,7 +129,8 @@ impl Drop for EncodedFilePath {
             .fetch_add(1, Ordering::Relaxed)
             + 1;
         debug!(
-            ?current_active_drop_spawns,
+            %current_active_drop_spawns,
+            ?file_path,
             "Spawned a filesystem_delete_file"
         );
         background_spawn!("filesystem_delete_file", async move {
@@ -148,6 +149,7 @@ impl Drop for EncodedFilePath {
                 - 1;
             debug!(
                 ?current_active_drop_spawns,
+                ?file_path,
                 "Dropped a filesystem_delete_file"
             );
         });
@@ -220,6 +222,7 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
 pub struct FileEntryImpl {
     data_size: u64,
     block_size: u64,
+    // We lock around this as it gets rewritten when we move between temp and content types
     encoded_file_path: RwLock<EncodedFilePath>,
 }
 
@@ -362,37 +365,49 @@ impl LenEntry for FileEntryImpl {
     // target file location to the new temp file. `unref()` should only ever be called once.
     #[inline]
     async fn unref(&self) {
-        {
-            let mut encoded_file_path = self.encoded_file_path.write().await;
-            if encoded_file_path.path_type == PathType::Temp {
-                // We are already a temp file that is now marked for deletion on drop.
-                // This is very rare, but most likely the rename into the content path failed.
+        let mut encoded_file_path = match self.encoded_file_path.try_write() {
+            Some(efp) => efp,
+            None => {
+                // This is being held onto by something else, usually emplace_path.
+                // We shouldn't try and unref this, because they're doing things to it instead
+                info!(
+                    ?self,
+                    "Skipping trying to do unref as someone else is editing this"
+                );
                 return;
             }
-            let from_path = encoded_file_path.get_file_path();
-            let new_key = make_temp_key(&encoded_file_path.key);
+        };
+        if encoded_file_path.path_type == PathType::Temp {
+            // We are already a temp file that is now marked for deletion on drop.
+            // This is very rare, but most likely the rename into the content path failed.
+            warn!(
+                key = ?encoded_file_path.key,
+                "File is already a temp file",
+            );
+            return;
+        }
+        let from_path = encoded_file_path.get_file_path();
+        let new_key = make_temp_key(&encoded_file_path.key);
 
-            let to_path =
-                to_full_path_from_key(&encoded_file_path.shared_context.temp_path, &new_key);
+        let to_path = to_full_path_from_key(&encoded_file_path.shared_context.temp_path, &new_key);
 
-            if let Err(err) = fs::rename(&from_path, &to_path).await {
-                warn!(
-                    key = ?encoded_file_path.key,
-                    ?from_path,
-                    ?to_path,
-                    ?err,
-                    "Failed to rename file",
-                );
-            } else {
-                debug!(
-                    key = ?encoded_file_path.key,
-                    ?from_path,
-                    ?to_path,
-                    "Renamed file",
-                );
-                encoded_file_path.path_type = PathType::Temp;
-                encoded_file_path.key = new_key;
-            }
+        if let Err(err) = fs::rename(&from_path, &to_path).await {
+            warn!(
+                key = ?encoded_file_path.key,
+                ?from_path,
+                ?to_path,
+                ?err,
+                "Failed to rename file",
+            );
+        } else {
+            debug!(
+                key = ?encoded_file_path.key,
+                ?from_path,
+                ?to_path,
+                "Renamed file (unref)",
+            );
+            encoded_file_path.path_type = PathType::Temp;
+            encoded_file_path.key = new_key;
         }
     }
 }
@@ -531,7 +546,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
             if let Err(err) = rename_fn(&from_file, &to_file) {
                 warn!(?from_file, ?to_file, ?err, "Failed to rename file",);
             } else {
-                debug!(?from_file, ?to_file, "Renamed file",);
+                debug!(?from_file, ?to_file, "Renamed file (old cache)",);
             }
         }
         Ok(())
@@ -740,6 +755,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .await
             .err_tip(|| "Failed to sync_data in filesystem store")?;
 
+        debug!(?temp_file, "Dropping file to update_file");
         drop(temp_file);
 
         *entry.data_size_mut() = data_size;
@@ -921,6 +937,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         );
         // We are done with the file, if we hold a reference to the file here, it could
         // result in a deadlock if `emplace_file()` also needs file descriptors.
+        debug!(?file, "Dropping file to to update_with_whole_file");
         drop(file);
         self.emplace_file(key.into_owned(), Arc::new(entry))
             .await
