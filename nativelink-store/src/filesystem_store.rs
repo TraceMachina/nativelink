@@ -220,12 +220,17 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
 pub struct FileEntryImpl {
     data_size: u64,
     block_size: u64,
-    encoded_file_path: RwLock<EncodedFilePath>,
+    // We lock around this as it gets rewritten when we move between temp and content types
+    encoded_file_path: Arc<RwLock<EncodedFilePath>>,
 }
 
 impl FileEntryImpl {
-    pub fn get_shared_context_for_test(&mut self) -> Arc<SharedContext> {
-        self.encoded_file_path.get_mut().shared_context.clone()
+    pub async fn get_shared_context_for_test(&mut self) -> Arc<SharedContext> {
+        self.encoded_file_path
+            .read_arc()
+            .await
+            .shared_context
+            .clone()
     }
 }
 
@@ -234,7 +239,7 @@ impl FileEntry for FileEntryImpl {
         Self {
             data_size,
             block_size,
-            encoded_file_path,
+            encoded_file_path: Arc::new(encoded_file_path),
         }
     }
 
@@ -362,11 +367,18 @@ impl LenEntry for FileEntryImpl {
     // target file location to the new temp file. `unref()` should only ever be called once.
     #[inline]
     async fn unref(&self) {
-        {
-            let mut encoded_file_path = self.encoded_file_path.write().await;
+        // If this is called during emplace_file, it'll block, so we need to spawn a new task.
+        let local_encoded_path = self.encoded_file_path.clone();
+        debug!("Spawning filesystem_unref");
+        background_spawn!("filesystem_unref", async move {
+            let mut encoded_file_path = local_encoded_path.write().await;
             if encoded_file_path.path_type == PathType::Temp {
                 // We are already a temp file that is now marked for deletion on drop.
                 // This is very rare, but most likely the rename into the content path failed.
+                warn!(
+                    key = ?encoded_file_path.key,
+                    "File is already a temp file",
+                );
                 return;
             }
             let from_path = encoded_file_path.get_file_path();
@@ -388,12 +400,12 @@ impl LenEntry for FileEntryImpl {
                     key = ?encoded_file_path.key,
                     ?from_path,
                     ?to_path,
-                    "Renamed file",
+                    "Renamed file (unref)",
                 );
                 encoded_file_path.path_type = PathType::Temp;
                 encoded_file_path.key = new_key;
             }
-        }
+        });
     }
 }
 
@@ -531,7 +543,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
             if let Err(err) = rename_fn(&from_file, &to_file) {
                 warn!(?from_file, ?to_file, ?err, "Failed to rename file",);
             } else {
-                debug!(?from_file, ?to_file, "Renamed file",);
+                debug!(?from_file, ?to_file, "Renamed file (old cache)",);
             }
         }
         Ok(())

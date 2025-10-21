@@ -18,7 +18,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use nativelink_config::stores::{FastSlowSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec};
+use nativelink_config::stores::{
+    EvictionPolicy, FastSlowSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec,
+};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
@@ -32,6 +34,7 @@ use nativelink_util::store_trait::{RemoveItemCallback, Store, StoreDriver, Store
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use tracing::debug;
 
 const MEGABYTE_SZ: usize = 1024 * 1024;
 
