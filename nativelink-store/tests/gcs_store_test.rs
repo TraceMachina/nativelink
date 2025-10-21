@@ -24,7 +24,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::gcs_client::client::GcsOperations;
 use nativelink_store::gcs_client::mocks::{MockGcsOperations, MockRequest};
-use nativelink_store::gcs_client::types::{DEFAULT_CONTENT_TYPE, ObjectPath};
+use nativelink_store::gcs_client::types::ObjectPath;
 use nativelink_store::gcs_store::GcsStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
@@ -113,7 +113,6 @@ async fn simple_has_object_error() -> Result<(), Error> {
             [
                 "Simulated generic failure",
                 "Error while trying to read - bucket: test-bucket path: test-prefix/0123456789abcdef000000000000000000010000000000000123456789abcdef-100",
-                "On attempt 1"
             ]
                 .iter()
                 .map(ToString::to_string)
@@ -535,15 +534,15 @@ async fn large_file_update_test() -> Result<(), Error> {
     // Verify the mock operations were called correctly
     let requests = mock_ops.get_requests().await;
 
-    // For large files, should see resumable upload operations
-    let start_resumable_requests = requests
+    // All files are streamed and the library handles chunking.
+    let upload_from_reader_requests = requests
         .iter()
-        .filter(|req| matches!(req, MockRequest::StartResumable { .. }))
+        .filter(|req| matches!(req, MockRequest::UploadFromReader { .. }))
         .count();
 
     assert!(
-        start_resumable_requests > 0,
-        "Expected at least one StartResumable request for large file"
+        upload_from_reader_requests > 0,
+        "Expected at least one UploadFromReader request"
     );
 
     Ok(())
@@ -567,7 +566,8 @@ async fn test_content_type() -> Result<(), Error> {
     assert!(result.is_some(), "Expected to find metadata");
     let metadata = result.unwrap();
     assert_eq!(
-        metadata.content_type, DEFAULT_CONTENT_TYPE,
+        metadata.content_type,
+        "application/octet-stream".to_string(),
         "Content type should match the default content type"
     );
 
@@ -597,7 +597,7 @@ async fn test_null_object_metadata() -> Result<(), Error> {
         name: object_path.path.clone(),
         bucket: object_path.bucket.clone(),
         size: -1, // Invalid size to test error handling
-        content_type: DEFAULT_CONTENT_TYPE.to_string(),
+        content_type: "application/octet-stream".to_string(),
         update_time: Some(nativelink_store::gcs_client::types::Timestamp {
             seconds: timestamp,
             nanos: 0,

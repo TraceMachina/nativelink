@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::fmt::Debug;
+use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,7 +25,7 @@ use nativelink_util::buf_channel::DropCloserReadHalf;
 use tokio::sync::RwLock;
 
 use crate::gcs_client::client::GcsOperations;
-use crate::gcs_client::types::{DEFAULT_CONTENT_TYPE, GcsObject, ObjectPath, Timestamp};
+use crate::gcs_client::types::{GcsObject, ObjectPath, Timestamp};
 
 /// A mock implementation of `GcsOperations` for testing
 #[derive(Debug)]
@@ -90,21 +91,8 @@ pub enum MockRequest {
         object_path: ObjectPath,
         content_len: usize,
     },
-    StartResumable {
-        object_path: ObjectPath,
-    },
-    UploadChunk {
-        upload_url: String,
-        object_path: ObjectPath,
-        data_len: usize,
-        offset: u64,
-        end_offset: u64,
-        total_size: Option<u64>,
-    },
     UploadFromReader {
         object_path: ObjectPath,
-        upload_id: String,
-        max_size: u64,
     },
     ObjectExists {
         object_path: ObjectPath,
@@ -157,7 +145,7 @@ impl MockGcsOperations {
             name: path.path.clone(),
             bucket: path.bucket.clone(),
             size: content.len() as i64,
-            content_type: DEFAULT_CONTENT_TYPE.to_string(),
+            content_type: "application/octet-stream".into(),
             update_time: Some(Timestamp {
                 seconds: now,
                 nanos: 0,
@@ -252,7 +240,7 @@ impl MockGcsOperations {
             name: path.path.clone(),
             bucket: path.bucket.clone(),
             size: content.len() as i64,
-            content_type: DEFAULT_CONTENT_TYPE.to_string(),
+            content_type: "application/octet-stream".into(),
             update_time: Some(Timestamp {
                 seconds: timestamp,
                 nanos: 0,
@@ -261,14 +249,6 @@ impl MockGcsOperations {
 
         let mock_object = MockObject { metadata, content };
         self.objects.write().await.insert(object_key, mock_object);
-    }
-
-    /// Get the current timestamp
-    fn get_current_timestamp(&self) -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64
     }
 }
 
@@ -297,7 +277,7 @@ impl GcsOperations for MockGcsOperations {
         object_path: &ObjectPath,
         start: u64,
         end: Option<u64>,
-    ) -> Result<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + Unpin>, Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send>>, Error> {
         struct OnceStream {
             content: Option<Bytes>,
         }
@@ -305,7 +285,7 @@ impl GcsOperations for MockGcsOperations {
             type Item = Result<Bytes, Error>;
 
             fn poll_next(
-                mut self: core::pin::Pin<&mut Self>,
+                mut self: Pin<&mut Self>,
                 _cx: &mut core::task::Context<'_>,
             ) -> core::task::Poll<Option<Self::Item>> {
                 core::task::Poll::Ready(self.content.take().map(Ok))
@@ -359,7 +339,7 @@ impl GcsOperations for MockGcsOperations {
                 content.len()
             };
 
-            Ok(Box::new(OnceStream {
+            Ok(Box::pin(OnceStream {
                 content: Some(Bytes::copy_from_slice(&content[start_idx..end_idx])),
             }))
         } else {
@@ -367,105 +347,10 @@ impl GcsOperations for MockGcsOperations {
         }
     }
 
-    async fn write_object(&self, object_path: &ObjectPath, content: Vec<u8>) -> Result<(), Error> {
-        self.call_counts.write_calls.fetch_add(1, Ordering::Relaxed);
-        self.requests.write().await.push(MockRequest::Write {
-            object_path: object_path.clone(),
-            content_len: content.len(),
-        });
-
-        self.handle_failure().await?;
-        self.add_object(object_path, content).await;
-        Ok(())
-    }
-
-    async fn start_resumable_write(&self, object_path: &ObjectPath) -> Result<String, Error> {
-        self.call_counts
-            .start_resumable_calls
-            .fetch_add(1, Ordering::Relaxed);
-        self.requests
-            .write()
-            .await
-            .push(MockRequest::StartResumable {
-                object_path: object_path.clone(),
-            });
-
-        self.handle_failure().await?;
-        let upload_id = format!("mock-upload-{}-{}", object_path.bucket, object_path.path);
-        Ok(upload_id)
-    }
-
-    async fn upload_chunk(
-        &self,
-        upload_url: &str,
-        object_path: &ObjectPath,
-        data: Bytes,
-        offset: u64,
-        end_offset: u64,
-        total_size: Option<u64>,
-    ) -> Result<(), Error> {
-        self.call_counts
-            .upload_chunk_calls
-            .fetch_add(1, Ordering::Relaxed);
-        self.requests.write().await.push(MockRequest::UploadChunk {
-            upload_url: upload_url.to_string(),
-            object_path: object_path.clone(),
-            data_len: data.len(),
-            offset,
-            end_offset,
-            total_size,
-        });
-
-        self.handle_failure().await?;
-
-        let object_key = self.get_object_key(object_path);
-        let mut objects = self.objects.write().await;
-
-        // Get or create the object
-        let mock_object = objects
-            .entry(object_key.clone())
-            .or_insert_with(|| MockObject {
-                metadata: GcsObject {
-                    name: object_path.path.clone(),
-                    bucket: object_path.bucket.clone(),
-                    size: 0,
-                    content_type: DEFAULT_CONTENT_TYPE.to_string(),
-                    update_time: Some(Timestamp {
-                        seconds: self.get_current_timestamp(),
-                        nanos: 0,
-                    }),
-                },
-                content: Vec::new(),
-            });
-
-        // Handle the chunk data
-        let offset_usize = usize::try_from(offset).unwrap_or(usize::MAX);
-        if mock_object.content.len() < offset_usize + data.len() {
-            mock_object.content.resize(offset_usize + data.len(), 0);
-        }
-
-        if !data.is_empty() {
-            mock_object.content[offset_usize..offset_usize + data.len()].copy_from_slice(&data);
-        }
-
-        // Update metadata if this is the final chunk
-        if total_size.map(|size| size == end_offset) == Some(true) {
-            mock_object.metadata.size = mock_object.content.len() as i64;
-            mock_object.metadata.update_time = Some(Timestamp {
-                seconds: self.get_current_timestamp(),
-                nanos: 0,
-            });
-        }
-
-        Ok(())
-    }
-
     async fn upload_from_reader(
         &self,
         object_path: &ObjectPath,
-        reader: &mut DropCloserReadHalf,
-        upload_id: &str,
-        max_size: u64,
+        mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
         self.call_counts
             .upload_from_reader_calls
@@ -475,31 +360,29 @@ impl GcsOperations for MockGcsOperations {
             .await
             .push(MockRequest::UploadFromReader {
                 object_path: object_path.clone(),
-                upload_id: upload_id.to_string(),
-                max_size,
             });
 
         self.handle_failure().await?;
 
         // Read all data from the reader
         let mut buffer = Vec::new();
-        let max_size = usize::try_from(max_size).unwrap_or(usize::MAX);
-        let mut total_read = 0usize;
 
-        while total_read < max_size {
-            let to_read = core::cmp::min(max_size - total_read, 8192); // 8KB chunks
-            let chunk = reader.consume(Some(to_read)).await?;
-
+        loop {
+            let chunk = reader.recv().await?;
             if chunk.is_empty() {
                 break;
             }
-
             buffer.extend_from_slice(&chunk);
-            total_read += chunk.len();
         }
 
-        self.write_object(object_path, buffer).await?;
+        self.call_counts.write_calls.fetch_add(1, Ordering::Relaxed);
+        self.requests.write().await.push(MockRequest::Write {
+            object_path: object_path.clone(),
+            content_len: buffer.len(),
+        });
 
+        self.handle_failure().await?;
+        self.add_object(object_path, buffer).await;
         Ok(())
     }
 

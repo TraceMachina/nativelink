@@ -12,30 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// ----- File size thresholds -----
-/// Threshold for using simple upload vs. resumable upload (10MB)
-pub const SIMPLE_UPLOAD_THRESHOLD: u64 = 10 * 1024 * 1024;
-/// Minimum size for multipart upload (5MB)
-pub const MIN_MULTIPART_SIZE: u64 = 5 * 1024 * 1024;
 /// Default chunk size for uploads (~2MB)
 pub const CHUNK_SIZE: usize = 2 * 1024 * 1000;
-
-// ----- Upload retry configuration -----
-/// Maximum number of upload retry attempts
-pub const MAX_UPLOAD_RETRIES: u32 = 5;
-/// Initial delay between upload retry attempts (500ms)
-pub const INITIAL_UPLOAD_RETRY_DELAY_MS: u64 = 500;
-/// Maximum delay between upload retry attempts (8s)
-pub const MAX_UPLOAD_RETRY_DELAY_MS: u64 = 8000;
 
 // ----- Connection pool configuration -----
 /// Default number of concurrent uploads
 pub const DEFAULT_CONCURRENT_UPLOADS: usize = 10;
-/// Default buffer size for retrying requests (5MB)
-pub const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 5 * 1024 * 1024;
-
-/// Default content type for uploaded objects
-pub const DEFAULT_CONTENT_TYPE: &str = "application/octet-stream";
 
 #[derive(Debug, Clone)]
 pub struct GcsObject {

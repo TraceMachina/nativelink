@@ -21,7 +21,7 @@ use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::gcs_client::client::GcsOperations;
 use nativelink_store::gcs_client::mocks::MockGcsOperations;
-use nativelink_store::gcs_client::types::{DEFAULT_CONTENT_TYPE, ObjectPath};
+use nativelink_store::gcs_client::types::ObjectPath;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 
 const BUCKET_NAME: &str = "test-bucket";
@@ -44,7 +44,10 @@ async fn test_read_object_metadata_found() -> Result<(), Error> {
     assert_eq!(metadata.name, OBJECT_PATH);
     assert_eq!(metadata.bucket, BUCKET_NAME);
     assert_eq!(metadata.size, 5);
-    assert_eq!(metadata.content_type, DEFAULT_CONTENT_TYPE);
+    assert_eq!(
+        metadata.content_type,
+        "application/octet-stream".to_string()
+    );
     assert!(metadata.update_time.is_some());
 
     // Verify call counts
@@ -127,107 +130,6 @@ async fn test_read_object_content() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn test_write_object() -> Result<(), Error> {
-    // Create a mock implementation
-    let mock_ops = Arc::new(MockGcsOperations::new());
-    let object_path = ObjectPath::new(BUCKET_NAME.to_string(), OBJECT_PATH);
-
-    // Test writing an object
-    let test_content = b"test content".to_vec();
-    mock_ops
-        .write_object(&object_path, test_content.clone())
-        .await?;
-
-    // Verify the object was stored
-    let result = mock_ops
-        .read_object_content(&object_path, 0, None)
-        .await?
-        .next()
-        .await
-        .map_or_else(
-            || {
-                Err(Error::new(
-                    Code::OutOfRange,
-                    "EOF reading result".to_string(),
-                ))
-            },
-            |result| result,
-        )?;
-    assert_eq!(result, test_content);
-
-    // Verify call counts
-    let call_counts = mock_ops.get_call_counts();
-    assert_eq!(call_counts.write_calls.load(Ordering::Relaxed), 1);
-    assert_eq!(call_counts.read_calls.load(Ordering::Relaxed), 1);
-
-    Ok(())
-}
-
-#[nativelink_test]
-async fn test_resumable_upload() -> Result<(), Error> {
-    // Create a mock implementation
-    let mock_ops = Arc::new(MockGcsOperations::new());
-    let object_path = ObjectPath::new(BUCKET_NAME.to_string(), OBJECT_PATH);
-
-    // Start a resumable upload
-    let upload_id = mock_ops.start_resumable_write(&object_path).await?;
-    assert!(!upload_id.is_empty(), "Expected non-empty upload ID");
-
-    // Upload chunks
-    let chunk1 = Bytes::from_static(b"first chunk ");
-    let chunk2 = Bytes::from_static(b"second chunk");
-
-    // Upload first chunk
-    mock_ops
-        .upload_chunk(
-            &upload_id,
-            &object_path,
-            chunk1.clone(),
-            0,
-            chunk1.len() as u64,
-            None,
-        )
-        .await?;
-
-    // Upload second chunk and mark as final
-    mock_ops
-        .upload_chunk(
-            &upload_id,
-            &object_path,
-            chunk2.clone(),
-            chunk1.len() as u64,
-            (chunk1.len() + chunk2.len()) as u64,
-            Some((chunk1.len() + chunk2.len()) as u64),
-        )
-        .await?;
-
-    // Verify the content
-    let result = mock_ops
-        .read_object_content(&object_path, 0, None)
-        .await?
-        .next()
-        .await
-        .map_or_else(
-            || {
-                Err(Error::new(
-                    Code::OutOfRange,
-                    "EOF reading result".to_string(),
-                ))
-            },
-            |result| result,
-        )?;
-    assert_eq!(result, [&chunk1[..], &chunk2[..]].concat());
-
-    // Verify call counts
-    let call_counts = mock_ops.get_call_counts();
-    assert_eq!(call_counts.start_resumable_calls.load(Ordering::Relaxed), 1);
-    assert_eq!(call_counts.upload_chunk_calls.load(Ordering::Relaxed), 2);
-    assert_eq!(call_counts.read_calls.load(Ordering::Relaxed), 1);
-
-    Ok(())
-}
-
-#[nativelink_test]
 async fn test_upload_from_reader() -> Result<(), Error> {
     // Create a mock implementation
     let mock_ops = Arc::new(MockGcsOperations::new());
@@ -243,14 +145,11 @@ async fn test_upload_from_reader() -> Result<(), Error> {
     let (mut tx, rx) = make_buf_channel_pair();
 
     // Start upload from reader
-    let upload_id = "test-upload-id";
-    let mut reader = rx;
-
     let mock_ops_clone = mock_ops.clone();
     let object_path_clone = object_path.clone();
     let upload_task = nativelink_util::spawn!("upload_test", async move {
         mock_ops_clone
-            .upload_from_reader(&object_path_clone, &mut reader, upload_id, data_size as u64)
+            .upload_from_reader(&object_path_clone, rx)
             .await
     });
 
@@ -307,44 +206,6 @@ async fn test_object_exists() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn test_simulated_failures() -> Result<(), Error> {
-    // Create a mock implementation
-    let mock_ops = Arc::new(MockGcsOperations::new());
-    let object_path = ObjectPath::new(BUCKET_NAME.to_string(), OBJECT_PATH);
-
-    // Set the mock to fail
-    mock_ops.set_should_fail(true);
-
-    // Test different operations and expect them to fail
-    let metadata_result = mock_ops.read_object_metadata(&object_path).await;
-    assert!(
-        metadata_result.is_err(),
-        "Expected read_object_metadata to fail"
-    );
-
-    let content_result = mock_ops.read_object_content(&object_path, 0, None).await;
-    assert!(
-        content_result.is_err(),
-        "Expected read_object_content to fail"
-    );
-
-    let write_result = mock_ops.write_object(&object_path, vec![1, 2, 3]).await;
-    assert!(write_result.is_err(), "Expected write_object to fail");
-
-    // Reset the mock to not fail
-    mock_ops.set_should_fail(false);
-
-    // Operations should succeed now
-    let result = mock_ops.write_object(&object_path, vec![1, 2, 3]).await;
-    assert!(
-        result.is_ok(),
-        "Expected write_object to succeed after resetting failure mode"
-    );
-
-    Ok(())
-}
-
-#[nativelink_test]
 async fn test_failure_modes() -> Result<(), Error> {
     // Create a mock implementation
     let mock_ops = Arc::new(MockGcsOperations::new());
@@ -393,7 +254,7 @@ async fn test_empty_data_handling() -> Result<(), Error> {
     let mock_ops = Arc::new(MockGcsOperations::new());
     let object_path = ObjectPath::new(BUCKET_NAME.to_string(), OBJECT_PATH);
     let expected_content = b"helloworld".to_vec();
-    let (mut tx, mut rx) = make_buf_channel_pair();
+    let (mut tx, rx) = make_buf_channel_pair();
 
     let mock_ops_for_verification = mock_ops.clone();
     let object_path_for_verification = object_path.clone();
@@ -410,7 +271,7 @@ async fn test_empty_data_handling() -> Result<(), Error> {
     let mock_ops_for_upload = mock_ops.clone();
     let upload_task = async move {
         mock_ops_for_upload
-            .upload_from_reader(&object_path, &mut rx, "test-upload-id", 1024)
+            .upload_from_reader(&object_path, rx)
             .await
     };
 
@@ -464,7 +325,10 @@ async fn test_add_object_with_timestamp() -> Result<(), Error> {
     assert_eq!(metadata.name, OBJECT_PATH);
     assert_eq!(metadata.bucket, BUCKET_NAME);
     assert_eq!(metadata.size, 5);
-    assert_eq!(metadata.content_type, DEFAULT_CONTENT_TYPE);
+    assert_eq!(
+        metadata.content_type,
+        "application/octet-stream".to_string()
+    );
 
     // Verify the timestamp was set correctly
     assert!(metadata.update_time.is_some());
