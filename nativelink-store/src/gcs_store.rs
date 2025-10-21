@@ -228,6 +228,15 @@ where
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
+        if is_zero_digest(digest.borrow()) {
+            return reader.recv().await.and_then(|should_be_empty| {
+                should_be_empty
+                    .is_empty()
+                    .then_some(())
+                    .ok_or_else(|| make_err!(Code::Internal, "Zero byte hash not empty"))
+            });
+        }
+
         let object_path = self.make_object_path(&digest);
 
         reader.set_max_recent_data_size(
