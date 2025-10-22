@@ -142,9 +142,18 @@ in {
     packageOverrides.cargo = nightly-rust.cargo;
     packageOverrides.rustfmt = nightly-rust.rustfmt;
   };
+
+  # Taplo fmt
   taplo = {
     enable = true;
-    excludes = ["nativelink-proto"];
+    types = ["toml"];
+  };
+
+  # Taplo validate
+  taplo-validate = {
+    enable = true;
+    entry = "${pkgs.taplo}/bin/taplo validate";
+    name = "taplo validate";
     types = ["toml"];
   };
 

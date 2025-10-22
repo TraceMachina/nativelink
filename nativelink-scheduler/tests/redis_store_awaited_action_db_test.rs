@@ -247,7 +247,7 @@ impl Mocks for FakeRedisBackend {
                     }
                 }
             }
-            results[0] = ((results.len() - 1) as u32).into();
+            results[0] = u32::try_from(results.len() - 1).unwrap_or(u32::MAX).into();
             return Ok(RedisValue::Array(vec![
                 RedisValue::Array(results),
                 RedisValue::Integer(0), // Means no more items in cursor.
@@ -688,6 +688,25 @@ async fn add_action_smoke_test() -> Result<(), Error> {
             ])),
             None,
         )
+        // Validation HMGET: Check if the internal operation exists (orphan detection)
+        .expect(
+            MockCommand {
+                cmd: Str::from_static("HMGET"),
+                subcommand: None,
+                args: vec![
+                    format!("aa_{WORKER_OPERATION_ID}").as_bytes().into(),
+                    "version".as_bytes().into(),
+                    "data".as_bytes().into(),
+                ],
+            },
+            Ok(RedisValue::Array(vec![
+                // Version.
+                "1".into(),
+                // Data.
+                RedisValue::Bytes(Bytes::from(serde_json::to_string(&worker_awaited_action).unwrap())),
+            ])),
+            None,
+        )
         .expect(
             MockCommand {
                 cmd: Str::from_static("HMGET"),
@@ -1025,6 +1044,67 @@ async fn test_outdated_version() -> Result<(), Error> {
     assert_eq!(
         update_res2.unwrap_err(),
         Error::new(Code::Aborted, "Could not update AwaitedAction because the version did not match for WORKER_OPERATION_ID".into())
+    );
+
+    Ok(())
+}
+
+/// Test that orphaned client operation ID mappings return None.
+///
+/// This tests the scenario where:
+/// 1. A client operation ID mapping exists (cid_* → operation_id)
+/// 2. The actual operation (aa_*) has been deleted (completed/timed out)
+/// 3. get_awaited_action_by_id should return None instead of a subscriber to a non-existent operation
+#[nativelink_test]
+async fn test_orphaned_client_operation_id_returns_none() -> Result<(), Error> {
+    const CLIENT_OPERATION_ID: &str = "orphaned_client_id";
+    const INTERNAL_OPERATION_ID: &str = "deleted_internal_operation_id";
+    const SUB_CHANNEL: &str = "sub_channel";
+
+    let worker_operation_id = Arc::new(Mutex::new(INTERNAL_OPERATION_ID));
+    let worker_operation_id_clone = worker_operation_id.clone();
+
+    let internal_operation_id = OperationId::from(INTERNAL_OPERATION_ID);
+
+    // Use FakeRedisBackend which handles SUBSCRIBE automatically
+    let mocks = Arc::new(FakeRedisBackend::new());
+    let store = make_redis_store(SUB_CHANNEL, mocks.clone());
+    mocks.set_subscription_manager(store.subscription_manager().unwrap());
+
+    // Manually set up the orphaned state in the fake backend:
+    // 1. Add client_id → operation_id mapping (cid_* key)
+    {
+        let mut table = mocks.table.lock();
+        let mut client_fields = HashMap::new();
+        client_fields.insert(
+            "data".into(),
+            RedisValue::Bytes(Bytes::from(
+                serde_json::to_string(&internal_operation_id).unwrap(),
+            )),
+        );
+        table.insert(format!("cid_{CLIENT_OPERATION_ID}"), client_fields);
+    }
+    // 2. Don't add the actual operation (aa_* key) - this simulates it being deleted/orphaned
+
+    let notifier = Arc::new(Notify::new());
+    let awaited_action_db = StoreAwaitedActionDb::new(
+        store.clone(),
+        notifier.clone(),
+        MockInstantWrapped::default,
+        move || worker_operation_id_clone.lock().clone().into(),
+    )
+    .unwrap();
+
+    // Try to get the awaited action by the client operation ID
+    // This should return None because the internal operation doesn't exist (orphaned mapping)
+    let result = awaited_action_db
+        .get_awaited_action_by_id(&OperationId::from(CLIENT_OPERATION_ID))
+        .await
+        .expect("Should not error when checking orphaned client operation");
+
+    assert!(
+        result.is_none(),
+        "Expected None for orphaned client operation ID, but got a subscription"
     );
 
     Ok(())

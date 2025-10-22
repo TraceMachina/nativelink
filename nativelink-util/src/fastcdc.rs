@@ -63,8 +63,7 @@ impl FastCDC {
             }
             avg_size - offset
         };
-        // Calculate the number of bits closest approximating our average.
-        let bits = (avg_size as f64).log2().round() as u32;
+
         Self {
             min_size,
             avg_size,
@@ -73,8 +72,8 @@ impl FastCDC {
             norm_size,
             // Turn our bits into a bitmask we can use later on for more
             // efficient bitwise operations.
-            mask_hard: 2u32.pow(bits + 1) - 1,
-            mask_easy: 2u32.pow(bits - 1) - 1,
+            mask_hard: 2u32.pow(avg_size.ilog2() + 1) - 1,
+            mask_easy: 2u32.pow(avg_size.ilog2() - 1) - 1,
 
             state: State {
                 hash: 0,

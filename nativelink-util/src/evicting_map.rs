@@ -305,12 +305,14 @@ where
     ) -> bool {
         let is_over_size = max_bytes != 0 && sum_store_size >= max_bytes;
 
-        let evict_older_than_seconds =
-            (self.anchor_time.elapsed().as_secs() as i32) - self.max_seconds;
+        let elapsed_seconds =
+            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+        let evict_older_than_seconds = elapsed_seconds.saturating_sub(self.max_seconds);
         let old_item_exists =
             self.max_seconds != 0 && peek_entry.seconds_since_anchor < evict_older_than_seconds;
 
-        let is_over_count = self.max_count != 0 && (lru_len as u64) > self.max_count;
+        let is_over_count =
+            self.max_count != 0 && u64::try_from(lru_len).unwrap_or(u64::MAX) > self.max_count;
 
         is_over_size || old_item_exists || is_over_count
     }
@@ -383,49 +385,53 @@ where
         // to be able to borrow a `Q`.
         R: Borrow<Q> + Send,
     {
-        let mut state = self.state.lock();
+        let (removal_futures, data_to_unref) = {
+            let mut state = self.state.lock();
 
-        let lru_len = state.lru.len();
-        let mut data_to_unref = Vec::new();
-        let mut removal_futures = Vec::new();
-        for (key, result) in keys.into_iter().zip(results.iter_mut()) {
-            let maybe_entry = if peek {
-                state.lru.peek_mut(key.borrow())
-            } else {
-                state.lru.get_mut(key.borrow())
-            };
-            match maybe_entry {
-                Some(entry) => {
-                    // Note: We need to check eviction because the item might be expired
-                    // based on the current time. In such case, we remove the item while
-                    // we are here.
-                    if self.should_evict(lru_len, entry, 0, u64::MAX) {
-                        *result = None;
-                        if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
-                            info!(?key, "Item expired, evicting");
-                            let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
-                            // Store data for later unref - we can't drop state here as we're still iterating
-                            data_to_unref.push(data);
-                            removal_futures.extend(futures.into_iter());
+            let lru_len = state.lru.len();
+            let mut data_to_unref = Vec::new();
+            let mut removal_futures = Vec::new();
+            for (key, result) in keys.into_iter().zip(results.iter_mut()) {
+                let maybe_entry = if peek {
+                    state.lru.peek_mut(key.borrow())
+                } else {
+                    state.lru.get_mut(key.borrow())
+                };
+                match maybe_entry {
+                    Some(entry) => {
+                        // Note: We need to check eviction because the item might be expired
+                        // based on the current time. In such case, we remove the item while
+                        // we are here.
+                        if self.should_evict(lru_len, entry, 0, u64::MAX) {
+                            *result = None;
+                            if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
+                                info!(?key, "Item expired, evicting");
+                                let (data, futures) =
+                                    state.remove(key.borrow(), &eviction_item, false);
+                                // Store data for later unref - we can't drop state here as we're still iterating
+                                data_to_unref.push(data);
+                                removal_futures.extend(futures.into_iter());
+                            }
+                        } else {
+                            if !peek {
+                                entry.seconds_since_anchor =
+                                    i32::try_from(self.anchor_time.elapsed().as_secs())
+                                        .unwrap_or(i32::MAX);
+                            }
+                            *result = Some(entry.data.len());
                         }
-                    } else {
-                        if !peek {
-                            entry.seconds_since_anchor =
-                                self.anchor_time.elapsed().as_secs() as i32;
-                        }
-                        *result = Some(entry.data.len());
                     }
+                    None => *result = None,
                 }
-                None => *result = None,
             }
-        }
+            (removal_futures, data_to_unref)
+        };
 
-        // Drop the state and perform the async callbacks.
-        drop(state);
+        // Perform the async callbacks outside of the lock
         let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while callbacks.next().await.is_some() {}
         let mut callbacks: FuturesUnordered<_> =
-            data_to_unref.iter().map(|item| item.unref()).collect();
+            data_to_unref.iter().map(LenEntry::unref).collect();
         while callbacks.next().await.is_some() {}
     }
 
@@ -455,14 +461,15 @@ where
             let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
             while callbacks.next().await.is_some() {}
             let mut callbacks: FuturesUnordered<_> =
-                items_to_unref.iter().map(|item| item.unref()).collect();
+                items_to_unref.iter().map(LenEntry::unref).collect();
             while callbacks.next().await.is_some() {}
         }
 
         // Now get the item
         let mut state = self.state.lock();
         let entry = state.lru.get_mut(key.borrow())?;
-        entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
+        entry.seconds_since_anchor =
+            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
         Some(entry.data.clone())
     }
 
@@ -471,8 +478,12 @@ where
     where
         K: 'static,
     {
-        self.insert_with_time(key, data, self.anchor_time.elapsed().as_secs() as i32)
-            .await
+        self.insert_with_time(
+            key,
+            data,
+            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX),
+        )
+        .await
     }
 
     /// Returns the replaced item if any.
@@ -517,7 +528,7 @@ where
             self.inner_insert_many(
                 &mut state,
                 inserts,
-                self.anchor_time.elapsed().as_secs() as i32,
+                i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX),
             )
         };
 
@@ -567,11 +578,11 @@ where
 
         // Perform eviction after all insertions
         let (items_to_unref, futures) = self.evict_items(state);
-        removal_futures.extend(futures.into_iter());
+        removal_futures.extend(futures);
 
         // Note: We cannot drop the state lock here since we're borrowing it,
         // but the caller will handle unreffing these items after releasing the lock
-        replaced_items.extend(items_to_unref.into_iter());
+        replaced_items.extend(items_to_unref);
 
         (replaced_items, removal_futures)
     }
@@ -600,7 +611,7 @@ where
 
         // Unref evicted items outside of lock
         let mut callbacks: FuturesUnordered<_> =
-            items_to_unref.iter().map(|item| item.unref()).collect();
+            items_to_unref.iter().map(LenEntry::unref).collect();
         while callbacks.next().await.is_some() {}
 
         // Unref removed item if any
@@ -618,41 +629,43 @@ where
     where
         F: FnOnce(&T) -> bool + Send,
     {
-        let mut state = self.state.lock();
-        if let Some(entry) = state.lru.get(key.borrow()) {
-            if !cond(&entry.data) {
-                return false;
-            }
-            // First perform eviction
-            let (evicted_items, mut removal_futures) = self.evict_items(&mut state);
+        let (evicted_items, removal_futures, removed_item) = {
+            let mut state = self.state.lock();
+            if let Some(entry) = state.lru.get(key.borrow()) {
+                if !cond(&entry.data) {
+                    return false;
+                }
+                // First perform eviction
+                let (evicted_items, mut removal_futures) = self.evict_items(&mut state);
 
-            // Then try to remove the requested item
-            let removed_item = if let Some(entry) = state.lru.pop(key.borrow()) {
-                let (item, more_removal_futures) = state.remove(key, &entry, false);
-                removal_futures.extend(more_removal_futures.into_iter());
-                Some(item)
+                // Then try to remove the requested item
+                let removed_item = if let Some(entry) = state.lru.pop(key.borrow()) {
+                    let (item, more_removal_futures) = state.remove(key, &entry, false);
+                    removal_futures.extend(more_removal_futures.into_iter());
+                    Some(item)
+                } else {
+                    None
+                };
+
+                (evicted_items, removal_futures, removed_item)
             } else {
-                None
-            };
-
-            // Drop the lock before unref operations
-            drop(state);
-
-            let mut removal_futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
-            while removal_futures.next().await.is_some() {}
-
-            // Unref evicted items
-            let mut callbacks: FuturesUnordered<_> =
-                evicted_items.iter().map(|item| item.unref()).collect();
-            while callbacks.next().await.is_some() {}
-
-            // Unref removed item if any
-            if let Some(item) = removed_item {
-                item.unref().await;
-                true
-            } else {
-                false
+                (vec![], vec![].into_iter().collect(), None)
             }
+        };
+
+        // Perform the async callbacks outside of the lock
+        let mut removal_futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+        while removal_futures.next().await.is_some() {}
+
+        // Unref evicted items
+        let mut callbacks: FuturesUnordered<_> =
+            evicted_items.iter().map(LenEntry::unref).collect();
+        while callbacks.next().await.is_some() {}
+
+        // Unref removed item if any
+        if let Some(item) = removed_item {
+            item.unref().await;
+            true
         } else {
             false
         }
