@@ -1,0 +1,9 @@
+# Modeling
+- [x] Figure out how UUID works: it has been reviewed but not explict; just a probability of like lottery
+- [ ] WebSockets or HTTP Streaming?
+- [ ] Modelling the data structure
+
+# Impl
+
+# Testing
+- [ ] Figure out how-to interatively test UIs
