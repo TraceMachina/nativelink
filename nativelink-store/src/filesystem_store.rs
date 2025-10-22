@@ -362,37 +362,34 @@ impl LenEntry for FileEntryImpl {
     // target file location to the new temp file. `unref()` should only ever be called once.
     #[inline]
     async fn unref(&self) {
-        {
-            let mut encoded_file_path = self.encoded_file_path.write().await;
-            if encoded_file_path.path_type == PathType::Temp {
-                // We are already a temp file that is now marked for deletion on drop.
-                // This is very rare, but most likely the rename into the content path failed.
-                return;
-            }
-            let from_path = encoded_file_path.get_file_path();
-            let new_key = make_temp_key(&encoded_file_path.key);
+        let mut encoded_file_path = self.encoded_file_path.write().await;
+        if encoded_file_path.path_type == PathType::Temp {
+            // We are already a temp file that is now marked for deletion on drop.
+            // This is very rare, but most likely the rename into the content path failed.
+            return;
+        }
+        let from_path = encoded_file_path.get_file_path();
+        let new_key = make_temp_key(&encoded_file_path.key);
 
-            let to_path =
-                to_full_path_from_key(&encoded_file_path.shared_context.temp_path, &new_key);
+        let to_path = to_full_path_from_key(&encoded_file_path.shared_context.temp_path, &new_key);
 
-            if let Err(err) = fs::rename(&from_path, &to_path).await {
-                warn!(
-                    key = ?encoded_file_path.key,
-                    ?from_path,
-                    ?to_path,
-                    ?err,
-                    "Failed to rename file",
-                );
-            } else {
-                debug!(
-                    key = ?encoded_file_path.key,
-                    ?from_path,
-                    ?to_path,
-                    "Renamed file",
-                );
-                encoded_file_path.path_type = PathType::Temp;
-                encoded_file_path.key = new_key;
-            }
+        if let Err(err) = fs::rename(&from_path, &to_path).await {
+            warn!(
+                key = ?encoded_file_path.key,
+                ?from_path,
+                ?to_path,
+                ?err,
+                "Failed to rename file",
+            );
+        } else {
+            debug!(
+                key = ?encoded_file_path.key,
+                ?from_path,
+                ?to_path,
+                "Renamed file",
+            );
+            encoded_file_path.path_type = PathType::Temp;
+            encoded_file_path.key = new_key;
         }
     }
 }
