@@ -857,10 +857,19 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn update(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        reader: DropCloserReadHalf,
+        mut reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
         let temp_key = make_temp_key(&key);
+
+        // There's a possibility of deadlock here where we take all of the
+        // file semaphores with make_and_open_file and the semaphores for
+        // whatever is populating reader is exhasted on the threads that
+        // have the FileSlots and not on those which can't.  To work around
+        // this we don't take the FileSlot until there's something on the
+        // reader available to know that the populator is active.
+        reader.peek().await?;
+
         let (entry, temp_file, temp_full_path) = Fe::make_and_open_file(
             self.block_size,
             EncodedFilePath {
