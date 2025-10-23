@@ -120,7 +120,7 @@ struct State<
     lifetime_inserted_bytes: Counter,
 
     _key_type: PhantomData<Q>,
-    remove_callbacks: Mutex<Vec<C>>,
+    remove_callbacks: Vec<C>,
 }
 
 type RemoveFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -158,7 +158,6 @@ impl<
 
         let callbacks = self
             .remove_callbacks
-            .lock()
             .iter()
             .map(|callback| callback.callback(key))
             .collect();
@@ -184,8 +183,8 @@ impl<
             .map(|old_item| self.remove(key.borrow(), &old_item, true))
     }
 
-    fn add_remove_callback(&self, callback: C) {
-        self.remove_callbacks.lock().push(callback);
+    fn add_remove_callback(&mut self, callback: C) {
+        self.remove_callbacks.push(callback);
     }
 }
 
@@ -241,7 +240,7 @@ where
                 replaced_items: CounterWithTime::default(),
                 lifetime_inserted_bytes: Counter::default(),
                 _key_type: PhantomData,
-                remove_callbacks: Mutex::new(Vec::new()),
+                remove_callbacks: Vec::new(),
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,
