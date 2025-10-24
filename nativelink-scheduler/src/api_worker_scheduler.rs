@@ -90,6 +90,9 @@ struct ApiWorkerSchedulerImpl {
     worker_change_notify: Arc<Notify>,
     /// A channel to notify that an operation is still alive.
     operation_keep_alive_tx: UnboundedSender<(OperationId, WorkerId)>,
+
+    /// Whether the worker scheduler is shutting down.
+    shutting_down: bool,
 }
 
 impl core::fmt::Debug for ApiWorkerSchedulerImpl {
@@ -426,6 +429,7 @@ impl ApiWorkerScheduler {
                 allocation_strategy,
                 worker_change_notify,
                 operation_keep_alive_tx,
+                shutting_down: false,
             }),
             platform_property_manager,
             worker_timeout_s,
@@ -514,8 +518,15 @@ impl WorkerScheduler for ApiWorkerScheduler {
     }
 
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
-        let mut inner = self.inner.lock().await;
         let worker_id = worker.id.clone();
+        let mut inner = self.inner.lock().await;
+        if inner.shutting_down {
+            warn!("Rejected worker add during shutdown: {}", worker_id);
+            return Err(make_err!(
+                Code::Unavailable,
+                "Received request to add worker while shutting down"
+            ));
+        }
         let result = inner
             .add_worker(worker)
             .err_tip(|| "Error while adding worker, removing from pool");
@@ -560,6 +571,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
 
     async fn shutdown(&self, shutdown_guard: ShutdownGuard) {
         let mut inner = self.inner.lock().await;
+        inner.shutting_down = true; // should reject further worker registration
         while let Some(worker_id) = inner
             .workers
             .peek_lru()
