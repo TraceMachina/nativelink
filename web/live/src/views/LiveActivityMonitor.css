@@ -1,0 +1,301 @@
+.live-activity-monitor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 16px;
+}
+
+.controls-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  background: #1a1a1a;
+  border-radius: 8px;
+  border: 1px solid #2a2a2a;
+}
+
+.recording-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.record-button,
+.clear-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: #2a2a2a;
+  color: #999;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.record-button:hover,
+.clear-button:hover {
+  background: #333;
+  color: #fff;
+}
+
+.record-button.recording {
+  background: #dc2626;
+  color: #fff;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.filter-chips {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  overflow-x: auto;
+}
+
+.chip-group {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.divider {
+  width: 1px;
+  height: 24px;
+  background: #333;
+}
+
+.filter-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #2a2a2a;
+  border: 1px solid #333;
+  border-radius: 16px;
+  color: #999;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.filter-chip:hover {
+  background: #333;
+  border-color: #444;
+  color: #fff;
+}
+
+.filter-chip.active {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+.filter-chip.success.active {
+  background: #10b981;
+  border-color: #10b981;
+}
+
+.filter-chip.error.active {
+  background: #ef4444;
+  border-color: #ef4444;
+}
+
+.filter-chip.warning.active {
+  background: #f59e0b;
+  border-color: #f59e0b;
+}
+
+.filter-chip.info.active {
+  background: #06b6d4;
+  border-color: #06b6d4;
+}
+
+.filter-chip .count {
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #2a2a2a;
+  border-radius: 6px;
+  border: 1px solid #333;
+  min-width: 200px;
+}
+
+.search-box span {
+  color: #666;
+  font-size: 20px;
+}
+
+.search-box input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #e0e0e0;
+  font-size: 14px;
+  outline: none;
+}
+
+.search-box input::placeholder {
+  color: #666;
+}
+
+.activity-list {
+  flex: 1;
+  overflow-y: auto;
+  background: #1a1a1a;
+  border-radius: 8px;
+  border: 1px solid #2a2a2a;
+}
+
+.activity-row {
+  display: flex;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #2a2a2a;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.activity-row:hover {
+  background: #222;
+}
+
+.activity-row.selected {
+  background: #2a2a2a;
+  border-left: 3px solid #3b82f6;
+}
+
+.activity-row.completed .status-indicator {
+  color: #10b981;
+}
+
+.activity-row.failed .status-indicator {
+  color: #ef4444;
+}
+
+.activity-row.in_progress .status-indicator {
+  color: #06b6d4;
+}
+
+.activity-row.pending .status-indicator {
+  color: #f59e0b;
+}
+
+.activity-row.canceled .status-indicator {
+  color: #6b7280;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: flex-start;
+  padding-top: 2px;
+}
+
+.status-indicator span {
+  font-size: 20px;
+}
+
+.activity-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.activity-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.type-badge {
+  padding: 2px 8px;
+  background: #333;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #3b82f6;
+}
+
+.status-text {
+  color: #999;
+  text-transform: capitalize;
+}
+
+.timestamp {
+  margin-left: auto;
+  color: #666;
+  font-size: 12px;
+}
+
+.activity-details {
+  color: #e0e0e0;
+  font-size: 14px;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+}
+
+.action-label {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activity-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: #666;
+}
+
+.meta-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.meta-item span {
+  font-size: 16px;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+  color: #666;
+}
+
+.empty-state span {
+  font-size: 64px;
+  margin-bottom: 16px;
+}
+
+.empty-state p {
+  font-size: 16px;
+  margin: 0;
+}

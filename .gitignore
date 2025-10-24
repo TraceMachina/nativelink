@@ -25,3 +25,5 @@ nativelink.bazelrc
 integration_tests/**/*.log
 toolchain-examples/*.log
 buck-out/
+web/live/node_modules/
+web/live/server/node_modules/

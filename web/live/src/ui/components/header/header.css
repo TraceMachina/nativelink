@@ -1,0 +1,32 @@
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  background: #151515;
+  border-bottom: 1px solid #2a2a2a;
+  padding: 0;
+  gap: 20px;
+  flex-shrink: 0;
+}
+
+.header .left {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.header .contents {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.header .right {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}

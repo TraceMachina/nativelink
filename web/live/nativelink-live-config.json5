@@ -1,0 +1,179 @@
+{
+  stores: [
+    // Action Cache Store
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink-live/ac",
+        temp_path: "/tmp/nativelink-live/tmp-ac",
+        eviction_policy: {
+          max_bytes: 1000000000, // 1GB
+        },
+      },
+    },
+
+    // CAS Store (Fast-Slow for worker)
+    {
+      name: "CAS_MAIN_STORE",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink-live/cas",
+            temp_path: "/tmp/nativelink-live/tmp-cas",
+            eviction_policy: {
+              max_bytes: 10000000000, // 10GB
+            },
+          },
+        },
+        slow: {
+          noop: {}, // No slow store for local testing
+        },
+      },
+    },
+
+    // Origin Events Store - This is where live events are published!
+    {
+      name: "ORIGIN_EVENTS_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink-live/origin-events",
+        temp_path: "/tmp/nativelink-live/tmp-events",
+        eviction_policy: {
+          max_bytes: 1000000000, // 1GB for events
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          memory_kb: "minimum",
+          cpu_arch: "exact",
+          OSFamily: "priority",
+          "container-image": "priority",
+          "lre-rs": "exact",
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "CAS_MAIN_STORE",
+        upload_action_result: {
+          ac_store: "AC_MAIN_STORE",
+        },
+        work_directory: "/tmp/nativelink-live/work",
+        platform_properties: {
+          cpu_count: {
+            values: [
+              "16",
+            ],
+          },
+          memory_kb: {
+            values: [
+              "8000000",
+            ],
+          },
+          cpu_arch: {
+            values: [
+              "arm64",
+            ], // Change to x86_64 if needed
+          },
+          OSFamily: {
+            values: [
+              "",
+            ],
+          },
+          "container-image": {
+            values: [
+              "",
+            ],
+          },
+          "lre-rs": {
+            values: [
+              "",
+            ],
+          },
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        execution: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_MAIN_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "main",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        bytestream: {
+          cas_stores: {
+            main: "CAS_MAIN_STORE",
+          },
+        },
+      },
+    },
+    {
+      name: "worker_api",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        health: {
+          path: "/status",
+        },
+        admin: {},
+      },
+    },
+  ],
+
+  // THIS IS THE KEY PART - Enable Origin Events!
+  experimental_origin_events: {
+    publisher: {
+      store: "ORIGIN_EVENTS_STORE",
+    },
+    max_event_queue_size: 65536,
+  },
+  global: {
+    max_open_files: 24576,
+  },
+}

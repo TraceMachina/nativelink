@@ -28,10 +28,44 @@ export interface NativelinkState {
 export interface TrackedLiveAction {
   uuid: string;
   meta: Record<LiveActionMetaKey, any>;
-  type: "upload" | "download" | "rbe" | "other";
+  type: "upload" | "download" | "rbe" | "clients" | "other";
   status: "pending" | "in_progress" | "completed" | "failed" | "canceled";
   started_at: number; // timestamp
   updated_at: number; // timestamp
+}
+
+export interface WorkerState {
+  worker_id: string;
+  status: 'idle' | 'working' | 'offline';
+  last_seen: number;
+  platform_properties: Record<string, string[]>;
+}
+
+export interface ClientState {
+  client_id: string;
+  remote_addr: string;
+  first_seen: number;
+  last_seen: number;
+  activity_count: number;
+}
+
+export interface LogLine {
+  timestamp: number;
+  level: string;
+  message: string;
+  raw: string;
+}
+
+export interface BuildInvocation {
+  invocation_id: string;
+  started_at: number;
+  completed_at?: number;
+  tool_name: string;
+  tool_version: string;
+  status: 'running' | 'succeeded' | 'failed';
+  targets: string[];
+  actions: number;
+  correlated_invocations_id: string;
 }
 
 // TODO(ilsubyeega): fill out this

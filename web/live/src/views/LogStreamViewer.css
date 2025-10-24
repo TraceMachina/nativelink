@@ -1,0 +1,265 @@
+.log-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #1e1e1e;
+  color: #d4d4d4;
+}
+
+.log-header {
+  padding: 15px 20px;
+  background: #252526;
+  border-bottom: 1px solid #3e3e42;
+}
+
+.log-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 15px 0;
+  font-size: 18px;
+  color: #cccccc;
+}
+
+.log-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.log-stats {
+  display: flex;
+  gap: 15px;
+  margin-right: auto;
+}
+
+.stat-item {
+  font-size: 13px;
+  color: #8c8c8c;
+  font-weight: 500;
+}
+
+.filter-buttons {
+  display: flex;
+  gap: 5px;
+}
+
+.filter-btn {
+  padding: 6px 12px;
+  background: #3c3c3c;
+  color: #cccccc;
+  border: 1px solid #555;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.filter-btn:hover {
+  background: #4c4c4c;
+  border-color: #666;
+}
+
+.filter-btn.active {
+  background: #0e639c;
+  border-color: #1177bb;
+  color: white;
+}
+
+.filter-btn.filter-info.active {
+  background: #0e639c;
+  border-color: #1177bb;
+}
+
+.filter-btn.filter-debug.active {
+  background: #6a5acd;
+  border-color: #8470ff;
+}
+
+.filter-btn.filter-warn.active {
+  background: #cd8500;
+  border-color: #ffb100;
+}
+
+.filter-btn.filter-error.active {
+  background: #d32f2f;
+  border-color: #f44336;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 200px;
+  max-width: 300px;
+  padding: 6px 12px;
+  background: #3c3c3c;
+  color: #cccccc;
+  border: 1px solid #555;
+  border-radius: 4px;
+  font-size: 13px;
+  outline: none;
+}
+
+.search-input:focus {
+  border-color: #0e639c;
+  background: #2d2d2d;
+}
+
+.clear-btn {
+  padding: 6px 12px;
+  background: #3c3c3c;
+  color: #cccccc;
+  border: 1px solid #555;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  transition: all 0.2s;
+}
+
+.clear-btn:hover {
+  background: #d32f2f;
+  border-color: #f44336;
+  color: white;
+}
+
+.auto-scroll-toggle {
+  display: flex;
+  align-items: center;
+}
+
+.auto-scroll-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #cccccc;
+  cursor: pointer;
+}
+
+.auto-scroll-toggle input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.log-container {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #1e1e1e;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.log-container::-webkit-scrollbar {
+  width: 10px;
+}
+
+.log-container::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+.log-container::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: 5px;
+}
+
+.log-container::-webkit-scrollbar-thumb:hover {
+  background: #4e4e4e;
+}
+
+.empty-logs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  color: #8c8c8c;
+}
+
+.empty-logs .material-symbols-outlined {
+  font-size: 64px;
+  color: #555;
+  margin-bottom: 16px;
+}
+
+.empty-logs p {
+  font-size: 14px;
+  max-width: 500px;
+}
+
+.log-lines {
+  padding: 10px 0;
+}
+
+.log-line {
+  display: flex;
+  padding: 2px 15px;
+  gap: 12px;
+  border-left: 3px solid transparent;
+  transition: background 0.1s;
+}
+
+.log-line:hover {
+  background: #2a2a2a;
+}
+
+.log-timestamp {
+  color: #858585;
+  flex-shrink: 0;
+  font-size: 12px;
+  user-select: none;
+}
+
+.log-level {
+  flex-shrink: 0;
+  width: 60px;
+  font-weight: 600;
+  font-size: 12px;
+  user-select: none;
+}
+
+.log-level-error {
+  color: #f48771;
+  border-left-color: #f48771;
+}
+
+.log-level-warn {
+  color: #cca700;
+  border-left-color: #cca700;
+}
+
+.log-level-info {
+  color: #3794ff;
+  border-left-color: #3794ff;
+}
+
+.log-level-debug {
+  color: #b267e6;
+  border-left-color: #b267e6;
+}
+
+.log-level-trace {
+  color: #cccccc;
+  border-left-color: #cccccc;
+}
+
+.log-level-default {
+  color: #cccccc;
+  border-left-color: #cccccc;
+}
+
+.log-message {
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-break: break-all;
+  flex: 1;
+}
+
+/* Highlight search matches */
+.log-message mark {
+  background: #613214;
+  color: #d4d4d4;
+}
