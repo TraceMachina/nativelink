@@ -44,13 +44,18 @@ use pretty_assertions::assert_eq;
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Take};
-use tokio::sync::Barrier;
+use tokio::sync::{Barrier, Semaphore};
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::Instrument;
 
 trait FileEntryHooks {
+    fn on_make_and_open(
+        _encoded_file_path: &EncodedFilePath,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        core::future::ready(Ok(()))
+    }
     fn on_unref<Fe: FileEntry>(_entry: &Fe) {}
     fn on_drop<Fe: FileEntry>(_entry: &Fe) {}
 }
@@ -84,6 +89,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         block_size: u64,
         encoded_file_path: EncodedFilePath,
     ) -> Result<(Self, fs::FileSlot, OsString), Error> {
+        Hooks::on_make_and_open(&encoded_file_path).await?;
         let (inner, file_slot, path) =
             FileEntryImpl::make_and_open_file(block_size, encoded_file_path).await?;
         Ok((
@@ -1246,4 +1252,96 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
     );
 
     Ok(())
+}
+
+#[nativelink_test]
+async fn file_slot_taken_when_ready() -> Result<(), Error> {
+    static FILE_SEMAPHORE: Semaphore = Semaphore::const_new(1);
+    static WRITER_SEMAPHORE: Semaphore = Semaphore::const_new(1);
+    static FILE_PERMIT: Mutex<Option<tokio::sync::SemaphorePermit<'_>>> = Mutex::new(None);
+    static WRITER_PERMIT: Mutex<Option<tokio::sync::SemaphorePermit<'_>>> = Mutex::new(None);
+
+    struct SingleSemaphoreHooks;
+    impl FileEntryHooks for SingleSemaphoreHooks {
+        async fn on_make_and_open(_encoded_file_path: &EncodedFilePath) -> Result<(), Error> {
+            *FILE_PERMIT.lock() =
+                Some(FILE_SEMAPHORE.acquire().await.map_err(|e| {
+                    make_err!(Code::Internal, "Unable to acquire semaphore: {e:?}")
+                })?);
+            // Drop the writer permit now that we have one.
+            WRITER_PERMIT.lock().take();
+            Ok(())
+        }
+    }
+
+    *WRITER_PERMIT.lock() = Some(WRITER_SEMAPHORE.acquire().await.unwrap());
+    *FILE_PERMIT.lock() = Some(FILE_SEMAPHORE.acquire().await.unwrap());
+
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let value_1: String = "x".repeat(1024);
+    let value_2: String = "y".repeat(1024);
+
+    let digest_1 = DigestInfo::try_new(HASH1, value_1.len())?;
+    let digest_2 = DigestInfo::try_new(HASH2, value_2.len())?;
+
+    let store = Box::pin(
+        FilesystemStore::<TestFileEntry<SingleSemaphoreHooks>>::new_with_timeout_and_rename_fn(
+            &FilesystemSpec {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                read_buffer_size: 1,
+                ..Default::default()
+            },
+            |from, to| std::fs::rename(from, to),
+        )
+        .await?,
+    );
+
+    let value_1 = Bytes::from(value_1);
+    let value_2 = Bytes::from(value_2);
+
+    let (mut writer_1, reader_1) = make_buf_channel_pair();
+    let (mut writer_2, reader_2) = make_buf_channel_pair();
+    let size_1 = UploadSizeInfo::ExactSize(value_1.len().try_into()?);
+    let size_2 = UploadSizeInfo::ExactSize(value_2.len().try_into()?);
+    let store_ref = &store;
+    let update_1_fut = async move {
+        let result = store_ref.update(digest_1, reader_1, size_1).await;
+        FILE_PERMIT.lock().take();
+        result
+    };
+    let update_2_fut = async move {
+        let result = store_ref.update(digest_2, reader_2, size_2).await;
+        FILE_PERMIT.lock().take();
+        result
+    };
+
+    let writer_1_fut = async move {
+        let _permit = WRITER_SEMAPHORE.acquire().await.unwrap();
+        writer_1.send(value_1.slice(0..1)).await?;
+        writer_1.send(value_1.slice(1..2)).await?;
+        writer_1.send(value_1.slice(2..3)).await?;
+        writer_1.send(value_1.slice(3..)).await?;
+        writer_1.send_eof()?;
+        Ok::<_, Error>(())
+    };
+    let writer_2_fut = async move {
+        writer_2.send(value_2.slice(0..1)).await?;
+        writer_2.send(value_2.slice(1..2)).await?;
+        writer_2.send(value_2.slice(2..3)).await?;
+        // Allow the update to get a file permit.
+        FILE_PERMIT.lock().take();
+        writer_2.send(value_2.slice(3..)).await?;
+        writer_2.send_eof()?;
+        Ok::<_, Error>(())
+    };
+
+    let (res_1, res_2, res_3, res_4) = tokio::time::timeout(Duration::from_secs(10), async move {
+        tokio::join!(update_1_fut, update_2_fut, writer_1_fut, writer_2_fut)
+    })
+    .await
+    .map_err(|_| make_err!(Code::Internal, "Deadlock detected"))?;
+    res_1.merge(res_2).merge(res_3).merge(res_4)
 }
