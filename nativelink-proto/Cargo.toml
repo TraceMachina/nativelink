@@ -1,21 +1,31 @@
+#:schema ../tools/cargo-with-detailed-deps.json
 [package]
-name = "nativelink-proto"
-version = "0.7.3"
 edition = "2024"
+name = "nativelink-proto"
+version = "0.7.4"
 
 [lib]
 name = "nativelink_proto"
 path = "genproto/lib.rs"
 
 [dependencies]
-derivative = { version="2.2.0", default-features = false }
+derive_more = { version = "2.0.1", default-features = false, features = [
+  "debug",
+] }
 prost = { version = "0.13.5", default-features = false }
 prost-types = { version = "0.13.5", default-features = false }
-tonic = { version = "0.13.0", features = ["codegen", "prost", "transport", "tls-ring"], default-features = false }
+tonic = { version = "0.13.0", features = [
+  "codegen",
+  "prost",
+  "tls-ring",
+  "transport",
+], default-features = false }
 
 [dev-dependencies]
 prost-build = { version = "0.13.5", default-features = false }
-tonic-build = { version = "0.13.0", features = ["prost"], default-features = false }
+tonic-build = { version = "0.13.0", features = [
+  "prost",
+], default-features = false }
 
 [package.metadata.cargo-machete]
 # Used by gen_protos_tool.rs

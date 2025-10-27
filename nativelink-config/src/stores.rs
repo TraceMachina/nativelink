@@ -928,6 +928,16 @@ pub struct ExperimentalGcsSpec {
     /// Error if authentication was not found.
     #[serde(default)]
     pub authentication_required: bool,
+
+    /// Connection timeout in milliseconds.
+    /// Default: 3000
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub connection_timeout_s: u64,
+
+    /// Read timeout in milliseconds.
+    /// Default: 3000
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub read_timeout_s: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]

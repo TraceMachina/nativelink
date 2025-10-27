@@ -57,7 +57,6 @@ use pretty_assertions::assert_eq;
 use prost::Message;
 use rand::Rng;
 use tokio::io::AsyncWriteExt;
-use tonic::Response;
 use utils::local_worker_test_utils::{
     setup_grpc_stream, setup_local_worker, setup_local_worker_with_config,
 };
@@ -405,16 +404,12 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
     assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
 
     // Now our client should be notified that our runner finished.
-    let execution_response = test_context
-        .client
-        .expect_execution_response(Ok(Response::new(())))
-        .await;
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
 
     // Now ensure the final results match our expectations.
     assert_eq!(
         execution_response,
         ExecuteResult {
-            worker_id: expected_worker_id,
             instance_name: INSTANCE_NAME.to_string(),
             operation_id: String::new(),
             result: Some(execute_result::Result::ExecuteResponse(
@@ -638,16 +633,12 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
     }
 
     // Now our client should be notified that our runner finished.
-    let execution_response = test_context
-        .client
-        .expect_execution_response(Ok(Response::new(())))
-        .await;
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
 
     // Now ensure the final results match our expectations.
     assert_eq!(
         execution_response,
         ExecuteResult {
-            worker_id: expected_worker_id,
             instance_name: INSTANCE_NAME.to_string(),
             operation_id: String::new(),
             result: Some(execute_result::Result::InternalError(

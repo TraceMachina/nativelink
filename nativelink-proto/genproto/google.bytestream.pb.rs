@@ -37,8 +37,7 @@ pub struct ReadRequest {
     pub read_limit: i64,
 }
 /// Response object for ByteStream.Read.
-#[derive(::derivative::Derivative)]
-#[derivative(Debug)]
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 #[prost(skip_debug)]
 pub struct ReadResponse {
@@ -47,12 +46,11 @@ pub struct ReadResponse {
     /// client that the request is still live while it is running an operation to
     /// generate more data.
     #[prost(bytes = "bytes", tag = "10")]
-    #[derivative(Debug = "ignore")]
+    #[debug(ignore)]
     pub data: ::prost::bytes::Bytes,
 }
 /// Request object for ByteStream.Write.
-#[derive(::derivative::Derivative)]
-#[derivative(Debug)]
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 #[prost(skip_debug)]
 pub struct WriteRequest {
@@ -85,7 +83,7 @@ pub struct WriteRequest {
     /// service that the request is still live while it is running an operation to
     /// generate more data.
     #[prost(bytes = "bytes", tag = "10")]
-    #[derivative(Debug = "ignore")]
+    #[debug(ignore)]
     pub data: ::prost::bytes::Bytes,
 }
 /// Response object for ByteStream.Write.

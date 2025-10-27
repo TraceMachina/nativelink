@@ -140,6 +140,9 @@ pub enum UpdateOperationType {
 
     /// Notification that the worker disconnected.
     UpdateWithDisconnect,
+
+    /// Notification that the execution stage has completed and it's just IO happening now.
+    ExecutionComplete,
 }
 
 #[async_trait]

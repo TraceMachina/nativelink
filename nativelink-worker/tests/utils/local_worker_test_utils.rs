@@ -21,7 +21,8 @@ use hyper::body::Frame;
 use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
 use nativelink_error::Error;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
+    ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
+    UpdateForWorker,
 };
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -62,7 +63,7 @@ enum WorkerClientApiCalls {
 )]
 enum WorkerClientApiReturns {
     ConnectWorker(Result<Response<Streaming<UpdateForWorker>>, Status>),
-    ExecutionResponse(Result<Response<()>, Status>),
+    ExecutionResponse(Result<(), Error>),
 }
 
 #[derive(Clone)]
@@ -116,7 +117,7 @@ impl MockWorkerApiClient {
 
     pub(crate) async fn expect_execution_response(
         &self,
-        result: Result<Response<()>, Status>,
+        result: Result<(), Error>,
     ) -> ExecuteResult {
         let mut rx_call_lock = self.rx_call.lock().await;
         let req = match rx_call_lock
@@ -157,15 +158,15 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
         }
     }
 
-    async fn keep_alive(&mut self, _request: KeepAliveRequest) -> Result<Response<()>, Status> {
+    async fn keep_alive(&mut self, _request: KeepAliveRequest) -> Result<(), Error> {
         unreachable!();
     }
 
-    async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<Response<()>, Status> {
+    async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<(), Error> {
         unreachable!();
     }
 
-    async fn execution_response(&mut self, request: ExecuteResult) -> Result<Response<()>, Status> {
+    async fn execution_response(&mut self, request: ExecuteResult) -> Result<(), Error> {
         self.tx_call
             .send(WorkerClientApiCalls::ExecutionResponse(request))
             .expect("Could not send request to mpsc");
@@ -180,6 +181,10 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
                 panic!("execution_response expected ExecutionResponse response, received {resp:?}")
             }
         }
+    }
+
+    async fn execution_complete(&mut self, _request: ExecuteComplete) -> Result<(), Error> {
+        Ok(())
     }
 }
 
