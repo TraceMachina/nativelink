@@ -66,7 +66,8 @@ use tokio::net::TcpListener;
 use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::oneshot::Sender;
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
@@ -174,6 +175,7 @@ macro_rules! service_setup {
 async fn inner_main(
     cfg: CasConfig,
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
+    scheduler_shutdown_tx: Sender<()>,
 ) -> Result<(), Error> {
     const fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
@@ -686,6 +688,7 @@ async fn inner_main(
     // Set up a shutdown handler for the worker schedulers.
     let mut shutdown_rx = shutdown_tx.subscribe();
     root_futures.push(Box::pin(async move {
+        let _ = scheduler_shutdown_tx.send(());
         if let Ok(shutdown_guard) = shutdown_rx.recv().await {
             for (_name, scheduler) in worker_schedulers {
                 scheduler.shutdown(shutdown_guard.clone()).await;
@@ -765,6 +768,9 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         std::process::exit(130);
     });
 
+    #[allow(unused_variables)]
+    let (scheduler_shutdown_tx, scheduler_shutdown_rx) = oneshot::channel();
+
     #[cfg(target_family = "unix")]
     #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
     runtime.spawn(async move {
@@ -774,6 +780,9 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             .await;
         warn!("Process terminated via SIGTERM",);
         drop(shutdown_tx_clone.send(shutdown_guard.clone()));
+        scheduler_shutdown_rx
+            .await
+            .expect("Failed to receive scheduler shutdown");
         let () = shutdown_guard.wait_for(Priority::P0).await;
         warn!("Successfully shut down nativelink.",);
         std::process::exit(143);
@@ -783,7 +792,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     runtime
         .block_on(async {
             trace_span!("main")
-                .in_scope(|| async { inner_main(cfg, shutdown_tx).await })
+                .in_scope(|| async { inner_main(cfg, shutdown_tx, scheduler_shutdown_tx).await })
                 .await
         })
         .err_tip(|| "main() function failed")?;
