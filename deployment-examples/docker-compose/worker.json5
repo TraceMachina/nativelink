@@ -41,6 +41,7 @@
             },
           },
         },
+        fast_direction: "get",
         slow: {
           ref_store: {
             name: "GRPC_LOCAL_STORE",
