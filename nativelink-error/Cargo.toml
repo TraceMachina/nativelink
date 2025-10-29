@@ -8,7 +8,7 @@ autoexamples = false
 autotests = false
 edition = "2024"
 name = "nativelink-error"
-version = "0.7.4"
+version = "0.7.5"
 
 [dependencies]
 nativelink-metric = { path = "../nativelink-metric" }
