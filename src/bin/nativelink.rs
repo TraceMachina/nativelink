@@ -688,8 +688,8 @@ async fn inner_main(
     // Set up a shutdown handler for the worker schedulers.
     let mut shutdown_rx = shutdown_tx.subscribe();
     root_futures.push(Box::pin(async move {
-        let _ = scheduler_shutdown_tx.send(());
         if let Ok(shutdown_guard) = shutdown_rx.recv().await {
+            let _ = scheduler_shutdown_tx.send(());
             for (_name, scheduler) in worker_schedulers {
                 scheduler.shutdown(shutdown_guard.clone()).await;
             }
