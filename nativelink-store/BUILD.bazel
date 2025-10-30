@@ -124,6 +124,11 @@ rust_test_suite(
         "tests/size_partitioning_store_test.rs",
         "tests/verify_store_test.rs",
     ],
+    env_inherit = [
+        "NATIVELINK_TEST_MONGO_URL",
+        "CI",
+        "GITHUB_ACTIONS",
+    ],
     proc_macro_deps = [
         "//nativelink-macro",
         "@crates//:async-trait",
