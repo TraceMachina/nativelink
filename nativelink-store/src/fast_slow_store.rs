@@ -186,29 +186,6 @@ impl FastSlowStore {
             .slow_store_hit_count
             .fetch_add(1, Ordering::Acquire);
 
-        // If the fast store is noop or read only or update only then bypass it.
-        if self
-            .fast_store
-            .inner_store(Some(key.borrow()))
-            .optimized_for(StoreOptimizations::NoopUpdates)
-            || self.fast_direction == StoreDirection::ReadOnly
-            || self.fast_direction == StoreDirection::Update
-        {
-            let Some(writer) = maybe_writer else {
-                return Err(make_err!(
-                    Code::Internal,
-                    "Attempt to populate fast store that is read only or noop"
-                ));
-            };
-            self.slow_store
-                .get_part(key, writer.borrow_mut(), offset, length)
-                .await?;
-            self.metrics
-                .slow_store_downloaded_bytes
-                .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
-            return Ok(());
-        }
-
         let send_range = offset..length.map_or(u64::MAX, |length| length + offset);
         let mut bytes_received: u64 = 0;
 
@@ -289,8 +266,22 @@ impl FastSlowStore {
         if maybe_size_info.is_some() {
             return Ok(());
         }
-        let loader = self.get_loader(key.borrow());
-        loader
+
+        // If the fast store is noop or read only or update only then this is an error.
+        if self
+            .fast_store
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.fast_direction == StoreDirection::ReadOnly
+            || self.fast_direction == StoreDirection::Update
+        {
+            return Err(make_err!(
+                Code::Internal,
+                "Attempt to populate fast store that is read only or noop"
+            ));
+        }
+
+        self.get_loader(key.borrow())
             .get_or_try_init(|| {
                 Pin::new(self).populate_and_maybe_stream(key.borrow(), None, 0, None)
             })
@@ -522,7 +513,7 @@ impl StoreDriver for FastSlowStore {
         length: Option<u64>,
     ) -> Result<(), Error> {
         // TODO(palfrey) Investigate if we should maybe ignore errors here instead of
-        // forwarding the up.
+        // forwarding them up.
         if self.fast_store.has(key.borrow()).await?.is_some() {
             self.metrics
                 .fast_store_hit_count
@@ -536,19 +527,32 @@ impl StoreDriver for FastSlowStore {
             return Ok(());
         }
 
-        let loader = self.get_loader(key.borrow());
+        // If the fast store is noop or read only or update only then bypass it.
+        if self
+            .fast_store
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.fast_direction == StoreDirection::ReadOnly
+            || self.fast_direction == StoreDirection::Update
+        {
+            self.metrics
+                .slow_store_hit_count
+                .fetch_add(1, Ordering::Acquire);
+            self.slow_store
+                .get_part(key, writer.borrow_mut(), offset, length)
+                .await?;
+            self.metrics
+                .slow_store_downloaded_bytes
+                .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+            return Ok(());
+        }
+
         let mut writer = Some(writer);
-        loader
+        self.get_loader(key.borrow())
             .get_or_try_init(|| {
-                writer
-                    .take()
-                    .map(|writer| {
-                        self.populate_and_maybe_stream(key.borrow(), Some(writer), offset, length)
-                    })
-                    .expect("writer somehow became None")
+                self.populate_and_maybe_stream(key.borrow(), writer.take(), offset, length)
             })
             .await?;
-        drop(loader);
 
         // If we didn't stream then re-enter which will stream from the fast
         // store, or retry the download.  We should not get in a loop here
