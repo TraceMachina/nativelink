@@ -27,7 +27,7 @@ const FAQData = [
   {
     question: "Is NativeLink free?",
     answer:
-      "No, NativeLink is now a paid service. Our Starter plan begins at $29/month. Users are free to set up the open-source version of NativeLink, which is limited in functionality but fully open source.",
+      "Users are free to set up the open-source version of NativeLink, which is limited in functionality but fully open source.",
   },
   {
     question: "What is the Rust-based architecture in NativeLink?",
