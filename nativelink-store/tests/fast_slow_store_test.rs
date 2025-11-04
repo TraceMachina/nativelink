@@ -544,3 +544,29 @@ async fn fast_put_only_not_updated() -> Result<(), Error> {
     );
     Ok(())
 }
+
+#[nativelink_test]
+async fn fast_readonly_only_not_updated_on_get() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_direction(StoreDirection::ReadOnly, StoreDirection::Both);
+    let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
+    slow_store
+        .update_oneshot(digest, make_random_data(100).into())
+        .await?;
+    assert!(
+        !fast_slow_store
+            .get_part_unchunked(digest, 0, None)
+            .await?
+            .is_empty(),
+        "Data not found in slow store"
+    );
+    assert!(
+        fast_store.has(digest).await?.is_none(),
+        "Expected data to not be in the fast store"
+    );
+    assert!(
+        slow_store.has(digest).await?.is_some(),
+        "Expected data in the slow store"
+    );
+    Ok(())
+}

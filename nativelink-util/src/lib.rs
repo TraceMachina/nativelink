@@ -22,6 +22,7 @@ pub mod digest_hasher;
 pub mod evicting_map;
 pub mod fastcdc;
 pub mod fs;
+pub mod fs_util;
 pub mod health_utils;
 pub mod instant_wrapper;
 pub mod known_platform_property_provider;

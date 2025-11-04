@@ -283,6 +283,12 @@ impl From<walkdir::Error> for Error {
     }
 }
 
+impl From<uuid::Error> for Error {
+    fn from(value: uuid::Error) -> Self {
+        Self::new(Code::Internal, value.to_string())
+    }
+}
+
 pub trait ResultExt<T> {
     /// # Errors
     ///
