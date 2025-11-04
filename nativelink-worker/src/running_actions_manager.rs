@@ -258,6 +258,46 @@ pub fn download_to_directory<'a>(
     .boxed()
 }
 
+/// Prepares action inputs by first trying the directory cache (if available),
+/// then falling back to traditional `download_to_directory`.
+///
+/// This provides a significant performance improvement for repeated builds
+/// with the same input directories.
+pub async fn prepare_action_inputs(
+    directory_cache: &Option<Arc<crate::directory_cache::DirectoryCache>>,
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    digest: &DigestInfo,
+    work_directory: &str,
+) -> Result<(), Error> {
+    // Try cache first if available
+    if let Some(cache) = directory_cache {
+        match cache
+            .get_or_create(*digest, Path::new(work_directory))
+            .await
+        {
+            Ok(cache_hit) => {
+                trace!(
+                    ?digest,
+                    work_directory, cache_hit, "Successfully prepared inputs via directory cache"
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                warn!(
+                    ?digest,
+                    ?e,
+                    "Directory cache failed, falling back to traditional download"
+                );
+                // Fall through to traditional path
+            }
+        }
+    }
+
+    // Traditional path (cache disabled or failed)
+    download_to_directory(cas_store, filesystem_store, digest, work_directory).await
+}
+
 #[cfg(target_family = "windows")]
 fn is_executable(_metadata: &std::fs::Metadata, full_path: &impl AsRef<Path>) -> bool {
     static EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "bat", "com"];
@@ -739,9 +779,11 @@ impl RunningActionImpl {
                 // Now the work directory has been created, we have to clean up.
                 self.did_cleanup.store(false, Ordering::Release);
                 // Download the input files/folder and place them into the temp directory.
+                // Use directory cache if available for better performance.
                 self.metrics()
                     .download_to_directory
-                    .wrap(download_to_directory(
+                    .wrap(prepare_action_inputs(
+                        &self.running_actions_manager.directory_cache,
                         &self.running_actions_manager.cas_store,
                         filesystem_store_pin,
                         &self.action_info.input_root_digest,
@@ -1722,6 +1764,7 @@ pub struct RunningActionsManagerArgs<'a> {
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
     pub timeout_handled_externally: bool,
+    pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
 }
 
 struct CleanupGuard {
@@ -1765,6 +1808,9 @@ pub struct RunningActionsManagerImpl {
     /// Notify waiters when a cleanup operation completes. This is used in conjunction with
     /// `cleaning_up_operations` to coordinate directory cleanup and creation.
     cleanup_complete_notify: Arc<Notify>,
+    /// Optional directory cache for improving performance by caching reconstructed
+    /// input directories and using hardlinks.
+    directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
 }
 
 impl RunningActionsManagerImpl {
@@ -1807,6 +1853,7 @@ impl RunningActionsManagerImpl {
             metrics: Arc::new(Metrics::default()),
             cleaning_up_operations: Mutex::new(HashSet::new()),
             cleanup_complete_notify: Arc::new(Notify::new()),
+            directory_cache: args.directory_cache,
         })
     }
 

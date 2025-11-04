@@ -244,8 +244,8 @@ where
 /// Scheduler state includes the actions that are queued, active, and recently completed.
 /// It also includes the workers that are available to execute actions based on allocation
 /// strategy.
-#[derive(MetricsComponent)]
-pub(crate) struct SimpleSchedulerStateManager<T, I, NowFn>
+#[derive(MetricsComponent, Debug)]
+pub struct SimpleSchedulerStateManager<T, I, NowFn>
 where
     T: AwaitedActionDb,
     I: InstantWrapper,
@@ -293,7 +293,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
-    pub(crate) fn new(
+    pub fn new(
         max_job_retries: usize,
         no_event_action_timeout: Duration,
         client_action_timeout: Duration,
@@ -532,6 +532,10 @@ where
                 // No action found. It is ok if the action was not found. It
                 // probably means that the action was dropped, but worker was
                 // still processing it.
+                warn!(
+                    %operation_id,
+                    "Unable to update action due to it being missing, probably dropped"
+                );
                 return Ok(());
             };
 

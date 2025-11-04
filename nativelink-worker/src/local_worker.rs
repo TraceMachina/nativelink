@@ -488,6 +488,44 @@ pub async fn new_local_worker(
     } else {
         Duration::from_secs(config.max_action_timeout as u64)
     };
+
+    // Initialize directory cache if configured
+    let directory_cache = if let Some(cache_config) = &config.directory_cache {
+        use std::path::PathBuf;
+
+        use crate::directory_cache::{
+            DirectoryCache, DirectoryCacheConfig as WorkerDirCacheConfig,
+        };
+
+        let cache_root = if cache_config.cache_root.is_empty() {
+            PathBuf::from(&config.work_directory).parent().map_or_else(
+                || PathBuf::from("/tmp/nativelink_directory_cache"),
+                |p| p.join("directory_cache"),
+            )
+        } else {
+            PathBuf::from(&cache_config.cache_root)
+        };
+
+        let worker_cache_config = WorkerDirCacheConfig {
+            max_entries: cache_config.max_entries,
+            max_size_bytes: cache_config.max_size_bytes,
+            cache_root,
+        };
+
+        match DirectoryCache::new(worker_cache_config, Store::new(fast_slow_store.clone())).await {
+            Ok(cache) => {
+                tracing::info!("Directory cache initialized successfully");
+                Some(Arc::new(cache))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize directory cache: {:?}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
@@ -501,6 +539,7 @@ pub async fn new_local_worker(
             upload_action_result_config: &config.upload_action_result,
             max_action_timeout,
             timeout_handled_externally: config.timeout_handled_externally,
+            directory_cache,
         })?);
     let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),
