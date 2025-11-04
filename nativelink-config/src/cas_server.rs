@@ -797,6 +797,40 @@ pub struct LocalWorkerConfig {
     /// of the environment variable being the value of the property of the
     /// action being executed of that name or the fixed value.
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
+
+    /// Optional directory cache configuration for improving performance by caching
+    /// reconstructed input directories and using hardlinks instead of rebuilding
+    /// them from CAS for every action.
+    /// Default: None (directory cache disabled)
+    pub directory_cache: Option<DirectoryCacheConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryCacheConfig {
+    /// Maximum number of cached directories.
+    /// Default: 1000
+    #[serde(default = "default_directory_cache_max_entries")]
+    pub max_entries: usize,
+
+    /// Maximum total size in bytes for all cached directories (0 = unlimited).
+    /// Default: 10737418240 (10 GB)
+    #[serde(default = "default_directory_cache_max_size_bytes")]
+    pub max_size_bytes: u64,
+
+    /// Base directory for cache storage. This directory will be managed by
+    /// the worker and should be on the same filesystem as `work_directory`.
+    /// Default: `{work_directory}/../directory_cache`
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub cache_root: String,
+}
+
+const fn default_directory_cache_max_entries() -> usize {
+    1000
+}
+
+const fn default_directory_cache_max_size_bytes() -> u64 {
+    10 * 1024 * 1024 * 1024 // 10 GB
 }
 
 #[derive(Deserialize, Serialize, Debug)]
