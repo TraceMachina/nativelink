@@ -8,7 +8,7 @@ Remote persistent workers allow build tools to keep compiler processes running b
 
 ## Files
 
-- **nativelink-config.json**: Complete NativeLink scheduler and CAS configuration with persistent worker support
+- `nativelink-config.json`: Complete NativeLink scheduler and CAS configuration with persistent worker support
 - **.bazelrc**: Bazel configuration for using persistent workers with remote execution
 - **nativelink_worker_wrapper.sh**: Wrapper script for starting NativeLink workers with persistent worker support
 
@@ -61,8 +61,8 @@ build --remote_default_platform_properties=persistentWorkerTool=javac
 
 Persistent workers are identified by these platform properties:
 
-- `persistentWorkerKey`: Unique identifier for the worker type (e.g., "scalac-v2.13")
-- `persistentWorkerTool`: Tool name (e.g., "javac", "scalac", "kotlinc")
+- `persistentWorkerKey`: Unique identifier for the worker type (for example, `scalac-v2.13`)
+- `persistentWorkerTool`: Tool name (for example, `javac`, `scalac`, `kotlinc`)
 
 ## Performance Tuning
 
@@ -129,7 +129,7 @@ If persistent workers grow over time:
 Persistent workers:
 - Share process memory across actions
 - Must sanitize state between requests
-- Should run in isolated namespaces
+- Should run in isolated namespace
 
 Use the wrapper script to ensure proper isolation.
 

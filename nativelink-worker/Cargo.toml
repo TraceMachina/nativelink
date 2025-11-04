@@ -54,7 +54,6 @@ uuid = { version = "1.16.0", default-features = false, features = [
 nativelink-macro = { path = "../nativelink-macro" }
 
 hyper = "1.6.0"
-hyper-util = "0.1.11"
 pretty_assertions = { version = "1.4.1", features = ["std"] }
 prost-types = { version = "0.13.5", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
@@ -64,6 +63,3 @@ serial_test = { version = "3.2.0", features = [
   "async",
 ], default-features = false }
 tempfile = { version = "3.15.0", default-features = false }
-tracing-test = { version = "0.2.5", default-features = false, features = [
-  "no-env-filter",
-] }

@@ -2624,7 +2624,6 @@ dependencies = [
  "tokio-stream",
  "tonic 0.13.1",
  "tracing",
- "tracing-test",
  "uuid",
 ]
 
@@ -2793,7 +2792,6 @@ dependencies = [
  "formatx",
  "futures",
  "hyper 1.7.0",
- "hyper-util",
  "nativelink-config",
  "nativelink-error",
  "nativelink-macro",
@@ -2818,7 +2816,6 @@ dependencies = [
  "tokio-stream",
  "tonic 0.13.1",
  "tracing",
- "tracing-test",
  "uuid",
 ]
 
