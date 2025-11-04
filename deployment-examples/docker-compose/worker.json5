@@ -61,6 +61,14 @@
           ac_store: "GRPC_LOCAL_AC_STORE",
         },
         work_directory: "/root/.cache/nativelink/work",
+
+        // Optional: Enable directory cache for ~100x faster builds
+        // Uncomment to enable:
+        // directory_cache: {
+        //   max_entries: 1000,
+        //   max_size_bytes: "10GB",
+        // },
+
         platform_properties: {
           cpu_count: {
             query_cmd: "nproc",
