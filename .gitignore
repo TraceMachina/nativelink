@@ -22,6 +22,5 @@ nixos.bazelrc
 rust-project.json
 darwin.bazelrc
 nativelink.bazelrc
-integration_tests/**/*.log
-toolchain-examples/*.log
+*.log
 buck-out/

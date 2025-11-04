@@ -31,4 +31,5 @@ tonic = { version = "0.13.0", features = [
   "tls-ring",
   "transport",
 ], default-features = false }
+uuid = { version = "1.16.0", default-features = false }
 walkdir = { version = "2.5.0", default-features = false }
