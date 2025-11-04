@@ -1,13 +1,9 @@
 # Getting started
 
-Get your credentials for the [NativeLink cloud](https://app.nativelink.com/) and
-paste them into `user.bazelrc`
+Get your credentials and paste them into `user.bazelrc`
 ```
 build --remote_cache=grpcs://TODO
-build --remote_header=x-nativelink-api-key=TODO
 build --bes_backend=grpcs://TODO
-build --bes_header=x-nativelink-api-key=TODO
-build --bes_results_url=TODO
 build --remote_timeout=600
 build --remote_executor=grpcs://TODO
 ```

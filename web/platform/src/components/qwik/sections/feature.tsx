@@ -49,12 +49,6 @@ export const Features = component$(() => {
           />
         ))}
       </div>
-      <a
-        href="https://app.nativelink.com"
-        class="no-underline! flex items-center justify-center rounded-[14px] border border-solid border-transparent bg-gradient-to-r from-[#724FBA] to-[#292C9F] px-12 py-2 text-white transition-all duration-200 hover:border-white hover:bg-black hover:text-white md:h-[37px] md:px-5"
-      >
-        Demo now
-      </a>
     </div>
   );
 });

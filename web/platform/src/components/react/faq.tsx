@@ -12,7 +12,7 @@ const FAQData = [
   {
     question: "How do I set up NativeLink?",
     answer:
-      "You can set up NativeLink by deploying it as a Docker image or using the cloud-hosted solution. Detailed setup instructions can be found in the NativeLink documentation.",
+      "You can set up NativeLink by deploying it as a Docker image. Detailed setup instructions can be found in the NativeLink documentation.",
   },
   {
     question: "What operating systems are supported by NativeLink?",

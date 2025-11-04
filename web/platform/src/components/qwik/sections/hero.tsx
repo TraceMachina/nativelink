@@ -77,14 +77,6 @@ export const Hero = component$(() => {
         <div class="w-full p-8 flex flex-row gap-5 justify-center items-center md:flex-row">
           <a
             id="button"
-            href="https://app.nativelink.com"
-            class=" w-1/2 h-10 gap-2 text-sm flex items-center justify-center rounded-xl border border-solid bg-white text-black transition-all duration-200 hover:border-white hover:bg-black hover:text-white md:h-[37px] md:w-[193px]"
-          >
-            <Cloud /> Sign up today
-          </a>
-
-          <a
-            id="button"
             href="/docs/introduction/setup"
             class="w-1/2 h-10 flex items-center bg-black justify-center rounded-xl border-white/80 border border-solid text-white transition-all duration-200 hover:border-white hover:text-white md:h-[37px] md:w-[193px]"
           >
