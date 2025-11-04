@@ -1,0 +1,242 @@
+---
+title: "Directory Cache Configuration"
+description: "Enable high-performance directory caching for faster builds"
+pagefind: true
+---
+
+The directory cache is a performance optimization feature that dramatically speeds up build operations by caching input directories and reusing them via hardlinks instead of copying files.
+
+## Overview
+
+When enabled, the directory cache provides:
+
+- **~100x faster directory preparation** for subsequent builds
+- **Automatic hardlink optimization** to avoid file copying
+- **LRU cache eviction** to manage disk space efficiently
+- **Thread-safe operation** with construction locks to prevent cache stampedes
+- **Graceful fallback** if caching fails
+
+## Performance Expectations
+
+- **First build**: No benefit (cache is empty)
+- **Subsequent builds**: ~100x faster directory preparation
+- **Cache hit rate**: Depends on how often you rebuild with same inputs
+
+## Basic Configuration
+
+Add the `directory_cache` section to your worker configuration:
+
+```json5
+{
+  workers: [
+    {
+      local_worker: {
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "CAS_MAIN_STORE",
+        upload_action_result: {
+          ac_store: "AC_MAIN_STORE",
+        },
+        work_directory: "/tmp/nativelink/work",
+
+        // Add this section to enable directory caching
+        directory_cache: {
+          max_entries: 1000,        // Maximum number of cached directories
+          max_size_bytes: "10GB",   // Maximum total cache size
+        },
+      },
+    },
+  ],
+  // ... rest of config
+}
+```
+
+## Configuration Options
+
+### `max_entries` (default: 1000)
+
+Maximum number of cached directories to keep. When this limit is reached, the least recently used directories are evicted.
+
+```json5
+directory_cache: {
+  max_entries: 1000,  // Adjust based on your typical build patterns
+}
+```
+
+### `max_size_bytes` (default: "10GB")
+
+Maximum total size of the cache. Supports human-readable sizes like "10GB", "1TB", etc.
+
+```json5
+directory_cache: {
+  max_size_bytes: "10GB",  // Adjust based on available disk space
+}
+```
+
+### `cache_root` (optional)
+
+Custom location for cache storage. By default, the cache is stored next to your `work_directory`:
+
+- Work directory: `/tmp/nativelink/work`
+- Cache directory: `/tmp/nativelink/directory_cache` (automatically created)
+
+```json5
+directory_cache: {
+  cache_root: "/tmp/nativelink/directory_cache",  // Optional custom path
+}
+```
+
+:::caution
+Ensure the cache location is on the **same filesystem** as the work directory for hardlinks to work properly!
+:::
+
+## Complete Example Configuration
+
+Here's a complete working configuration with directory caching enabled:
+
+```json5
+{
+  stores: {
+    CAS_MAIN_STORE: {
+      filesystem: {
+        content_path: "/tmp/nativelink/cas",
+        temp_path: "/tmp/nativelink/tmp",
+        eviction_policy: {
+          max_bytes: 10000000000, // 10GB
+        },
+      },
+    },
+    AC_MAIN_STORE: {
+      filesystem: {
+        content_path: "/tmp/nativelink/ac",
+        temp_path: "/tmp/nativelink/tmp",
+        eviction_policy: {
+          max_bytes: 1000000000, // 1GB
+        },
+      },
+    },
+  },
+
+  workers: [
+    {
+      local_worker: {
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "CAS_MAIN_STORE",
+        upload_action_result: {
+          ac_store: "AC_MAIN_STORE",
+        },
+        work_directory: "/tmp/nativelink/work",
+
+        // Directory cache configuration
+        directory_cache: {
+          max_entries: 1000,
+          max_size_bytes: "10GB",
+        },
+      },
+    },
+  ],
+
+  schedulers: {
+    MAIN_SCHEDULER: {
+      simple: {
+        supported_platform_properties: {
+          cpu_count: {
+            query_cmd: "nproc",
+          },
+        },
+      },
+    },
+  },
+
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: {
+          main: {
+            cas_store: "CAS_MAIN_STORE",
+          },
+        },
+        ac: {
+          main: {
+            ac_store: "AC_MAIN_STORE",
+          },
+        },
+        execution: {
+          main: {
+            scheduler: "MAIN_SCHEDULER",
+          },
+        },
+        capabilities: {
+          main: {
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        },
+      },
+    },
+  ],
+}
+```
+
+## How It Works
+
+The directory cache operates automatically once configured:
+
+1. **Cache population**: Input directories from build actions are cached based on their content digest
+2. **Hardlink reuse**: When the same directory is needed again, hardlinks are created instead of copying files
+3. **LRU eviction**: When cache limits are reached, least recently used directories are removed
+4. **Construction locking**: Multiple concurrent requests for the same directory are deduplicated
+5. **Graceful fallback**: If caching fails for any reason, builds continue normally without cache optimization
+
+## Use Cases
+
+The directory cache provides the most benefit for:
+
+- **Incremental builds**: Same input directories are reused across builds
+- **Large dependency trees**: Big `node_modules`, `vendor` directories, or similar
+- **Repeated builds**: CI/CD pipelines running the same builds multiple times
+- **Monorepos**: Shared dependencies across many build targets
+
+## Monitoring Cache Performance
+
+The cache logs debug-level information about cache hits and misses:
+
+```text
+DEBUG Directory cache HIT digest=abc123...
+DEBUG Directory cache MISS digest=def456...
+```
+
+Enable debug logging to monitor cache effectiveness and tune configuration as needed.
+
+## Disabling the Cache
+
+If you don't add the `directory_cache` section, NativeLink works exactly as before - it just won't use the cache optimization. There's no performance penalty for not using the cache.
+
+## Troubleshooting
+
+### Hardlinks not working
+
+Ensure the cache directory and work directory are on the same filesystem. Hardlinks cannot span filesystem boundaries.
+
+### Cache growing too large
+
+Adjust `max_size_bytes` or `max_entries` to control cache size. The LRU eviction policy will automatically remove old entries when limits are reached.
+
+### Low cache hit rate
+
+This is normal for builds that frequently change inputs. The cache is most effective when rebuilding with the same or similar inputs.
+
+## Additional Resources
+
+- Check out the [Basic Config Examples](/docs/config/basic-configs) for more configuration patterns
+- See [Production Config](/docs/config/production-config) for enterprise deployments
+- Join our [Slack](https://forms.gle/LtaWSixEC6bYi5xF7) for help with configuration
