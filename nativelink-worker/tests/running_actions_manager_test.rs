@@ -453,6 +453,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -575,6 +576,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -699,6 +701,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -879,6 +882,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1060,6 +1064,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1267,6 +1272,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1401,6 +1407,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         #[cfg(target_family = "unix")]
@@ -1603,6 +1610,7 @@ exit 0
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
@@ -1778,6 +1786,7 @@ exit 0
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
@@ -1947,6 +1956,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
         let arguments = vec!["true".to_string()];
         let command = Command {
@@ -2030,6 +2040,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2104,6 +2115,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2184,6 +2196,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2285,6 +2298,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2330,6 +2344,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2397,6 +2412,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2515,6 +2531,7 @@ exit 1
                         },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     timeout_handled_externally: false,
+                    directory_cache: None,
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2601,6 +2618,7 @@ exit 1
                         },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     timeout_handled_externally: false,
+                    directory_cache: None,
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2687,6 +2705,7 @@ exit 1
                         },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     timeout_handled_externally: false,
+                    directory_cache: None,
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2770,6 +2789,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -2901,6 +2921,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3069,6 +3090,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3168,6 +3190,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
         let queued_timestamp = make_system_time(1000);
 
@@ -3281,6 +3304,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3460,6 +3484,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3579,6 +3604,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         // Create a simple action
@@ -3719,6 +3745,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         // Create a simple action

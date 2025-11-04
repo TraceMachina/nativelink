@@ -2812,6 +2812,7 @@ dependencies = [
  "serde_json5",
  "serial_test",
  "shlex",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tonic 0.13.1",
