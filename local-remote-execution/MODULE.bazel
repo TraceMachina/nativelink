@@ -13,7 +13,7 @@ bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_cc", version = "0.1.5")
 
 # Use the starlark implementation of Java rules instead of the builtin ones.
-bazel_dep(name = "rules_java", version = "8.11.0")
+bazel_dep(name = "rules_java", version = "9.0.0")
 bazel_dep(name = "rules_rust", version = "0.61.0")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
 

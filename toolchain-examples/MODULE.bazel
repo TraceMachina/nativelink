@@ -10,7 +10,7 @@ bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_cc", version = "0.1.5")
 
 # Java
-bazel_dep(name = "rules_java", version = "8.11.0")
+bazel_dep(name = "rules_java", version = "9.0.0")
 
 java = use_extension("//java:extensions.bzl", "toolchains")
 use_repo(java, "local_jdk")
