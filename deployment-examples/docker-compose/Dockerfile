@@ -59,7 +59,7 @@ COPY --from=builder /root/nativelink-bin /usr/local/bin/nativelink
 ARG ADDITIONAL_SETUP_WORKER_CMD
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl=8.5.0-2ubuntu10.6 \
+    && apt-get install -y --no-install-recommends curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}" \

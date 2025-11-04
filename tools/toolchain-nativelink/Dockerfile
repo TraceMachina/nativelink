@@ -25,7 +25,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --no-instal
     python3=3.12.3-0ubuntu2 \
     python3-minimal=3.12.3-0ubuntu2 \
     libpython3-stdlib=3.12.3-0ubuntu2 \
-    curl=8.5.0-2ubuntu10.6 \
+    curl \
     ca-certificates=20240203 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
