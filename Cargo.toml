@@ -1,5 +1,8 @@
 [workspace]
-exclude = ["tools/generate-bazel-rc", "nativelink-config/generate-stores-config"]
+exclude = [
+  "nativelink-config/generate-stores-config",
+  "tools/generate-bazel-rc",
+]
 resolver = "2"
 
 [package]
