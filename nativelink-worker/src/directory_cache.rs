@@ -29,7 +29,7 @@ use nativelink_util::fs_util::{hardlink_directory_tree, set_readonly_recursive};
 use nativelink_util::store_trait::{Store, StoreLike};
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
-use tracing::{Level, event};
+use tracing::{debug, trace, warn};
 
 /// Configuration for the directory cache
 #[derive(Debug, Clone)]
@@ -122,8 +122,7 @@ impl DirectoryCache {
                 metadata.last_access = SystemTime::now();
                 metadata.ref_count += 1;
 
-                event!(
-                    Level::DEBUG,
+                debug!(
                     ?digest,
                     path = ?metadata.path,
                     "Directory cache HIT"
@@ -136,8 +135,7 @@ impl DirectoryCache {
                         return Ok(true);
                     }
                     Err(e) => {
-                        event!(
-                            Level::WARN,
+                        warn!(
                             ?digest,
                             error = ?e,
                             "Failed to hardlink from cache, will reconstruct"
@@ -149,7 +147,7 @@ impl DirectoryCache {
             }
         }
 
-        event!(Level::DEBUG, ?digest, "Directory cache MISS");
+        debug!(?digest, "Directory cache MISS");
 
         // Get or create construction lock to prevent stampede
         let construction_lock = {
@@ -170,8 +168,7 @@ impl DirectoryCache {
                 return match hardlink_directory_tree(&metadata.path, dest_path).await {
                     Ok(()) => Ok(true),
                     Err(e) => {
-                        event!(
-                            Level::WARN,
+                        warn!(
                             ?digest,
                             error = ?e,
                             "Failed to hardlink after construction"
@@ -231,7 +228,7 @@ impl DirectoryCache {
         dest_path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
         Box::pin(async move {
-            event!(Level::DEBUG, ?digest, ?dest_path, "Constructing directory");
+            debug!(?digest, ?dest_path, "Constructing directory");
 
             // Fetch the Directory proto
             let directory: ProtoDirectory = get_and_decode_digest(&self.cas_store, digest.into())
@@ -273,7 +270,7 @@ impl DirectoryCache {
         )
         .err_tip(|| "Invalid file digest")?;
 
-        event!(Level::TRACE, ?file_path, ?digest, "Creating file");
+        trace!(?file_path, ?digest, "Creating file");
 
         // Fetch file content from CAS
         use nativelink_util::store_trait::StoreKey;
@@ -318,7 +315,7 @@ impl DirectoryCache {
             })?)
             .err_tip(|| "Invalid directory digest")?;
 
-        event!(Level::TRACE, ?dir_path, ?digest, "Creating subdirectory");
+        trace!(?dir_path, ?digest, "Creating subdirectory");
 
         // Recursively construct subdirectory
         self.construct_directory(digest, &dir_path).await
@@ -329,7 +326,7 @@ impl DirectoryCache {
         let link_path = parent.join(&symlink.name);
         let target = Path::new(&symlink.target);
 
-        event!(Level::TRACE, ?link_path, ?target, "Creating symlink");
+        trace!(?link_path, ?target, "Creating symlink");
 
         #[cfg(unix)]
         fs::symlink(&target, &link_path)
@@ -387,17 +384,11 @@ impl DirectoryCache {
 
         if let Some(digest) = to_evict {
             if let Some(metadata) = cache.remove(&digest) {
-                event!(
-                    Level::DEBUG,
-                    ?digest,
-                    size = metadata.size,
-                    "Evicting cached directory"
-                );
+                debug!(?digest, size = metadata.size, "Evicting cached directory");
 
                 // Remove from disk
                 if let Err(e) = fs::remove_dir_all(&metadata.path).await {
-                    event!(
-                        Level::WARN,
+                    warn!(
                         ?digest,
                         path = ?metadata.path,
                         error = ?e,

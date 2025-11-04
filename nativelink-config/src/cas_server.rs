@@ -815,7 +815,10 @@ pub struct DirectoryCacheConfig {
 
     /// Maximum total size in bytes for all cached directories (0 = unlimited).
     /// Default: 10737418240 (10 GB)
-    #[serde(default = "default_directory_cache_max_size_bytes")]
+    #[serde(
+        default = "default_directory_cache_max_size_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
     pub max_size_bytes: u64,
 
     /// Base directory for cache storage. This directory will be managed by
