@@ -179,7 +179,7 @@ const Widgets = component$(() => {
       </div>
       <a
         id="button"
-        href="https://app.nativelink.com"
+        href="/docs/introduction/setup#-quickstart"
         target="_blank"
         class="hidden md:flex bg-white text-black hover:bg-gray-200 transition-colors duration-300 px-4 h-8 rounded-xl justify-center items-center"
         rel="noreferrer"

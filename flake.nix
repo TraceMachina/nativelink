@@ -64,8 +64,7 @@
               # Getting started
 
               Enter the Nix environment with `nix develop`.
-              Get your credentials for the NativeLink cloud on
-              https://app.nativelink.com/ and paste them into `user.bazelrc`.
+              Get your credentials for NativeLink and paste them into `user.bazelrc`.
               Run `bazel build hello-world` to build the example with local
               remote execution.
 

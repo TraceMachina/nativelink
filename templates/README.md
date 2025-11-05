@@ -1,5 +1,4 @@
-NativeLink provides the following templates to use caching and remote execution
-on the NativeLink cloud:
+NativeLink provides the following templates to use caching and remote execution:
 - **`bazel`**:
   C++ with local remote execution using Bazel.
   Provides the same toolchain during local and remote execution to share cache
