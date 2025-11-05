@@ -20,7 +20,7 @@ const paddings = ["p-4"]
 <Layout title="NativeLink Products">
    <div class="w-screen p-2 py-24 gap-3 bg-black overflow-hidden">
      <div class="gap-5 text-primary" class:list={[screenList, flexStart, paddings]}>
-      <div class="gap-5 flex flex-col md:flex-row md:w-[1300px] md:items-center md:justify-center md:h-96">
+      <div class="gap-5 flex flex-col md:flex-row md:w-[1300px] md:items-center md:justify-center md:h-40">
         <LinearGradient
         text="Simulation infrastructure for testing before deployment"
         class="text-3xl md:text-6xl md:w-1/2"
@@ -34,23 +34,6 @@ const paddings = ["p-4"]
         </div>
 
       </div>
-
-      <picture>
-        <source
-          srcset="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp"
-          media="(min-width: 768px)"
-        />
-        <source
-          srcset="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp"
-          media="(max-width: 767px)"
-        />
-        <img
-          fetchpriority="high"
-          src="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp"
-          alt="Mockup"
-          class="object-fit md:w-[1000px] py-8 md:py-2"
-        />
-      </picture>
 
         <div class="relative w-full flex flex-col md:flex-row-reverse md:w-[1200px] md:pt-56 md:gap-20">
 
@@ -72,7 +55,7 @@ const paddings = ["p-4"]
           <CodeTabs class="z-10 md:w-1/2"/>
         </div>
 
-        <div class="w-full flex gap-10 pt-24 md:pt-56 flex-col md:flex-row md:w-[1200px] md:gap-20">
+        <div class="w-full flex gap-5 pt-24 md:pt-56 flex-col md:flex-row md:w-[1200px] md:gap-5">
           <div class="z-10 flex flex-col gap-3 items-start justify-center">
             <LinearGradient
             text="Made with love in Rust"
@@ -82,33 +65,7 @@ const paddings = ["p-4"]
             </span>
           </div>
 
-
-          <div class="z-10 shadow-images border border-gray-600 rounded-xl w-full bg-gray-900 flex justify-center">
-            <picture>
-              <source
-                media="(min-width: 320px) and (max-width: 750px)"
-                srcset="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_demo.webp"
-              />
-              <source
-                media="(min-width: 751px)"
-                srcset="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_demo.webp"
-              />
-              <img
-                fetchpriority="high"
-                class="rounded-xl"
-                src="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_demo.webp"
-                alt="Demo_Page_Product_Shot (1).png"
-                class="object-fit md:w-[1000px] py-8 md:py-2"
-                />
-            </picture>
-          </div>
-
-
-        </div>
-
-        <div class="w-full flex gap-10 py-24 md:py-56 flex-col md:flex-row-reverse md:w-[1200px] md:gap-20">
-
-          <div class="z-10 pt-16 flex flex-col gap-3">
+          <div class="z-10 flex flex-col items-start gap-3">
             <LinearGradient
             text="Built for production"
             class="text-3xl"
@@ -118,24 +75,7 @@ const paddings = ["p-4"]
 
           </div>
 
-          <div class="z-10 shadow-images border border-gray-600 rounded-xl w-full bg-gray-900 flex justify-center">
-            <picture>
-              <source
-                media="(min-width: 320px) and (max-width: 750px)"
-                srcset="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_metrics.webp"
-              >
-              <img
-                class="rounded-xl"
-                fetchpriority="high"
-                src="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_metrics.webp"
-                alt="Nativelink Metrics"
-                style="object-fit: contain; object-position: center center; width: 100%;"
-              >
-            </picture>
-          </div>
-
         </div>
-
 
         <Features />
         <Benefits />

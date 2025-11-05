@@ -57,9 +57,7 @@ NativeLink seamlessly integrates with build tools that use the Remote Execution 
 
 ## 🚀 Quickstart
 
-To start, you can deploy NativeLink as a Docker image (as shown below) or by using our cloud-hosted solution, [NativeLink Cloud](https://app.nativelink.com). It's **FREE** for individuals, open-source projects, and cloud production environments, with support for unlimited team members.
-
-The setups below are **production-grade** installations. See the [contribution docs](https://nativelink.com/docs/contribute/nix/) for instructions on how to build from source with [Bazel](https://nativelink.com/docs/contribute/bazel/), [Cargo](https://nativelink.com/docs/contribute/cargo/), and [Nix](https://nativelink.com/docs/contribute/nix/).
+To start, you can deploy NativeLink as a Docker image (as shown below). The setups below are **production-grade** installations. See the [contribution docs](https://nativelink.com/docs/contribute/nix/) for instructions on how to build from source with [Bazel](https://nativelink.com/docs/contribute/bazel/), [Cargo](https://nativelink.com/docs/contribute/cargo/), and [Nix](https://nativelink.com/docs/contribute/nix/).
 
 You can find a few example deployments in the [Docs](https://nativelink.com/docs/deployment-examples/kubernetes).
 

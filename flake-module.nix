@@ -25,27 +25,6 @@
             A bash snippet that creates a nixos.bazelrc file in the repository.
           '';
         };
-        api-key = lib.mkOption {
-          type = lib.types.str;
-          description = lib.mdDoc ''
-            The API key to connect to the NativeLink Cloud.
-
-            You should only use read-only keys here to prevent cache-poisoning and
-            malicious artifact extractions.
-
-            Defaults to NativeLink's shared read-only api key.
-          '';
-          default = "065f02f53f26a12331d5cfd00a778fb243bfb4e857b8fcd4c99273edfb15deae";
-        };
-        endpoint = lib.mkOption {
-          type = lib.types.str;
-          description = lib.mdDoc ''
-            The NativeLink Cloud endpoint.
-
-            Defaults to NativeLink's shared cache.
-          '';
-          default = "grpcs://cas-tracemachina-shared.build-faster.nativelink.net";
-        };
         prefix = lib.mkOption {
           type = lib.types.str;
           description = lib.mdDoc ''
@@ -75,9 +54,6 @@
           # };
           # ```
           defaultConfig = [
-            "--remote_cache=${cfg.endpoint}"
-            "--remote_header=x-nativelink-api-key=${cfg.api-key}"
-            "--remote_header=x-nativelink-project=nativelink-ci"
             "--nogenerate_json_trace_profile"
             "--remote_upload_local_results=false"
             "--remote_cache_async"
