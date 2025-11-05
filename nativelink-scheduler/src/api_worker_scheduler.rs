@@ -133,7 +133,7 @@ impl ApiWorkerSchedulerImpl {
                 .is_err()
             {
                 error!(
-                    ?operation_id,
+                    %operation_id,
                     ?worker_id,
                     "OperationKeepAliveTx stream closed"
                 );
@@ -279,7 +279,7 @@ impl ApiWorkerSchedulerImpl {
                 .err_tip(|| "in update_operation on SimpleScheduler::update_action");
             if let Err(err) = update_operation_res {
                 error!(
-                    ?operation_id,
+                    %operation_id,
                     ?worker_id,
                     ?err,
                     "Failed to update_operation on update_action"
@@ -353,7 +353,7 @@ impl ApiWorkerSchedulerImpl {
         } else {
             warn!(
                 ?worker_id,
-                ?operation_id,
+                %operation_id,
                 ?action_info,
                 "Worker not found in worker map in worker_notify_run_action"
             );
