@@ -493,6 +493,8 @@ pub async fn new_local_worker(
     let directory_cache = if let Some(cache_config) = &config.directory_cache {
         use std::path::PathBuf;
 
+        use nativelink_store::filesystem_store::FilesystemStore;
+
         use crate::directory_cache::{
             DirectoryCache, DirectoryCacheConfig as WorkerDirCacheConfig,
         };
@@ -512,15 +514,76 @@ pub async fn new_local_worker(
             cache_root,
         };
 
-        match DirectoryCache::new(worker_cache_config, Store::new(fast_slow_store.clone())).await {
-            Ok(cache) => {
-                tracing::info!("Directory cache initialized successfully");
-                Some(Arc::new(cache))
-            }
-            Err(e) => {
-                tracing::warn!("Failed to initialize directory cache: {:?}", e);
+        // Extract FilesystemStore from the fast_store
+        let filesystem_store = if let Some(fs_store) = fast_slow_store
+            .fast_store()
+            .downcast_ref::<FilesystemStore>(None)
+        {
+            if let Some(arc) = fs_store.get_arc() {
+                Some(arc)
+            } else {
+                tracing::error!(
+                    "❌ Directory cache configuration error: FilesystemStore Arc doesn't exist.\n\
+                    The directory cache is now DISABLED.\n\
+                    \n\
+                    This is an internal error. Please report this issue at:\n\
+                    https://github.com/TraceMachina/nativelink/issues"
+                );
                 None
             }
+        } else {
+            tracing::error!(
+                "❌ Directory cache configuration error: Fast store is not a FilesystemStore.\n\
+                The directory cache is now DISABLED.\n\
+                \n\
+                📋 REQUIRED CONFIGURATION:\n\
+                The directory cache requires a FastSlowStore with a FilesystemStore as the 'fast' store.\n\
+                \n\
+                ✅ Your CAS store configuration should look like this:\n\
+                {{\n\
+                  \"stores\": {{\n\
+                    \"CAS_MAIN_STORE\": {{\n\
+                      \"fast_slow\": {{\n\
+                        \"fast\": {{\n\
+                          \"filesystem\": {{  // ← FilesystemStore required here\n\
+                            \"content_path\": \"/path/to/cas\",\n\
+                            \"temp_path\": \"/path/to/tmp\",\n\
+                            \"eviction_policy\": {{\n\
+                              \"max_bytes\": 10000000000\n\
+                            }}\n\
+                          }}\n\
+                        }},\n\
+                        \"slow\": {{ /* your slow store config */ }}\n\
+                      }}\n\
+                    }}\n\
+                  }}\n\
+                }}\n\
+                \n\
+                ℹ️  The fast store in your FastSlowStore must be a FilesystemStore for the\n\
+                directory cache to use hardlinks for optimal performance.\n\
+                \n\
+                💡 TIP: If you don't want to use the directory cache, remove the\n\
+                'directory_cache' configuration from your worker config."
+            );
+            None
+        };
+
+        if let Some(fs_store) = filesystem_store {
+            match DirectoryCache::new(worker_cache_config, fast_slow_store.clone(), fs_store).await
+            {
+                Ok(cache) => {
+                    tracing::info!(
+                        "Directory cache initialized successfully with FilesystemStore hardlinks"
+                    );
+                    Some(Arc::new(cache))
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to initialize directory cache: {:?}", e);
+                    None
+                }
+            }
+        } else {
+            None
         }
     } else {
         None

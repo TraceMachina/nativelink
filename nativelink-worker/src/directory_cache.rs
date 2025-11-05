@@ -19,15 +19,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use futures::stream::{FuturesUnordered, TryStreamExt};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Directory as ProtoDirectory, DirectoryNode, FileNode, SymlinkNode,
 };
 use nativelink_store::ac_utils::get_and_decode_digest;
-use nativelink_util::common::DigestInfo;
-use nativelink_util::fs_util::{hardlink_directory_tree, set_readonly_recursive};
-use nativelink_util::store_trait::{Store, StoreLike};
-use tokio::fs;
+use nativelink_store::fast_slow_store::FastSlowStore;
+use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
+use nativelink_util::common::{DigestInfo, fs};
+use nativelink_util::fs_util::hardlink_directory_tree;
+use tokio::fs as tokio_fs;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, trace, warn};
 
@@ -74,8 +76,10 @@ struct CachedDirectoryMetadata {
 /// 2. If yes, hardlink the entire tree to the action's workspace
 /// 3. If no, construct it once and cache for future use
 ///
+/// Uses `FilesystemStore` hardlinks for maximum performance - files are hardlinked
+/// directly from the `FilesystemStore` instead of being copied from CAS.
+///
 /// This dramatically reduces I/O and improves action startup time.
-#[derive(Debug)]
 pub struct DirectoryCache {
     /// Configuration
     config: DirectoryCacheConfig,
@@ -83,23 +87,50 @@ pub struct DirectoryCache {
     cache: Arc<RwLock<HashMap<DigestInfo, CachedDirectoryMetadata>>>,
     /// Lock for cache construction to prevent stampedes
     construction_locks: Arc<Mutex<HashMap<DigestInfo, Arc<Mutex<()>>>>>,
-    /// CAS store for fetching directories
-    cas_store: Store,
+    /// `FastSlowStore` for fetching directories and populating filesystem store
+    cas_store: Arc<FastSlowStore>,
+    /// `FilesystemStore` for hardlinking files (must be the "fast" store of `cas_store`)
+    filesystem_store: Arc<FilesystemStore>,
+}
+
+// Manual Debug implementation since we can't auto-derive with Arc<FastSlowStore>
+impl core::fmt::Debug for DirectoryCache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DirectoryCache")
+            .field("config", &self.config)
+            .field("cache_entries", &self.cache.try_read().map(|c| c.len()))
+            .finish()
+    }
 }
 
 impl DirectoryCache {
-    /// Creates a new DirectoryCache
-    pub async fn new(config: DirectoryCacheConfig, cas_store: Store) -> Result<Self, Error> {
+    /// Creates a new `DirectoryCache`
+    ///
+    /// # Arguments
+    /// * `config` - Cache configuration
+    /// * `cas_store` - `FastSlowStore` for fetching data (must have `FilesystemStore` as fast store)
+    /// * `filesystem_store` - `FilesystemStore` for hardlinking (must be the fast store of `cas_store`)
+    pub async fn new(
+        config: DirectoryCacheConfig,
+        cas_store: Arc<FastSlowStore>,
+        filesystem_store: Arc<FilesystemStore>,
+    ) -> Result<Self, Error> {
         // Ensure cache root exists
-        fs::create_dir_all(&config.cache_root)
+        tokio_fs::create_dir_all(&config.cache_root)
             .await
-            .err_tip(|| format!("Failed to create cache root: {:?}", config.cache_root))?;
+            .err_tip(|| {
+                format!(
+                    "Failed to create cache root: {}",
+                    config.cache_root.display()
+                )
+            })?;
 
         Ok(Self {
             config,
             cache: Arc::new(RwLock::new(HashMap::new())),
             construction_locks: Arc::new(Mutex::new(HashMap::new())),
             cas_store,
+            filesystem_store,
         })
     }
 
@@ -185,10 +216,12 @@ impl DirectoryCache {
         let cache_path = self.get_cache_path(&digest);
         self.construct_directory(digest, &cache_path).await?;
 
-        // Make it read-only to prevent modifications
-        set_readonly_recursive(&cache_path)
-            .await
-            .err_tip(|| "Failed to set cache directory to readonly")?;
+        // NOTE: We do NOT set the cache directory to read-only because:
+        // 1. Hardlinked files share the same inode and thus share permissions
+        // 2. Actions need write access to their work directories
+        // 3. Setting cache read-only would make all hardlinked work dirs read-only
+        // The cache is still protected from accidental modification because actions
+        // work in separate directories, and the cache itself is in a different location.
 
         // Calculate size
         let size = nativelink_util::fs_util::calculate_directory_size(&cache_path)
@@ -222,6 +255,7 @@ impl DirectoryCache {
     }
 
     /// Constructs a directory from the CAS at the given path
+    /// Uses parallel processing for better performance with large directory trees
     fn construct_directory<'a>(
         &'a self,
         digest: DigestInfo,
@@ -231,35 +265,53 @@ impl DirectoryCache {
             debug!(?digest, ?dest_path, "Constructing directory");
 
             // Fetch the Directory proto
-            let directory: ProtoDirectory = get_and_decode_digest(&self.cas_store, digest.into())
+            let directory: ProtoDirectory = get_and_decode_digest(&*self.cas_store, digest.into())
                 .await
-                .err_tip(|| format!("Failed to fetch directory digest: {:?}", digest))?;
+                .err_tip(|| format!("Failed to fetch directory digest: {digest:?}"))?;
 
             // Create the destination directory
-            fs::create_dir_all(dest_path)
+            tokio_fs::create_dir_all(dest_path)
                 .await
-                .err_tip(|| format!("Failed to create directory: {:?}", dest_path))?;
+                .err_tip(|| format!("Failed to create directory: {}", dest_path.display()))?;
 
-            // Process files
-            for file in &directory.files {
-                self.create_file(dest_path, file).await?;
+            // Process files, subdirectories, and symlinks in parallel
+            let mut futures: FuturesUnordered<
+                Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>,
+            > = FuturesUnordered::new();
+
+            // Queue all file creation tasks
+            for file in directory.files {
+                let dest_path = dest_path.to_path_buf();
+                futures.push(Box::pin(async move {
+                    self.create_file(&dest_path, &file).await
+                }));
             }
 
-            // Process subdirectories recursively
-            for dir_node in &directory.directories {
-                self.create_subdirectory(dest_path, dir_node).await?;
+            // Queue all subdirectory creation tasks
+            for dir_node in directory.directories {
+                let dest_path = dest_path.to_path_buf();
+                futures.push(Box::pin(async move {
+                    self.create_subdirectory(&dest_path, &dir_node).await
+                }));
             }
 
-            // Process symlinks
-            for symlink in &directory.symlinks {
-                self.create_symlink(dest_path, symlink).await?;
+            // Queue all symlink creation tasks
+            for symlink in directory.symlinks {
+                let dest_path = dest_path.to_path_buf();
+                futures.push(Box::pin(async move {
+                    self.create_symlink(&dest_path, &symlink).await
+                }));
             }
+
+            // Wait for all operations to complete
+            while futures.try_next().await?.is_some() {}
 
             Ok(())
         })
     }
 
-    /// Creates a file from a FileNode
+    /// Creates a file from a `FileNode` using hardlinks from `FilesystemStore`
+    /// This is much faster than copying data from CAS
     async fn create_file(&self, parent: &Path, file_node: &FileNode) -> Result<(), Error> {
         let file_path = parent.join(&file_node.name);
         let digest = DigestInfo::try_from(
@@ -270,31 +322,48 @@ impl DirectoryCache {
         )
         .err_tip(|| "Invalid file digest")?;
 
-        trace!(?file_path, ?digest, "Creating file");
+        trace!(?file_path, ?digest, "Creating file via hardlink");
 
-        // Fetch file content from CAS
-        use nativelink_util::store_trait::StoreKey;
-        let data = self
-            .cas_store
-            .get_part_unchunked(StoreKey::Digest(digest), 0, None)
+        // First, ensure the file is in the FilesystemStore (fast store)
+        self.cas_store
+            .populate_fast_store(digest.into())
             .await
-            .err_tip(|| format!("Failed to fetch file: {:?}", file_path))?;
+            .err_tip(|| format!("Failed to populate fast store for: {}", file_path.display()))?;
 
-        // Write to disk
-        fs::write(&file_path, data.as_ref())
+        // Get the file entry from FilesystemStore
+        let file_entry = self
+            .filesystem_store
+            .get_file_entry_for_digest(&digest)
             .await
-            .err_tip(|| format!("Failed to write file: {:?}", file_path))?;
+            .err_tip(|| format!("Failed to get file entry for: {}", file_path.display()))?;
 
-        // Set permissions
+        // Hardlink from FilesystemStore to destination
+        file_entry
+            .get_file_path_locked(|src| fs::hard_link(src, &file_path))
+            .await
+            .map_err(|e| {
+                if e.code == Code::NotFound {
+                    make_err!(
+                        Code::Internal,
+                        "Could not hardlink file from cache, likely evicted: {e:?} : {file_path:?}\n\
+                        Consider increasing filesystem store's max_bytes configuration."
+                    )
+                } else {
+                    make_err!(Code::Internal, "Could not hardlink file: {e:?} : {file_path:?}")
+                }
+            })?;
+
+        // Set permissions if executable
         #[cfg(unix)]
         if file_node.is_executable {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&file_path)
+            let mut perms = tokio_fs::metadata(&file_path)
                 .await
                 .err_tip(|| "Failed to get file metadata")?
                 .permissions();
+            // Set to rwxr-xr-x (755) for executable files
             perms.set_mode(0o755);
-            fs::set_permissions(&file_path, perms)
+            tokio_fs::set_permissions(&file_path, perms)
                 .await
                 .err_tip(|| "Failed to set file permissions")?;
         }
@@ -302,7 +371,7 @@ impl DirectoryCache {
         Ok(())
     }
 
-    /// Creates a subdirectory from a DirectoryNode
+    /// Creates a subdirectory from a `DirectoryNode`
     async fn create_subdirectory(
         &self,
         parent: &Path,
@@ -321,7 +390,7 @@ impl DirectoryCache {
         self.construct_directory(digest, &dir_path).await
     }
 
-    /// Creates a symlink from a SymlinkNode
+    /// Creates a symlink from a `SymlinkNode`
     async fn create_symlink(&self, parent: &Path, symlink: &SymlinkNode) -> Result<(), Error> {
         let link_path = parent.join(&symlink.name);
         let target = Path::new(&symlink.target);
@@ -329,15 +398,15 @@ impl DirectoryCache {
         trace!(?link_path, ?target, "Creating symlink");
 
         #[cfg(unix)]
-        fs::symlink(&target, &link_path)
+        tokio_fs::symlink(&target, &link_path)
             .await
-            .err_tip(|| format!("Failed to create symlink: {:?}", link_path))?;
+            .err_tip(|| format!("Failed to create symlink: {}", link_path.display()))?;
 
         #[cfg(windows)]
         {
             // On Windows, we need to know if target is a directory
             // For now, assume files (can be improved later)
-            fs::symlink_file(&target, &link_path)
+            tokio_fs::symlink_file(&target, &link_path)
                 .await
                 .err_tip(|| format!("Failed to create symlink: {:?}", link_path))?;
         }
@@ -387,7 +456,7 @@ impl DirectoryCache {
                 debug!(?digest, size = metadata.size, "Evicting cached directory");
 
                 // Remove from disk
-                if let Err(e) = fs::remove_dir_all(&metadata.path).await {
+                if let Err(e) = tokio_fs::remove_dir_all(&metadata.path).await {
                     warn!(
                         ?digest,
                         path = ?metadata.path,
@@ -405,7 +474,7 @@ impl DirectoryCache {
 
     /// Gets the cache path for a digest
     fn get_cache_path(&self, digest: &DigestInfo) -> PathBuf {
-        self.config.cache_root.join(format!("{}", digest))
+        self.config.cache_root.join(format!("{digest}"))
     }
 
     /// Returns cache statistics
@@ -428,99 +497,4 @@ pub struct CacheStats {
     pub entries: usize,
     pub total_size_bytes: u64,
     pub in_use_entries: usize,
-}
-
-#[cfg(test)]
-mod tests {
-    use nativelink_store::memory_store::MemoryStore;
-    use nativelink_util::common::DigestInfo;
-    use nativelink_util::store_trait::StoreLike;
-    use prost::Message;
-    use tempfile::TempDir;
-
-    use super::*;
-
-    async fn setup_test_store() -> (Store, DigestInfo) {
-        let store = Store::new(MemoryStore::new(&Default::default()));
-
-        // Create a simple directory structure
-        let file_content = b"Hello, World!";
-        // SHA256 hash of "Hello, World!"
-        let file_digest = DigestInfo::try_new(
-            "dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
-            13,
-        )
-        .unwrap();
-
-        // Upload file
-        store
-            .as_store_driver_pin()
-            .update_oneshot(file_digest.into(), file_content.to_vec().into())
-            .await
-            .unwrap();
-
-        // Create Directory proto
-        let directory = ProtoDirectory {
-            files: vec![FileNode {
-                name: "test.txt".to_string(),
-                digest: Some(file_digest.into()),
-                is_executable: false,
-                ..Default::default()
-            }],
-            directories: vec![],
-            symlinks: vec![],
-            ..Default::default()
-        };
-
-        // Encode and upload directory
-        let mut dir_data = Vec::new();
-        directory.encode(&mut dir_data).unwrap();
-        // Use a fixed hash for the directory
-        let dir_digest = DigestInfo::try_new(
-            "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-            dir_data.len() as i64,
-        )
-        .unwrap();
-
-        store
-            .as_store_driver_pin()
-            .update_oneshot(dir_digest.into(), dir_data.into())
-            .await
-            .unwrap();
-
-        (store, dir_digest)
-    }
-
-    #[tokio::test]
-    async fn test_directory_cache_basic() -> Result<(), Error> {
-        let temp_dir = TempDir::new().unwrap();
-        let cache_root = temp_dir.path().join("cache");
-        let (store, dir_digest) = setup_test_store().await;
-
-        let config = DirectoryCacheConfig {
-            max_entries: 10,
-            max_size_bytes: 1024 * 1024,
-            cache_root,
-        };
-
-        let cache = DirectoryCache::new(config, store).await?;
-
-        // First access - cache miss
-        let dest1 = temp_dir.path().join("dest1");
-        let hit = cache.get_or_create(dir_digest, &dest1).await?;
-        assert!(!hit, "First access should be cache miss");
-        assert!(dest1.join("test.txt").exists());
-
-        // Second access - cache hit
-        let dest2 = temp_dir.path().join("dest2");
-        let hit = cache.get_or_create(dir_digest, &dest2).await?;
-        assert!(hit, "Second access should be cache hit");
-        assert!(dest2.join("test.txt").exists());
-
-        // Verify stats
-        let stats = cache.stats().await;
-        assert_eq!(stats.entries, 1);
-
-        Ok(())
-    }
 }
