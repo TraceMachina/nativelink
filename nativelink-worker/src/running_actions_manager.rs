@@ -706,7 +706,7 @@ pub struct RunningActionImpl {
 }
 
 impl RunningActionImpl {
-    fn new(
+    pub fn new(
         execution_metadata: ExecutionMetadata,
         operation_id: OperationId,
         action_directory: String,
@@ -747,7 +747,7 @@ impl RunningActionImpl {
         &self.running_actions_manager.metrics
     }
 
-    /// Prepares any actions needed to execution this action. This action will do the following:
+    /// Prepares any actions needed to execute this action. This action will do the following:
     ///
     /// * Download any files needed to execute the action
     /// * Build a folder with all files needed to execute the action.
@@ -971,16 +971,22 @@ impl RunningActionImpl {
             .err_tip(|| "Expected stderr to exist on command this should never happen")?;
 
         let mut child_process_guard = guard(child_process, |mut child_process| {
-            if child_process.try_wait().is_ok_and(|res| res.is_some()) {
-                // The child already exited, probably a timeout or kill operation.
-                return;
+            let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
+                child_process.try_wait();
+            match result {
+                Ok(res) if res.is_some() => {
+                    // The child already exited, probably a timeout or kill operation
+                }
+                result => {
+                    error!(
+                        ?result,
+                        "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
+                    );
+                    background_spawn!("running_actions_manager_kill_child_process", async move {
+                        child_process.kill().await
+                    });
+                }
             }
-            error!(
-                "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
-            );
-            background_spawn!("running_actions_manager_kill_child_process", async move {
-                child_process.kill().await
-            });
         });
 
         let all_stdout_fut = spawn!("stdout_reader", async move {
@@ -1025,12 +1031,19 @@ impl RunningActionImpl {
                         );
                     }
                     {
+                        let joined_command = args.join(OsStr::new(" "));
+                        let command = joined_command.to_string_lossy();
+                        info!(
+                            seconds = self.action_info.timeout.as_secs_f32(),
+                            %command,
+                            "Command timed out"
+                        );
                         let mut state = self.state.lock();
                         state.error = Error::merge_option(state.error.take(), Some(Error::new(
                             Code::DeadlineExceeded,
                             format!(
                                 "Command '{}' timed out after {} seconds",
-                                args.join(OsStr::new(" ")).to_string_lossy(),
+                                command,
                                 self.action_info.timeout.as_secs_f32()
                             )
                         )));
@@ -1394,31 +1407,47 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics()
+        let res = self
+            .metrics()
             .clone()
             .prepare_action
             .wrap(Self::inner_prepare_action(self))
-            .await
+            .await;
+        if let Err(ref e) = res {
+            warn!(?e, "Error during prepare_action");
+        }
+        res
     }
 
     async fn execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics()
+        let res = self
+            .metrics()
             .clone()
             .execute
             .wrap(Self::inner_execute(self))
-            .await
+            .await;
+        if let Err(ref e) = res {
+            warn!(?e, "Error during prepare_action");
+        }
+        res
     }
 
     async fn upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics()
+        let res = self
+            .metrics()
             .clone()
             .upload_results
             .wrap(Self::inner_upload_results(self))
-            .await
+            .await;
+        if let Err(ref e) = res {
+            warn!(?e, "Error during upload_results");
+        }
+        res
     }
 
     async fn cleanup(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics()
+        let res = self
+            .metrics()
             .clone()
             .cleanup
             .wrap(async move {
@@ -1432,7 +1461,11 @@ impl RunningAction for RunningActionImpl {
                 self.did_cleanup.store(true, Ordering::Release);
                 result.map(move |()| self)
             })
-            .await
+            .await;
+        if let Err(ref e) = res {
+            warn!(?e, "Error during cleanup");
+        }
+        res
     }
 
     async fn get_finished_result(self: Arc<Self>) -> Result<ActionResult, Error> {
