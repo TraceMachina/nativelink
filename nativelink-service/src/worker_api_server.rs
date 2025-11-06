@@ -352,7 +352,7 @@ impl WorkerConnection {
                         UpdateOperationType::UpdateWithActionStage(action_stage),
                     )
                     .await
-                    .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
+                    .err_tip(|| format!("Failed to operation {operation_id}"))?;
             }
             execute_result::Result::InternalError(e) => {
                 self.scheduler
@@ -362,7 +362,7 @@ impl WorkerConnection {
                         UpdateOperationType::UpdateWithError(e.into()),
                     )
                     .await
-                    .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
+                    .err_tip(|| format!("Failed to operation {operation_id}"))?;
             }
         }
         Ok(())
@@ -377,7 +377,7 @@ impl WorkerConnection {
                 UpdateOperationType::ExecutionComplete,
             )
             .await
-            .err_tip(|| format!("Failed to operation {operation_id:?}"))?;
+            .err_tip(|| format!("Failed to operation {operation_id}"))?;
         Ok(())
     }
 }

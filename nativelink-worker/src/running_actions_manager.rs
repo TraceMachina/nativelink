@@ -630,10 +630,10 @@ async fn do_cleanup(
         .err_tip(|| format!("Could not remove working directory {action_directory}"));
 
     if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
-        error!(?operation_id, ?err, "Error cleaning up action");
+        error!(%operation_id, ?err, "Error cleaning up action");
         Result::<(), Error>::Err(err).merge(remove_dir_result)
     } else if let Err(err) = remove_dir_result {
-        error!(?operation_id, ?err, "Error removing working directory");
+        error!(%operation_id, ?err, "Error removing working directory");
         Err(err)
     } else {
         Ok(())
@@ -1367,7 +1367,7 @@ impl Drop for RunningActionImpl {
         }
         let operation_id = self.operation_id.clone();
         error!(
-            ?operation_id,
+            %operation_id,
             "RunningActionImpl did not cleanup. This is a violation of the requirements, will attempt to do it in the background."
         );
         let running_actions_manager = self.running_actions_manager.clone();
@@ -1379,7 +1379,7 @@ impl Drop for RunningActionImpl {
                 return;
             };
             error!(
-                ?operation_id,
+                %operation_id,
                 ?action_directory,
                 ?err,
                 "Error cleaning up action"
@@ -2012,7 +2012,7 @@ impl RunningActionsManagerImpl {
     fn cleanup_action(&self, operation_id: &OperationId) -> Result<(), Error> {
         let mut running_actions = self.running_actions.lock();
         let result = running_actions.remove(operation_id).err_tip(|| {
-            format!("Expected action id '{operation_id:?}' to exist in RunningActionsManagerImpl")
+            format!("Expected operation id '{operation_id}' to exist in RunningActionsManagerImpl")
         });
         // No need to copy anything, we just are telling the receivers an event happened.
         self.action_done_tx.send_modify(|()| {});
