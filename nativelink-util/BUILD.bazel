@@ -97,6 +97,7 @@ rust_test_suite(
         "tests/evicting_map_test.rs",
         "tests/fastcdc_test.rs",
         "tests/fs_test.rs",
+        "tests/fs_util_test.rs",
         "tests/health_utils_test.rs",
         "tests/operation_id_tests.rs",
         "tests/origin_event_test.rs",

@@ -52,6 +52,7 @@ rust_test_suite(
     name = "integration",
     timeout = "short",
     srcs = [
+        "tests/directory_cache_test.rs",
         "tests/local_worker_test.rs",
         "tests/running_actions_manager_test.rs",
     ],
@@ -80,6 +81,7 @@ rust_test_suite(
         "@crates//:prost-types",
         "@crates//:rand",
         "@crates//:serial_test",
+        "@crates//:tempfile",
         "@crates//:tokio",
         "@crates//:tonic",
         "@crates//:tracing",

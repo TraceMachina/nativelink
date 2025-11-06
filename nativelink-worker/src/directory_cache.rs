@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -115,15 +115,13 @@ impl DirectoryCache {
         cas_store: Arc<FastSlowStore>,
         filesystem_store: Arc<FilesystemStore>,
     ) -> Result<Self, Error> {
-        // Ensure cache root exists
-        tokio_fs::create_dir_all(&config.cache_root)
-            .await
-            .err_tip(|| {
-                format!(
-                    "Failed to create cache root: {}",
-                    config.cache_root.display()
-                )
-            })?;
+        // Ensure cache root exists (using std::fs since this is just initialization)
+        std::fs::create_dir_all(&config.cache_root).err_tip(|| {
+            format!(
+                "Failed to create cache root: {}",
+                config.cache_root.display()
+            )
+        })?;
 
         Ok(Self {
             config,

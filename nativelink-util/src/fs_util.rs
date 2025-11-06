@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -129,150 +129,6 @@ fn hardlink_directory_tree_recursive<'a>(
                     }
                 }
             }
-        }
-
-        Ok(())
-    })
-}
-
-/// Sets a directory tree to read-only recursively.
-/// This prevents actions from modifying cached directories.
-///
-/// # Arguments
-/// * `dir` - Directory to make read-only
-///
-/// # Platform Notes
-/// - Unix: Sets permissions to 0o555 (r-xr-xr-x) for directories, 0o444 for files
-/// - Windows: Sets `FILE_ATTRIBUTE_READONLY`
-///
-/// # Important
-/// Note that when using hardlinks, all hardlinked copies share the same inode
-/// and thus share permissions. Setting permissions on one affects all hardlinked copies.
-pub async fn set_readonly_recursive(dir: &Path) -> Result<(), Error> {
-    error_if!(!dir.exists(), "Directory does not exist: {:?}", dir);
-
-    set_readonly_recursive_impl(dir).await
-}
-
-fn set_readonly_recursive_impl<'a>(
-    path: &'a Path,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-    Box::pin(async move {
-        let metadata = fs::metadata(path)
-            .await
-            .err_tip(|| format!("Failed to get metadata for: {path:?}"))?;
-
-        if metadata.is_dir() {
-            let mut entries = fs::read_dir(path)
-                .await
-                .err_tip(|| format!("Failed to read directory: {path:?}"))?;
-
-            while let Some(entry) = entries
-                .next_entry()
-                .await
-                .err_tip(|| format!("Failed to get next entry in: {path:?}"))?
-            {
-                set_readonly_recursive_impl(&entry.path()).await?;
-            }
-        }
-
-        // Set the file/directory to read-only
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = metadata.permissions();
-
-            // If it's a directory, set to r-xr-xr-x (555)
-            // If it's a file, set to r--r--r-- (444)
-            let mode = if metadata.is_dir() { 0o555 } else { 0o444 };
-            perms.set_mode(mode);
-
-            fs::set_permissions(path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {path:?}"))?;
-        }
-
-        #[cfg(windows)]
-        {
-            let mut perms = metadata.permissions();
-            perms.set_readonly(true);
-
-            fs::set_permissions(path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {path:?}"))?;
-        }
-
-        Ok(())
-    })
-}
-
-/// Sets a directory tree to writable recursively.
-/// This allows actions to modify files in their work directory.
-///
-/// # Arguments
-/// * `dir` - Directory to make writable
-///
-/// # Platform Notes
-/// - Unix: Sets permissions to 0o755 (rwxr-xr-x) for directories, 0o644 for files
-/// - Windows: Clears `FILE_ATTRIBUTE_READONLY`
-///
-/// # Important
-/// Note that when using hardlinks, all hardlinked copies share the same inode
-/// and thus share permissions. Setting permissions on one affects all hardlinked copies.
-/// This means if you make a work directory writable, the cached version will also
-/// become writable.
-pub async fn set_writable_recursive(dir: &Path) -> Result<(), Error> {
-    error_if!(!dir.exists(), "Directory does not exist: {:?}", dir);
-
-    set_writable_recursive_impl(dir).await
-}
-
-fn set_writable_recursive_impl<'a>(
-    path: &'a Path,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-    Box::pin(async move {
-        let metadata = fs::metadata(path)
-            .await
-            .err_tip(|| format!("Failed to get metadata for: {path:?}"))?;
-
-        if metadata.is_dir() {
-            let mut entries = fs::read_dir(path)
-                .await
-                .err_tip(|| format!("Failed to read directory: {path:?}"))?;
-
-            while let Some(entry) = entries
-                .next_entry()
-                .await
-                .err_tip(|| format!("Failed to get next entry in: {path:?}"))?
-            {
-                set_writable_recursive_impl(&entry.path()).await?;
-            }
-        }
-
-        // Set the file/directory to writable
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = metadata.permissions();
-
-            // If it's a directory, set to rwxr-xr-x (755)
-            // If it's a file, set to rw-r--r-- (644)
-            let mode = if metadata.is_dir() { 0o755 } else { 0o644 };
-            perms.set_mode(mode);
-
-            fs::set_permissions(path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {path:?}"))?;
-        }
-
-        #[cfg(windows)]
-        {
-            let mut perms = metadata.permissions();
-            perms.set_readonly(false);
-
-            fs::set_permissions(path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {path:?}"))?;
         }
 
         Ok(())

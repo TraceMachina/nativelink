@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,10 +16,7 @@ use std::path::PathBuf;
 
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
-use nativelink_util::fs_util::{
-    calculate_directory_size, hardlink_directory_tree, set_readonly_recursive,
-    set_writable_recursive,
-};
+use nativelink_util::fs_util::{calculate_directory_size, hardlink_directory_tree};
 use tempfile::TempDir;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -57,8 +54,8 @@ async fn create_test_directory() -> Result<(TempDir, PathBuf), Error> {
 
 #[nativelink_test]
 async fn hardlink_directory_tree_test() -> Result<(), Error> {
-    let (_temp_dir, src_dir) = create_test_directory().await?;
-    let dst_dir = _temp_dir.path().join("test_dst");
+    let (temp_dir, src_dir) = create_test_directory().await?;
+    let dst_dir = temp_dir.path().join("test_dst");
 
     // Hardlink the directory
     hardlink_directory_tree(&src_dir, &dst_dir).await?;
@@ -92,46 +89,6 @@ async fn hardlink_directory_tree_test() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn set_readonly_recursive_test() -> Result<(), Error> {
-    let (_temp_dir, test_dir) = create_test_directory().await?;
-
-    set_readonly_recursive(&test_dir).await?;
-
-    // Verify files are read-only
-    let metadata = fs::metadata(test_dir.join("file1.txt")).await?;
-    assert!(metadata.permissions().readonly());
-
-    let metadata = fs::metadata(test_dir.join("subdir/file2.txt")).await?;
-    assert!(metadata.permissions().readonly());
-
-    Ok(())
-}
-
-#[nativelink_test]
-async fn set_writable_recursive_test() -> Result<(), Error> {
-    let (_temp_dir, test_dir) = create_test_directory().await?;
-
-    // First set to read-only
-    set_readonly_recursive(&test_dir).await?;
-
-    // Verify read-only
-    let metadata = fs::metadata(test_dir.join("file1.txt")).await?;
-    assert!(metadata.permissions().readonly());
-
-    // Now set to writable
-    set_writable_recursive(&test_dir).await?;
-
-    // Verify writable (not read-only)
-    let metadata = fs::metadata(test_dir.join("file1.txt")).await?;
-    assert!(!metadata.permissions().readonly());
-
-    let metadata = fs::metadata(test_dir.join("subdir/file2.txt")).await?;
-    assert!(!metadata.permissions().readonly());
-
-    Ok(())
-}
-
-#[nativelink_test]
 async fn calculate_directory_size_test() -> Result<(), Error> {
     let (_temp_dir, test_dir) = create_test_directory().await?;
 
@@ -146,7 +103,7 @@ async fn calculate_directory_size_test() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn hardlink_nonexistent_source_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn hardlink_nonexistent_source_test() -> Result<(), Box<dyn core::error::Error>> {
     let temp_dir = TempDir::new()?;
     let src = temp_dir.path().join("nonexistent");
     let dst = temp_dir.path().join("dest");
@@ -159,8 +116,8 @@ async fn hardlink_nonexistent_source_test() -> Result<(), Box<dyn std::error::Er
 
 #[nativelink_test]
 async fn hardlink_existing_destination_test() -> Result<(), Error> {
-    let (_temp_dir, src_dir) = create_test_directory().await?;
-    let dst_dir = _temp_dir.path().join("existing");
+    let (temp_dir, src_dir) = create_test_directory().await?;
+    let dst_dir = temp_dir.path().join("existing");
 
     // Create the destination directory (should now work)
     fs::create_dir(&dst_dir).await?;
