@@ -30,9 +30,12 @@ mod tests {
     use std::sync::{Arc, LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use bytes::Bytes;
     use futures::prelude::*;
     use nativelink_config::cas_server::EnvironmentSource;
-    use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
+    use nativelink_config::stores::{
+        FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+    };
     use nativelink_error::{Code, Error, ResultExt, make_input_err};
     use nativelink_macro::nativelink_test;
     use nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable;
@@ -113,8 +116,8 @@ mod tests {
             &FastSlowSpec {
                 fast: StoreSpec::Filesystem(fast_config),
                 slow: StoreSpec::Memory(slow_config),
-                fast_direction: Default::default(),
-                slow_direction: Default::default(),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
             },
             Store::new(fast_store.clone()),
             Store::new(slow_store.clone()),
@@ -1870,7 +1873,7 @@ exit 0
             .compute_from_reader(Cursor::new(expected_stderr))
             .await?;
 
-        let actual_stderr: bytes::Bytes = cas_store
+        let actual_stderr: Bytes = cas_store
             .as_ref()
             .get_part_unchunked(result.stderr_digest, 0, None)
             .await?;
@@ -2889,6 +2892,13 @@ exit 1
             tx.send(()).expect("Could not send timeout signal");
         });
         assert_eq!(results?.error.unwrap().code, Code::DeadlineExceeded);
+
+        assert!(!logs_contain(
+            "Child process was not cleaned up before dropping the call to execute(), killing in background spawn"
+        ));
+        assert!(logs_contain(
+            "Command timed out seconds=0.0 command=sh -c sleep infinity"
+        ));
 
         Ok(())
     }
