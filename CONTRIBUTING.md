@@ -462,7 +462,7 @@ NativeLink Code of Conduct is available in the
 You can generate branch-based coverage reports via:
 
 ```
-nix run .#nativelinkCoverageForHost
+nix build .#nativelinkCoverageForHost
 ```
 
 The `result` symlink contains a webpage with the visualized report.

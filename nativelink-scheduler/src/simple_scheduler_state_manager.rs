@@ -581,7 +581,7 @@ where
                     _ => {
                         return Err(make_err!(
                             Code::Internal,
-                            "Action {operation_id:?} is already completed with state {:?} - maybe_worker_id: {:?}",
+                            "Action {operation_id} is already completed with state {:?} - maybe_worker_id: {:?}",
                             awaited_action.state().stage,
                             maybe_worker_id,
                         ));

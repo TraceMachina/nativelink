@@ -219,7 +219,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             let operation_id = OperationId::from(kill_operation_request.operation_id);
                             if let Err(err) = self.running_actions_manager.kill_operation(&operation_id).await {
                                 error!(
-                                    ?operation_id,
+                                    %operation_id,
                                     ?err,
                                     "Failed to send kill request for operation"
                                 );
