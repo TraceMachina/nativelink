@@ -1050,7 +1050,7 @@ impl RunningActionImpl {
                     }
                 },
                 maybe_exit_status = child_process_guard.wait() => {
-                    // Defuse our guard so it does not try to cleanup and make nessless logs.
+                    // Defuse our guard so it does not try to cleanup and make senseless logs.
                     drop(ScopeGuard::<_, _>::into_inner(child_process_guard));
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
                     // TODO(palfrey) We should implement stderr/stdout streaming to client here.
@@ -1077,6 +1077,8 @@ impl RunningActionImpl {
                         }
                         exit_code
                     });
+
+                    info!(?args, "Command complete");
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await

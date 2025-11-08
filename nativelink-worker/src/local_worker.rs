@@ -272,7 +272,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     })
                                     .and_then(|action| {
                                         debug!(
-                                            operation_id = ?action.get_operation_id(),
+                                            operation_id = %action.get_operation_id(),
                                             "Received request to run action"
                                         );
                                         action
