@@ -1079,15 +1079,15 @@ impl SchedulerStore for RedisStore {
             + Send,
     {
         let key = data.get_key();
-        let key = self.encode_key(&key);
+        let redis_key = self.encode_key(&key);
         let client = self.get_client().await?;
         let maybe_index = data.get_indexes().err_tip(|| {
-            format!("Err getting index in RedisStore::update_data::versioned for {key:?}")
+            format!("Err getting index in RedisStore::update_data::versioned for {redis_key}")
         })?;
         if <T as SchedulerStoreKeyProvider>::Versioned::VALUE {
             let current_version = data.current_version();
             let data = data.try_into_bytes().err_tip(|| {
-                format!("Could not convert value to bytes in RedisStore::update_data::versioned for {key:?}")
+                format!("Could not convert value to bytes in RedisStore::update_data::versioned for {redis_key}")
             })?;
             let mut argv = Vec::with_capacity(3 + maybe_index.len() * 2);
             argv.push(Bytes::from(format!("{current_version}")));
@@ -1098,23 +1098,34 @@ impl SchedulerStore for RedisStore {
             }
             let (success, new_version): (bool, i64) = self
                 .update_if_version_matches_script
-                .evalsha_with_reload(client, vec![key.as_ref()], argv)
+                .evalsha_with_reload(client, vec![redis_key.as_ref()], argv)
                 .await
                 .err_tip(|| format!("In RedisStore::update_data::versioned for {key:?}"))?;
             if !success {
-                tracing::info!(
-                    "Error updating Redis key {key} expected version {current_version} but found {new_version}"
+                warn!(
+                    %redis_key,
+                    %key,
+                    %current_version,
+                    %new_version,
+                    "Error updating Redis key"
                 );
                 return Ok(None);
             }
+            info!(
+                %redis_key,
+                %key,
+                old_version = %current_version,
+                %new_version,
+                "Updated redis key to new version"
+            );
             // If we have a publish channel configured, send a notice that the key has been set.
             if let Some(pub_sub_channel) = &self.pub_sub_channel {
-                return Ok(client.publish(pub_sub_channel, key.as_ref()).await?);
+                return Ok(client.publish(pub_sub_channel, redis_key.as_ref()).await?);
             }
             Ok(Some(new_version))
         } else {
             let data = data.try_into_bytes().err_tip(|| {
-                format!("Could not convert value to bytes in RedisStore::update_data::noversion for {key:?}")
+                format!("Could not convert value to bytes in RedisStore::update_data::noversion for {redis_key}")
             })?;
             let mut fields = RedisMap::new();
             fields.reserve(1 + maybe_index.len());
@@ -1123,12 +1134,12 @@ impl SchedulerStore for RedisStore {
                 fields.insert(name.into(), value.into());
             }
             client
-                .hset::<(), _, _>(key.as_ref(), fields)
+                .hset::<(), _, _>(redis_key.as_ref(), fields)
                 .await
-                .err_tip(|| format!("In RedisStore::update_data::noversion for {key:?}"))?;
+                .err_tip(|| format!("In RedisStore::update_data::noversion for {redis_key}"))?;
             // If we have a publish channel configured, send a notice that the key has been set.
             if let Some(pub_sub_channel) = &self.pub_sub_channel {
-                return Ok(client.publish(pub_sub_channel, key.as_ref()).await?);
+                return Ok(client.publish(pub_sub_channel, redis_key.as_ref()).await?);
             }
             Ok(Some(0)) // Always use "0" version since this is not a versioned request.
         }
