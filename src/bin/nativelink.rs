@@ -720,10 +720,6 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
     runtime.block_on(async { tokio::spawn(async { init_tracing() }).await? })?;
 
-    if cfg!(feature = "worker_find_logging") {
-        info!("worker_find_logging enabled");
-    }
-
     let mut cfg = get_config()?;
 
     let global_cfg = if let Some(global_cfg) = &mut cfg.global {

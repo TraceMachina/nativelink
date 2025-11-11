@@ -708,7 +708,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             self.make_client_awaited_action(&operation_id.clone(), awaited_action);
 
         debug!(
-            ?client_operation_id,
+            %client_operation_id,
             %operation_id,
             ?client_awaited_action,
             "Adding action"

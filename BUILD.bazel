@@ -14,8 +14,6 @@ rust_binary(
     srcs = [
         "src/bin/nativelink.rs",
     ],
-    # Enable this to get extra debug about workers that are not being used by the CAS
-    # crate_features = ["worker_find_logging"],
     deps = [
         "//nativelink-config",
         "//nativelink-error",

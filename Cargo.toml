@@ -29,14 +29,6 @@ name = "nativelink"
 [features]
 nix = ["nativelink-worker/nix"]
 
-# Enable this to get extra debug about workers that are not being used by the CAS
-# for some reason. We don't enable this by default, as it's part of a hot path in
-# the scheduling system, and also that a worker not matching isn't necessarily bad.
-worker_find_logging = [
-  "nativelink-scheduler/worker_find_logging",
-  "nativelink-util/worker_find_logging",
-]
-
 [dependencies]
 nativelink-config = { path = "nativelink-config" }
 nativelink-error = { path = "nativelink-error" }

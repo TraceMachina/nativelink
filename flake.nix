@@ -160,8 +160,6 @@
           (craneLibFor p).buildPackage ((commonArgsFor p)
             // {
               cargoArtifacts = cargoArtifactsFor p;
-              # Enable this for debugging worker scheduler issues
-              # cargoExtraArgs = "--features worker_find_logging";
             });
 
         nativeTargetPkgs =

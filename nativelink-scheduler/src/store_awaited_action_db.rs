@@ -35,7 +35,7 @@ use nativelink_util::store_trait::{
 };
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::Notify;
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
@@ -461,8 +461,9 @@ async fn inner_update_awaited_action(
         .await
         .err_tip(|| "In RedisAwaitedActionDb::update_awaited_action")?;
     if maybe_version.is_none() {
-        tracing::warn!(
-            "Could not update AwaitedAction because the version did not match for {operation_id}"
+        warn!(
+            %operation_id,
+            "Could not update AwaitedAction because the version did not match"
         );
         return Err(make_err!(
             Code::Aborted,
