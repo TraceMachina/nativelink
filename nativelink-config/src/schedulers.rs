@@ -16,7 +16,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::serde_utils::{convert_duration_with_shellexpand, convert_numeric_with_shellexpand};
+use crate::serde_utils::{
+    convert_duration_with_shellexpand, convert_duration_with_shellexpand_and_negative,
+    convert_numeric_with_shellexpand,
+};
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -63,6 +66,11 @@ pub enum WorkerAllocationStrategy {
     LeastRecentlyUsed,
     /// Prefer workers that have been most recently used to run a job.
     MostRecentlyUsed,
+}
+
+// defaults to every 10s
+const fn default_worker_match_logging_interval_s() -> i64 {
+    10
 }
 
 #[derive(Deserialize, Serialize, Debug, Default)]
@@ -129,6 +137,15 @@ pub struct SimpleSpec {
     /// The storage backend to use for the scheduler.
     /// Default: memory
     pub experimental_backend: Option<ExperimentalSimpleSchedulerBackend>,
+
+    /// Every N seconds, do logging of worker matching
+    /// e.g. "worker busy", "can't find any worker"
+    /// Defaults to 10s. Can be set to -1 to disable
+    #[serde(
+        default = "default_worker_match_logging_interval_s",
+        deserialize_with = "convert_duration_with_shellexpand_and_negative"
+    )]
+    pub worker_match_logging_interval_s: i64,
 }
 
 #[derive(Deserialize, Serialize, Debug)]

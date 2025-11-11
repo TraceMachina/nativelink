@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
 use futures::Future;
@@ -140,6 +140,11 @@ pub struct SimpleScheduler {
     /// Background task that tries to match actions to workers. If this struct
     /// is dropped the spawn will be cancelled as well.
     task_worker_matching_spawn: JoinHandleDropGuard<()>,
+
+    /// Every duration, do logging of worker matching
+    /// e.g. "worker busy", "can't find any worker"
+    /// Set to None to disable. This is quite noisy, so we limit it
+    worker_match_logging_interval: Option<Duration>,
 }
 
 impl core::fmt::Debug for SimpleScheduler {
@@ -203,18 +208,19 @@ impl SimpleScheduler {
     }
 
     pub async fn do_try_match_for_test(&self) -> Result<(), Error> {
-        self.do_try_match().await
+        self.do_try_match(true).await
     }
 
     // TODO(palfrey) This is an O(n*m) (aka n^2) algorithm. In theory we
     // can create a map of capabilities of each worker and then try and match
     // the actions to the worker using the map lookup (ie. map reduce).
-    async fn do_try_match(&self) -> Result<(), Error> {
+    async fn do_try_match(&self, full_worker_logging: bool) -> Result<(), Error> {
         async fn match_action_to_worker(
             action_state_result: &dyn ActionStateResult,
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             platform_property_manager: &PlatformPropertyManager,
+            full_worker_logging: bool,
         ) -> Result<(), Error> {
             let (action_info, maybe_origin_metadata) =
                 action_state_result
@@ -238,7 +244,7 @@ impl SimpleScheduler {
             // Try to find a worker for the action.
             let worker_id = {
                 match workers
-                    .find_worker_for_action(&action_info.platform_properties)
+                    .find_worker_for_action(&action_info.platform_properties, full_worker_logging)
                     .await
                 {
                     Some(worker_id) => worker_id,
@@ -309,10 +315,12 @@ impl SimpleScheduler {
                     self.worker_scheduler.as_ref(),
                     self.matching_engine_state_manager.as_ref(),
                     self.platform_property_manager.as_ref(),
+                    full_worker_logging,
                 )
                 .await,
             );
         }
+
         result
     }
 }
@@ -413,6 +421,7 @@ impl SimpleScheduler {
             let task_worker_matching_spawn =
                 spawn!("simple_scheduler_task_worker_matching", async move {
                     let mut last_match_successful = true;
+                    let mut worker_match_logging_last: Option<Instant> = None;
                     // Break out of the loop only when the inner is dropped.
                     loop {
                         let task_change_fut = task_change_notify.notified();
@@ -433,8 +442,26 @@ impl SimpleScheduler {
                             tokio::pin!(sleep_fut);
                             let _ = futures::future::select(state_changed, sleep_fut).await;
                         }
+
                         let result = match weak_inner.upgrade() {
-                            Some(scheduler) => scheduler.do_try_match().await,
+                            Some(scheduler) => {
+                                let now = Instant::now();
+                                let full_worker_logging = {
+                                    match scheduler.worker_match_logging_interval {
+                                        None => false,
+                                        Some(duration) => match worker_match_logging_last {
+                                            None => true,
+                                            Some(when) => now.duration_since(when) >= duration,
+                                        },
+                                    }
+                                };
+
+                                let res = scheduler.do_try_match(full_worker_logging).await;
+                                if full_worker_logging {
+                                    worker_match_logging_last.replace(now);
+                                }
+                                res
+                            }
                             // If the inner went away it means the scheduler is shutting
                             // down, so we need to resolve our future.
                             None => return,
@@ -448,6 +475,21 @@ impl SimpleScheduler {
                     }
                     // Unreachable.
                 });
+
+            let worker_match_logging_interval = match spec.worker_match_logging_interval_s {
+                -1 => None,
+                signed_secs => {
+                    if let Ok(secs) = TryInto::<u64>::try_into(signed_secs) {
+                        Some(Duration::from_secs(secs))
+                    } else {
+                        error!(
+                            worker_match_logging_interval_s = spec.worker_match_logging_interval_s,
+                            "Valid values for worker_match_logging_interval_s are -1 or a positive integer, setting to -1 (disabled)",
+                        );
+                        None
+                    }
+                }
+            };
             Self {
                 matching_engine_state_manager: state_manager.clone(),
                 client_state_manager: state_manager.clone(),
@@ -455,6 +497,7 @@ impl SimpleScheduler {
                 platform_property_manager,
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
+                worker_match_logging_interval,
             }
         });
         (action_scheduler, worker_scheduler_clone)

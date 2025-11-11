@@ -32,9 +32,7 @@ use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tonic::async_trait;
-#[cfg(feature = "worker_find_logging")]
-use tracing::info;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
@@ -190,46 +188,46 @@ impl ApiWorkerSchedulerImpl {
         Ok(())
     }
 
-    #[cfg_attr(not(feature = "worker_find_logging"), allow(unused_variables))]
     fn inner_worker_checker(
         (worker_id, w): &(&WorkerId, &Worker),
         platform_properties: &PlatformProperties,
+        full_worker_logging: bool,
     ) -> bool {
-        #[cfg(feature = "worker_find_logging")]
-        {
-            if !w.can_accept_work() {
+        if !w.can_accept_work() {
+            if full_worker_logging {
                 info!(
                     "Worker {worker_id} cannot accept work because is_paused: {}, is_draining: {}",
                     w.is_paused, w.is_draining
                 );
-                return false;
             }
-            if !platform_properties.is_satisfied_by(&w.platform_properties) {
-                info!("Worker {worker_id} properties are insufficient");
-                return false;
-            }
-            return true;
-        }
-        #[cfg(not(feature = "worker_find_logging"))]
+            false
+        } else if !platform_properties.is_satisfied_by(&w.platform_properties, full_worker_logging)
         {
-            w.can_accept_work() && platform_properties.is_satisfied_by(&w.platform_properties)
+            if full_worker_logging {
+                info!("Worker {worker_id} properties are insufficient");
+            }
+            false
+        } else {
+            true
         }
     }
 
     fn inner_find_worker_for_action(
         &self,
         platform_properties: &PlatformProperties,
+        full_worker_logging: bool,
     ) -> Option<WorkerId> {
         let mut workers_iter = self.workers.iter();
-        let workers_iter =
-            match self.allocation_strategy {
-                // Use rfind to get the least recently used that satisfies the properties.
-                WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
-                    .rfind(|worker| Self::inner_worker_checker(worker, platform_properties)),
-                // Use find to get the most recently used that satisfies the properties.
-                WorkerAllocationStrategy::MostRecentlyUsed => workers_iter
-                    .find(|worker| Self::inner_worker_checker(worker, platform_properties)),
-            };
+        let workers_iter = match self.allocation_strategy {
+            // Use rfind to get the least recently used that satisfies the properties.
+            WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter.rfind(|worker| {
+                Self::inner_worker_checker(worker, platform_properties, full_worker_logging)
+            }),
+            // Use find to get the most recently used that satisfies the properties.
+            WorkerAllocationStrategy::MostRecentlyUsed => workers_iter.find(|worker| {
+                Self::inner_worker_checker(worker, platform_properties, full_worker_logging)
+            }),
+        };
         workers_iter.map(|(_, w)| w.id.clone())
     }
 
@@ -486,9 +484,10 @@ impl ApiWorkerScheduler {
     pub async fn find_worker_for_action(
         &self,
         platform_properties: &PlatformProperties,
+        full_worker_logging: bool,
     ) -> Option<WorkerId> {
         let inner = self.inner.lock().await;
-        inner.inner_find_worker_for_action(platform_properties)
+        inner.inner_find_worker_for_action(platform_properties, full_worker_logging)
     }
 
     /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.

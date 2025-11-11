@@ -181,6 +181,28 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn bad_worker_match_logging_interval() -> Result<(), Error> {
+    let task_change_notify = Arc::new(Notify::new());
+    let (_scheduler, _worker_scheduler) = SimpleScheduler::new(
+        &SimpleSpec {
+            worker_match_logging_interval_s: -2,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        task_change_notify,
+        None,
+    );
+    assert!(logs_contain(
+        "nativelink_scheduler::simple_scheduler: Valid values for worker_match_logging_interval_s are -1 or a positive integer, setting to -1 (disabled) worker_match_logging_interval_s=-2"
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
 async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
     async fn advance_time<T>(duration: Duration, poll_fut: &mut Pin<&mut impl Future<Output = T>>) {
         const STEP_AMOUNT: Duration = Duration::from_millis(100);
@@ -223,7 +245,7 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
     .unwrap();
 
     // Trigger a do_try_match to ensure we get a state change.
-    scheduler.do_try_match_for_test().await.unwrap();
+    scheduler.do_try_match_for_test().await?;
     assert_eq!(
         action_listener.changed().await.unwrap().0.stage,
         ActionStage::Executing
