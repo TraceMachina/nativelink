@@ -6,7 +6,6 @@
   options.perSystem = flake-parts-lib.mkPerSystemOption (
     {
       config,
-      options,
       pkgs,
       ...
     }: let
