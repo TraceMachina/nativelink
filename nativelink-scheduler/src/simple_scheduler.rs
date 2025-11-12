@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
-use futures::Future;
+use futures::{Future, StreamExt, future};
 use nativelink_config::schedulers::SimpleSpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
@@ -38,8 +39,7 @@ use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
-use tokio_stream::StreamExt;
-use tracing::{error, info_span};
+use tracing::{error, info, info_span};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
@@ -429,8 +429,7 @@ impl SimpleScheduler {
                         tokio::pin!(task_change_fut);
                         tokio::pin!(worker_change_fut);
                         // Wait for either of these futures to be ready.
-                        let state_changed =
-                            futures::future::select(task_change_fut, worker_change_fut);
+                        let state_changed = future::select(task_change_fut, worker_change_fut);
                         if last_match_successful {
                             let _ = state_changed.await;
                         } else {
@@ -440,7 +439,7 @@ impl SimpleScheduler {
                             // hard loop if there's something wrong inside do_try_match.
                             let sleep_fut = tokio::time::sleep(Duration::from_millis(100));
                             tokio::pin!(sleep_fut);
-                            let _ = futures::future::select(state_changed, sleep_fut).await;
+                            let _ = future::select(state_changed, sleep_fut).await;
                         }
 
                         let result = match weak_inner.upgrade() {
@@ -458,6 +457,68 @@ impl SimpleScheduler {
 
                                 let res = scheduler.do_try_match(full_worker_logging).await;
                                 if full_worker_logging {
+                                    let operations_stream = scheduler
+                                        .matching_engine_state_manager
+                                        .filter_operations(OperationFilter::default())
+                                        .await
+                                        .err_tip(|| "In action_scheduler getting filter result");
+
+                                    let mut oldest_actions_in_state: HashMap<
+                                        String,
+                                        BTreeSet<Arc<ActionState>>,
+                                    > = HashMap::new();
+                                    let max_items = 5;
+
+                                    match operations_stream {
+                                        Ok(stream) => {
+                                            let actions = stream
+                                                .filter_map(|item| async move {
+                                                    match item.as_ref().as_state().await {
+                                                        Ok((action_state, _origin_metadata)) => {
+                                                            Some(action_state)
+                                                        }
+                                                        Err(e) => {
+                                                            error!(
+                                                                ?e,
+                                                                "Failed to get action state!"
+                                                            );
+                                                            None
+                                                        }
+                                                    }
+                                                })
+                                                .collect::<Vec<_>>()
+                                                .await;
+                                            for action_state in actions.iter() {
+                                                let name = action_state.stage.name();
+                                                match oldest_actions_in_state.get_mut(&name) {
+                                                    Some(values) => {
+                                                        values.insert(action_state.clone());
+                                                        if values.len() > max_items {
+                                                            values.pop_first();
+                                                        }
+                                                    }
+                                                    None => {
+                                                        let mut values = BTreeSet::new();
+                                                        values.insert(action_state.clone());
+                                                        oldest_actions_in_state
+                                                            .insert(name, values);
+                                                    }
+                                                };
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(?e, "Failed to get operations list!");
+                                        }
+                                    }
+
+                                    for value in oldest_actions_in_state.values() {
+                                        let mut items = vec![];
+                                        for item in value {
+                                            items.push(item.to_string());
+                                        }
+                                        info!(?items, "Oldest actions in state");
+                                    }
+
                                     worker_match_logging_last.replace(now);
                                 }
                                 res

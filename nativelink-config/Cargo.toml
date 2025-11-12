@@ -10,7 +10,7 @@ version = "0.7.6"
 nativelink-error = { path = "../nativelink-error" }
 
 byte-unit = { version = "5.1.6", default-features = false, features = ["byte"] }
-humantime = { version = "2.2.0", default-features = false }
+humantime = { version = "2.3.0", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }

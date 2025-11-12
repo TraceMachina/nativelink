@@ -489,6 +489,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         let mut new_awaited_action = worker_awaited_action.clone();
         let mut new_state = new_awaited_action.state().as_ref().clone();
         new_state.stage = ActionStage::Executing;
+        new_state.last_transition_timestamp = SystemTime::now();
         new_awaited_action.worker_set_state(Arc::new(new_state), MockSystemTime::now().into());
         new_awaited_action
     };

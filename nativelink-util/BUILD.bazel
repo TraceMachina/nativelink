@@ -55,6 +55,7 @@ rust_library(
         "@crates//:bytes",
         "@crates//:futures",
         "@crates//:hex",
+        "@crates//:humantime",
         "@crates//:hyper-1.7.0",
         "@crates//:hyper-util",
         "@crates//:lru",
