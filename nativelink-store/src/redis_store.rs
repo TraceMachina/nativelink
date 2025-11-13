@@ -53,7 +53,7 @@ use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use tokio::select;
 use tokio::time::sleep;
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
@@ -1111,7 +1111,7 @@ impl SchedulerStore for RedisStore {
                 );
                 return Ok(None);
             }
-            info!(
+            trace!(
                 %redis_key,
                 %key,
                 old_version = %current_version,
