@@ -28,7 +28,7 @@
     "framer-motion": "^12.9.4",
     "mdast": "^3.0.0",
     "motion": "^12.9.4",
-    "playwright": "1.52.0",
+    "playwright": "1.54.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "rehype-autolink-headings": "^7.1.0",

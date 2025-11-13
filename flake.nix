@@ -17,7 +17,7 @@
     };
     nix2container = {
       # TODO(SchahinRohani): Use a specific commit hash until nix2container is stable.
-      url = "github:nlewo/nix2container/cc96df7c3747c61c584d757cfc083922b4f4b33e";
+      url = "github:nlewo/nix2container/e5496ab66e9de9e3f67dc06f692dfbc471b6316e";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -118,7 +118,7 @@
           linkerPath =
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
-            else "${pkgs.llvmPackages_20.lld}/bin/ld.lld";
+            else "${pkgs.llvmPackages.lld}/bin/ld.lld";
 
           linkerEnvVar = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER";
         in
@@ -132,17 +132,17 @@
             buildInputs =
               [p.cacert]
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
-                p.darwin.apple_sdk.frameworks.Security
+                p.apple-sdk_15
                 p.libiconv
               ];
             nativeBuildInputs =
               (
                 if isLinuxBuild
                 then [pkgs.mold]
-                else [pkgs.llvmPackages_20.lld]
+                else [pkgs.llvmPackages.lld]
               )
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
-                p.darwin.apple_sdk.frameworks.Security
+                p.apple-sdk_15
                 p.libiconv
               ];
             CARGO_BUILD_TARGET = targetArch;
@@ -241,14 +241,14 @@
               pkgs.diffutils
               pkgs.gnutar
               pkgs.gzip
-              pkgs.python3Full
+              pkgs.python3
               pkgs.unzip
               pkgs.zstd
               pkgs.cargo-bloat
               pkgs.mold-wrapped
               pkgs.reindeer
-              pkgs.lld_16
-              pkgs.clang_16
+              pkgs.lld_21
+              pkgs.clang_21
               buck2-rust
             ];
           };
@@ -367,9 +367,9 @@
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
 
-            inherit (pkgs) buildstream buildbox buck2 mongodb wait4x bazelisk;
+            inherit (pkgs) buildstream buck2 mongodb wait4x bazelisk;
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
-              inherit nativelink buildstream buildbox;
+              inherit nativelink buildstream;
             };
             mongo-with-nativelink-test = pkgs.callPackage integration_tests/mongo/mongo-with-nativelink-test.nix {
               inherit nativelink mongodb wait4x bazelisk;
@@ -458,6 +458,21 @@
               unset TMPDIR TMP
               exec ${pkgs.bazelisk}/bin/bazelisk "$@"
             '';
+
+            # FIXME(palfrey): workaround for https://github.com/NixOS/nixpkgs/issues/456842
+            go_1_25_3 = pkgs.go_1_25.overrideAttrs {
+              version = "1.25.3";
+              src = pkgs.fetchurl {
+                url = "https://go.dev/dl/go1.25.3.src.tar.gz";
+                hash = "sha256-qBpLpZPQAV4QxR4mfeP/B8eskU38oDfZUX0ClRcJd5U=";
+              };
+            };
+            buildGo1253Module = pkgs.buildGoModule.override {
+              go = go_1_25_3;
+            };
+            cosign = pkgs.cosign.override {
+              buildGoModule = buildGo1253Module;
+            };
           in
             [
               # Development tooling
@@ -477,7 +492,7 @@
               pkgs.google-cloud-sdk
               pkgs.skopeo
               pkgs.dive
-              pkgs.cosign
+              cosign
               pkgs.kubectl
               pkgs.kubernetes-helm
               pkgs.cilium-cli
@@ -511,8 +526,7 @@
               pkgs.nativelink-tools.create-local-image
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-              pkgs.darwin.apple_sdk.frameworks.CoreFoundation
-              pkgs.darwin.apple_sdk.frameworks.Security
+              pkgs.apple-sdk_15
               pkgs.libiconv
             ]
             ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [
