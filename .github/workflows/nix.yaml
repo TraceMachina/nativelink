@@ -28,6 +28,9 @@ jobs:
     name: Bazel Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout
         uses: >- # v4.2.2
@@ -35,6 +38,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Invoke Bazel build in Nix shell
         run: |
@@ -58,6 +63,9 @@ jobs:
     name: Cargo Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout
         uses: >- # v4.2.2
@@ -65,6 +73,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Invoke Cargo build in Nix shell
         run: >
@@ -81,6 +91,9 @@ jobs:
     name: Installation / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout
         uses: >- # v4.2.2
@@ -88,6 +101,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test nix run
         run: |
@@ -100,6 +115,9 @@ jobs:
           test-name: [buildstream, mongo, buck2, rbe-toolchain]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout
         uses: >- # v4.2.2
@@ -107,6 +125,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test ${{ matrix.test-name }} run
         run: |

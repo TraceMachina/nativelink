@@ -26,6 +26,7 @@ jobs:
     name: Publish ${{ matrix.image }}
     runs-on: ubuntu-24.04
     permissions:
+      contents: read
       packages: write
       id-token: write
       security-events: write
@@ -37,6 +38,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test image
         run: |

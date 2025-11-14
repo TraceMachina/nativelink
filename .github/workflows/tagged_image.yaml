@@ -21,6 +21,7 @@ jobs:
     permissions:
       packages: write
       id-token: write
+      contents: read
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -29,6 +30,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test image
         run: |

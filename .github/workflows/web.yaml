@@ -10,6 +10,7 @@ on:
       - 'tools/**'
       - '**/*.lock'
       - '**/*.nix'
+      - .github/workflows/web.yaml
   pull_request:
     branches: [main]
     paths:
@@ -19,6 +20,7 @@ on:
       - 'tools/**'
       - '**/*.lock'
       - '**/*.nix'
+      - .github/workflows/web.yaml
 
 permissions: read-all
 
@@ -45,6 +47,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test Build
         if: github.event_name == 'pull_request'
