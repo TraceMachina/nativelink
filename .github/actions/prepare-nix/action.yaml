@@ -54,7 +54,5 @@ runs:
         source-tag: v3.13.0
 
     - name: Add Nix magic cache
-      uses: >- # https://github.com/DeterminateSystems/magic-nix-cache-action/releases/tag/v13
-        DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39
-      with:
-        source-tag: v0.1.6
+      uses: >- # https://github.com/DeterminateSystems/flakehub-cache-action/releases/tag/v2.1.0
+        DeterminateSystems/flakehub-cache-action@f7831e2a80f884ef16bbbd09a60823b4cf191069
