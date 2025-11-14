@@ -320,9 +320,8 @@ where
         // Note: The caller must filter `client_operation_id`.
 
         let mut maybe_reloaded_awaited_action: Option<AwaitedAction> = None;
-        if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout
-            < (self.now_fn)().now()
-        {
+        let now = (self.now_fn)().now();
+        if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout < now {
             // This may change if the version is out of date.
             let mut timed_out = true;
             if !awaited_action.state().stage.is_finished() {
@@ -335,6 +334,7 @@ where
                     )),
                     ..ActionResult::default()
                 });
+                state.last_transition_timestamp = now;
                 let state = Arc::new(state);
                 // We may be competing with an client timestamp update, so try
                 // this a few times.
@@ -655,6 +655,7 @@ where
                     // correct client id.
                     client_operation_id: operation_id.clone(),
                     action_digest: awaited_action.action_info().digest(),
+                    last_transition_timestamp: now,
                 }),
                 now,
             );

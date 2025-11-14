@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -267,6 +268,7 @@ impl CacheLookupScheduler {
                         client_operation_id: OperationId::default(),
                         stage: ActionStage::CompletedFromCache(action_result),
                         action_digest: action_info.unique_qualifier.digest(),
+                        last_transition_timestamp: SystemTime::now(),
                     };
 
                     let ctx = Context::current();
