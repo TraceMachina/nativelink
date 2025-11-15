@@ -113,6 +113,10 @@ export const starlightConfig = {
           label: "Chromium",
           link: `${docsRoot}/deployment-examples/chromium`,
         },
+        {
+          label: "Warm Worker Pools",
+          link: `${docsRoot}/deployment-examples/warm-worker-pools`,
+        },
       ],
     },
     {

@@ -17,3 +17,7 @@ pub mod cas_server;
 pub mod schedulers;
 pub mod serde_utils;
 pub mod stores;
+
+// Warm worker pools configuration (optional feature)
+#[cfg(feature = "warm-worker-pools")]
+pub mod warm_worker_pools;

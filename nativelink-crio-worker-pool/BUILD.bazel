@@ -1,0 +1,32 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "nativelink-crio-worker-pool",
+    srcs = [
+        "src/cache.rs",
+        "src/config.rs",
+        "src/cri_client.rs",
+        "src/lib.rs",
+        "src/lifecycle.rs",
+        "src/pool_manager.rs",
+        "src/warmup.rs",
+        "src/worker.rs",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//nativelink-error",
+        "//nativelink-util",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:serde_with",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tracing",
+        "@crates//:uuid",
+    ],
+)
+
+rust_test(
+    name = "unit_tests",
+    crate = ":nativelink-crio-worker-pool",
+)

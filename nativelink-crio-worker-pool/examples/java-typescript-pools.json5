@@ -1,0 +1,196 @@
+{
+  // Example configuration for Java and TypeScript warm worker pools
+  pools: [
+    {
+      // Java/JVM Worker Pool
+      name: "java-pool",
+      language: "jvm",
+      cri_socket: "unix:///var/run/crio/crio.sock",
+      container_image: "ghcr.io/tracemachina/nativelink-worker-java:latest",
+      crictl_binary: "crictl",
+      namespace: "nativelink",
+
+      // Pool sizing
+      min_warm_workers: 5,
+      max_workers: 50,
+
+      // Worker process configuration
+      worker_command: [
+        "/usr/local/bin/nativelink-worker",
+      ],
+      worker_args: [
+        "--config",
+        "/etc/nativelink/worker-config.json",
+      ],
+      env: {
+        RUST_LOG: "info",
+        JAVA_HOME: "/usr/lib/jvm/java-21-openjdk-amd64",
+
+        // JVM tuning for faster warmup and better GC
+        JAVA_OPTS: "-XX:+TieredCompilation -XX:TieredStopAtLevel=1 -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+UseStringDeduplication -XX:+AlwaysPreTouch -XX:InitiatingHeapOccupancyPercent=45 -XX:MaxRAMPercentage=75.0",
+      },
+      working_directory: "/tmp/worker",
+
+      // Warmup strategy for JVM
+      warmup: {
+        // Warmup commands - exercises JIT and loads classes
+        commands: [
+          {
+            argv: [
+              "/opt/warmup/jvm-warmup.sh",
+            ],
+            timeout_s: 60,
+          },
+        ],
+
+        // Verification after warmup
+        verification: [
+          {
+            argv: [
+              "java",
+              "-version",
+            ],
+            timeout_s: 5,
+          },
+          {
+            argv: [
+              "jcmd",
+              "1",
+              "VM.version",
+            ],
+            timeout_s: 5,
+          },
+        ],
+
+        // Post-job cleanup - trigger GC
+        post_job_cleanup: [
+          {
+            argv: [
+              "jcmd",
+              "1",
+              "GC.run",
+            ],
+            timeout_s: 30,
+          },
+        ],
+        default_timeout_s: 30,
+      },
+
+      // Cache priming (optional)
+      cache: {
+        enabled: true,
+        max_bytes: 10737418240, // 10 GB
+        commands: [
+          {
+            argv: [
+              "/opt/warmup/prime-cache.sh",
+            ],
+            timeout_s: 120,
+          },
+        ],
+      },
+
+      // Lifecycle management
+      lifecycle: {
+        worker_ttl_seconds: 3600, // 1 hour
+        max_jobs_per_worker: 200,
+        gc_job_frequency: 20, // Force GC every 20 jobs
+      },
+    },
+    {
+      // TypeScript/Node.js Worker Pool
+      name: "typescript-pool",
+      language: "nodejs",
+      cri_socket: "unix:///var/run/crio/crio.sock",
+      container_image: "ghcr.io/tracemachina/nativelink-worker-node:latest",
+      crictl_binary: "crictl",
+      namespace: "nativelink",
+
+      // Pool sizing
+      min_warm_workers: 3,
+      max_workers: 30,
+
+      // Worker process configuration
+      worker_command: [
+        "/usr/local/bin/nativelink-worker",
+      ],
+      worker_args: [
+        "--config",
+        "/etc/nativelink/worker-config.json",
+      ],
+      env: {
+        RUST_LOG: "info",
+        NODE_ENV: "production",
+
+        // V8 tuning for faster warmup
+        NODE_OPTIONS: "--expose-gc --max-old-space-size=4096 --max-semi-space-size=128",
+      },
+      working_directory: "/tmp/worker",
+
+      // Warmup strategy for Node.js/V8
+      warmup: {
+        // Warmup commands - exercises V8 TurboFan and loads modules
+        commands: [
+          {
+            argv: [
+              "/opt/warmup/nodejs-warmup.sh",
+            ],
+            timeout_s: 45,
+          },
+        ],
+
+        // Verification after warmup
+        verification: [
+          {
+            argv: [
+              "node",
+              "--version",
+            ],
+            timeout_s: 5,
+          },
+          {
+            argv: [
+              "npm",
+              "--version",
+            ],
+            timeout_s: 5,
+          },
+        ],
+
+        // Post-job cleanup - trigger GC
+        post_job_cleanup: [
+          {
+            argv: [
+              "node",
+              "-e",
+              "if (global.gc) global.gc();",
+            ],
+            timeout_s: 10,
+          },
+        ],
+        default_timeout_s: 30,
+      },
+
+      // Cache priming (optional)
+      cache: {
+        enabled: true,
+        max_bytes: 5368709120, // 5 GB
+        commands: [
+          {
+            argv: [
+              "/opt/warmup/prime-node-cache.sh",
+            ],
+            timeout_s: 90,
+          },
+        ],
+      },
+
+      // Lifecycle management
+      lifecycle: {
+        worker_ttl_seconds: 2700, // 45 minutes
+        max_jobs_per_worker: 300,
+        gc_job_frequency: 30, // Force GC every 30 jobs
+      },
+    },
+  ],
+}
