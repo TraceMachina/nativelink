@@ -273,14 +273,8 @@ pub async fn create_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
 
 #[cfg(target_family = "unix")]
 pub async fn symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
-    let src = src.as_ref().to_owned();
-    let dst = dst.as_ref().to_owned();
-    call_with_permit(move |_| {
-        tokio::runtime::Handle::current()
-            .block_on(tokio::fs::symlink(src, dst))
-            .map_err(Into::<Error>::into)
-    })
-    .await
+    let _permit = get_permit().await?;
+    tokio::fs::symlink(src, dst).await.map_err(Into::into)
 }
 
 pub async fn read_link(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
