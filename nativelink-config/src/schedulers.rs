@@ -21,7 +21,6 @@ use crate::serde_utils::{
     convert_numeric_with_shellexpand,
 };
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
-
 // Import warm worker pool configuration
 #[cfg(feature = "warm-worker-pools")]
 use crate::warm_worker_pools::WarmWorkerPoolsConfig;

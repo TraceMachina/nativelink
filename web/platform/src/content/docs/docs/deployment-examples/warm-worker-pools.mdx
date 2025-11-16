@@ -9,6 +9,10 @@ pagefind: true
 
 Warm worker pools are a performance optimization feature in NativeLink that dramatically reduces build times for languages with slow cold-start characteristics (Java, TypeScript, etc.) by maintaining pools of pre-warmed worker containers.
 
+:::caution[Platform Requirements]
+Warm worker pools require **Linux/Unix systems** with CRI-O installed. This feature uses Unix domain sockets for container runtime communication and **isn't available on Windows**.
+:::
+
 ### Key Benefits
 
 - **60-80% faster builds** for Java, TypeScript, and other JIT-compiled languages

@@ -2,6 +2,12 @@
 edition = "2024"
 name = "nativelink-crio-worker-pool"
 version = "0.1.0"
+# CRI-O uses Unix domain sockets - only available on Unix-like systems
+publish = false
+
+[features]
+cargo-build = []
+default = ["cargo-build"]
 
 [package.metadata.cargo-machete]
 ignored = ["prost", "tonic-build"]

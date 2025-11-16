@@ -16,6 +16,7 @@ rust_library(
         "src/schedulers.rs",
         "src/serde_utils.rs",
         "src/stores.rs",
+        "src/warm_worker_pools.rs",
     ],
     compile_data = [
         "README.md",

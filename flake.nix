@@ -141,6 +141,7 @@
                 then [pkgs.mold]
                 else [pkgs.llvmPackages_20.lld]
               )
+              ++ [p.protobuf] # Required for nativelink-crio-worker-pool proto compilation
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
                 p.darwin.apple_sdk.frameworks.Security
                 p.libiconv

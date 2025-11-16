@@ -4,6 +4,11 @@
 //! of pre-warmed workers backed by CRI-O containers.  It is intended to be used
 //! by a standalone pool manager service as well as future scheduler integrations.
 //!
+//! ## Platform Support
+//!
+//! **Unix/Linux only** - This crate requires Unix domain sockets for CRI-O communication
+//! and is not available on Windows.
+//!
 //! ## CRI Client Implementations
 //!
 //! Two CRI client implementations are available:
@@ -13,6 +18,9 @@
 //!
 //! - **`CriClient`** (legacy): CLI-based client using `crictl` binary.
 //!   Simpler but slower, kept for backwards compatibility.
+
+// CRI-O requires Unix domain sockets - not available on Windows
+#![cfg(unix)]
 
 mod cache;
 mod config;

@@ -12,16 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Compile CRI protocol buffers
-    tonic_build::configure()
-        .build_server(false) // We're a client, not a server
-        .build_client(true)
-        .compile_protos(&["proto/cri/api.proto"], &["proto/cri"])?;
+fn main() -> Result<(), Box<dyn core::error::Error>> {
+    // CRI-O requires Unix domain sockets - skip build on Windows
+    #[cfg(not(unix))]
+    {
+        println!(
+            "cargo:warning=nativelink-crio-worker-pool is Unix-only and will not be built on this platform"
+        );
+        return Ok(());
+    }
 
-    // Tell cargo to rerun this build script if the proto file changes
-    println!("cargo:rerun-if-changed=proto/cri/api.proto");
-    println!("cargo:rerun-if-changed=proto/cri");
+    #[cfg(unix)]
+    {
+        // Compile CRI protocol buffers with linter suppressions for generated code
+        tonic_build::configure()
+            .build_server(false) // We're a client, not a server
+            .build_client(true)
+            .emit_rerun_if_changed(false) // We handle this manually below
+            .type_attribute(".", "#[allow(clippy::all, unused_qualifications)]")
+            .compile_protos(&["proto/cri/api.proto"], &["proto/cri"])?;
 
-    Ok(())
+        // Tell cargo to rerun this build script if the proto file changes
+        println!("cargo:rerun-if-changed=proto/cri/api.proto");
+        println!("cargo:rerun-if-changed=proto/cri");
+
+        Ok(())
+    } // End cfg(unix)
 }

@@ -1,10 +1,10 @@
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nativelink_config::warm_worker_pools::IsolationStrategy;
+use nativelink_config::warm_worker_pools::{IsolationStrategy, WarmWorkerPoolsConfig};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::WorkerId;
@@ -14,7 +14,6 @@ use uuid::Uuid;
 
 use crate::cache::CachePrimingAgent;
 use crate::config::WorkerPoolConfig;
-use nativelink_config::warm_worker_pools::WarmWorkerPoolsConfig;
 use crate::cri_client::{
     ContainerConfig, ContainerMetadata, CriClient, ImageSpec, KeyValue, LinuxContainerConfig,
     LinuxContainerResources, LinuxPodSandboxConfig, LinuxSandboxSecurityContext, NamespaceOptions,
@@ -83,7 +82,11 @@ impl WarmWorkerPoolManager {
     ///
     /// If the pool has isolation enabled, this will create an ephemeral COW clone
     /// of a warm template. Otherwise, it falls back to regular acquisition.
-    pub async fn acquire_isolated(&self, pool: &str, job_id: &str) -> Result<WarmWorkerLease, Error> {
+    pub async fn acquire_isolated(
+        &self,
+        pool: &str,
+        job_id: &str,
+    ) -> Result<WarmWorkerLease, Error> {
         let worker_pool = self
             .pools
             .get(pool)
@@ -159,7 +162,8 @@ impl WorkerPool {
         let template = self.get_or_create_template().await?;
 
         // Create isolated clone
-        self.clone_from_template(&template, job_id, isolation_config).await
+        self.clone_from_template(&template, job_id, isolation_config)
+            .await
     }
 
     /// Gets the existing template or creates a new one.
@@ -261,11 +265,7 @@ impl WorkerPool {
         job_id: &str,
         isolation_config: &nativelink_config::warm_worker_pools::IsolationConfig,
     ) -> Result<WarmWorkerLease, Error> {
-        let worker_id = WorkerId(format!(
-            "crio:{}:isolated:{}",
-            self.config.name,
-            job_id
-        ));
+        let worker_id = WorkerId(format!("crio:{}:isolated:{}", self.config.name, job_id));
 
         // Create OverlayFS mount structure
         let mount = OverlayFsMount::new(
@@ -305,7 +305,12 @@ impl WorkerPool {
             .runtime
             .create_container(&sandbox_id, &container_config, &sandbox_config)
             .await
-            .err_tip(|| format!("while creating container for isolated worker {}", worker_id.0))?;
+            .err_tip(|| {
+                format!(
+                    "while creating container for isolated worker {}",
+                    worker_id.0
+                )
+            })?;
 
         self.runtime
             .start_container(&container_id)
@@ -764,6 +769,7 @@ impl WorkerPool {
 
 /// Template state for a warm worker that can be cloned for isolated jobs.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct TemplateState {
     worker_id: WorkerId,
     sandbox_id: String,
@@ -844,7 +850,13 @@ impl WarmWorkerLease {
             // For isolated workers, we need different cleanup
             if let Some(mount) = self.isolation_mount.take() {
                 self.pool
-                    .release_isolated_worker(worker_id, &self.container_id, &self.sandbox_id, mount, outcome)
+                    .release_isolated_worker(
+                        worker_id,
+                        &self.container_id,
+                        &self.sandbox_id,
+                        mount,
+                        outcome,
+                    )
                     .await
                     .err_tip(|| "while releasing isolated worker")
             } else {
