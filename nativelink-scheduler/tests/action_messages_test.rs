@@ -43,6 +43,7 @@ async fn action_state_any_url_test() -> Result<(), Error> {
         // Result is only populated if has_action_result.
         stage: ActionStage::Completed(ActionResult::default()),
         action_digest,
+        last_transition_timestamp: SystemTime::now(),
     };
     let operation: Operation = action_state.as_operation(client_id);
 

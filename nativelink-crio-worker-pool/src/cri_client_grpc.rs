@@ -28,7 +28,14 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
 // Generated from CRI protocol buffers
+#[allow(clippy::all, clippy::pedantic, clippy::restriction, clippy::nursery)]
 pub mod runtime {
+    // When building with Bazel, include the generated proto directly
+    #[cfg(not(feature = "cargo-build"))]
+    include!("../runtime.v1.pb.rs");
+
+    // When building with Cargo, use tonic's include_proto macro
+    #[cfg(feature = "cargo-build")]
     tonic::include_proto!("runtime.v1");
 }
 

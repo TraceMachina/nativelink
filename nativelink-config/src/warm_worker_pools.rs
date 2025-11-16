@@ -132,7 +132,7 @@ impl Default for LifecycleConfig {
 }
 
 /// Isolation strategy for worker jobs.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum IsolationStrategy {
     /// No isolation - workers execute multiple jobs with shared state (default, backward compatible).
