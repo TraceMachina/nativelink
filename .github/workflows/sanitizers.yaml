@@ -42,6 +42,10 @@ jobs:
           remove_dotnet: true
           remove_haskell: true
 
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        shell: bash
+
       - name: Setup Bazel
         uses: >- # v0.13.0
           bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
