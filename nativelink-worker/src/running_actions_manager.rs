@@ -154,8 +154,9 @@ pub fn download_to_directory<'a>(
                             .get_file_entry_for_digest(&digest)
                             .await
                             .err_tip(|| "During hard link")?;
-                        file_entry
-                            .get_file_path_locked(|src| fs::hard_link(src, &dest))
+                        // TODO: add a test for #2051: deadlock with large number of files
+                        let src_path = file_entry.get_file_path_locked(|src| async move { Ok(PathBuf::from(src)) }).await?;
+                        fs::hard_link(&src_path, &dest)
                             .await
                             .map_err(|e| {
                                 if e.code == Code::NotFound {
