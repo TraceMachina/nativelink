@@ -273,6 +273,7 @@ pub async fn create_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
 
 #[cfg(target_family = "unix")]
 pub async fn symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
+    // TODO: add a test for #2051: deadlock with large number of files
     let _permit = get_permit().await?;
     tokio::fs::symlink(src, dst).await.map_err(Into::into)
 }
