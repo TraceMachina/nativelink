@@ -373,11 +373,17 @@ impl SimpleScheduler {
                                             return Ok(());
                                         }
                                         // Release worker lease and return error
-                                        let _ = worker_lease
+                                        if let Err(release_err) = worker_lease
                                             .release(
                                                 nativelink_crio_worker_pool::WorkerOutcome::Failed,
                                             )
-                                            .await;
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                ?release_err,
+                                                "Failed to release worker lease after assignment failure"
+                                            );
+                                        }
                                         return Err(err);
                                     }
 
