@@ -1,5 +1,5 @@
 let
-  defaultStableVersion = "1.88.0";
+  defaultStableVersion = "1.87.0";
   defaultNightlyVersion = "2025-05-21";
 in rec {
   # This map translates execution platforms to sensible targets that can
