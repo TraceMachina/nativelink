@@ -226,9 +226,9 @@ async fn wait_for_no_open_files() -> Result<(), Error> {
     Ok(())
 }
 
-/// Helper function to ensure there are no temporary files left.
-async fn check_temp_empty(temp_path: &str) -> Result<(), Error> {
-    let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
+/// Helper function to ensure there are no temporary or content files left.
+async fn check_storage_dir_empty(storage_path: &str) -> Result<(), Error> {
+    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{DIGEST_FOLDER}"))
         .await
         .err_tip(|| "Failed opening temp directory")?
         .into_inner();
@@ -243,7 +243,7 @@ async fn check_temp_empty(temp_path: &str) -> Result<(), Error> {
         );
     }
 
-    let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{STR_FOLDER}"))
+    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{STR_FOLDER}"))
         .await
         .err_tip(|| "Failed opening temp directory")?
         .into_inner();
@@ -380,7 +380,7 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
         "Dropped a filesystem_delete_file current_active_drop_spawns=0"
     ));
 
-    check_temp_empty(&temp_path).await
+    check_storage_dir_empty(&temp_path).await
 }
 
 // This test ensures that if a file is overridden and an open stream to the file already
@@ -487,7 +487,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
     }
 
     // Now ensure our temp file was cleaned up.
-    check_temp_empty(&temp_path).await
+    check_storage_dir_empty(&temp_path).await
 }
 
 // Eviction has a different code path than a file replacement, so we check that if a
@@ -583,7 +583,7 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
     }
 
     // Now ensure our temp file was cleaned up.
-    check_temp_empty(&temp_path).await
+    check_storage_dir_empty(&temp_path).await
 }
 
 // Test to ensure that if we are holding a reference to `FileEntry` and the contents are
@@ -805,7 +805,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
 
     // Now it should have cleaned up its temp files.
     {
-        check_temp_empty(&temp_path).await?;
+        check_storage_dir_empty(&temp_path).await?;
     }
 
     // Finally ensure that our entry is not in the store.
@@ -907,32 +907,6 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn has_with_results_on_zero_digests() -> Result<(), Error> {
-    async fn wait_for_empty_content_file<
-        Fut: Future<Output = Result<(), Error>>,
-        F: Fn() -> Fut,
-    >(
-        content_path: &str,
-        digest: DigestInfo,
-        yield_fn: F,
-    ) -> Result<(), Error> {
-        loop {
-            yield_fn().await?;
-
-            let empty_digest_file_name =
-                OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
-
-            let file_metadata = fs::metadata(empty_digest_file_name)
-                .await
-                .err_tip(|| "Failed to open content file")?;
-
-            // Test that the empty digest file is created and contains an empty length.
-            if file_metadata.is_file() && file_metadata.len() == 0 {
-                return Ok(());
-            }
-        }
-        // Unreachable.
-    }
-
     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
@@ -960,12 +934,93 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
     );
     assert_eq!(results, vec![Some(0)]);
 
-    wait_for_empty_content_file(&content_path, digest, || async move {
-        tokio::task::yield_now().await;
+    check_storage_dir_empty(&content_path).await?;
+
+    Ok(())
+}
+
+async fn wrap_update_zero_digest<F>(updater: F) -> Result<(), Error>
+where
+    F: AsyncFnOnce(DigestInfo, Arc<FilesystemStore>) -> Result<(), Error>,
+{
+    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let store = FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+        &FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            read_buffer_size: 1,
+            ..Default::default()
+        },
+        |from, to| std::fs::rename(from, to),
+    )
+    .await?;
+    updater(digest, store).await?;
+    check_storage_dir_empty(&content_path).await?;
+    check_storage_dir_empty(&temp_path).await?;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn update_whole_file_with_zero_digest() -> Result<(), Error> {
+    wrap_update_zero_digest(async |digest, store| {
+        let temp_file_dir = make_temp_path("update_with_zero_digest");
+        std::fs::create_dir_all(&temp_file_dir)?;
+        let temp_file_path = Path::new(&temp_file_dir).join("zero-length-file");
+        std::fs::write(&temp_file_path, b"")
+            .err_tip(|| format!("Writing to {temp_file_path:?}"))?;
+        let file_slot = fs::open_file(&temp_file_path, 0, 0).await?.into_inner();
+        store
+            .update_with_whole_file(
+                digest,
+                temp_file_path.into(),
+                file_slot,
+                UploadSizeInfo::ExactSize(0),
+            )
+            .await?;
         Ok(())
     })
+    .await
+}
+
+#[nativelink_test]
+async fn update_oneshot_with_zero_digest() -> Result<(), Error> {
+    wrap_update_zero_digest(async |digest, store| store.update_oneshot(digest, Bytes::new()).await)
+        .await
+}
+
+#[nativelink_test]
+async fn update_with_zero_digest() -> Result<(), Error> {
+    wrap_update_zero_digest(async |digest, store| {
+        let (_writer, reader) = make_buf_channel_pair();
+        store
+            .update(digest, reader, UploadSizeInfo::ExactSize(0))
+            .await
+    })
+    .await
+}
+
+#[nativelink_test]
+async fn get_file_entry_for_zero_digest() -> Result<(), Error> {
+    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let store = FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+        &FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            read_buffer_size: 1,
+            ..Default::default()
+        },
+        |from, to| std::fs::rename(from, to),
+    )
     .await?;
 
+    let file_entry = store.get_file_entry_for_digest(&digest).await?;
+    assert!(file_entry.is_empty());
     Ok(())
 }
 

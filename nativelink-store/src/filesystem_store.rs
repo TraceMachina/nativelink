@@ -704,6 +704,17 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
+        if is_zero_digest(digest) {
+            return Ok(Arc::new(Fe::create(
+                0,
+                0,
+                RwLock::new(EncodedFilePath {
+                    shared_context: self.shared_context.clone(),
+                    path_type: PathType::Content,
+                    key: digest.into(),
+                }),
+            )));
+        }
         self.evicting_map
             .get(&digest.into())
             .await
@@ -860,6 +871,11 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         mut reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
+        if is_zero_digest(key.borrow()) {
+            // don't need to add, because zero length files are just assumed to exist
+            return Ok(());
+        }
+
         let temp_key = make_temp_key(&key);
 
         // There's a possibility of deadlock here where we take all of the
@@ -910,6 +926,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .err_tip(|| format!("While reading metadata for {}", path.display()))?
                 .len(),
         };
+        if file_size == 0 {
+            // don't need to add, because zero length files are just assumed to exist
+            return Ok(None);
+        }
         let entry = Fe::create(
             file_size,
             self.block_size,
