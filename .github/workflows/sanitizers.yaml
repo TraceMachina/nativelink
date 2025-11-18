@@ -29,6 +29,7 @@ jobs:
     name: ${{ matrix.sanitizer }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    environment: production
     steps:
       - name: Checkout
         uses: >- # v4.2.2
@@ -52,3 +53,5 @@ jobs:
       - name: Run Bazel tests
         run: bazel test --config=${{ matrix.sanitizer }} --verbose_failures //...
         shell: bash
+        env:
+          NATIVELINK_TEST_MONGO_URL: ${{ secrets.NATIVELINK_TEST_MONGO_URL}}

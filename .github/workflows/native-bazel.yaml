@@ -28,6 +28,7 @@ jobs:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    environment: production
     steps:
       - name: Checkout
         uses: >- # v4.2.2
@@ -59,3 +60,5 @@ jobs:
             exit 1
           fi
         shell: bash
+        env:
+          NATIVELINK_TEST_MONGO_URL: ${{ secrets.NATIVELINK_TEST_MONGO_URL}}
