@@ -76,6 +76,7 @@ rust_library(
         "@crates//:hyper",
         "@crates//:hyper-rustls",
         "@crates//:hyper-util",
+        "@crates//:itertools",
         "@crates//:lz4_flex",
         "@crates//:mongodb",
         "@crates//:opentelemetry",

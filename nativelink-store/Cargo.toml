@@ -69,6 +69,7 @@ hyper-rustls = { version = "0.27.5", default-features = false, features = [
   "rustls-platform-verifier",
 ] }
 hyper-util = { version = "0.1.11", default-features = false }
+itertools = { version = "0.14.0", default-features = false }
 lz4_flex = { version = "0.11.3", default-features = false }
 mongodb = { version = "3", features = [
   "compat-3-0-0",
