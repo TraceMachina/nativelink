@@ -43,7 +43,7 @@ jobs:
 
       - name: Rust cache
         # https://github.com/Swatinem/rust-cache/releases/tag/v2.8.1
-        uses: Swatinem/rust-cache@a84bfdc502f07db5a85dd9d7a30f91a931516cc5
+        uses: Swatinem/rust-cache@c9119007a19252f0981aef1785db9b0dd6f373c0
 
       - name: Build on ${{ runner.os }}
         run: cargo build --all --profile=smol
