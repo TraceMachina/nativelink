@@ -135,6 +135,7 @@ commit_parsers = [
   { message = "Resolve", group = "<!-- 2 -->🐛 Bug Fixes" },
 
   { message = "Merge branch", skip = true },
+  { message = "Prepare.+release", skip = true },
   { message = "Release", skip = true },
 
   # Catch-all in miscellaneous
