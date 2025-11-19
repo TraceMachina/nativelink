@@ -472,6 +472,7 @@
               pkgs.lre.stable-rust
               pkgs.lre.lre-rs.lre-rs-configs-gen
               pkgs.rust-analyzer
+              pkgs.protobuf
 
               ## Infrastructure
               pkgs.awscli2
