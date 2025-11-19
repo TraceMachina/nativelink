@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::borrow::Cow;
-use std::env;
 use std::sync::{Arc, RwLock};
+use std::{env, thread, usize};
 
 use bytes::Bytes;
 use nativelink_config::stores::RedisSpec;
@@ -86,11 +86,20 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         .unwrap_or_else(|_| "2000000".to_string())
         .parse()?;
 
+    // Cap the max threads at 1/2 of the system max allowed, so Redis still has some
+    // CPU available. Make sure we've got at least one available!
+    let max_threads = {
+        let raw = thread::available_parallelism()?;
+        let halved = raw.get() / 2;
+        halved.clamp(1, usize::MAX)
+    };
+
     #[expect(
         clippy::disallowed_methods,
         reason = "`We need `tokio::runtime::Runtime::block_on` so we can get errors _after_ threads finished"
     )]
     tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(max_threads)
         .enable_all()
         .build()
         .unwrap()
@@ -99,6 +108,8 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             spawn!("init tracing", async { init_tracing() })
                 .await?
                 .expect("Init tracing should work");
+
+            info!(max_threads, "Starting runner");
 
             let spec = RedisSpec {
                 addresses: vec![format!("redis://{redis_host}:6379/")],
@@ -174,7 +185,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
 
                                 let res = store_clone.get_and_decode(data.clone()).await?;
                                 if let Some(existing_data) = res {
-                                    data.version = existing_data.version + 1;
+                                    data.version = existing_data.version;
                                 }
 
                                 store_clone.update_data(data).await?;
