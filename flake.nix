@@ -87,7 +87,7 @@
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
           filter = path: type:
-            (builtins.match "^.*(examples/.+\.json5|data/.+|nativelink-config/README\.md)" path != null)
+            (builtins.match "^.*(examples/.+\.json5|data/.+|nativelink-config/README\.md|.+\.proto)" path != null)
             || ((craneLibFor pkgs).filterCargoSources path type);
         };
 
@@ -328,6 +328,11 @@
             self.overlays.tools
             (import rust-overlay)
             (import ./tools/rust-overlay-cut-libsecret.nix)
+            (_final: prev: {
+              cargo-llvm-cov = prev.cargo-llvm-cov.overrideAttrs (old: {
+                meta = old.meta // {broken = false;};
+              });
+            })
           ];
         };
         apps = {
@@ -345,28 +350,13 @@
             inherit
               nativelink
               nativelinkCoverageForHost
-              nativelink-aarch64-linux
-              nativelink-image
               nativelink-is-executable-test
-              nativelink-worker-init
-              nativelink-x86_64-linux
               ;
 
             # Used by the CI
             inherit (pkgs.nativelink-tools) local-image-test publish-ghcr;
 
             default = nativelink;
-
-            nativelink-worker-lre-cc = createWorker pkgs.lre.lre-cc.image;
-            lre-java = pkgs.callPackage ./local-remote-execution/lre-java.nix {inherit buildImage;};
-            rbe-autogen-lre-java = pkgs.rbe-autogen lre-java;
-            nativelink-worker-lre-java = createWorker lre-java;
-            nativelink-worker-lre-rs = createWorker pkgs.lre.lre-rs.image;
-            nativelink-worker-siso-chromium = createWorker siso-chromium;
-            nativelink-worker-toolchain-drake = createWorker toolchain-drake;
-            nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
-            nativelink-worker-buck2-toolchain = buck2-toolchain;
-            image = nativelink-image;
 
             inherit (pkgs) buildstream buildbox buck2 mongodb wait4x bazelisk;
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
@@ -385,6 +375,25 @@
             generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
             generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
           }
+          // (pkgs.lib.optionalAttrs pkgs.stdenv.isLinux rec {
+            inherit
+              nativelink-aarch64-linux
+              nativelink-image
+              nativelink-worker-init
+              nativelink-x86_64-linux
+              ;
+
+            nativelink-worker-lre-cc = createWorker pkgs.lre.lre-cc.image;
+            lre-java = pkgs.callPackage ./local-remote-execution/lre-java.nix {inherit buildImage;};
+            rbe-autogen-lre-java = pkgs.rbe-autogen lre-java;
+            nativelink-worker-lre-java = createWorker lre-java;
+            nativelink-worker-lre-rs = createWorker pkgs.lre.lre-rs.image;
+            nativelink-worker-siso-chromium = createWorker siso-chromium;
+            nativelink-worker-toolchain-drake = createWorker toolchain-drake;
+            nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
+            nativelink-worker-buck2-toolchain = buck2-toolchain;
+            image = nativelink-image;
+          })
           // (
             # It's not possible to crosscompile to darwin, not even between
             # x86_64-darwin and aarch64-darwin. We create these targets anyways
