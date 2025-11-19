@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-macro"
-version = "0.7.6"
+version = "0.7.7"
 
 [lib]
 proc-macro = true

@@ -20,6 +20,7 @@ use nativelink_metric::{
 };
 use prost_types::TimestampError;
 use serde::{Deserialize, Serialize};
+use tokio::sync::AcquireError;
 // Reexport of tonic's error codes which we use as "nativelink_error::Code".
 pub use tonic::Code;
 
@@ -230,6 +231,12 @@ impl From<core::convert::Infallible> for Error {
 impl From<TimestampError> for Error {
     fn from(err: TimestampError) -> Self {
         make_err!(Code::InvalidArgument, "{}", err)
+    }
+}
+
+impl From<AcquireError> for Error {
+    fn from(err: AcquireError) -> Self {
+        make_err!(Code::Internal, "{}", err)
     }
 }
 

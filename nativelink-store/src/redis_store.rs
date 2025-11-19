@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::cmp;
 use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
 use core::time::Duration;
+use core::{cmp, iter};
 use std::borrow::Cow;
 use std::sync::{Arc, Weak};
 
@@ -37,6 +37,7 @@ use fred::types::scripts::Script;
 use fred::types::{Builder, Key as RedisKey, Map as RedisMap, SortOrder, Value as RedisValue};
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
+use itertools::izip;
 use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
@@ -52,6 +53,7 @@ use nativelink_util::task::JoinHandleDropGuard;
 use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use tokio::select;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 use tracing::{error, info, trace, warn};
 use uuid::Uuid;
@@ -93,6 +95,8 @@ const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 /// The default COUNT value passed when scanning keys in Redis.
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_SCAN_COUNT: u32 = 10_000;
+
+const DEFAULT_CLIENT_PERMITS: usize = 100;
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 #[derive(Debug, MetricsComponent)]
@@ -140,6 +144,28 @@ pub struct RedisStore {
 
     /// A manager for subscriptions to keys in Redis.
     subscription_manager: Mutex<Option<Arc<RedisSubscriptionManager>>>,
+
+    /// Permits to limit inflight Redis requests. Technically only
+    /// limits the calls to `get_client()`, but the requests per client
+    /// are small enough that it works well enough.
+    client_permits: Arc<Semaphore>,
+}
+
+struct ClientWithPermit<'a> {
+    client: &'a Client,
+
+    // here so it sticks around with the client and doesn't get dropped until that does
+    #[allow(dead_code)]
+    semaphore_permit: OwnedSemaphorePermit,
+}
+
+impl Drop for ClientWithPermit<'_> {
+    fn drop(&mut self) {
+        trace!(
+            remaining = self.semaphore_permit.semaphore().available_permits(),
+            "Dropping a client permit"
+        );
+    }
 }
 
 impl RedisStore {
@@ -219,6 +245,9 @@ impl RedisStore {
             if spec.scan_count == 0 {
                 spec.scan_count = DEFAULT_SCAN_COUNT;
             }
+            if spec.max_client_permits == 0 {
+                spec.max_client_permits = DEFAULT_CLIENT_PERMITS;
+            }
         }
         let connection_timeout = Duration::from_millis(spec.connection_timeout_ms);
         let command_timeout = Duration::from_millis(spec.command_timeout_ms);
@@ -261,6 +290,7 @@ impl RedisStore {
             spec.read_chunk_size,
             spec.max_chunk_uploads_per_update,
             spec.scan_count,
+            spec.max_client_permits,
         )
         .map(Arc::new)
     }
@@ -276,6 +306,7 @@ impl RedisStore {
         read_chunk_size: usize,
         max_chunk_uploads_per_update: usize,
         scan_count: u32,
+        max_client_permits: usize,
     ) -> Result<Self, Error> {
         // Start connection pool (this will retry forever by default).
         client_pool.connect();
@@ -294,10 +325,11 @@ impl RedisStore {
             scan_count,
             update_if_version_matches_script: Script::from_lua(LUA_VERSION_SET_SCRIPT),
             subscription_manager: Mutex::new(None),
+            client_permits: Arc::new(Semaphore::new(max_client_permits)),
         })
     }
 
-    async fn get_client(&'_ self) -> Result<&'_ Client, Error> {
+    async fn get_client(&'_ self) -> Result<ClientWithPermit<'_>, Error> {
         let client = self.client_pool.next();
         let config = client.client_config();
         if config.mocks.is_none() {
@@ -310,7 +342,14 @@ impl RedisStore {
                 )
             )?;
         }
-        Ok(client)
+        let local_client_permits = self.client_permits.clone();
+        let remaining = local_client_permits.available_permits();
+        let semaphore_permit = local_client_permits.acquire_owned().await?;
+        trace!(remaining, "Got a client permit");
+        Ok(ClientWithPermit {
+            client,
+            semaphore_permit,
+        })
     }
 
     /// Encode a [`StoreKey`] so it can be sent to Redis.
@@ -348,45 +387,54 @@ impl StoreDriver for RedisStore {
         // difficult and it doesn't work very well in cluster mode.
         // If we wanted to optimize this with pipeline be careful to
         // implement retry and to support cluster mode.
+
         let client = self.get_client().await?;
-        keys.iter()
-            .zip(results.iter_mut())
-            .map(|(key, result)| async move {
-                // We need to do a special pass to ensure our zero key exist.
-                if is_zero_digest(key.borrow()) {
-                    *result = Some(0);
-                    return Ok::<_, Error>(());
-                }
-                let encoded_key = self.encode_key(key);
-                let pipeline = client.pipeline();
-                pipeline
-                    .strlen::<(), _>(encoded_key.as_ref())
-                    .await
-                    .err_tip(|| {
-                        format!("In RedisStore::has_with_results::strlen for {encoded_key}")
-                    })?;
-                // Redis returns 0 when the key doesn't exist
-                // AND when the key exists with value of length 0.
-                // Therefore, we need to check both length and existence
-                // and do it in a pipeline for efficiency.
-                pipeline
-                    .exists::<(), _>(encoded_key.as_ref())
-                    .await
-                    .err_tip(|| {
-                        format!("In RedisStore::has_with_results::exists for {encoded_key}")
-                    })?;
-                let (blob_len, exists) = pipeline
-                    .all::<(u64, bool)>()
-                    .await
-                    .err_tip(|| "In RedisStore::has_with_results::query")?;
 
-                *result = if exists { Some(blob_len) } else { None };
+        // If we ask for many keys in one go, this can timeout, so limit that
+        let max_in_one_go = Arc::new(Semaphore::const_new(5));
 
-                Ok::<_, Error>(())
-            })
-            .collect::<FuturesUnordered<_>>()
-            .try_collect()
-            .await
+        izip!(
+            keys.iter(),
+            results.iter_mut(),
+            iter::repeat(&max_in_one_go)
+        )
+        .map(|(key, result, local_semaphore)| async move {
+            // We need to do a special pass to ensure our zero key exist.
+            if is_zero_digest(key.borrow()) {
+                *result = Some(0);
+                return Ok::<_, Error>(());
+            }
+            let encoded_key = self.encode_key(key);
+
+            let guard = local_semaphore.acquire().await?;
+
+            let pipeline = client.client.pipeline();
+            pipeline
+                .strlen::<(), _>(encoded_key.as_ref())
+                .await
+                .err_tip(|| format!("In RedisStore::has_with_results::strlen for {encoded_key}"))?;
+            // Redis returns 0 when the key doesn't exist
+            // AND when the key exists with value of length 0.
+            // Therefore, we need to check both length and existence
+            // and do it in a pipeline for efficiency.
+            pipeline
+                .exists::<(), _>(encoded_key.as_ref())
+                .await
+                .err_tip(|| format!("In RedisStore::has_with_results::exists for {encoded_key}"))?;
+            let (blob_len, exists) = pipeline
+                .all::<(u64, bool)>()
+                .await
+                .err_tip(|| "In RedisStore::has_with_results::all")?;
+
+            *result = if exists { Some(blob_len) } else { None };
+
+            drop(guard);
+
+            Ok::<_, Error>(())
+        })
+        .collect::<FuturesUnordered<_>>()
+        .try_collect()
+        .await
     }
 
     async fn list(
@@ -416,7 +464,7 @@ impl StoreDriver for RedisStore {
             Bound::Unbounded => format!("{}*", self.key_prefix),
         };
         let client = self.get_client().await?;
-        let mut scan_stream = client.scan(pattern, Some(self.scan_count), None);
+        let mut scan_stream = client.client.scan(pattern, Some(self.scan_count), None);
         let mut iterations = 0;
         'outer: while let Some(mut page) = scan_stream.try_next().await? {
             if let Some(keys) = page.take_results() {
@@ -502,7 +550,7 @@ impl StoreDriver for RedisStore {
                 let (offset, end_pos, chunk) = res?;
                 let temp_key_ref = &temp_key;
                 Ok(async move {
-                    client
+                    client.client
                         .setrange::<(), _, _>(temp_key_ref, offset, chunk)
                         .await
                         .err_tip(
@@ -521,6 +569,7 @@ impl StoreDriver for RedisStore {
         }
 
         let blob_len = client
+            .client
             .strlen::<u64, _>(&temp_key)
             .await
             .err_tip(|| format!("In RedisStore::update strlen check for {temp_key}"))?;
@@ -538,13 +587,17 @@ impl StoreDriver for RedisStore {
 
         // Rename the temp key so that the data appears under the real key. Any data already present in the real key is lost.
         client
+            .client
             .rename::<(), _, _>(&temp_key, final_key.as_ref())
             .await
             .err_tip(|| "While queueing key rename in RedisStore::update()")?;
 
         // If we have a publish channel configured, send a notice that the key has been set.
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
-            return Ok(client.publish(pub_sub_channel, final_key.as_ref()).await?);
+            return Ok(client
+                .client
+                .publish(pub_sub_channel, final_key.as_ref())
+                .await?);
         }
 
         Ok(())
@@ -570,7 +623,6 @@ impl StoreDriver for RedisStore {
                 .err_tip(|| "Failed to send zero EOF in redis store get_part");
         }
 
-        let client = self.get_client().await?;
         let encoded_key = self.encode_key(&key);
         let encoded_key = encoded_key.as_ref();
 
@@ -590,8 +642,10 @@ impl StoreDriver for RedisStore {
             data_end,
         );
 
+        let client = self.get_client().await?;
         loop {
             let chunk: Bytes = client
+                .client
                 .getrange(encoded_key, chunk_start, chunk_end)
                 .await
                 .err_tip(|| "In RedisStore::get_part::getrange")?;
@@ -629,6 +683,7 @@ impl StoreDriver for RedisStore {
         if writer.get_bytes_written() == 0 {
             // We're supposed to read 0 bytes, so just check if the key exists.
             let exists = client
+                .client
                 .exists::<bool, _>(encoded_key)
                 .await
                 .err_tip(|| "In RedisStore::get_part::zero_exists")?;
@@ -1098,7 +1153,7 @@ impl SchedulerStore for RedisStore {
             }
             let (success, new_version): (bool, i64) = self
                 .update_if_version_matches_script
-                .evalsha_with_reload(client, vec![redis_key.as_ref()], argv)
+                .evalsha_with_reload(client.client, vec![redis_key.as_ref()], argv)
                 .await
                 .err_tip(|| format!("In RedisStore::update_data::versioned for {key:?}"))?;
             if !success {
@@ -1120,7 +1175,10 @@ impl SchedulerStore for RedisStore {
             );
             // If we have a publish channel configured, send a notice that the key has been set.
             if let Some(pub_sub_channel) = &self.pub_sub_channel {
-                return Ok(client.publish(pub_sub_channel, redis_key.as_ref()).await?);
+                return Ok(client
+                    .client
+                    .publish(pub_sub_channel, redis_key.as_ref())
+                    .await?);
             }
             Ok(Some(new_version))
         } else {
@@ -1134,12 +1192,16 @@ impl SchedulerStore for RedisStore {
                 fields.insert(name.into(), value.into());
             }
             client
+                .client
                 .hset::<(), _, _>(redis_key.as_ref(), fields)
                 .await
                 .err_tip(|| format!("In RedisStore::update_data::noversion for {redis_key}"))?;
             // If we have a publish channel configured, send a notice that the key has been set.
             if let Some(pub_sub_channel) = &self.pub_sub_channel {
-                return Ok(client.publish(pub_sub_channel, redis_key.as_ref()).await?);
+                return Ok(client
+                    .client
+                    .publish(pub_sub_channel, redis_key.as_ref())
+                    .await?);
             }
             Ok(Some(0)) // Always use "0" version since this is not a versioned request.
         }
@@ -1299,6 +1361,7 @@ impl SchedulerStore for RedisStore {
         let key = self.encode_key(&key);
         let client = self.get_client().await?;
         let (maybe_version, maybe_data) = client
+            .client
             .hmget::<(Option<i64>, Option<Bytes>), _, _>(
                 key.as_ref(),
                 vec![
