@@ -1221,7 +1221,7 @@ pub struct RedisSpec {
 
     /// Maximum number of permitted actions to the Redis store at any one time
     /// This stops problems with timeouts due to many, many inflight actions
-    /// Default: 100
+    /// Default: 500
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_client_permits: usize,
 }

@@ -96,7 +96,7 @@ const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_SCAN_COUNT: u32 = 10_000;
 
-const DEFAULT_CLIENT_PERMITS: usize = 100;
+const DEFAULT_CLIENT_PERMITS: usize = 500;
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 #[derive(Debug, MetricsComponent)]
