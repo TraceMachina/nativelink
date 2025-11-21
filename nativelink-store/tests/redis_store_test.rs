@@ -170,7 +170,7 @@ impl Drop for MockRedisBackend {
     }
 }
 
-fn make_clients(mut builder: Builder) -> (RecoverablePool, SubscriberClient) {
+fn make_clients(builder: Builder) -> (RecoverablePool, SubscriberClient) {
     const CONNECTION_POOL_SIZE: usize = 1;
     let client_pool = RecoverablePool::new(builder.clone(), CONNECTION_POOL_SIZE).unwrap();
 
