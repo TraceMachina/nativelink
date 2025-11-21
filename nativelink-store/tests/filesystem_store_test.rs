@@ -26,7 +26,7 @@ use bytes::Bytes;
 use futures::executor::block_on;
 use futures::task::Poll;
 use futures::{Future, FutureExt, poll};
-use nativelink_config::stores::FilesystemSpec;
+use nativelink_config::stores::{EvictionPolicy, FilesystemSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
@@ -41,7 +41,8 @@ use nativelink_util::{background_spawn, spawn};
 use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
-use rand::Rng;
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Take};
 use tokio::sync::{Barrier, Semaphore};
@@ -49,6 +50,15 @@ use tokio::time::sleep;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::Instrument;
+
+const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
+
+fn make_random_data(sz: usize) -> Vec<u8> {
+    let mut value = vec![0u8; sz];
+    let mut rng = SmallRng::seed_from_u64(1);
+    rng.fill(&mut value[..]);
+    value
+}
 
 trait FileEntryHooks {
     fn on_make_and_open(
@@ -331,7 +341,7 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
         FilesystemStore::<TestFileEntry<LocalHooks>>::new(&FilesystemSpec {
             content_path: content_path.clone(),
             temp_path: temp_path.clone(),
-            eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+            eviction_policy: Some(EvictionPolicy {
                 max_count: 3,
                 ..Default::default()
             }),
@@ -404,7 +414,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
         FilesystemStore::<TestFileEntry<LocalHooks>>::new(&FilesystemSpec {
             content_path: content_path.clone(),
             temp_path: temp_path.clone(),
-            eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+            eviction_policy: Some(EvictionPolicy {
                 max_count: 3,
                 ..Default::default()
             }),
@@ -512,7 +522,7 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
         FilesystemStore::<TestFileEntry<LocalHooks>>::new(&FilesystemSpec {
             content_path: content_path.clone(),
             temp_path: temp_path.clone(),
-            eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+            eviction_policy: Some(EvictionPolicy {
                 max_count: 1,
                 ..Default::default()
             }),
@@ -658,7 +668,7 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
         FilesystemStore::<TestFileEntry<LocalHooks>>::new(&FilesystemSpec {
             content_path: make_temp_path("content_path"),
             temp_path: make_temp_path("temp_path"),
-            eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+            eviction_policy: Some(EvictionPolicy {
                 max_bytes: 5,
                 ..Default::default()
             }),
@@ -1399,4 +1409,57 @@ async fn file_slot_taken_when_ready() -> Result<(), Error> {
     .await
     .map_err(|_| make_err!(Code::Internal, "Deadlock detected"))?;
     res_1.merge(res_2).merge(res_3).merge(res_4)
+}
+
+// If we insert a file larger than the max_bytes eviction policy, it should be safely
+// evicted, without deadlocking.
+#[nativelink_test]
+async fn safe_small_safe_eviction() -> Result<(), Error> {
+    let store_spec = FilesystemSpec {
+        content_path: "/tmp/nativelink/safe_fs".into(),
+        temp_path: "/tmp/nativelink/safe_fs_temp".into(),
+        eviction_policy: Some(EvictionPolicy {
+            max_bytes: 1,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let store = Store::new(<FilesystemStore>::new(&store_spec).await?);
+
+    // > than the max_bytes
+    let bytes = 2;
+
+    let data = make_random_data(bytes);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    assert_eq!(
+        store.has(digest).await,
+        Ok(None),
+        "Expected data to not exist in store"
+    );
+
+    store.update_oneshot(digest, data.clone().into()).await?;
+
+    assert_eq!(
+        store.has(digest).await,
+        Ok(None),
+        "Expected data to not exist in store, because eviction"
+    );
+
+    let (tx, mut rx) = make_buf_channel_pair();
+
+    assert_eq!(
+        store.get(digest, tx).await,
+        Err(Error {
+            code: Code::NotFound,
+            messages: vec![format!(
+                "{VALID_HASH}-{bytes} not found in filesystem store here"
+            )],
+        }),
+        "Expected data to not exist in store, because eviction"
+    );
+
+    assert!(rx.recv().await.is_err());
+
+    Ok(())
 }

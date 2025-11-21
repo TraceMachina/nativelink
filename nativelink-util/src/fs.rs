@@ -27,7 +27,7 @@ use rlimit::increase_nofile_limit;
 pub use tokio::fs::DirEntry;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncWrite, ReadBuf, SeekFrom, Take};
 use tokio::sync::{Semaphore, SemaphorePermit};
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::spawn_blocking;
 
@@ -121,6 +121,10 @@ pub static OPEN_FILE_SEMAPHORE: Semaphore = Semaphore::const_new(DEFAULT_OPEN_FI
 /// Try to acquire a permit from the open file semaphore.
 #[inline]
 pub async fn get_permit() -> Result<SemaphorePermit<'static>, Error> {
+    trace!(
+        available_permits = OPEN_FILE_SEMAPHORE.available_permits(),
+        "getting FS permit"
+    );
     OPEN_FILE_SEMAPHORE
         .acquire()
         .await
