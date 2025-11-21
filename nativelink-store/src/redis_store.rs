@@ -22,7 +22,7 @@ use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use bytes::Bytes;
 use const_format::formatcp;
-use fred::clients::{Pool as RedisPool, SubscriberClient};
+use fred::clients::SubscriberClient;
 use fred::interfaces::{ClientLike, KeysInterface, PubsubInterface};
 use fred::prelude::{Client, EventInterface, HashesInterface, RediSearchInterface};
 use fred::types::config::{
@@ -98,11 +98,81 @@ const DEFAULT_SCAN_COUNT: u32 = 10_000;
 
 const DEFAULT_CLIENT_PERMITS: usize = 500;
 
+#[derive(Clone, Debug)]
+pub struct RecoverablePool {
+    clients: Arc<RwLock<Vec<Client>>>,
+    builder: Builder,
+    counter: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl RecoverablePool {
+    pub fn new(builder: Builder, size: usize) -> Result<Self, Error> {
+        let mut clients = Vec::with_capacity(size);
+        for _ in 0..size {
+            let client = builder
+                .build()
+                .err_tip(|| "Failed to build client in RecoverablePool::new")?;
+            clients.push(client);
+        }
+        Ok(Self {
+            clients: Arc::new(RwLock::new(clients)),
+            builder,
+            counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+    }
+
+    fn connect(&self) {
+        let clients = self.clients.read();
+        for client in clients.iter() {
+            client.connect();
+        }
+    }
+
+    fn next(&self) -> Client {
+        let clients = self.clients.read();
+        let index = self
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        clients[index % clients.len()].clone()
+    }
+
+    async fn replace_client(&self, old_client: &Client) -> Result<Client, Error> {
+        let mut clients = self.clients.write();
+        // Find the index of the old client.
+        let Some(index) = clients.iter().position(|c| c.id() == old_client.id()) else {
+            // Client already replaced or not found, just return a new one from the pool.
+            // This might happen if multiple threads try to replace the same client.
+            // We just return the next one in the list.
+            let index = self
+                .counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Ok(clients[index % clients.len()].clone());
+        };
+
+        let new_client = self
+            .builder
+            .build()
+            .err_tip(|| "Failed to build new client in RecoverablePool::replace_client")?;
+        new_client.connect();
+        // Wait for the new client to be connected before returning it.
+        // We don't want to hand out a disconnected client.
+        // If it fails to connect, we still put it in the pool, but it will be
+        // picked up by the next health check or usage.
+        let _unused = new_client.wait_for_connect().await;
+
+        let old_client = std::mem::replace(&mut clients[index], new_client.clone());
+        // Ensure the old client is closed.
+        let _unused = old_client.quit().await;
+        info!("Replaced Redis client {}", old_client.id());
+        Ok(new_client)
+    }
+}
+
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 #[derive(Debug, MetricsComponent)]
 pub struct RedisStore {
     /// The client pool connecting to the backing Redis instance(s).
-    client_pool: RedisPool,
+    client_pool: RecoverablePool,
 
     /// A channel to publish updates to when a key is added, removed, or modified.
     #[metric(
@@ -151,15 +221,15 @@ pub struct RedisStore {
     client_permits: Arc<Semaphore>,
 }
 
-struct ClientWithPermit<'a> {
-    client: &'a Client,
+struct ClientWithPermit {
+    client: Client,
 
     // here so it sticks around with the client and doesn't get dropped until that does
     #[allow(dead_code)]
     semaphore_permit: OwnedSemaphorePermit,
 }
 
-impl Drop for ClientWithPermit<'_> {
+impl Drop for ClientWithPermit {
     fn drop(&mut self) {
         trace!(
             remaining = self.semaphore_permit.semaphore().available_permits(),
@@ -273,8 +343,7 @@ impl RedisStore {
             })
             .set_policy(reconnect_policy);
 
-        let client_pool = builder
-            .build_pool(spec.connection_pool_size)
+        let client_pool = RecoverablePool::new(builder.clone(), spec.connection_pool_size)
             .err_tip(|| "while creating redis connection pool")?;
 
         let subscriber_client = builder
@@ -298,7 +367,7 @@ impl RedisStore {
     /// Used for testing when determinism is required.
     #[expect(clippy::too_many_arguments)]
     pub fn new_from_builder_and_parts(
-        client_pool: RedisPool,
+        client_pool: RecoverablePool,
         subscriber_client: SubscriberClient,
         pub_sub_channel: Option<String>,
         temp_name_generator_fn: fn() -> String,
@@ -329,18 +398,18 @@ impl RedisStore {
         })
     }
 
-    async fn get_client(&'_ self) -> Result<ClientWithPermit<'_>, Error> {
-        let client = self.client_pool.next();
+    async fn get_client(&self) -> Result<ClientWithPermit, Error> {
+        let mut client = self.client_pool.next();
         let config = client.client_config();
         if config.mocks.is_none() {
-            client.wait_for_connect().await.err_tip(||
-                format!(
-                    "Connection issue connecting to redis server with hosts: {:?}, username: {}, database: {}",
-                    config.server.hosts().iter().map(|s| format!("{}:{}", s.host, s.port)).collect::<Vec<String>>(),
-                    config.username.unwrap_or_else(|| "None".to_string()),
-                    config.database.unwrap_or_default()
-                )
-            )?;
+            if let Err(e) = client.wait_for_connect().await {
+                warn!("Connection issue connecting to redis server: {e:?}. Replacing client.");
+                client = self
+                    .client_pool
+                    .replace_client(&client)
+                    .await
+                    .err_tip(|| "Failed to replace client in RedisStore::get_client")?;
+            }
         }
         let local_client_permits = self.client_permits.clone();
         let remaining = local_client_permits.available_permits();
@@ -396,9 +465,10 @@ impl StoreDriver for RedisStore {
         izip!(
             keys.iter(),
             results.iter_mut(),
-            iter::repeat(&max_in_one_go)
+            iter::repeat(&max_in_one_go),
+            iter::repeat(&client)
         )
-        .map(|(key, result, local_semaphore)| async move {
+        .map(|(key, result, local_semaphore, client)| async move {
             // We need to do a special pass to ensure our zero key exist.
             if is_zero_digest(key.borrow()) {
                 *result = Some(0);
@@ -549,8 +619,9 @@ impl StoreDriver for RedisStore {
             .map(|res| {
                 let (offset, end_pos, chunk) = res?;
                 let temp_key_ref = &temp_key;
+                let client = client.client.clone();
                 Ok(async move {
-                    client.client
+                    client
                         .setrange::<(), _, _>(temp_key_ref, offset, chunk)
                         .await
                         .err_tip(
@@ -1153,7 +1224,7 @@ impl SchedulerStore for RedisStore {
             }
             let (success, new_version): (bool, i64) = self
                 .update_if_version_matches_script
-                .evalsha_with_reload(client.client, vec![redis_key.as_ref()], argv)
+                .evalsha_with_reload(&client.client, vec![redis_key.as_ref()], argv)
                 .await
                 .err_tip(|| format!("In RedisStore::update_data::versioned for {key:?}"))?;
             if !success {
