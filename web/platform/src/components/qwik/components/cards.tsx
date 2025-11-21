@@ -59,10 +59,7 @@ export const VideoCard = component$<VideoCard>(
 const pricing = [
   {
     title: "Open Source",
-    items: [
-      "Free!",
-      "Community Support",
-    ],
+    items: ["Free!", "Community Support"],
     cta: {
       title: "Get Started",
       link: "/docs/introduction/setup",

@@ -17,3 +17,4 @@ pub mod cas_server;
 pub mod schedulers;
 pub mod serde_utils;
 pub mod stores;
+pub mod warm_worker_pools;

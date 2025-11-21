@@ -1,6 +1,8 @@
 [default.extend-words]
 # `conly_flags` in lre-cc
 conly = "conly"
+# crictl command for stopping pod sandboxes
+stopp = "stopp"
 
 [default]
 # Old wrong spelling support
