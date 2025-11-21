@@ -102,7 +102,7 @@ const DEFAULT_CLIENT_PERMITS: usize = 500;
 pub struct RecoverablePool {
     clients: Arc<RwLock<Vec<Client>>>,
     builder: Builder,
-    counter: Arc<std::sync::atomic::AtomicUsize>,
+    counter: Arc<core::sync::atomic::AtomicUsize>,
 }
 
 impl RecoverablePool {
@@ -117,7 +117,7 @@ impl RecoverablePool {
         Ok(Self {
             clients: Arc::new(RwLock::new(clients)),
             builder,
-            counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            counter: Arc::new(core::sync::atomic::AtomicUsize::new(0)),
         })
     }
 
@@ -132,23 +132,11 @@ impl RecoverablePool {
         let clients = self.clients.read();
         let index = self
             .counter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         clients[index % clients.len()].clone()
     }
 
     async fn replace_client(&self, old_client: &Client) -> Result<Client, Error> {
-        let mut clients = self.clients.write();
-        // Find the index of the old client.
-        let Some(index) = clients.iter().position(|c| c.id() == old_client.id()) else {
-            // Client already replaced or not found, just return a new one from the pool.
-            // This might happen if multiple threads try to replace the same client.
-            // We just return the next one in the list.
-            let index = self
-                .counter
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return Ok(clients[index % clients.len()].clone());
-        };
-
         let new_client = self
             .builder
             .build()
@@ -160,10 +148,28 @@ impl RecoverablePool {
         // picked up by the next health check or usage.
         let _unused = new_client.wait_for_connect().await;
 
-        let old_client = std::mem::replace(&mut clients[index], new_client.clone());
-        // Ensure the old client is closed.
-        let _unused = old_client.quit().await;
-        info!("Replaced Redis client {}", old_client.id());
+        let client_to_quit = {
+            let mut clients = self.clients.write();
+            // Find the index of the old client.
+            if let Some(index) = clients.iter().position(|c| c.id() == old_client.id()) {
+                let old_client = core::mem::replace(&mut clients[index], new_client.clone());
+                Some(old_client)
+            } else {
+                // Client already replaced or not found, just return a new one from the pool.
+                // This might happen if multiple threads try to replace the same client.
+                // We just return the next one in the list.
+                let _index = self
+                    .counter
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                None
+            }
+        };
+
+        if let Some(old_client) = client_to_quit {
+            // Ensure the old client is closed.
+            let _unused = old_client.quit().await;
+            info!("Replaced Redis client {}", old_client.id());
+        }
         Ok(new_client)
     }
 }
@@ -1290,7 +1296,7 @@ impl SchedulerStore for RedisStore {
     {
         let index_value = index.index_value();
         let run_ft_aggregate = || {
-            let client = self.client_pool.next().clone();
+            let client = self.client_pool.next();
             let sanitized_field = try_sanitize(index_value.as_ref()).err_tip(|| {
                 format!("In RedisStore::search_by_index_prefix::try_sanitize - {index_value:?}")
             })?;
