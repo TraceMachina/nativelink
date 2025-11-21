@@ -359,8 +359,8 @@ impl SchedulerStoreDecodeTo for SearchUniqueQualifierToAwaitedAction<'_> {
 struct SearchStateToAwaitedAction(&'static str);
 impl SchedulerIndexProvider for SearchStateToAwaitedAction {
     const KEY_PREFIX: &'static str = OPERATION_ID_TO_AWAITED_ACTION_KEY_PREFIX;
-    const INDEX_NAME: &'static str = "state";
-    const MAYBE_SORT_KEY: Option<&'static str> = Some("sort_key");
+    const INDEX_NAME: &'static str = "nl_state";
+    const MAYBE_SORT_KEY: Option<&'static str> = Some("nl_sort_key");
     type Versioned = TrueValue;
     fn index_value(&self) -> Cow<'_, str> {
         Cow::Borrowed(self.0)
@@ -416,10 +416,10 @@ impl SchedulerStoreDataProvider for UpdateOperationIdToAwaitedAction {
         {
             let state = SortedAwaitedActionState::try_from(&self.0.state().stage)
                 .err_tip(|| "In UpdateOperationIdToAwaitedAction::get_index")?;
-            output.push(("state", Bytes::from(get_state_prefix(state))));
+            output.push(("nl_state", Bytes::from(get_state_prefix(state))));
             let sorted_awaited_action = SortedAwaitedAction::from(&self.0);
             output.push((
-                "sort_key",
+                "nl_sort_key",
                 // We encode to hex to ensure that the sort key is lexicographically sorted.
                 Bytes::from(format!("{:016x}", sorted_awaited_action.sort_key.as_u64())),
             ));
