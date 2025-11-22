@@ -332,7 +332,7 @@ impl RedisStore {
     async fn get_client(&'_ self) -> Result<ClientWithPermit<'_>, Error> {
         let client = self.client_pool.next();
         let config = client.client_config();
-        if config.mocks.is_none() {
+        if config.mocks.is_none() && !client.is_connected() {
             client.wait_for_connect().await.err_tip(||
                 format!(
                     "Connection issue connecting to redis server with hosts: {:?}, username: {}, database: {}",
