@@ -170,7 +170,7 @@ impl Drop for MockRedisBackend {
     }
 }
 
-fn make_clients(builder: Builder) -> (RecoverablePool, SubscriberClient) {
+fn make_clients(builder: &Builder) -> (RecoverablePool, SubscriberClient) {
     const CONNECTION_POOL_SIZE: usize = 1;
     let client_pool = RecoverablePool::new(builder.clone(), CONNECTION_POOL_SIZE).unwrap();
 
@@ -189,7 +189,7 @@ fn make_mock_store_with_prefix(mocks: &Arc<MockRedisBackend>, key_prefix: String
         mocks: Some(mocks),
         ..Default::default()
     });
-    let (client_pool, subscriber_client) = make_clients(builder);
+    let (client_pool, subscriber_client) = make_clients(&builder);
     RedisStore::new_from_builder_and_parts(
         client_pool,
         subscriber_client,
@@ -891,8 +891,7 @@ fn test_health() {
             assert!(
                 message.contains("Connection issue connecting to redis server")
                     || message.contains("Timeout Error: Request timed out"),
-                "Error message mismatch: {:?}",
-                message
+                "Error message mismatch: {message:?}"
             );
         }
         health_result => {
