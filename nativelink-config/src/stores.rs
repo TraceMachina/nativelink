@@ -640,7 +640,7 @@ pub struct OntapS3ExistenceCacheSpec {
     pub backend: Box<ExperimentalOntapS3Spec>,
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, Copy, PartialEq)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StoreDirection {
     /// The store operates normally and all get and put operations are

@@ -490,19 +490,17 @@ impl SimpleScheduler {
                                                 .await;
                                             for action_state in &actions {
                                                 let name = action_state.stage.name();
-                                                match oldest_actions_in_state.get_mut(&name) {
-                                                    Some(values) => {
-                                                        values.insert(action_state.clone());
-                                                        if values.len() > max_items {
-                                                            values.pop_first();
-                                                        }
+                                                if let Some(values) =
+                                                    oldest_actions_in_state.get_mut(&name)
+                                                {
+                                                    values.insert(action_state.clone());
+                                                    if values.len() > max_items {
+                                                        values.pop_first();
                                                     }
-                                                    None => {
-                                                        let mut values = BTreeSet::new();
-                                                        values.insert(action_state.clone());
-                                                        oldest_actions_in_state
-                                                            .insert(name, values);
-                                                    }
+                                                } else {
+                                                    let mut values = BTreeSet::new();
+                                                    values.insert(action_state.clone());
+                                                    oldest_actions_in_state.insert(name, values);
                                                 }
                                             }
                                         }

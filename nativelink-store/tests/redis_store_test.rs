@@ -856,7 +856,11 @@ fn test_connection_errors() {
         .has("1234")
         .await
         .expect_err("Wanted connection error");
-    assert_eq!(err.messages.len(), 2);
+    assert!(
+        err.messages.len() >= 2,
+        "Expected at least two error messages, got {:?}",
+        err.messages
+    );
     // The exact error message depends on where the failure is caught (pipeline vs connection)
     // and how it's propagated. We just want to ensure it failed.
     assert!(

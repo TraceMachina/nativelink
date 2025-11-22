@@ -165,17 +165,14 @@ impl RecoverablePool {
                 .map(|index| core::mem::replace(&mut clients[index], new_client.clone()))
         };
 
-        match replaced_client {
-            Some(old_client) => {
-                let _unused = old_client.quit().await;
-                info!("Replaced Redis client {}", old_client.id());
-                Ok(new_client)
-            }
-            None => {
-                // Second race: pool entry changed after we connected the new client.
-                let _unused = new_client.quit().await;
-                Ok(self.next())
-            }
+        if let Some(old_client) = replaced_client {
+            let _unused = old_client.quit().await;
+            info!("Replaced Redis client {}", old_client.id());
+            Ok(new_client)
+        } else {
+            // Second race: pool entry changed after we connected the new client.
+            let _unused = new_client.quit().await;
+            Ok(self.next())
         }
     }
 }
@@ -432,7 +429,7 @@ impl RedisStore {
                 config.database.unwrap_or_default()
             );
             match client.wait_for_connect().await {
-                Ok(_) => break,
+                Ok(()) => break,
                 Err(e) => {
                     warn!("{connection_info}: {e:?}. Replacing client.");
                     client = self
@@ -1366,85 +1363,81 @@ impl SchedulerStore for RedisStore {
             };
 
         let client = Arc::new(self.get_client().await?);
-        let (stream, client_guard) =
-            match run_ft_aggregate(client.clone(), index_name.clone(), sanitized_field.clone())
-                .await
-            {
-                Ok(result) => result,
-                Err(_) => {
-                    let mut schema = vec![SearchSchema {
-                        field_name: K::INDEX_NAME.into(),
-                        alias: None,
-                        kind: SearchSchemaKind::Tag {
-                            sortable: false,
-                            unf: false,
-                            separator: None,
-                            casesensitive: false,
-                            withsuffixtrie: false,
-                            noindex: false,
-                        },
-                    }];
-                    if let Some(sort_key) = K::MAYBE_SORT_KEY {
-                        schema.push(SearchSchema {
-                            field_name: sort_key.into(),
-                            alias: None,
-                            kind: SearchSchemaKind::Tag {
-                                sortable: true,
-                                unf: false,
-                                separator: None,
-                                casesensitive: false,
-                                withsuffixtrie: false,
-                                noindex: false,
-                            },
-                        });
-                    }
-                    let create_result: Result<(), Error> = {
-                        let create_client = self.get_client().await?;
-                        create_client
-                        .client
-                        .ft_create::<(), _>(
-                            index_name.clone(),
-                            FtCreateOptions {
-                                on: Some(IndexKind::Hash),
-                                prefixes: vec![K::KEY_PREFIX.into()],
-                                nohl: true,
-                                nofields: true,
-                                nofreqs: true,
-                                nooffsets: true,
-                                temporary: Some(INDEX_TTL_S),
-                                ..Default::default()
-                            },
-                            schema,
-                        )
-                        .await
-                        .err_tip(|| {
-                            format!(
-                                "Error with ft_create in RedisStore::search_by_index_prefix({})",
-                                get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
-                            )
-                        })?;
-                        Ok(())
-                    };
-                    let retry_client = Arc::new(self.get_client().await?);
-                    match run_ft_aggregate(
-                        retry_client.clone(),
+        let (stream, client_guard) = if let Ok(result) =
+            run_ft_aggregate(client.clone(), index_name.clone(), sanitized_field.clone()).await
+        {
+            result
+        } else {
+            let mut schema = vec![SearchSchema {
+                field_name: K::INDEX_NAME.into(),
+                alias: None,
+                kind: SearchSchemaKind::Tag {
+                    sortable: false,
+                    unf: false,
+                    separator: None,
+                    casesensitive: false,
+                    withsuffixtrie: false,
+                    noindex: false,
+                },
+            }];
+            if let Some(sort_key) = K::MAYBE_SORT_KEY {
+                schema.push(SearchSchema {
+                    field_name: sort_key.into(),
+                    alias: None,
+                    kind: SearchSchemaKind::Tag {
+                        sortable: true,
+                        unf: false,
+                        separator: None,
+                        casesensitive: false,
+                        withsuffixtrie: false,
+                        noindex: false,
+                    },
+                });
+            }
+            let create_result: Result<(), Error> = {
+                let create_client = self.get_client().await?;
+                create_client
+                    .client
+                    .ft_create::<(), _>(
                         index_name.clone(),
-                        sanitized_field.clone(),
+                        FtCreateOptions {
+                            on: Some(IndexKind::Hash),
+                            prefixes: vec![K::KEY_PREFIX.into()],
+                            nohl: true,
+                            nofields: true,
+                            nofreqs: true,
+                            nooffsets: true,
+                            temporary: Some(INDEX_TTL_S),
+                            ..Default::default()
+                        },
+                        schema,
                     )
                     .await
-                    {
-                        Ok(result) => result,
-                        Err(e) => {
-                            let e: Error = e.into();
-                            let err = match create_result {
-                                Ok(()) => e,
-                                Err(create_err) => create_err.merge(e),
-                            };
-                            return Err(err);
-                        }
-                    }
-                }
+                    .err_tip(|| {
+                        format!(
+                            "Error with ft_create in RedisStore::search_by_index_prefix({})",
+                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
+                        )
+                    })?;
+                Ok(())
             };
+            let retry_client = Arc::new(self.get_client().await?);
+            let retry_result =
+                run_ft_aggregate(retry_client, index_name.clone(), sanitized_field.clone()).await;
+            if let Ok(result) = retry_result {
+                result
+            } else {
+                let e: Error = retry_result
+                    .err()
+                    .expect("Checked for Ok result above")
+                    .into();
+                let err = match create_result {
+                    Ok(()) => e,
+                    Err(create_err) => create_err.merge(e),
+                };
+                return Err(err);
+            }
+        };
 
         Ok(stream.map(move |result| {
             let keep_alive = client_guard.clone();

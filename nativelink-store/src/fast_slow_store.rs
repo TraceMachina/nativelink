@@ -422,7 +422,7 @@ impl StoreDriver for FastSlowStore {
         Ok(())
     }
 
-    /// FastSlowStore has optimizations for dealing with files.
+    /// `FastSlowStore` has optimizations for dealing with files.
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
         optimization == StoreOptimizations::FileUpdates
     }
