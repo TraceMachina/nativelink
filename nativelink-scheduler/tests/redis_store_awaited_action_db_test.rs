@@ -217,37 +217,56 @@ impl Mocks for FakeRedisBackend {
         }
 
         if actual.cmd == Str::from_static("FT.AGGREGATE") {
-            // The query is @field:value where value might be wrapped in braces.
+            // The query is either "*" (match all) or @field:{ value }.
             let query = actual.args[1]
                 .clone()
                 .into_string()
                 .expect("Aggregate query should be a string");
-            assert_eq!(&query[..1], "@");
-            let mut parts = query[1..].split(':');
-            let field = parts.next().expect("No field name");
-            let value = parts.next().expect("No value");
-            let value = value
-                .strip_prefix("{ ")
-                .and_then(|s| s.strip_suffix(" }"))
-                .unwrap_or(value);
             // Lazy implementation making assumptions.
             assert_eq!(
                 actual.args[2..6],
                 vec!["LOAD".into(), 2.into(), "data".into(), "version".into()]
             );
             let mut results = vec![RedisValue::Integer(0)];
-            for fields in self.table.lock().values() {
-                if let Some(key_value) = fields.get(field) {
-                    if *key_value == RedisValue::Bytes(Bytes::from(value.to_owned())) {
+
+            if query == "*" {
+                // Wildcard query - return all records that have both data and version fields.
+                // Some entries (e.g., from HSET) may not have version field.
+                for fields in self.table.lock().values() {
+                    if let (Some(data), Some(version)) = (fields.get("data"), fields.get("version"))
+                    {
                         results.push(RedisValue::Array(vec![
                             RedisValue::Bytes(Bytes::from("data")),
-                            fields.get("data").expect("No data field").clone(),
+                            data.clone(),
                             RedisValue::Bytes(Bytes::from("version")),
-                            fields.get("version").expect("No version field").clone(),
+                            version.clone(),
                         ]));
                     }
                 }
+            } else {
+                // Field-specific query: @field:{ value }
+                assert_eq!(&query[..1], "@");
+                let mut parts = query[1..].split(':');
+                let field = parts.next().expect("No field name");
+                let value = parts.next().expect("No value");
+                let value = value
+                    .strip_prefix("{ ")
+                    .and_then(|s| s.strip_suffix(" }"))
+                    .unwrap_or(value);
+                for fields in self.table.lock().values() {
+                    if let Some(key_value) = fields.get(field) {
+                        if *key_value == RedisValue::Bytes(Bytes::from(value.to_owned())) {
+                            results.push(RedisValue::Array(vec![
+                                RedisValue::Bytes(Bytes::from("data")),
+                                fields.get("data").expect("No data field").clone(),
+                                RedisValue::Bytes(Bytes::from("version")),
+                                fields.get("version").expect("No version field").clone(),
+                            ]));
+                        }
+                    }
+                }
             }
+
             results[0] = u32::try_from(results.len() - 1).unwrap_or(u32::MAX).into();
             return Ok(RedisValue::Array(vec![
                 RedisValue::Array(results),
