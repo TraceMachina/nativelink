@@ -25,9 +25,9 @@ use fred::bytes_utils::string::Str;
 use fred::clients::SubscriberClient;
 use fred::error::{Error as RedisError, ErrorKind as RedisErrorKind};
 use fred::mocks::{MockCommand, Mocks};
-use fred::prelude::{Builder, Pool as RedisPool};
+use fred::prelude::Builder;
 use fred::types::Value as RedisValue;
-use fred::types::config::{Config as RedisConfig, PerformanceConfig};
+use fred::types::config::Config as RedisConfig;
 use futures::StreamExt;
 use mock_instant::global::SystemTime as MockSystemTime;
 use nativelink_config::schedulers::SimpleSpec;
@@ -46,7 +46,7 @@ use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::store_awaited_action_db::StoreAwaitedActionDb;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
-use nativelink_store::redis_store::{RedisStore, RedisSubscriptionManager};
+use nativelink_store::redis_store::{RecoverablePool, RedisStore, RedisSubscriptionManager};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
 };
@@ -217,37 +217,56 @@ impl Mocks for FakeRedisBackend {
         }
 
         if actual.cmd == Str::from_static("FT.AGGREGATE") {
-            // The query is @field:value where value might be wrapped in braces.
+            // The query is either "*" (match all) or @field:{ value }.
             let query = actual.args[1]
                 .clone()
                 .into_string()
                 .expect("Aggregate query should be a string");
-            assert_eq!(&query[..1], "@");
-            let mut parts = query[1..].split(':');
-            let field = parts.next().expect("No field name");
-            let value = parts.next().expect("No value");
-            let value = value
-                .strip_prefix("{ ")
-                .and_then(|s| s.strip_suffix(" }"))
-                .unwrap_or(value);
             // Lazy implementation making assumptions.
             assert_eq!(
                 actual.args[2..6],
                 vec!["LOAD".into(), 2.into(), "data".into(), "version".into()]
             );
             let mut results = vec![RedisValue::Integer(0)];
-            for fields in self.table.lock().values() {
-                if let Some(key_value) = fields.get(field) {
-                    if *key_value == RedisValue::Bytes(Bytes::from(value.to_owned())) {
+
+            if query == "*" {
+                // Wildcard query - return all records that have both data and version fields.
+                // Some entries (e.g., from HSET) may not have version field.
+                for fields in self.table.lock().values() {
+                    if let (Some(data), Some(version)) = (fields.get("data"), fields.get("version"))
+                    {
                         results.push(RedisValue::Array(vec![
                             RedisValue::Bytes(Bytes::from("data")),
-                            fields.get("data").expect("No data field").clone(),
+                            data.clone(),
                             RedisValue::Bytes(Bytes::from("version")),
-                            fields.get("version").expect("No version field").clone(),
+                            version.clone(),
                         ]));
                     }
                 }
+            } else {
+                // Field-specific query: @field:{ value }
+                assert_eq!(&query[..1], "@");
+                let mut parts = query[1..].split(':');
+                let field = parts.next().expect("No field name");
+                let value = parts.next().expect("No value");
+                let value = value
+                    .strip_prefix("{ ")
+                    .and_then(|s| s.strip_suffix(" }"))
+                    .unwrap_or(value);
+                for fields in self.table.lock().values() {
+                    if let Some(key_value) = fields.get(field) {
+                        if *key_value == RedisValue::Bytes(Bytes::from(value.to_owned())) {
+                            results.push(RedisValue::Array(vec![
+                                RedisValue::Bytes(Bytes::from("data")),
+                                fields.get("data").expect("No data field").clone(),
+                                RedisValue::Bytes(Bytes::from("version")),
+                                fields.get("version").expect("No version field").clone(),
+                            ]));
+                        }
+                    }
+                }
             }
+
             results[0] = u32::try_from(results.len() - 1).unwrap_or(u32::MAX).into();
             return Ok(RedisValue::Array(vec![
                 RedisValue::Array(results),
@@ -393,7 +412,7 @@ fn make_redis_store(sub_channel: &str, mocks: Arc<impl Mocks>) -> Arc<RedisStore
         mocks: Some(mocks),
         ..Default::default()
     });
-    let (client_pool, subscriber_client) = make_clients(builder);
+    let (client_pool, subscriber_client) = make_clients(&builder);
     Arc::new(
         RedisStore::new_from_builder_and_parts(
             client_pool,
@@ -410,15 +429,9 @@ fn make_redis_store(sub_channel: &str, mocks: Arc<impl Mocks>) -> Arc<RedisStore
     )
 }
 
-fn make_clients(mut builder: Builder) -> (RedisPool, SubscriberClient) {
+fn make_clients(builder: &Builder) -> (RecoverablePool, SubscriberClient) {
     const CONNECTION_POOL_SIZE: usize = 1;
-    let client_pool = builder
-        .set_performance_config(PerformanceConfig {
-            broadcast_channel_capacity: 4096,
-            ..Default::default()
-        })
-        .build_pool(CONNECTION_POOL_SIZE)
-        .unwrap();
+    let client_pool = RecoverablePool::new(builder.clone(), CONNECTION_POOL_SIZE).unwrap();
 
     let subscriber_client = builder.build_subscriber_client().unwrap();
     (client_pool, subscriber_client)
@@ -521,6 +534,15 @@ async fn add_action_smoke_test() -> Result<(), Error> {
     mocks
         .expect(
             MockCommand {
+                cmd: Str::from_static("SUBSCRIBE"),
+                subcommand: None,
+                args: vec![SUB_CHANNEL.as_bytes().into()],
+            },
+            Ok(RedisValue::Integer(0)),
+            None,
+        )
+        .expect(
+            MockCommand {
                 cmd: Str::from_static("FT.AGGREGATE"),
                 subcommand: None,
                 args: ft_aggregate_args.clone(),
@@ -529,15 +551,6 @@ async fn add_action_smoke_test() -> Result<(), Error> {
                 RedisErrorKind::NotFound,
                 String::new(),
             )),
-            None,
-        )
-        .expect(
-            MockCommand {
-                cmd: Str::from_static("SUBSCRIBE"),
-                subcommand: None,
-                args: vec![SUB_CHANNEL.as_bytes().into()],
-            },
-            Ok(RedisValue::Integer(0)),
             None,
         )
         .expect(
