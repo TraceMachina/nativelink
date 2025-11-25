@@ -1383,39 +1383,44 @@ impl SchedulerStore for RedisStore {
             get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
         );
 
-        let run_ft_aggregate =
-            |client: Arc<ClientWithPermit>, index_name: String, field: String| async move {
-                ft_aggregate(
-                    client.client.clone(),
-                    index_name,
-                    format!("@{}:{{ {} }}", K::INDEX_NAME, field),
-                    FtAggregateOptions {
-                        load: Some(Load::Some(vec![
-                            SearchField {
-                                identifier: DATA_FIELD_NAME.into(),
-                                property: None,
-                            },
-                            SearchField {
-                                identifier: VERSION_FIELD_NAME.into(),
-                                property: None,
-                            },
-                        ])),
-                        cursor: Some(WithCursor {
-                            count: Some(MAX_COUNT_PER_CURSOR),
-                            max_idle: Some(CURSOR_IDLE_MS),
+        let run_ft_aggregate = |client: Arc<ClientWithPermit>,
+                                index_name: String,
+                                sanitized_field: String| async move {
+            ft_aggregate(
+                client.client.clone(),
+                index_name,
+                if sanitized_field.is_empty() {
+                    "*".to_string()
+                } else {
+                    format!("@{}:{{ {} }}", K::INDEX_NAME, sanitized_field)
+                },
+                FtAggregateOptions {
+                    load: Some(Load::Some(vec![
+                        SearchField {
+                            identifier: DATA_FIELD_NAME.into(),
+                            property: None,
+                        },
+                        SearchField {
+                            identifier: VERSION_FIELD_NAME.into(),
+                            property: None,
+                        },
+                    ])),
+                    cursor: Some(WithCursor {
+                        count: Some(MAX_COUNT_PER_CURSOR),
+                        max_idle: Some(CURSOR_IDLE_MS),
+                    }),
+                    pipeline: vec![AggregateOperation::SortBy {
+                        properties: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| {
+                            vec![(format!("@{v}").into(), SortOrder::Asc)]
                         }),
-                        pipeline: vec![AggregateOperation::SortBy {
-                            properties: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| {
-                                vec![(format!("@{v}").into(), SortOrder::Asc)]
-                            }),
-                            max: None,
-                        }],
-                        ..Default::default()
-                    },
-                )
-                .await
-                .map(|stream| (stream, client))
-            };
+                        max: None,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|stream| (stream, client))
+        };
 
         let client = Arc::new(self.get_client().await?);
         let (stream, client_guard) = if let Ok(result) =
