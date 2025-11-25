@@ -43,19 +43,18 @@ use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
-use nativelink_util::spawn;
 use nativelink_util::store_trait::{
     BoolValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
     SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
     SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
 };
 use nativelink_util::task::JoinHandleDropGuard;
+use nativelink_util::{background_spawn, spawn};
 use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use tokio::runtime::Runtime;
 use tokio::select;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio::task::block_in_place;
 use tokio::time::sleep;
 use tracing::{error, info, trace, warn};
 use uuid::Uuid;
@@ -191,6 +190,10 @@ impl RecoverablePool {
         }
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Drop needs a fallback runtime when no executor is running"
+    )]
     fn shutdown_blocking(clients: Vec<Client>) {
         if clients.is_empty() {
             return;
@@ -210,17 +213,17 @@ impl RecoverablePool {
 impl Drop for RecoverablePool {
     fn drop(&mut self) {
         let mut maybe_clients = Some(self.snapshot_clients());
-        if maybe_clients
-            .as_ref()
-            .map_or(true, |clients| clients.is_empty())
-        {
+        if maybe_clients.as_ref().is_none_or(Vec::is_empty) {
             return;
         }
 
         match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
+            Ok(_) => {
                 if let Some(clients) = maybe_clients.take() {
-                    block_in_place(|| handle.block_on(Self::quit_clients(clients)));
+                    let handle = background_spawn!("redis_pool_shutdown", async move {
+                        Self::quit_clients(clients).await;
+                    });
+                    drop(handle);
                 }
             }
             Err(_) => {
