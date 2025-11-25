@@ -52,8 +52,10 @@ use nativelink_util::store_trait::{
 use nativelink_util::task::JoinHandleDropGuard;
 use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
+use tokio::runtime::Runtime;
 use tokio::select;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::task::block_in_place;
 use tokio::time::sleep;
 use tracing::{error, info, trace, warn};
 use uuid::Uuid;
@@ -173,6 +175,59 @@ impl RecoverablePool {
             // Second race: pool entry changed after we connected the new client.
             let _unused = new_client.quit().await;
             Ok(self.next())
+        }
+    }
+
+    fn snapshot_clients(&self) -> Vec<Client> {
+        let clients = self.clients.read();
+        clients.iter().cloned().collect()
+    }
+
+    async fn quit_clients(clients: Vec<Client>) {
+        for client in clients {
+            if let Err(e) = client.quit().await {
+                warn!("Failed to quit Redis client {}: {e:?}", client.id());
+            }
+        }
+    }
+
+    fn shutdown_blocking(clients: Vec<Client>) {
+        if clients.is_empty() {
+            return;
+        }
+
+        match Runtime::new() {
+            Ok(runtime) => {
+                runtime.block_on(Self::quit_clients(clients));
+            }
+            Err(e) => {
+                warn!("Failed to create runtime for Redis shutdown: {e:?}");
+            }
+        }
+    }
+}
+
+impl Drop for RecoverablePool {
+    fn drop(&mut self) {
+        let mut maybe_clients = Some(self.snapshot_clients());
+        if maybe_clients
+            .as_ref()
+            .map_or(true, |clients| clients.is_empty())
+        {
+            return;
+        }
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                if let Some(clients) = maybe_clients.take() {
+                    block_in_place(|| handle.block_on(Self::quit_clients(clients)));
+                }
+            }
+            Err(_) => {
+                if let Some(clients) = maybe_clients.take() {
+                    Self::shutdown_blocking(clients);
+                }
+            }
         }
     }
 }
