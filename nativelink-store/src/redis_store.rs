@@ -1329,13 +1329,10 @@ impl SchedulerStore for RedisStore {
         );
 
         let run_ft_aggregate =
-            |client: Arc<ClientWithPermit>, index_name: String, field: String| async move {
+            |client: Arc<ClientWithPermit>, index_name: String, sanitized_field: String| async move {
                 ft_aggregate(
-                    client,
-                    format!(
-                        "{}",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
-                    ),
+                    client.client.clone(),
+                    index_name,
                     if sanitized_field.is_empty() {
                         "*".to_string()
                     } else {
