@@ -633,18 +633,25 @@ async fn do_cleanup(
 
     debug!("Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
-    let remove_dir_result = fs::remove_dir_all(action_directory)
-        .await
-        .err_tip(|| format!("Could not remove working directory {action_directory}"));
+    let remove_dir_result = match fs::remove_dir_all(action_directory).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.code == Code::NotFound => Ok(()),
+        Err(err) => {
+            Err(err).err_tip(|| format!("Could not remove working directory {action_directory}"))
+        }
+    };
 
-    if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
-        error!(%operation_id, ?err, "Error cleaning up action");
-        Result::<(), Error>::Err(err).merge(remove_dir_result)
-    } else if let Err(err) = remove_dir_result {
-        error!(%operation_id, ?err, "Error removing working directory");
-        Err(err)
-    } else {
-        Ok(())
+    let cleanup_result = running_actions_manager.cleanup_action(operation_id);
+    match (cleanup_result, remove_dir_result) {
+        (Err(err), remove_dir_result) => {
+            error!(%operation_id, ?err, "Error cleaning up action");
+            Err::<(), Error>(err).merge(remove_dir_result)
+        }
+        (Ok(()), Err(err)) => {
+            error!(%operation_id, ?err, "Error removing working directory");
+            Err(err)
+        }
+        _ => Ok(()),
     }
 }
 
@@ -2053,14 +2060,25 @@ impl RunningActionsManagerImpl {
         })
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "We keep a Result here to preserve the existing API and future-proof error handling."
+    )]
     fn cleanup_action(&self, operation_id: &OperationId) -> Result<(), Error> {
         let mut running_actions = self.running_actions.lock();
-        let result = running_actions.remove(operation_id).err_tip(|| {
-            format!("Expected operation id '{operation_id}' to exist in RunningActionsManagerImpl")
-        });
+        if running_actions.remove(operation_id).is_none() {
+            warn!(
+                %operation_id,
+                "Cleanup requested for operation that was not tracked"
+            );
+            self.metrics.cleanup_missing_action.inc();
+            // No need to copy anything, we just are telling the receivers an event happened.
+            self.action_done_tx.send_modify(|()| {});
+            return Ok(());
+        }
         // No need to copy anything, we just are telling the receivers an event happened.
         self.action_done_tx.send_modify(|()| {});
-        result.map(|_| ())
+        Ok(())
     }
 
     // Note: We do not capture metrics on this call, only `.kill_all()`.
@@ -2260,6 +2278,8 @@ pub struct Metrics {
     get_finished_result: AsyncCounterWrapper,
     #[metric(help = "Number of times an action waited for cleanup to complete.")]
     cleanup_waits: CounterWithTime,
+    #[metric(help = "Number of cleanup calls where the action was already missing.")]
+    cleanup_missing_action: CounterWithTime,
     #[metric(help = "Number of stale directories removed during action retries.")]
     stale_removals: CounterWithTime,
     #[metric(help = "Number of timeouts while waiting for cleanup to complete.")]

@@ -84,6 +84,35 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     metrics: Arc<Metrics>,
 }
 
+#[derive(Debug)]
+struct ActionsInTransitGuard {
+    counter: Arc<AtomicU64>,
+    active: bool,
+}
+
+impl ActionsInTransitGuard {
+    fn new(counter: Arc<AtomicU64>) -> Self {
+        counter.fetch_add(1, Ordering::Release);
+        Self {
+            counter,
+            active: true,
+        }
+    }
+
+    fn done(&mut self) {
+        if self.active {
+            self.counter.fetch_sub(1, Ordering::Release);
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for ActionsInTransitGuard {
+    fn drop(&mut self) {
+        self.done();
+    }
+}
+
 async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Error> {
     let Some(precondition_script) = &precondition_script else {
         // No script means we are always ok to proceed.
@@ -254,7 +283,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
                             let start_action_fut = {
                                 let precondition_script_cfg = self.config.experimental_precondition_script.clone();
-                                let actions_in_transit = self.actions_in_transit.clone();
+                                let mut actions_in_transit_guard =
+                                    ActionsInTransitGuard::new(self.actions_in_transit.clone());
                                 let worker_id = self.worker_id.clone();
                                 let running_actions_manager = self.running_actions_manager.clone();
                                 let mut grpc_client = self.grpc_client.clone();
@@ -265,9 +295,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
                                     .and_then(|()| running_actions_manager.create_and_add_action(worker_id, start_execute))
                                     .map(move |r| {
-                                        // Now that we either failed or registered our action, we can
-                                        // consider the action to no longer be in transit.
-                                        actions_in_transit.fetch_sub(1, Ordering::Release);
+                                        actions_in_transit_guard.done();
                                         r
                                     })
                                     .and_then(|action| {
@@ -338,8 +366,6 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     Ok(())
                                 }
                             };
-
-                            self.actions_in_transit.fetch_add(1, Ordering::Release);
 
                             let add_future_channel = add_future_channel.clone();
 
@@ -683,24 +709,28 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             );
 
             // Now listen for connections and run all other services.
-            if let Err(err) = inner.run(update_for_worker_stream, &mut shutdown_rx).await {
-                'no_more_actions: {
-                    // Ensure there are no actions in transit before we try to kill
-                    // all our actions.
-                    const ITERATIONS: usize = 1_000;
+            if let Err(mut err) = inner.run(update_for_worker_stream, &mut shutdown_rx).await {
+                // Ensure there are no actions in transit before we try to kill
+                // all our actions. If they refuse to drain, forcibly reset the
+                // counter so we can keep cleaning up.
+                const ITERATIONS: usize = 1_000;
+                const ERROR_MSG: &str = "Actions in transit did not reach zero before we disconnected from the scheduler";
 
-                    const ERROR_MSG: &str = "Actions in transit did not reach zero before we disconnected from the scheduler";
-
-                    let sleep_duration = ACTIONS_IN_TRANSIT_TIMEOUT_S / ITERATIONS as f32;
-                    for _ in 0..ITERATIONS {
-                        if inner.actions_in_transit.load(Ordering::Acquire) == 0 {
-                            break 'no_more_actions;
-                        }
-                        (sleep_fn_pin)(Duration::from_secs_f32(sleep_duration)).await;
+                let sleep_duration = ACTIONS_IN_TRANSIT_TIMEOUT_S / ITERATIONS as f32;
+                for _ in 0..ITERATIONS {
+                    if inner.actions_in_transit.load(Ordering::Acquire) == 0 {
+                        break;
                     }
-                    error!(ERROR_MSG);
-                    return Err(err.append(ERROR_MSG));
+                    (sleep_fn_pin)(Duration::from_secs_f32(sleep_duration)).await;
                 }
+
+                let actions_in_transit = inner.actions_in_transit.load(Ordering::Acquire);
+                if actions_in_transit != 0 {
+                    error!(actions_in_transit, ERROR_MSG);
+                    inner.actions_in_transit.store(0, Ordering::Release);
+                    err = err.append(ERROR_MSG);
+                }
+
                 error!(?err, "Worker disconnected from scheduler");
                 // Kill off any existing actions because if we re-connect, we'll
                 // get some more and it might resource lock us.

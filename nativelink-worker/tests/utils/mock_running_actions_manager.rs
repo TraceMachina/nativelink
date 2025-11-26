@@ -94,6 +94,27 @@ impl MockRunningActionsManager {
         req
     }
 
+    pub(crate) async fn wait_for_create_and_add_action_call(&self) -> (String, StartExecute) {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        let RunningActionManagerCalls::CreateAndAddAction(req) = rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        else {
+            panic!("Got incorrect call waiting for create_and_add_action")
+        };
+        req
+    }
+
+    pub(crate) fn send_create_and_add_action_response(
+        &self,
+        result: Result<Arc<MockRunningAction>, Error>,
+    ) {
+        self.tx_resp
+            .send(RunningActionManagerReturns::CreateAndAddAction(result))
+            .expect("Could not send request to mpsc");
+    }
+
     pub(crate) async fn expect_cache_action_result(
         &self,
     ) -> (DigestInfo, ActionResult, DigestHasherFunc) {
