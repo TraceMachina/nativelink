@@ -27,7 +27,7 @@ use fred::prelude::Builder;
 use fred::types::Value as RedisValue;
 use fred::types::config::Config as RedisConfig;
 use nativelink_config::stores::RedisSpec;
-use nativelink_error::{Code, Error};
+use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{RecoverablePool, RedisStore};
@@ -37,6 +37,7 @@ use nativelink_util::health_utils::HealthStatus;
 use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use tokio::sync::watch;
+use tokio::time::{Duration, timeout};
 
 const VALID_HASH1: &str = "3031323334353637383961626364656630303030303030303030303030303030";
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -202,6 +203,34 @@ fn make_mock_store_with_prefix(mocks: &Arc<MockRedisBackend>, key_prefix: String
         DEFAULT_MAX_PERMITS,
     )
     .unwrap()
+}
+
+#[nativelink_test]
+async fn recoverable_pool_drop_sends_quit() -> Result<(), Error> {
+    let mocks = Arc::new(MockRedisBackend::new());
+    let quit_command = MockCommand {
+        cmd: Str::from_static("QUIT"),
+        subcommand: None,
+        args: Vec::new(),
+    };
+    mocks.expect(quit_command.clone(), Ok(RedisValue::new_ok()));
+
+    let mut builder = Builder::default_centralized();
+    builder.set_config(RedisConfig {
+        mocks: Some(Arc::clone(&mocks)),
+        ..Default::default()
+    });
+
+    {
+        let pool = RecoverablePool::new(builder.clone(), 1)?;
+        pool.connect();
+        // pool dropped here
+    }
+
+    timeout(Duration::from_secs(1), mocks.wait_for(quit_command))
+        .await
+        .map_err(|_| make_err!(Code::DeadlineExceeded, "Timed out waiting for QUIT command"))?;
+    Ok(())
 }
 
 #[nativelink_test]
