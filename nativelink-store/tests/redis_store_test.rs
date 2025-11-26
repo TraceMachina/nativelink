@@ -216,15 +216,18 @@ async fn recoverable_pool_drop_sends_quit() -> Result<(), Error> {
     mocks.expect(quit_command.clone(), Ok(RedisValue::new_ok()));
 
     let mut builder = Builder::default_centralized();
+    let mocks_clone = Arc::clone(&mocks);
+    let mocks_trait: Arc<dyn Mocks> = mocks_clone;
     builder.set_config(RedisConfig {
-        mocks: Some(Arc::clone(&mocks)),
+        mocks: Some(mocks_trait),
         ..Default::default()
     });
 
     {
         let pool = RecoverablePool::new(builder.clone(), 1)?;
         pool.connect();
-        // pool dropped here
+        pool.wait_for_connect_for_testing().await?;
+        drop(pool);
     }
 
     timeout(Duration::from_secs(1), mocks.wait_for(quit_command))

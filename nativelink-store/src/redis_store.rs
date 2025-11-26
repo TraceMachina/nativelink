@@ -43,13 +43,13 @@ use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
+use nativelink_util::spawn;
 use nativelink_util::store_trait::{
     BoolValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
     SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
     SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
 };
 use nativelink_util::task::JoinHandleDropGuard;
-use nativelink_util::{background_spawn, spawn};
 use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use tokio::runtime::Runtime;
@@ -122,11 +122,25 @@ impl RecoverablePool {
         })
     }
 
-    fn connect(&self) {
+    pub fn connect(&self) {
         let clients = self.clients.read();
         for client in clients.iter() {
             client.connect();
         }
+    }
+
+    /// Helper primarily for tests to block until all clients have connected.
+    pub async fn wait_for_connect_for_testing(&self) -> Result<(), Error> {
+        let clients = self.clients.read().clone();
+        for client in clients {
+            client.wait_for_connect().await.err_tip(|| {
+                format!(
+                    "Failed to connect client {} in RecoverablePool::wait_for_connect_for_testing",
+                    client.id()
+                )
+            })?;
+        }
+        Ok(())
     }
 
     fn next(&self) -> Client {
@@ -220,10 +234,13 @@ impl Drop for RecoverablePool {
         match tokio::runtime::Handle::try_current() {
             Ok(_) => {
                 if let Some(clients) = maybe_clients.take() {
-                    let handle = background_spawn!("redis_pool_shutdown", async move {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "Drop needs to detach shutdown task without holding guards"
+                    )]
+                    tokio::spawn(async move {
                         Self::quit_clients(clients).await;
                     });
-                    drop(handle);
                 }
             }
             Err(_) => {
