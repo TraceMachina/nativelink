@@ -127,6 +127,9 @@ pub enum StoreOptimizations {
 
     /// If the store will never serve downloads.
     NoopDownloads,
+
+    /// If the store will rely on lazily determining file existence for mutations.
+    LazyNotFound,
 }
 
 /// A wrapper struct for [`StoreKey`] to work around
