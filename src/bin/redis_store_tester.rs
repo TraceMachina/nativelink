@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 
 use bytes::Bytes;
 use nativelink_config::stores::RedisSpec;
-use nativelink_error::{Code, Error};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_store::redis_store::RedisStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::store_trait::{
@@ -16,6 +16,7 @@ use nativelink_util::store_trait::{
 use nativelink_util::telemetry::init_tracing;
 use nativelink_util::{background_spawn, spawn};
 use rand::Rng;
+use redis::aio::ConnectionManager;
 use tracing::{error, info};
 
 // Define test structures that implement the scheduler traits
@@ -106,7 +107,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                 max_client_permits,
                 ..Default::default()
             };
-            let store = RedisStore::new(spec)?;
+            let store = RedisStore::new(spec).await?;
             let mut count = 0;
             let in_flight = Arc::new(AtomicUsize::new(0));
 
@@ -134,8 +135,10 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                 let local_in_flight = in_flight.clone();
 
                 background_spawn!("action", async move {
-                    async fn run_action(store_clone: Arc<RedisStore>) -> Result<(), Error> {
-                        let action_value = rand::rng().random_range(0..5);
+                    async fn run_action(
+                        store_clone: Arc<RedisStore<ConnectionManager>>,
+                    ) -> Result<(), Error> {
+                        let action_value = rand::rng().random_range(0..6);
                         match action_value {
                             0 => {
                                 store_clone.has(random_key()).await?;
@@ -164,6 +167,13 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                                 store_clone
                                     .update_oneshot(random_key(), Bytes::from_static(b"1234"))
                                     .await?;
+                            }
+                            4 => {
+                                let res = store_clone
+                                    .list(.., |_key| true)
+                                    .await
+                                    .err_tip(|| "In list")?;
+                                info!(%res, "end list");
                             }
                             _ => {
                                 let mut data = TestSchedulerData {

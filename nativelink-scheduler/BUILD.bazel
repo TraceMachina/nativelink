@@ -45,6 +45,7 @@ rust_library(
         "@crates//:opentelemetry",
         "@crates//:opentelemetry-semantic-conventions",
         "@crates//:parking_lot",
+        "@crates//:redis",
         "@crates//:scopeguard",
         "@crates//:serde",
         "@crates//:serde_json",
@@ -84,12 +85,13 @@ rust_test_suite(
         "//nativelink-util",
         "@crates//:async-lock",
         "@crates//:bytes",
-        "@crates//:fred",
         "@crates//:futures",
         "@crates//:mock_instant",
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",
         "@crates//:prost",
+        "@crates//:redis",
+        "@crates//:redis-test",
         "@crates//:serde_json",
         "@crates//:tokio",
         "@crates//:tokio-stream",
@@ -108,8 +110,8 @@ rust_test(
         "//nativelink-macro",
     ],
     deps = [
-        "@crates//:fred",
         "@crates//:pretty_assertions",
+        "@crates//:redis",
     ],
 )
 

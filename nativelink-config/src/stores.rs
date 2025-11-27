@@ -1203,7 +1203,7 @@ pub struct RedisSpec {
     ///
     /// Default: 10000
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
-    pub scan_count: u32,
+    pub scan_count: usize,
 
     /// Retry configuration to use when a network request fails.
     /// See the `Retry` struct for more information.

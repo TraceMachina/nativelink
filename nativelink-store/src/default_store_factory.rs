@@ -65,7 +65,7 @@ pub fn store_factory<'a>(
                     GcsStore::new(gcs_config, SystemTime::now).await?
                 }
             },
-            StoreSpec::RedisStore(spec) => RedisStore::new(spec.clone())?,
+            StoreSpec::RedisStore(spec) => RedisStore::new(spec.clone()).await?,
             StoreSpec::Verify(spec) => VerifyStore::new(
                 spec,
                 store_factory(&spec.backend, store_manager, None).await?,

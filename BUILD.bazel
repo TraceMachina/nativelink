@@ -51,6 +51,7 @@ rust_binary(
         "//nativelink-util",
         "@crates//:bytes",
         "@crates//:rand",
+        "@crates//:redis",
         "@crates//:tokio",
         "@crates//:tracing",
     ],
