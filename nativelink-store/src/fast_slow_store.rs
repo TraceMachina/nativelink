@@ -37,6 +37,7 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
+use tracing::debug;
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -173,6 +174,11 @@ impl FastSlowStore {
             .inner_store(Some(key.borrow()))
             .optimized_for(StoreOptimizations::LazyNotFound)
         {
+            debug!(
+                key = %key.as_str(),
+                store_name = %self.slow_store.inner_store(Some(key.borrow())).get_name(),
+                "Skipping .has() check due to LazyNotFound optimization"
+            );
             None
         } else {
             Some(self
