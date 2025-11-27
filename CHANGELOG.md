@@ -3,6 +3,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.8](https://github.com/TraceMachina/nativelink/compare/v0.7.7..v0.7.8) - 2025-11-27
+
+### 🐛 Bug Fixes
+
+- Use wildcard query when Redis index value is empty ([#2069](https://github.com/TraceMachina/nativelink/issues/2069)) - ([43f7f8d](https://github.com/TraceMachina/nativelink/commit/43f7f8df6562c605cebbf3bbcbfa265f6cf2f46e))
+- Fix assertion message for fastcdc ([#2056](https://github.com/TraceMachina/nativelink/issues/2056)) - ([7ec4f11](https://github.com/TraceMachina/nativelink/commit/7ec4f11d1cac24dfcc3ad88803be0b087465610c))
+- Fix the changelog post 0.7.7 ([#2057](https://github.com/TraceMachina/nativelink/issues/2057)) - ([437a785](https://github.com/TraceMachina/nativelink/commit/437a785e5631bff3b28378c16101a8b21b151d37))
+
+### 🧪 Testing & CI
+
+- Redis store tester and permits ([#1878](https://github.com/TraceMachina/nativelink/issues/1878)) - ([3df6293](https://github.com/TraceMachina/nativelink/commit/3df6293e09131d44f73bb053eba1c1b282b3d9d7))
+
+### ⚙️ Miscellaneous
+
+- *(deps)* Update dependency astro to v5.15.9 [security] ([#2061](https://github.com/TraceMachina/nativelink/issues/2061)) - ([3d41449](https://github.com/TraceMachina/nativelink/commit/3d4144985f6479e08dc1989f666bbecdbe98f98e))
+- Recoverable connection pool ([#2067](https://github.com/TraceMachina/nativelink/issues/2067)) - ([14b2cc6](https://github.com/TraceMachina/nativelink/commit/14b2cc684e77af485518444d40499b9cc204be55))
+- Revert "bugfix: prefix Redis index name and sort key ([#2066](https://github.com/TraceMachina/nativelink/issues/2066))" ([#2068](https://github.com/TraceMachina/nativelink/issues/2068)) - ([2e84883](https://github.com/TraceMachina/nativelink/commit/2e848832053ec86a95be159578282fef68481d2e))
+- Prefix Redis index name and sort key ([#2066](https://github.com/TraceMachina/nativelink/issues/2066)) - ([6a95ae8](https://github.com/TraceMachina/nativelink/commit/6a95ae8e258b70423da585e5cc2b78ec8d911072))
+- Disable digest updates for renovate and Nix magic cache ([#2059](https://github.com/TraceMachina/nativelink/issues/2059)) - ([f56c2bb](https://github.com/TraceMachina/nativelink/commit/f56c2bbe9c756c233c1efaf4f705aedbd3f940ee))
+- Do not need to store zero-length filesystem files ([#2033](https://github.com/TraceMachina/nativelink/issues/2033)) - ([5adf904](https://github.com/TraceMachina/nativelink/commit/5adf904b5a54eb7488f987706dc8c22e1fe4b75b))
+- Don't complain about worker stream error if we're shutting down ([#2055](https://github.com/TraceMachina/nativelink/issues/2055)) - ([6282afc](https://github.com/TraceMachina/nativelink/commit/6282afc6846bb071d2120e49f0488c905ad07200))
+
+### ⬆️ Bumps & Version Updates
+
+- Update the default max permits for redis ([#2063](https://github.com/TraceMachina/nativelink/issues/2063)) - ([7b9df29](https://github.com/TraceMachina/nativelink/commit/7b9df29b9a682b49add7f0c3198734509655d59a))
+
 ## [0.7.7](https://github.com/TraceMachina/nativelink/compare/v0.7.6..v0.7.7) - 2025-11-17
 
 
