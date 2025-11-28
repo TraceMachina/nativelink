@@ -32,6 +32,7 @@ PROTO_NAMES = [
 rust_binary(
     name = "gen_protos_tool",
     srcs = ["gen_protos_tool.rs"],
+    visibility = ["//visibility:public"],
     deps = [
         "@crates//:clap",
         "@crates//:prost-build",
