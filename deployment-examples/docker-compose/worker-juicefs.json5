@@ -1,0 +1,128 @@
+{
+  // Worker configuration for JuiceFS-backed shared CAS
+  // This configuration uses a JuiceFS mount at /mnt/jfs for shared CAS storage
+  // All workers share the same CAS, enabling efficient artifact sharing
+  stores: [
+    {
+      name: "JUICEFS_SHARED_CAS",
+
+      // JuiceFS-backed filesystem store
+      // All workers mount the same JuiceFS volume, providing truly shared CAS
+      filesystem: {
+        content_path: "/mnt/jfs/cas/content",
+        temp_path: "/tmp/${WORKER_NAME}/cas-temp",
+        eviction_policy: {
+          // 100GB shared across all workers via JuiceFS
+          // JuiceFS handles distributed caching automatically
+          max_bytes: 100000000000,
+        },
+
+        // Larger read buffer for distributed filesystem
+        read_buffer_size: 65536,
+      },
+    },
+    {
+      name: "LOCAL_AC_STORE",
+
+      // Action Cache uses local memory for fast lookups
+      // Each worker has its own AC cache
+      memory: {
+        eviction_policy: {
+          max_bytes: 1000000000, // 1GB
+        },
+      },
+    },
+    {
+      name: "GRPC_CAS_BACKUP",
+
+      // Backup GRPC store for CAS server
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            address: "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051",
+          },
+        ],
+        store_type: "cas",
+      },
+    },
+    {
+      name: "GRPC_AC_STORE",
+
+      // GRPC store for Action Cache
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            address: "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051",
+          },
+        ],
+        store_type: "ac",
+      },
+    },
+    {
+      name: "FAST_SLOW_CAS",
+
+      // Fast-slow pattern: Local JuiceFS cache (fast) + GRPC backup (slow)
+      fast_slow: {
+        fast: {
+          ref_store: {
+            name: "JUICEFS_SHARED_CAS",
+          },
+        },
+        slow: {
+          ref_store: {
+            name: "GRPC_CAS_BACKUP",
+          },
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          uri: "grpc://${SCHEDULER_ENDPOINT:-127.0.0.1}:50061",
+        },
+
+        // Use fast-slow CAS with JuiceFS as fast tier
+        cas_fast_slow_store: "FAST_SLOW_CAS",
+        upload_action_result: {
+          // Upload results to GRPC AC store
+          ac_store: "GRPC_AC_STORE",
+        },
+
+        // Worker-specific work directory (not shared)
+        work_directory: "/tmp/${WORKER_NAME}/work",
+        platform_properties: {
+          cpu_count: {
+            query_cmd: "nproc",
+          },
+          OSFamily: {
+            values: [
+              "linux",
+            ],
+          },
+          "container-image": {
+            values: [
+              "docker://alpine@sha256:...",
+            ],
+          },
+          ISA: {
+            values: [
+              "x86-64",
+            ],
+          },
+
+          // JuiceFS-specific property to identify workers with shared storage
+          storage_type: {
+            values: [
+              "juicefs",
+            ],
+          },
+        },
+      },
+    },
+  ],
+  servers: [],
+}
