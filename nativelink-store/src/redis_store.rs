@@ -52,6 +52,7 @@ use nativelink_util::store_trait::{
 use nativelink_util::task::JoinHandleDropGuard;
 use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
+use tokio::runtime::Runtime;
 use tokio::select;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
@@ -121,11 +122,25 @@ impl RecoverablePool {
         })
     }
 
-    fn connect(&self) {
+    pub fn connect(&self) {
         let clients = self.clients.read();
         for client in clients.iter() {
             client.connect();
         }
+    }
+
+    /// Helper primarily for tests to block until all clients have connected.
+    pub async fn wait_for_connect_for_testing(&self) -> Result<(), Error> {
+        let clients = self.clients.read().clone();
+        for client in clients {
+            client.wait_for_connect().await.err_tip(|| {
+                format!(
+                    "Failed to connect client {} in RecoverablePool::wait_for_connect_for_testing",
+                    client.id()
+                )
+            })?;
+        }
+        Ok(())
     }
 
     fn next(&self) -> Client {
@@ -173,6 +188,66 @@ impl RecoverablePool {
             // Second race: pool entry changed after we connected the new client.
             let _unused = new_client.quit().await;
             Ok(self.next())
+        }
+    }
+
+    fn snapshot_clients(&self) -> Vec<Client> {
+        let clients = self.clients.read();
+        clients.iter().cloned().collect()
+    }
+
+    async fn quit_clients(clients: Vec<Client>) {
+        for client in clients {
+            if let Err(e) = client.quit().await {
+                warn!("Failed to quit Redis client {}: {e:?}", client.id());
+            }
+        }
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Drop needs a fallback runtime when no executor is running"
+    )]
+    fn shutdown_blocking(clients: Vec<Client>) {
+        if clients.is_empty() {
+            return;
+        }
+
+        match Runtime::new() {
+            Ok(runtime) => {
+                runtime.block_on(Self::quit_clients(clients));
+            }
+            Err(e) => {
+                warn!("Failed to create runtime for Redis shutdown: {e:?}");
+            }
+        }
+    }
+}
+
+impl Drop for RecoverablePool {
+    fn drop(&mut self) {
+        let mut maybe_clients = Some(self.snapshot_clients());
+        if maybe_clients.as_ref().is_none_or(Vec::is_empty) {
+            return;
+        }
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) => {
+                if let Some(clients) = maybe_clients.take() {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "Drop needs to detach shutdown task without holding guards"
+                    )]
+                    tokio::spawn(async move {
+                        Self::quit_clients(clients).await;
+                    });
+                }
+            }
+            Err(_) => {
+                if let Some(clients) = maybe_clients.take() {
+                    Self::shutdown_blocking(clients);
+                }
+            }
         }
     }
 }
