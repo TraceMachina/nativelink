@@ -4,18 +4,20 @@ use std::env;
 use std::sync::{Arc, RwLock};
 
 use bytes::Bytes;
+use futures::TryStreamExt;
 use nativelink_config::stores::RedisSpec;
-use nativelink_error::{Code, Error};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_store::redis_store::RedisStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::store_trait::{
-    SchedulerCurrentVersionProvider, SchedulerStore, SchedulerStoreDataProvider,
-    SchedulerStoreDecodeTo, SchedulerStoreKeyProvider, StoreKey, StoreLike, TrueValue,
-    UploadSizeInfo,
+    SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
+    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider, StoreKey,
+    StoreLike, TrueValue, UploadSizeInfo,
 };
 use nativelink_util::telemetry::init_tracing;
 use nativelink_util::{background_spawn, spawn};
 use rand::Rng;
+use redis::aio::ConnectionManager;
 use tracing::{error, info};
 
 // Define test structures that implement the scheduler traits
@@ -26,6 +28,7 @@ struct TestSchedulerData {
     version: i64,
 }
 
+#[derive(Debug)]
 struct TestSchedulerReturn {
     version: i64,
 }
@@ -69,6 +72,36 @@ impl SchedulerCurrentVersionProvider for TestSchedulerData {
     }
 }
 
+struct SearchByContentPrefix {
+    prefix: String,
+}
+
+impl SchedulerIndexProvider for SearchByContentPrefix {
+    const KEY_PREFIX: &'static str = "test:";
+    const INDEX_NAME: &'static str = "content_prefix";
+    type Versioned = TrueValue;
+
+    fn index_value(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.prefix)
+    }
+}
+
+impl SchedulerStoreKeyProvider for SearchByContentPrefix {
+    type Versioned = TrueValue;
+
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(std::borrow::Cow::Owned("dummy_key".to_string()))
+    }
+}
+
+impl SchedulerStoreDecodeTo for SearchByContentPrefix {
+    type DecodeOutput = TestSchedulerReturn;
+
+    fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+        TestSchedulerData::decode(version, data)
+    }
+}
+
 const MAX_KEY: u16 = 1024;
 
 fn random_key() -> StoreKey<'static> {
@@ -106,7 +139,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                 max_client_permits,
                 ..Default::default()
             };
-            let store = RedisStore::new(spec)?;
+            let store = RedisStore::new_standard(spec).await?;
             let mut count = 0;
             let in_flight = Arc::new(AtomicUsize::new(0));
 
@@ -134,8 +167,10 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                 let local_in_flight = in_flight.clone();
 
                 background_spawn!("action", async move {
-                    async fn run_action(store_clone: Arc<RedisStore>) -> Result<(), Error> {
-                        let action_value = rand::rng().random_range(0..5);
+                    async fn run_action(
+                        store_clone: Arc<RedisStore<ConnectionManager>>,
+                    ) -> Result<(), Error> {
+                        let action_value = rand::rng().random_range(0..7);
                         match action_value {
                             0 => {
                                 store_clone.has(random_key()).await?;
@@ -164,6 +199,24 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                                 store_clone
                                     .update_oneshot(random_key(), Bytes::from_static(b"1234"))
                                     .await?;
+                            }
+                            4 => {
+                                let res = store_clone
+                                    .list(.., |_key| true)
+                                    .await
+                                    .err_tip(|| "In list")?;
+                                info!(%res, "end list");
+                            }
+                            5 => {
+                                let search_provider = SearchByContentPrefix {
+                                    prefix: "key".to_string(),
+                                };
+                                let search_results: Vec<_> = store_clone
+                                    .search_by_index_prefix(search_provider)
+                                    .await?
+                                    .try_collect()
+                                    .await?;
+                                info!(?search_results, "search results");
                             }
                             _ => {
                                 let mut data = TestSchedulerData {

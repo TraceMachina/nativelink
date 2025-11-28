@@ -107,6 +107,7 @@ build --@rules_rust//:clippy_flag=-Wclippy::dbg_macro
 build --@rules_rust//:clippy_flag=-Wclippy::decimal_literal_representation
 build --@rules_rust//:clippy_flag=-Dclippy::elidable_lifetime_names
 build --@rules_rust//:clippy_flag=-Dclippy::explicit_into_iter_loop
+build --@rules_rust//:clippy_flag=-Dclippy::future_not_send
 build --@rules_rust//:clippy_flag=-Aclippy::get_unwrap
 build --@rules_rust//:clippy_flag=-Dclippy::missing_const_for_fn
 build --@rules_rust//:clippy_flag=-Aclippy::missing_docs_in_private_items
