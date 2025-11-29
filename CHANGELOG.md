@@ -3,6 +3,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.8](https://github.com/TraceMachina/nativelink/compare/v0.7.7..v0.7.8) - 2025-11-27
+
+### 🐛 Bug Fixes
+
+- Use wildcard query when Redis index value is empty ([#2069](https://github.com/TraceMachina/nativelink/issues/2069))
+- Fix assertion message for fastcdc ([#2056](https://github.com/TraceMachina/nativelink/issues/2056))
+- Fix the changelog post 0.7.7 ([#2057](https://github.com/TraceMachina/nativelink/issues/2057))
+
+### 🧪 Testing & CI
+
+- Redis store tester and permits ([#1878](https://github.com/TraceMachina/nativelink/issues/1878))
+
+### ⚙️ Miscellaneous
+
+- *(deps)* Update dependency astro to v5.15.9 [security] ([#2061](https://github.com/TraceMachina/nativelink/issues/2061))
+- Recoverable connection pool ([#2067](https://github.com/TraceMachina/nativelink/issues/2067))
+- Revert "bugfix: prefix Redis index name and sort key ([#2066])" ([#2068](https://github.com/TraceMachina/nativelink/issues/2068))
+- Prefix Redis index name and sort key ([#2066](https://github.com/TraceMachina/nativelink/issues/2066))
+- Disable digest updates for renovate and Nix magic cache ([#2059](https://github.com/TraceMachina/nativelink/issues/2059))
+- Do not need to store zero-length filesystem files ([#2033](https://github.com/TraceMachina/nativelink/issues/2033))
+- Don't complain about worker stream error if we're shutting down ([#2055](https://github.com/TraceMachina/nativelink/issues/2055))
+
+### ⬆️ Bumps & Version Updates
+
+- Update the default max permits for redis ([#2063](https://github.com/TraceMachina/nativelink/issues/2063))
+
 ## [0.7.7](https://github.com/TraceMachina/nativelink/compare/v0.7.6..v0.7.7) - 2025-11-17
 
 
