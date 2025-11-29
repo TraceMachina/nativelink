@@ -169,7 +169,7 @@ impl FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        let deterministic_sz = if self
+        let known_reader_stream_size = if self
             .slow_store
             .inner_store(Some(key.borrow()))
             .optimized_for(StoreOptimizations::LazyNotFound)
@@ -252,8 +252,8 @@ impl FastSlowStore {
         let fast_store_fut = self.fast_store.update(
             key.borrow(),
             fast_rx,
-            match deterministic_sz {
-                Some(sz) => UploadSizeInfo::ExactSize(sz),
+            match known_reader_stream_size {
+                Some(size) => UploadSizeInfo::ExactSize(size),
                 None => UploadSizeInfo::MaxSize(u64::MAX),
             },
         );
