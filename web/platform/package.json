@@ -22,7 +22,7 @@
     "@react-three/fiber": "^9.1.2",
     "@tailwindcss/vite": "^4.1.5",
     "@types/bun": "^1.2.12",
-    "astro": "5.14.3",
+    "astro": "5.15.9",
     "clsx": "^2.1.1",
     "dotenv": "^17.0.0",
     "framer-motion": "^12.9.4",

@@ -454,7 +454,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
             .insert_with_time(
                 key.into_owned().into(),
                 Arc::new(file_entry),
-                time_since_anchor.as_secs() as i32,
+                i32::try_from(time_since_anchor.as_secs()).unwrap_or(i32::MAX),
             )
             .await;
         Ok(())
@@ -704,6 +704,17 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
+        if is_zero_digest(digest) {
+            return Ok(Arc::new(Fe::create(
+                0,
+                0,
+                RwLock::new(EncodedFilePath {
+                    shared_context: self.shared_context.clone(),
+                    path_type: PathType::Content,
+                    key: digest.into(),
+                }),
+            )));
+        }
         self.evicting_map
             .get(&digest.into())
             .await
@@ -857,10 +868,24 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn update(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        reader: DropCloserReadHalf,
+        mut reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
+        if is_zero_digest(key.borrow()) {
+            // don't need to add, because zero length files are just assumed to exist
+            return Ok(());
+        }
+
         let temp_key = make_temp_key(&key);
+
+        // There's a possibility of deadlock here where we take all of the
+        // file semaphores with make_and_open_file and the semaphores for
+        // whatever is populating reader is exhasted on the threads that
+        // have the FileSlots and not on those which can't.  To work around
+        // this we don't take the FileSlot until there's something on the
+        // reader available to know that the populator is active.
+        reader.peek().await?;
+
         let (entry, temp_file, temp_full_path) = Fe::make_and_open_file(
             self.block_size,
             EncodedFilePath {
@@ -901,6 +926,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .err_tip(|| format!("While reading metadata for {}", path.display()))?
                 .len(),
         };
+        if file_size == 0 {
+            // don't need to add, because zero length files are just assumed to exist
+            return Ok(None);
+        }
         let entry = Fe::create(
             file_size,
             self.block_size,

@@ -20,6 +20,7 @@ rust_library(
         "src/evicting_map.rs",
         "src/fastcdc.rs",
         "src/fs.rs",
+        "src/fs_util.rs",
         "src/health_utils.rs",
         "src/instant_wrapper.rs",
         "src/known_platform_property_provider.rs",
@@ -54,6 +55,7 @@ rust_library(
         "@crates//:bytes",
         "@crates//:futures",
         "@crates//:hex",
+        "@crates//:humantime",
         "@crates//:hyper-1.7.0",
         "@crates//:hyper-util",
         "@crates//:lru",
@@ -152,6 +154,7 @@ rust_test(
         "@crates//:pretty_assertions",
         "@crates//:rand",
         "@crates//:serde_json",
+        "@crates//:tempfile",
     ],
 )
 

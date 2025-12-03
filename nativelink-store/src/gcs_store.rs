@@ -100,10 +100,10 @@ where
         let max_chunk_size =
             core::cmp::min(spec.resumable_chunk_size.unwrap_or(CHUNK_SIZE), CHUNK_SIZE);
 
-        let max_chunk_size = if max_chunk_size % CHUNK_MULTIPLE != 0 {
-            ((max_chunk_size + CHUNK_MULTIPLE / 2) / CHUNK_MULTIPLE) * CHUNK_MULTIPLE
-        } else {
+        let max_chunk_size = if max_chunk_size.is_multiple_of(CHUNK_MULTIPLE) {
             max_chunk_size
+        } else {
+            ((max_chunk_size + CHUNK_MULTIPLE / 2) / CHUNK_MULTIPLE) * CHUNK_MULTIPLE
         };
 
         let max_retry_buffer_size = spec
@@ -228,6 +228,15 @@ where
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
+        if is_zero_digest(digest.borrow()) {
+            return reader.recv().await.and_then(|should_be_empty| {
+                should_be_empty
+                    .is_empty()
+                    .then_some(())
+                    .ok_or_else(|| make_err!(Code::Internal, "Zero byte hash not empty"))
+            });
+        }
+
         let object_path = self.make_object_path(&digest);
 
         reader.set_max_recent_data_size(
@@ -238,7 +247,7 @@ where
         // For small files with exact size, we'll use simple upload
         if let UploadSizeInfo::ExactSize(size) = upload_size {
             if size < MIN_MULTIPART_SIZE {
-                let content = reader.consume(Some(size as usize)).await?;
+                let content = reader.consume(Some(usize::try_from(size)?)).await?;
                 let client = &self.client;
 
                 return self

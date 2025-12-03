@@ -48,9 +48,18 @@ runs:
         fi
 
     - name: Install Nix
-      uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v17
-        DeterminateSystems/nix-installer-action@21a544727d0c62386e78b4befe52d19ad12692e3
+      uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v20
+        DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196
+      with:
+        source-tag: v3.13.0
 
-    - name: Add Nix magic cache
-      uses: >- # https://github.com/DeterminateSystems/magic-nix-cache-action/releases/tag/v11
-        DeterminateSystems/magic-nix-cache-action@def9f5a5c6a6b8751c0534e8813a5d0ad2635660
+    # FIXME(palfrey): Replace with better cache. Workers are currently taking minutes to upload data
+    # all the time, probably because we're at ~500GB of 10GB in the cache storage and it's breaking.
+    # We've tried Flakehub, but it doesn't work for us because it assumes "branches on an org repo"
+    # not our "fork and branch on your own repo" setup for it's auth so we can't currently use that.
+
+    # - name: Add Nix magic cache
+    #   uses: >- # https://github.com/DeterminateSystems/magic-nix-cache-action/releases/tag/v13
+    #     DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39
+    #   with:
+    #     source-tag: v0.1.6

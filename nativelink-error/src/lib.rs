@@ -20,6 +20,7 @@ use nativelink_metric::{
 };
 use prost_types::TimestampError;
 use serde::{Deserialize, Serialize};
+use tokio::sync::AcquireError;
 // Reexport of tonic's error codes which we use as "nativelink_error::Code".
 pub use tonic::Code;
 
@@ -233,6 +234,12 @@ impl From<TimestampError> for Error {
     }
 }
 
+impl From<AcquireError> for Error {
+    fn from(err: AcquireError) -> Self {
+        make_err!(Code::Internal, "{}", err)
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Self {
@@ -279,6 +286,12 @@ impl From<Error> for tonic::Status {
 
 impl From<walkdir::Error> for Error {
     fn from(value: walkdir::Error) -> Self {
+        Self::new(Code::Internal, value.to_string())
+    }
+}
+
+impl From<uuid::Error> for Error {
+    fn from(value: uuid::Error) -> Self {
         Self::new(Code::Internal, value.to_string())
     }
 }

@@ -57,9 +57,7 @@ NativeLink seamlessly integrates with build tools that use the Remote Execution 
 
 ## 🚀 Quickstart
 
-To start, you can deploy NativeLink as a Docker image (as shown below) or by using our cloud-hosted solution, [NativeLink Cloud](https://app.nativelink.com). It's **FREE** for individuals, open-source projects, and cloud production environments, with support for unlimited team members.
-
-The setups below are **production-grade** installations. See the [contribution docs](https://nativelink.com/docs/contribute/nix/) for instructions on how to build from source with [Bazel](https://nativelink.com/docs/contribute/bazel/), [Cargo](https://nativelink.com/docs/contribute/cargo/), and [Nix](https://nativelink.com/docs/contribute/nix/).
+To start, you can deploy NativeLink as a Docker image (as shown below). The setups below are **production-grade** installations. See the [contribution docs](https://nativelink.com/docs/contribute/nix/) for instructions on how to build from source with [Bazel](https://nativelink.com/docs/contribute/bazel/), [Cargo](https://nativelink.com/docs/contribute/cargo/), and [Nix](https://nativelink.com/docs/contribute/nix/).
 
 You can find a few example deployments in the [Docs](https://nativelink.com/docs/deployment-examples/kubernetes).
 
@@ -74,14 +72,14 @@ for how to build the images yourself.
 
 ```bash
 curl -O \
-    https://raw.githubusercontent.com/TraceMachina/nativelink/v0.7.0/nativelink-config/examples/basic_cas.json5
+    https://raw.githubusercontent.com/TraceMachina/nativelink/v0.7.5/nativelink-config/examples/basic_cas.json5
 
 # See https://github.com/TraceMachina/nativelink/pkgs/container/nativelink
 # to find the latest tag
 docker run \
     -v $(pwd)/basic_cas.json5:/config \
     -p 50051:50051 \
-    ghcr.io/tracemachina/nativelink:v0.7.0 \
+    ghcr.io/tracemachina/nativelink:v0.7.5 \
     config
 ```
 
@@ -90,7 +88,7 @@ docker run \
 ```powershell
 # Download the configuration file
 Invoke-WebRequest `
-    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v0.7.0/nativelink-config/examples/basic_cas.json5" `
+    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v0.7.5/nativelink-config/examples/basic_cas.json5" `
     -OutFile "basic_cas.json5"
 
 # Run the Docker container
@@ -98,7 +96,7 @@ Invoke-WebRequest `
 docker run `
     -v ${PWD}/basic_cas.json5:/config `
     -p 50051:50051 `
-    ghcr.io/tracemachina/nativelink:v0.7.0 `
+    ghcr.io/tracemachina/nativelink:v0.7.5 `
     config
 ```
 

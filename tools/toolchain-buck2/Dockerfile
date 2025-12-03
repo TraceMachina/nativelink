@@ -13,13 +13,13 @@
 # limitations under the License.
 
 # https://hub.docker.com/layers/library/ubuntu/noble-20250925/images/sha256-78281ac7684a7caf02348780a1b5de85844548a3cc0505df924de98380a0eeea
-FROM ubuntu:noble-20250925 AS dependencies
+FROM ubuntu:noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5ccd7a0b32b80d8248123 AS dependencies
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
     apt-get install -y --no-install-recommends \
         git=1:2.43.0-1ubuntu7.3 \
         ca-certificates=20240203 \
         curl=8.5.0-2ubuntu10.6 \
-        python3=3.12.3-0ubuntu2 \
+        python3=3.12.3-0ubuntu2.1 \
         && apt-get clean \
         && rm -rf /var/lib/apt/lists/* \
         && update-ca-certificates

@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 mod utils {
     pub(crate) mod scheduler_utils;
@@ -70,6 +70,7 @@ async fn add_action_adds_property() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let client_operation_id = OperationId::default();
     let (_, (passed_client_operation_id, action_info)) = join!(
@@ -114,6 +115,7 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let client_operation_id = OperationId::default();
     let (_, (passed_client_operation_id, action_info)) = join!(
@@ -153,6 +155,7 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let client_operation_id = OperationId::default();
     let (_, (passed_client_operation_id, action_info)) = join!(
@@ -192,6 +195,7 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let client_operation_id = OperationId::default();
     let (_, (passed_client_operation_id, action_info)) = join!(
@@ -233,6 +237,7 @@ async fn add_action_property_replace() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let client_operation_id = OperationId::default();
     let (_, (passed_client_operation_id, action_info)) = join!(
@@ -277,6 +282,7 @@ async fn add_action_property_replace_match_value() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let client_operation_id = OperationId::default();
     let (_, (passed_client_operation_id, action_info)) = join!(
@@ -322,6 +328,7 @@ async fn add_action_property_replace_value() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let client_operation_id = OperationId::default();
     let (_, (passed_client_operation_id, action_info)) = join!(
@@ -359,6 +366,7 @@ async fn add_action_property_remove() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     // let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
     let client_operation_id = OperationId::default();

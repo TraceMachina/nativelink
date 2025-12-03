@@ -1,15 +1,16 @@
+#:schema ../tools/cargo-with-detailed-deps.json
 lints.workspace = true
 
 [package]
 edition = "2024"
 name = "nativelink-metric"
-version = "0.7.3"
+version = "0.7.8"
 
 [dependencies]
 nativelink-metric-macro-derive = { path = "nativelink-metric-macro-derive" }
 
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
-parking_lot = "0.12.3"
+parking_lot = { version = "0.12.3", default-features = false }
 tokio = { version = "1.44.1", features = [
   "fs",
   "io-util",

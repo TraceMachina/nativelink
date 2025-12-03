@@ -107,6 +107,7 @@ impl AwaitedAction {
             // client_operation_id to all clients.
             client_operation_id: operation_id.clone(),
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: now,
         });
 
         let ctx = Context::current();
@@ -239,29 +240,36 @@ impl MetricsComponent for AwaitedActionSortKey {
 }
 
 impl AwaitedActionSortKey {
-    #[rustfmt::skip]
     const fn new(priority: i32, insert_timestamp: u32) -> Self {
-        // Shift `new_priority` so [`i32::MIN`] is represented by zero.
-        // This makes it so any negative values are positive, but
-        // maintains ordering.
-        const MIN_I32: i64 = (i32::MIN as i64).abs();
-        let priority = ((priority as i64 + MIN_I32) as u32).to_be_bytes();
+        // Shift the signed i32 range [i32::MIN, i32::MAX] to the unsigned u32 range
+        // [0, u32::MAX] to preserve ordering when we convert to bytes for sorting.
+        let priority_u32 = i32::MIN.unsigned_abs().wrapping_add_signed(priority);
+        let priority = priority_u32.to_be_bytes();
 
         // Invert our timestamp so the larger the timestamp the lower the number.
         // This makes timestamp descending order instead of ascending.
         let timestamp = (insert_timestamp ^ u32::MAX).to_be_bytes();
 
         Self(u64::from_be_bytes([
-            priority[0], priority[1], priority[2], priority[3],
-            timestamp[0], timestamp[1], timestamp[2], timestamp[3],
+            priority[0],
+            priority[1],
+            priority[2],
+            priority[3],
+            timestamp[0],
+            timestamp[1],
+            timestamp[2],
+            timestamp[3],
         ]))
     }
 
     fn new_with_unique_key(priority: i32, insert_timestamp: &SystemTime) -> Self {
-        let timestamp = insert_timestamp
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as u32;
+        let timestamp = u32::try_from(
+            insert_timestamp
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap_or(u32::MAX);
         Self::new(priority, timestamp)
     }
 

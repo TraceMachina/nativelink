@@ -14,8 +14,6 @@ rust_binary(
     srcs = [
         "src/bin/nativelink.rs",
     ],
-    # Enable this to get extra debug about workers that are not being used by the CAS
-    # crate_features = ["worker_find_logging"],
     deps = [
         "//nativelink-config",
         "//nativelink-error",
@@ -37,6 +35,23 @@ rust_binary(
         "@crates//:tokio-rustls",
         "@crates//:tonic",
         "@crates//:tower",
+        "@crates//:tracing",
+    ],
+)
+
+rust_binary(
+    name = "redis_store_tester",
+    srcs = [
+        "src/bin/redis_store_tester.rs",
+    ],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:bytes",
+        "@crates//:rand",
+        "@crates//:tokio",
         "@crates//:tracing",
     ],
 )

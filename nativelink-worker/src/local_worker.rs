@@ -196,7 +196,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
         loop {
             select! {
-                maybe_update = update_for_worker_stream.next() => {
+                maybe_update = update_for_worker_stream.next() => if !shutting_down || maybe_update.is_some() {
                     match maybe_update
                         .err_tip(|| "UpdateForWorker stream closed early")?
                         .err_tip(|| "Got error in UpdateForWorker stream")?
@@ -219,7 +219,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             let operation_id = OperationId::from(kill_operation_request.operation_id);
                             if let Err(err) = self.running_actions_manager.kill_operation(&operation_id).await {
                                 error!(
-                                    ?operation_id,
+                                    %operation_id,
                                     ?err,
                                     "Failed to send kill request for operation"
                                 );
@@ -272,7 +272,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     })
                                     .and_then(|action| {
                                         debug!(
-                                            operation_id = ?action.get_operation_id(),
+                                            operation_id = %action.get_operation_id(),
                                             "Received request to run action"
                                         );
                                         action
@@ -488,6 +488,44 @@ pub async fn new_local_worker(
     } else {
         Duration::from_secs(config.max_action_timeout as u64)
     };
+
+    // Initialize directory cache if configured
+    let directory_cache = if let Some(cache_config) = &config.directory_cache {
+        use std::path::PathBuf;
+
+        use crate::directory_cache::{
+            DirectoryCache, DirectoryCacheConfig as WorkerDirCacheConfig,
+        };
+
+        let cache_root = if cache_config.cache_root.is_empty() {
+            PathBuf::from(&config.work_directory).parent().map_or_else(
+                || PathBuf::from("/tmp/nativelink_directory_cache"),
+                |p| p.join("directory_cache"),
+            )
+        } else {
+            PathBuf::from(&cache_config.cache_root)
+        };
+
+        let worker_cache_config = WorkerDirCacheConfig {
+            max_entries: cache_config.max_entries,
+            max_size_bytes: cache_config.max_size_bytes,
+            cache_root,
+        };
+
+        match DirectoryCache::new(worker_cache_config, Store::new(fast_slow_store.clone())).await {
+            Ok(cache) => {
+                tracing::info!("Directory cache initialized successfully");
+                Some(Arc::new(cache))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize directory cache: {:?}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
@@ -501,6 +539,7 @@ pub async fn new_local_worker(
             upload_action_result_config: &config.upload_action_result,
             max_action_timeout,
             timeout_handled_externally: config.timeout_handled_externally,
+            directory_cache,
         })?);
     let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),

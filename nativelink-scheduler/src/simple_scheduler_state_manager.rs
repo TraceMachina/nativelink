@@ -244,8 +244,8 @@ where
 /// Scheduler state includes the actions that are queued, active, and recently completed.
 /// It also includes the workers that are available to execute actions based on allocation
 /// strategy.
-#[derive(MetricsComponent)]
-pub(crate) struct SimpleSchedulerStateManager<T, I, NowFn>
+#[derive(MetricsComponent, Debug)]
+pub struct SimpleSchedulerStateManager<T, I, NowFn>
 where
     T: AwaitedActionDb,
     I: InstantWrapper,
@@ -293,7 +293,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
-    pub(crate) fn new(
+    pub fn new(
         max_job_retries: usize,
         no_event_action_timeout: Duration,
         client_action_timeout: Duration,
@@ -320,9 +320,8 @@ where
         // Note: The caller must filter `client_operation_id`.
 
         let mut maybe_reloaded_awaited_action: Option<AwaitedAction> = None;
-        if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout
-            < (self.now_fn)().now()
-        {
+        let now = (self.now_fn)().now();
+        if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout < now {
             // This may change if the version is out of date.
             let mut timed_out = true;
             if !awaited_action.state().stage.is_finished() {
@@ -335,6 +334,7 @@ where
                     )),
                     ..ActionResult::default()
                 });
+                state.last_transition_timestamp = now;
                 let state = Arc::new(state);
                 // We may be competing with an client timestamp update, so try
                 // this a few times.
@@ -532,6 +532,10 @@ where
                 // No action found. It is ok if the action was not found. It
                 // probably means that the action was dropped, but worker was
                 // still processing it.
+                warn!(
+                    %operation_id,
+                    "Unable to update action due to it being missing, probably dropped"
+                );
                 return Ok(());
             };
 
@@ -577,7 +581,7 @@ where
                     _ => {
                         return Err(make_err!(
                             Code::Internal,
-                            "Action {operation_id:?} is already completed with state {:?} - maybe_worker_id: {:?}",
+                            "Action {operation_id} is already completed with state {:?} - maybe_worker_id: {:?}",
                             awaited_action.state().stage,
                             maybe_worker_id,
                         ));
@@ -651,6 +655,7 @@ where
                     // correct client id.
                     client_operation_id: operation_id.clone(),
                     action_digest: awaited_action.action_info().digest(),
+                    last_transition_timestamp: now,
                 }),
                 now,
             );

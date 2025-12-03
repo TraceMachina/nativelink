@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # https://hub.docker.com/layers/library/ubuntu/noble-20250925/images/sha256-78281ac7684a7caf02348780a1b5de85844548a3cc0505df924de98380a0eeea
-FROM ubuntu:noble-20250925
+FROM ubuntu:noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5ccd7a0b32b80d8248123
 
 # Set shell to bash and enable pipefail
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -22,9 +22,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
     gcc=4:13.2.0-7ubuntu1 \
     g++=4:13.2.0-7ubuntu1 \
-    python3=3.12.3-0ubuntu2 \
-    python3-minimal=3.12.3-0ubuntu2 \
-    libpython3-stdlib=3.12.3-0ubuntu2 \
+    python3=3.12.3-0ubuntu2.1 \
     curl=8.5.0-2ubuntu10.6 \
     ca-certificates=20240203 \
     && apt-get clean \

@@ -85,11 +85,14 @@ commit_parsers = [
   { message = "GrpcStore now sends digest function from context", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Implement .* feature", group = "<!-- 1 -->⛰️  Features" },
   { message = "Implement `ClientStateManager` for `SimpleScheduler`", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Log failures to update actions", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Log on command complete", group = "<!-- 1 -->⛰️  Features" },
   { message = "Make the error on a size field clearer", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Migrate to callPackage syntax", group = "<!-- 6 -->⚙️ Miscellaneous" },
   { message = "Move Bytestream to array config", group = "<!-- 1 -->⛰️  Features" },
   { message = "Move `update_action_with_internal_error` into `StateManager`", group = "<!-- 6 -->⚙️ Miscellaneous" },
   { message = "Prevent UUID collision", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Redo worker_find_logging as config", group = "<!-- 1 -->⛰️  Features" },
   { message = "Remove nativelink-proto as build dependency", group = "<!-- 4 -->🧪 Testing & CI" },
   { message = "Retry GrpcStore get_part_ref", group = "<!-- 1 -->⛰️  Features" },
   { message = "Shard store weight scale distribution", group = "<!-- 1 -->⛰️  Features" },
@@ -131,6 +134,8 @@ commit_parsers = [
   { message = "Handle", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Resolve", group = "<!-- 2 -->🐛 Bug Fixes" },
 
+  { message = "Merge branch", skip = true },
+  { message = "Prepare.+release", skip = true },
   { message = "Release", skip = true },
 
   # Catch-all in miscellaneous

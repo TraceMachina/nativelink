@@ -10,6 +10,7 @@ load(
 rust_library(
     name = "nativelink-worker",
     srcs = [
+        "src/directory_cache.rs",
         "src/lib.rs",
         "src/local_worker.rs",
         "src/running_actions_manager.rs",
@@ -99,6 +100,7 @@ rust_test(
         "@crates//:prost-types",
         "@crates//:rand",
         "@crates//:serial_test",
+        "@crates//:tempfile",
     ],
 )
 

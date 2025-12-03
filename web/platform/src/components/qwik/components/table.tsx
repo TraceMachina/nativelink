@@ -4,19 +4,9 @@ import { Checkmark, Xmark } from "./icons.tsx";
 
 const features = [
   {
-    feature: "Data Transfer",
-    free: "Up to 1TB",
-    enterprise: "Unlimited",
-  },
-  {
     feature: "Hosting",
     free: "Self-hosted",
-    enterprise: "Self-hosted or partially to fully managed",
-  },
-  {
-    feature: "Private Hosted Cache",
-    free: <Xmark />,
-    enterprise: <Checkmark />,
+    enterprise: "Self-hosted or partially managed",
   },
   {
     feature: "Support",
@@ -34,33 +24,13 @@ const features = [
     enterprise: "Linux, MacOS, and Windows",
   },
   {
-    feature: "Build Action Breakdown",
-    free: <Checkmark />,
-    enterprise: <Checkmark />,
-  },
-  {
-    feature: "Live Build Updates",
-    free: <Checkmark />,
-    enterprise: <Checkmark />,
-  },
-  {
     feature: "Org-wide sharing",
-    free: <Checkmark />,
-    enterprise: <Checkmark />,
-  },
-  {
-    feature: "GUI",
     free: <Checkmark />,
     enterprise: <Checkmark />,
   },
   {
     feature: "Distributed Scheduler",
     free: <Checkmark />,
-    enterprise: <Checkmark />,
-  },
-  {
-    feature: "Autoscaling",
-    free: <Xmark />,
     enterprise: <Checkmark />,
   },
   {
@@ -79,18 +49,28 @@ const features = [
     enterprise: <Checkmark />,
   },
   {
-    feature: "Number of CPU cores",
-    free: "Up to 100",
-    enterprise: "Unlimited",
+    feature: "Remote Execution",
+    free: <Checkmark />,
+    enterprise: <Checkmark />,
   },
   {
-    feature: "Unlimited users",
+    feature: "Autoscaling",
     free: <Xmark />,
     enterprise: <Checkmark />,
   },
   {
-    feature: "Remote Execution",
-    free: <Checkmark />,
+    feature: "GUI",
+    free: <Xmark />,
+    enterprise: <Checkmark />,
+  },
+  {
+    feature: "Build Action Breakdown",
+    free: <Xmark />,
+    enterprise: <Checkmark />,
+  },
+  {
+    feature: "Live Build Updates",
+    free: <Xmark />,
     enterprise: <Checkmark />,
   },
 ];
@@ -104,7 +84,7 @@ export const FeatureTable = component$(() => {
             Feature
           </th>
           <th class="p-2 w-[30%] md:w-[35%] border-r border-[#2b2b2b] text-center font-semibold">
-            Starter ($29/mo)
+            Open Source
           </th>
           <th class="p-2 w-[30%] md:w-[35%] text-center font-semibold">
             Enterprise

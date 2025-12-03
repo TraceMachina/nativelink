@@ -223,7 +223,8 @@ async fn simple_update_ac() -> Result<(), Error> {
 
     let mut send_data = BytesMut::with_capacity(CONTENT_LENGTH);
     for i in 0..CONTENT_LENGTH {
-        send_data.put_u8(((i % 93) + 33) as u8); // Printable characters only.
+        let value = (i % 93) + 33;
+        send_data.put_u8(u8::try_from(value).expect("value always in u8 range"));
     }
     let send_data = send_data.freeze();
 
@@ -584,7 +585,8 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
 
     let mut send_data = Vec::with_capacity(AC_ENTRY_SIZE);
     for i in 0..send_data.capacity() {
-        send_data.push(((i * 3) % 256) as u8);
+        let value = (i * 3) % 256;
+        send_data.push(u8::try_from(value).expect("value always in u8 range"));
     }
     let digest = DigestInfo::try_new(VALID_HASH1, send_data.len())?;
 

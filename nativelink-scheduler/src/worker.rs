@@ -115,7 +115,7 @@ fn reduce_platform_properties(
     parent_props: &mut PlatformProperties,
     reduction_props: &PlatformProperties,
 ) {
-    debug_assert!(reduction_props.is_satisfied_by(parent_props));
+    debug_assert!(reduction_props.is_satisfied_by(parent_props, false));
     for (property, prop_value) in &reduction_props.properties {
         if let PlatformPropertyValue::Minimum(value) = prop_value {
             let worker_props = &mut parent_props.properties;

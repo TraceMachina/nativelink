@@ -64,8 +64,7 @@
               # Getting started
 
               Enter the Nix environment with `nix develop`.
-              Get your credentials for the NativeLink cloud on
-              https://app.nativelink.com/ and paste them into `user.bazelrc`.
+              Get your credentials for NativeLink and paste them into `user.bazelrc`.
               Run `bazel build hello-world` to build the example with local
               remote execution.
 
@@ -161,8 +160,6 @@
           (craneLibFor p).buildPackage ((commonArgsFor p)
             // {
               cargoArtifacts = cargoArtifactsFor p;
-              # Enable this for debugging worker scheduler issues
-              # cargoExtraArgs = "--features worker_find_logging";
             });
 
         nativeTargetPkgs =
@@ -369,10 +366,8 @@
             nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
-            generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
-            generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
 
-            inherit (pkgs) buildstream buildbox mongodb wait4x bazelisk;
+            inherit (pkgs) buildstream buildbox buck2 mongodb wait4x bazelisk;
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
               inherit nativelink buildstream buildbox;
             };
@@ -382,6 +377,12 @@
             rbe-toolchain-with-nativelink-test = pkgs.callPackage toolchain-examples/rbe-toolchain-test.nix {
               inherit nativelink bazelisk;
             };
+            buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
+              inherit nativelink buck2;
+            };
+
+            generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
+            generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
           }
           // (
             # It's not possible to crosscompile to darwin, not even between
@@ -463,6 +464,7 @@
               pkgs.git
               pkgs.pre-commit
               pkgs.git-cliff
+              pkgs.buck2
 
               # Rust
               bazel

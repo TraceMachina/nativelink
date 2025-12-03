@@ -114,6 +114,28 @@ pub struct GcsClient {
 }
 
 impl GcsClient {
+    fn create_client_config(spec: &ExperimentalGcsSpec) -> Result<ClientConfig, Error> {
+        let mut client_config = ClientConfig::default();
+        let connect_timeout = if spec.connection_timeout_s > 0 {
+            Duration::from_secs(spec.connection_timeout_s)
+        } else {
+            Duration::from_secs(3)
+        };
+        let read_timeout = if spec.read_timeout_s > 0 {
+            Duration::from_secs(spec.read_timeout_s)
+        } else {
+            Duration::from_secs(3)
+        };
+        let client = reqwest::ClientBuilder::new()
+            .connect_timeout(connect_timeout)
+            .read_timeout(read_timeout)
+            .build()
+            .map_err(|e| make_err!(Code::Internal, "Unable to create GCS client: {e:?}"))?;
+        let mid_client = reqwest_middleware::ClientBuilder::new(client).build();
+        client_config.http = Some(mid_client);
+        Ok(client_config)
+    }
+
     /// Create a new GCS client from the provided spec
     pub async fn new(spec: &ExperimentalGcsSpec) -> Result<Self, Error> {
         // Attempt to get the authentication from a file with the environment
@@ -121,8 +143,12 @@ impl GcsClient {
         // environment in variable GOOGLE_APPLICATION_CREDENTIALS_JSON.  If that
         // fails, attempt to get authentication from the environment.
         let maybe_client_config = match CredentialsFile::new().await {
-            Ok(credentials) => ClientConfig::default().with_credentials(credentials).await,
-            Err(_) => ClientConfig::default().with_auth().await,
+            Ok(credentials) => {
+                Self::create_client_config(spec)?
+                    .with_credentials(credentials)
+                    .await
+            }
+            Err(_) => Self::create_client_config(spec)?.with_auth().await,
         }
         .map_err(|e| {
             make_err!(
@@ -135,7 +161,8 @@ impl GcsClient {
         let client_config = if spec.authentication_required {
             maybe_client_config.err_tip(|| "Authentication required and none found.")?
         } else {
-            maybe_client_config.unwrap_or_else(|_| ClientConfig::default().anonymous())
+            maybe_client_config
+                .or_else(|_| Self::create_client_config(spec).map(ClientConfig::anonymous))?
         };
 
         // Creating client with the configured authentication
@@ -212,9 +239,12 @@ impl GcsClient {
         reader: &mut DropCloserReadHalf,
         max_size: u64,
     ) -> Result<(), Error> {
-        let initial_capacity = core::cmp::min(max_size as usize, 10 * 1024 * 1024);
+        let initial_capacity = core::cmp::min(
+            usize::try_from(max_size).unwrap_or(usize::MAX),
+            10 * 1024 * 1024,
+        );
         let mut data = Vec::with_capacity(initial_capacity);
-        let max_size = max_size as usize;
+        let max_size = usize::try_from(max_size).unwrap_or(usize::MAX);
         let mut total_size = 0usize;
 
         while total_size < max_size {
@@ -265,7 +295,7 @@ impl GcsClient {
 
             // Upload data in chunks
             let mut offset: u64 = 0;
-            let max_size = max_size as usize;
+            let max_size = usize::try_from(max_size).unwrap_or(usize::MAX);
             let mut total_uploaded = 0usize;
 
             while total_uploaded < max_size {
@@ -550,7 +580,11 @@ impl GcsOperations for GcsClient {
 
                     let mut rng = rand::rng();
                     let jitter_factor = rng.random::<f64>().mul_add(0.4, 0.8);
-                    retry_delay = (retry_delay as f64 * jitter_factor) as u64;
+                    retry_delay = Duration::from_millis(retry_delay)
+                        .mul_f64(jitter_factor)
+                        .as_millis()
+                        .try_into()
+                        .unwrap_or(u64::MAX);
 
                     retry_count += 1;
                 }

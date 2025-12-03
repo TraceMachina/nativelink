@@ -30,9 +30,12 @@ mod tests {
     use std::sync::{Arc, LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use bytes::Bytes;
     use futures::prelude::*;
     use nativelink_config::cas_server::EnvironmentSource;
-    use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
+    use nativelink_config::stores::{
+        FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+    };
     use nativelink_error::{Code, Error, ResultExt, make_input_err};
     use nativelink_macro::nativelink_test;
     use nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable;
@@ -113,6 +116,8 @@ mod tests {
             &FastSlowSpec {
                 fast: StoreSpec::Filesystem(fast_config),
                 slow: StoreSpec::Memory(slow_config),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
             },
             Store::new(fast_store.clone()),
             Store::new(slow_store.clone()),
@@ -451,6 +456,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -573,6 +579,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -697,6 +704,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -877,6 +885,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1058,6 +1067,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1265,6 +1275,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1399,6 +1410,7 @@ mod tests {
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         #[cfg(target_family = "unix")]
@@ -1601,6 +1613,7 @@ exit 0
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
@@ -1776,6 +1789,7 @@ exit 0
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
@@ -1859,7 +1873,7 @@ exit 0
             .compute_from_reader(Cursor::new(expected_stderr))
             .await?;
 
-        let actual_stderr: bytes::Bytes = cas_store
+        let actual_stderr: Bytes = cas_store
             .as_ref()
             .get_part_unchunked(result.stderr_digest, 0, None)
             .await?;
@@ -1945,6 +1959,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
         let arguments = vec!["true".to_string()];
         let command = Command {
@@ -2028,6 +2043,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2102,6 +2118,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2182,6 +2199,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2283,6 +2301,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2328,6 +2347,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2395,6 +2415,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2513,11 +2534,15 @@ exit 1
                         },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     timeout_handled_externally: false,
+                    directory_cache: None,
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
                     sleep_fn: |duration| {
-                        SENT_TIMEOUT.store(duration.as_millis() as i64, Ordering::Relaxed);
+                        SENT_TIMEOUT.store(
+                            i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
+                            Ordering::Relaxed,
+                        );
                         Box::pin(future::pending())
                     },
                 },
@@ -2555,7 +2580,8 @@ exit 1
                 .await?;
             assert_eq!(
                 SENT_TIMEOUT.load(Ordering::Relaxed),
-                TASK_TIMEOUT.as_millis() as i64
+                i64::try_from(TASK_TIMEOUT.as_millis())
+                    .expect("TASK_TIMEOUT.as_millis() exceeds i64::MAX")
             );
         }
         {
@@ -2595,11 +2621,15 @@ exit 1
                         },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     timeout_handled_externally: false,
+                    directory_cache: None,
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
                     sleep_fn: |duration| {
-                        SENT_TIMEOUT.store(duration.as_millis() as i64, Ordering::Relaxed);
+                        SENT_TIMEOUT.store(
+                            i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
+                            Ordering::Relaxed,
+                        );
                         Box::pin(future::pending())
                     },
                 },
@@ -2637,7 +2667,8 @@ exit 1
                 .await?;
             assert_eq!(
                 SENT_TIMEOUT.load(Ordering::Relaxed),
-                MAX_TIMEOUT_DURATION.as_millis() as i64
+                i64::try_from(MAX_TIMEOUT_DURATION.as_millis())
+                    .expect("MAX_TIMEOUT_DURATION.as_millis() exceeds i64::MAX")
             );
         }
         {
@@ -2677,11 +2708,15 @@ exit 1
                         },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     timeout_handled_externally: false,
+                    directory_cache: None,
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
                     sleep_fn: |duration| {
-                        SENT_TIMEOUT.store(duration.as_millis() as i64, Ordering::Relaxed);
+                        SENT_TIMEOUT.store(
+                            i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
+                            Ordering::Relaxed,
+                        );
                         Box::pin(future::pending())
                     },
                 },
@@ -2757,6 +2792,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -2857,6 +2893,26 @@ exit 1
         });
         assert_eq!(results?.error.unwrap().code, Code::DeadlineExceeded);
 
+        #[cfg(target_family = "unix")]
+        let command = "[\"sh\", \"-c\", \"sleep infinity\"]";
+        #[cfg(target_family = "windows")]
+        let command = "[\"cmd\", \"/C\", \"ping -n 99999 127.0.0.1\"]";
+
+        assert!(logs_contain(&format!("Executing command args={command}")));
+        assert!(logs_contain(&format!("Command complete args={command}")));
+
+        assert!(!logs_contain(
+            "Child process was not cleaned up before dropping the call to execute(), killing in background spawn"
+        ));
+        #[cfg(target_family = "unix")]
+        assert!(logs_contain(
+            "Command timed out seconds=0.0 command=sh -c sleep infinity"
+        ));
+        #[cfg(target_family = "windows")]
+        assert!(logs_contain(
+            "Command timed out seconds=0.0 command=cmd /C ping -n 99999 127.0.0.1"
+        ));
+
         Ok(())
     }
 
@@ -2888,6 +2944,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3056,6 +3113,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3155,6 +3213,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
         let queued_timestamp = make_system_time(1000);
 
@@ -3268,6 +3327,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3447,6 +3507,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3566,6 +3627,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         // Create a simple action
@@ -3706,6 +3768,7 @@ exit 1
                     },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
+                directory_cache: None,
             })?);
 
         // Create a simple action

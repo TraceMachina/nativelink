@@ -35,7 +35,7 @@ use nativelink_util::store_trait::{
 };
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::Notify;
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
@@ -461,8 +461,9 @@ async fn inner_update_awaited_action(
         .await
         .err_tip(|| "In RedisAwaitedActionDb::update_awaited_action")?;
     if maybe_version.is_none() {
-        tracing::warn!(
-            "Could not update AwaitedAction because the version did not match for {operation_id}"
+        warn!(
+            %operation_id,
+            "Could not update AwaitedAction because the version did not match"
         );
         return Err(make_err!(
             Code::Aborted,
@@ -614,6 +615,46 @@ where
         let Some(operation_id) = maybe_operation_id else {
             return Ok(None);
         };
+
+        // Validate that the internal operation actually exists.
+        // If it doesn't, this is an orphaned client operation mapping that should be cleaned up.
+        // This can happen when an operation is deleted (completed/timed out) but the
+        // client_id -> operation_id mapping persists in the store.
+        let maybe_awaited_action = match self
+            .store
+            .get_and_decode(OperationIdToAwaitedAction(Cow::Borrowed(&operation_id)))
+            .await
+        {
+            Ok(maybe_action) => maybe_action,
+            Err(err) if err.code == Code::NotFound => {
+                tracing::warn!(
+                    "Orphaned client operation mapping detected: client_id={} maps to operation_id={}, \
+                    but the operation does not exist in the store (NotFound). This typically happens when \
+                    an operation completes or times out but the client mapping persists.",
+                    client_operation_id,
+                    operation_id
+                );
+                None
+            }
+            Err(err) => {
+                // Some other error occurred
+                return Err(err).err_tip(
+                    || "In RedisAwaitedActionDb::get_awaited_action_by_id::validate_operation",
+                );
+            }
+        };
+
+        if maybe_awaited_action.is_none() {
+            tracing::warn!(
+                "Found orphaned client operation mapping: client_id={} -> operation_id={}, \
+                but operation no longer exists. Returning None to prevent client from polling \
+                a non-existent operation.",
+                client_operation_id,
+                operation_id
+            );
+            return Ok(None);
+        }
+
         Ok(Some(OperationSubscriber::new(
             Some(client_operation_id.clone()),
             OperationIdToAwaitedAction(Cow::Owned(operation_id)),

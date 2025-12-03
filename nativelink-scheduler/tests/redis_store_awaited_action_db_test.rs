@@ -25,9 +25,9 @@ use fred::bytes_utils::string::Str;
 use fred::clients::SubscriberClient;
 use fred::error::{Error as RedisError, ErrorKind as RedisErrorKind};
 use fred::mocks::{MockCommand, Mocks};
-use fred::prelude::{Builder, Pool as RedisPool};
+use fred::prelude::Builder;
 use fred::types::Value as RedisValue;
-use fred::types::config::{Config as RedisConfig, PerformanceConfig};
+use fred::types::config::Config as RedisConfig;
 use futures::StreamExt;
 use mock_instant::global::SystemTime as MockSystemTime;
 use nativelink_config::schedulers::SimpleSpec;
@@ -46,7 +46,7 @@ use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::store_awaited_action_db::StoreAwaitedActionDb;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
-use nativelink_store::redis_store::{RedisStore, RedisSubscriptionManager};
+use nativelink_store::redis_store::{RecoverablePool, RedisStore, RedisSubscriptionManager};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
 };
@@ -72,6 +72,7 @@ const SCRIPT_VERSION: &str = "3e762c15";
 const VERSION_SCRIPT_HASH: &str = "b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5";
 const MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 const SCAN_COUNT: u32 = 10_000;
+const MAX_PERMITS: usize = 100;
 
 fn mock_uuid_generator() -> String {
     uuid::Uuid::parse_str(TEMP_UUID).unwrap().to_string()
@@ -216,38 +217,57 @@ impl Mocks for FakeRedisBackend {
         }
 
         if actual.cmd == Str::from_static("FT.AGGREGATE") {
-            // The query is @field:value where value might be wrapped in braces.
+            // The query is either "*" (match all) or @field:{ value }.
             let query = actual.args[1]
                 .clone()
                 .into_string()
                 .expect("Aggregate query should be a string");
-            assert_eq!(&query[..1], "@");
-            let mut parts = query[1..].split(':');
-            let field = parts.next().expect("No field name");
-            let value = parts.next().expect("No value");
-            let value = value
-                .strip_prefix("{ ")
-                .and_then(|s| s.strip_suffix(" }"))
-                .unwrap_or(value);
             // Lazy implementation making assumptions.
             assert_eq!(
                 actual.args[2..6],
                 vec!["LOAD".into(), 2.into(), "data".into(), "version".into()]
             );
             let mut results = vec![RedisValue::Integer(0)];
-            for fields in self.table.lock().values() {
-                if let Some(key_value) = fields.get(field) {
-                    if *key_value == RedisValue::Bytes(Bytes::from(value.to_owned())) {
+
+            if query == "*" {
+                // Wildcard query - return all records that have both data and version fields.
+                // Some entries (e.g., from HSET) may not have version field.
+                for fields in self.table.lock().values() {
+                    if let (Some(data), Some(version)) = (fields.get("data"), fields.get("version"))
+                    {
                         results.push(RedisValue::Array(vec![
                             RedisValue::Bytes(Bytes::from("data")),
-                            fields.get("data").expect("No data field").clone(),
+                            data.clone(),
                             RedisValue::Bytes(Bytes::from("version")),
-                            fields.get("version").expect("No version field").clone(),
+                            version.clone(),
                         ]));
                     }
                 }
+            } else {
+                // Field-specific query: @field:{ value }
+                assert_eq!(&query[..1], "@");
+                let mut parts = query[1..].split(':');
+                let field = parts.next().expect("No field name");
+                let value = parts.next().expect("No value");
+                let value = value
+                    .strip_prefix("{ ")
+                    .and_then(|s| s.strip_suffix(" }"))
+                    .unwrap_or(value);
+                for fields in self.table.lock().values() {
+                    if let Some(key_value) = fields.get(field) {
+                        if *key_value == RedisValue::Bytes(Bytes::from(value.to_owned())) {
+                            results.push(RedisValue::Array(vec![
+                                RedisValue::Bytes(Bytes::from("data")),
+                                fields.get("data").expect("No data field").clone(),
+                                RedisValue::Bytes(Bytes::from("version")),
+                                fields.get("version").expect("No version field").clone(),
+                            ]));
+                        }
+                    }
+                }
             }
-            results[0] = ((results.len() - 1) as u32).into();
+
+            results[0] = u32::try_from(results.len() - 1).unwrap_or(u32::MAX).into();
             return Ok(RedisValue::Array(vec![
                 RedisValue::Array(results),
                 RedisValue::Integer(0), // Means no more items in cursor.
@@ -392,7 +412,7 @@ fn make_redis_store(sub_channel: &str, mocks: Arc<impl Mocks>) -> Arc<RedisStore
         mocks: Some(mocks),
         ..Default::default()
     });
-    let (client_pool, subscriber_client) = make_clients(builder);
+    let (client_pool, subscriber_client) = make_clients(&builder);
     Arc::new(
         RedisStore::new_from_builder_and_parts(
             client_pool,
@@ -403,20 +423,15 @@ fn make_redis_store(sub_channel: &str, mocks: Arc<impl Mocks>) -> Arc<RedisStore
             4064,
             MAX_CHUNK_UPLOADS_PER_UPDATE,
             SCAN_COUNT,
+            MAX_PERMITS,
         )
         .unwrap(),
     )
 }
 
-fn make_clients(mut builder: Builder) -> (RedisPool, SubscriberClient) {
+fn make_clients(builder: &Builder) -> (RecoverablePool, SubscriberClient) {
     const CONNECTION_POOL_SIZE: usize = 1;
-    let client_pool = builder
-        .set_performance_config(PerformanceConfig {
-            broadcast_channel_capacity: 4096,
-            ..Default::default()
-        })
-        .build_pool(CONNECTION_POOL_SIZE)
-        .unwrap();
+    let client_pool = RecoverablePool::new(builder.clone(), CONNECTION_POOL_SIZE).unwrap();
 
     let subscriber_client = builder.build_subscriber_client().unwrap();
     (client_pool, subscriber_client)
@@ -489,6 +504,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         let mut new_awaited_action = worker_awaited_action.clone();
         let mut new_state = new_awaited_action.state().as_ref().clone();
         new_state.stage = ActionStage::Executing;
+        new_state.last_transition_timestamp = SystemTime::now();
         new_awaited_action.worker_set_state(Arc::new(new_state), MockSystemTime::now().into());
         new_awaited_action
     };
@@ -518,6 +534,15 @@ async fn add_action_smoke_test() -> Result<(), Error> {
     mocks
         .expect(
             MockCommand {
+                cmd: Str::from_static("SUBSCRIBE"),
+                subcommand: None,
+                args: vec![SUB_CHANNEL.as_bytes().into()],
+            },
+            Ok(RedisValue::Integer(0)),
+            None,
+        )
+        .expect(
+            MockCommand {
                 cmd: Str::from_static("FT.AGGREGATE"),
                 subcommand: None,
                 args: ft_aggregate_args.clone(),
@@ -526,15 +551,6 @@ async fn add_action_smoke_test() -> Result<(), Error> {
                 RedisErrorKind::NotFound,
                 String::new(),
             )),
-            None,
-        )
-        .expect(
-            MockCommand {
-                cmd: Str::from_static("SUBSCRIBE"),
-                subcommand: None,
-                args: vec![SUB_CHANNEL.as_bytes().into()],
-            },
-            Ok(RedisValue::Integer(0)),
             None,
         )
         .expect(
@@ -685,6 +701,25 @@ async fn add_action_smoke_test() -> Result<(), Error> {
                 RedisValue::Null,
                 // Data.
                 RedisValue::Bytes(Bytes::from(serde_json::to_string(&worker_operation_id).unwrap())),
+            ])),
+            None,
+        )
+        // Validation HMGET: Check if the internal operation exists (orphan detection)
+        .expect(
+            MockCommand {
+                cmd: Str::from_static("HMGET"),
+                subcommand: None,
+                args: vec![
+                    format!("aa_{WORKER_OPERATION_ID}").as_bytes().into(),
+                    "version".as_bytes().into(),
+                    "data".as_bytes().into(),
+                ],
+            },
+            Ok(RedisValue::Array(vec![
+                // Version.
+                "1".into(),
+                // Data.
+                RedisValue::Bytes(Bytes::from(serde_json::to_string(&worker_awaited_action).unwrap())),
             ])),
             None,
         )
@@ -1025,6 +1060,67 @@ async fn test_outdated_version() -> Result<(), Error> {
     assert_eq!(
         update_res2.unwrap_err(),
         Error::new(Code::Aborted, "Could not update AwaitedAction because the version did not match for WORKER_OPERATION_ID".into())
+    );
+
+    Ok(())
+}
+
+/// Test that orphaned client operation ID mappings return None.
+///
+/// This tests the scenario where:
+/// 1. A client operation ID mapping exists (cid_* → operation_id)
+/// 2. The actual operation (aa_*) has been deleted (completed/timed out)
+/// 3. get_awaited_action_by_id should return None instead of a subscriber to a non-existent operation
+#[nativelink_test]
+async fn test_orphaned_client_operation_id_returns_none() -> Result<(), Error> {
+    const CLIENT_OPERATION_ID: &str = "orphaned_client_id";
+    const INTERNAL_OPERATION_ID: &str = "deleted_internal_operation_id";
+    const SUB_CHANNEL: &str = "sub_channel";
+
+    let worker_operation_id = Arc::new(Mutex::new(INTERNAL_OPERATION_ID));
+    let worker_operation_id_clone = worker_operation_id.clone();
+
+    let internal_operation_id = OperationId::from(INTERNAL_OPERATION_ID);
+
+    // Use FakeRedisBackend which handles SUBSCRIBE automatically
+    let mocks = Arc::new(FakeRedisBackend::new());
+    let store = make_redis_store(SUB_CHANNEL, mocks.clone());
+    mocks.set_subscription_manager(store.subscription_manager().unwrap());
+
+    // Manually set up the orphaned state in the fake backend:
+    // 1. Add client_id → operation_id mapping (cid_* key)
+    {
+        let mut table = mocks.table.lock();
+        let mut client_fields = HashMap::new();
+        client_fields.insert(
+            "data".into(),
+            RedisValue::Bytes(Bytes::from(
+                serde_json::to_string(&internal_operation_id).unwrap(),
+            )),
+        );
+        table.insert(format!("cid_{CLIENT_OPERATION_ID}"), client_fields);
+    }
+    // 2. Don't add the actual operation (aa_* key) - this simulates it being deleted/orphaned
+
+    let notifier = Arc::new(Notify::new());
+    let awaited_action_db = StoreAwaitedActionDb::new(
+        store.clone(),
+        notifier.clone(),
+        MockInstantWrapped::default,
+        move || worker_operation_id_clone.lock().clone().into(),
+    )
+    .unwrap();
+
+    // Try to get the awaited action by the client operation ID
+    // This should return None because the internal operation doesn't exist (orphaned mapping)
+    let result = awaited_action_db
+        .get_awaited_action_by_id(&OperationId::from(CLIENT_OPERATION_ID))
+        .await
+        .expect("Should not error when checking orphaned client operation");
+
+    assert!(
+        result.is_none(),
+        "Expected None for orphaned client operation ID, but got a subscription"
     );
 
     Ok(())

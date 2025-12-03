@@ -240,7 +240,7 @@ async fn test_upload_from_reader() -> Result<(), Error> {
     let data_size = 100;
     let mut send_data = BytesMut::new();
     for i in 0..data_size {
-        send_data.put_u8(((i % 93) + 33) as u8);
+        send_data.put_u8(u8::try_from((i % 93) + 33).expect("printable ASCII range"));
     }
     let send_data = send_data.freeze();
     let (mut tx, rx) = make_buf_channel_pair();

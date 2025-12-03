@@ -32,9 +32,7 @@ use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tonic::async_trait;
-#[cfg(feature = "worker_find_logging")]
-use tracing::info;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
@@ -90,6 +88,9 @@ struct ApiWorkerSchedulerImpl {
     worker_change_notify: Arc<Notify>,
     /// A channel to notify that an operation is still alive.
     operation_keep_alive_tx: UnboundedSender<(OperationId, WorkerId)>,
+
+    /// Whether the worker scheduler is shutting down.
+    shutting_down: bool,
 }
 
 impl core::fmt::Debug for ApiWorkerSchedulerImpl {
@@ -130,7 +131,7 @@ impl ApiWorkerSchedulerImpl {
                 .is_err()
             {
                 error!(
-                    ?operation_id,
+                    %operation_id,
                     ?worker_id,
                     "OperationKeepAliveTx stream closed"
                 );
@@ -187,46 +188,46 @@ impl ApiWorkerSchedulerImpl {
         Ok(())
     }
 
-    #[cfg_attr(not(feature = "worker_find_logging"), allow(unused_variables))]
     fn inner_worker_checker(
         (worker_id, w): &(&WorkerId, &Worker),
         platform_properties: &PlatformProperties,
+        full_worker_logging: bool,
     ) -> bool {
-        #[cfg(feature = "worker_find_logging")]
-        {
-            if !w.can_accept_work() {
+        if !w.can_accept_work() {
+            if full_worker_logging {
                 info!(
                     "Worker {worker_id} cannot accept work because is_paused: {}, is_draining: {}",
                     w.is_paused, w.is_draining
                 );
-                return false;
             }
-            if !platform_properties.is_satisfied_by(&w.platform_properties) {
-                info!("Worker {worker_id} properties are insufficient");
-                return false;
-            }
-            return true;
-        }
-        #[cfg(not(feature = "worker_find_logging"))]
+            false
+        } else if !platform_properties.is_satisfied_by(&w.platform_properties, full_worker_logging)
         {
-            w.can_accept_work() && platform_properties.is_satisfied_by(&w.platform_properties)
+            if full_worker_logging {
+                info!("Worker {worker_id} properties are insufficient");
+            }
+            false
+        } else {
+            true
         }
     }
 
     fn inner_find_worker_for_action(
         &self,
         platform_properties: &PlatformProperties,
+        full_worker_logging: bool,
     ) -> Option<WorkerId> {
         let mut workers_iter = self.workers.iter();
-        let workers_iter =
-            match self.allocation_strategy {
-                // Use rfind to get the least recently used that satisfies the properties.
-                WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
-                    .rfind(|worker| Self::inner_worker_checker(worker, platform_properties)),
-                // Use find to get the most recently used that satisfies the properties.
-                WorkerAllocationStrategy::MostRecentlyUsed => workers_iter
-                    .find(|worker| Self::inner_worker_checker(worker, platform_properties)),
-            };
+        let workers_iter = match self.allocation_strategy {
+            // Use rfind to get the least recently used that satisfies the properties.
+            WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter.rfind(|worker| {
+                Self::inner_worker_checker(worker, platform_properties, full_worker_logging)
+            }),
+            // Use find to get the most recently used that satisfies the properties.
+            WorkerAllocationStrategy::MostRecentlyUsed => workers_iter.find(|worker| {
+                Self::inner_worker_checker(worker, platform_properties, full_worker_logging)
+            }),
+        };
         workers_iter.map(|(_, w)| w.id.clone())
     }
 
@@ -276,7 +277,7 @@ impl ApiWorkerSchedulerImpl {
                 .err_tip(|| "in update_operation on SimpleScheduler::update_action");
             if let Err(err) = update_operation_res {
                 error!(
-                    ?operation_id,
+                    %operation_id,
                     ?worker_id,
                     ?err,
                     "Failed to update_operation on update_action"
@@ -350,7 +351,7 @@ impl ApiWorkerSchedulerImpl {
         } else {
             warn!(
                 ?worker_id,
-                ?operation_id,
+                %operation_id,
                 ?action_info,
                 "Worker not found in worker map in worker_notify_run_action"
             );
@@ -426,6 +427,7 @@ impl ApiWorkerScheduler {
                 allocation_strategy,
                 worker_change_notify,
                 operation_keep_alive_tx,
+                shutting_down: false,
             }),
             platform_property_manager,
             worker_timeout_s,
@@ -482,9 +484,10 @@ impl ApiWorkerScheduler {
     pub async fn find_worker_for_action(
         &self,
         platform_properties: &PlatformProperties,
+        full_worker_logging: bool,
     ) -> Option<WorkerId> {
         let inner = self.inner.lock().await;
-        inner.inner_find_worker_for_action(platform_properties)
+        inner.inner_find_worker_for_action(platform_properties, full_worker_logging)
     }
 
     /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
@@ -514,8 +517,15 @@ impl WorkerScheduler for ApiWorkerScheduler {
     }
 
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
-        let mut inner = self.inner.lock().await;
         let worker_id = worker.id.clone();
+        let mut inner = self.inner.lock().await;
+        if inner.shutting_down {
+            warn!("Rejected worker add during shutdown: {}", worker_id);
+            return Err(make_err!(
+                Code::Unavailable,
+                "Received request to add worker while shutting down"
+            ));
+        }
         let result = inner
             .add_worker(worker)
             .err_tip(|| "Error while adding worker, removing from pool");
@@ -560,6 +570,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
 
     async fn shutdown(&self, shutdown_guard: ShutdownGuard) {
         let mut inner = self.inner.lock().await;
+        inner.shutting_down = true; // should reject further worker registration
         while let Some(worker_id) = inner
             .workers
             .peek_lru()
