@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
+use std::sync::Arc;
+
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
     convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
-    convert_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
-    convert_string_with_shellexpand, convert_vec_string_with_shellexpand,
+    convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
+    convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
+    convert_vec_string_with_shellexpand,
 };
 
 /// Name of the store. This type will be used when referencing a store
@@ -44,10 +49,8 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "memory": {
-    ///     "eviction_policy": {
-    ///       // 10mb.
-    ///       "max_bytes": 10000000,
-    ///     }
+    ///   "eviction_policy": {
+    ///     "max_bytes": "10mb",
     ///   }
     /// }
     /// ```
@@ -62,7 +65,8 @@ pub enum StoreSpec {
     /// 1. **Amazon S3:**
     ///    S3 store will use Amazon's S3 service as a backend to store
     ///    the files. This configuration can be used to share files
-    ///    across multiple instances.
+    ///    across multiple instances. Uses system certificates for TLS
+    ///    verification via `rustls-platform-verifier`.
     ///
     ///   **Example JSON Config:**
     ///   ```json
@@ -100,7 +104,58 @@ pub enum StoreSpec {
     ///   }
     ///   ```
     ///
+    /// 3. **`NetApp` ONTAP S3**
+    ///    `NetApp` ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
+    ///    to store files. This store is specifically configured for ONTAP's S3 requirements
+    ///    including custom TLS configuration, credentials management, and proper vserver
+    ///    configuration.
+    ///
+    ///    This store uses AWS environment variables for credentials:
+    ///    - `AWS_ACCESS_KEY_ID`
+    ///    - `AWS_SECRET_ACCESS_KEY`
+    ///    - `AWS_DEFAULT_REGION`
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "ontap",
+    ///      "endpoint": "https://ontap-s3-endpoint:443",
+    ///      "vserver_name": "your-vserver",
+    ///      "bucket": "your-bucket",
+    ///      "root_certificates": "/path/to/certs.pem",  // Optional
+    ///      "key_prefix": "test-prefix/",               // Optional
+    ///      "retry": {
+    ///        "max_retries": 6,
+    ///        "delay": 0.3,
+    ///        "jitter": 0.5
+    ///      },
+    ///      "multipart_max_concurrent_uploads": 10
+    ///    }
+    ///    ```
     ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
+
+    /// ONTAP S3 Existence Cache provides a caching layer on top of the ONTAP S3 store
+    /// to optimize repeated existence checks. It maintains an in-memory cache of object
+    /// digests and periodically syncs this cache to disk for persistence.
+    ///
+    /// The cache helps reduce latency for repeated calls to check object existence,
+    /// while still ensuring eventual consistency with the underlying ONTAP S3 store.
+    ///
+    /// Example JSON Config:
+    /// ```json
+    /// "ontap_s3_existence_cache": {
+    ///   "index_path": "/path/to/cache/index.json",
+    ///   "sync_interval_seconds": 300,
+    ///   "backend": {
+    ///     "endpoint": "https://ontap-s3-endpoint:443",
+    ///     "vserver_name": "your-vserver",
+    ///     "bucket": "your-bucket",
+    ///     "key_prefix": "test-prefix/"
+    ///   }
+    /// }
+    /// ```
+    ///
+    OntapS3ExistenceCache(Box<OntapS3ExistenceCacheSpec>),
 
     /// Verify store is used to apply verifications to an underlying
     /// store implementation. It is strongly encouraged to validate
@@ -114,13 +169,15 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "verify": {
-    ///   "memory": {
-    ///     "eviction_policy": {
-    ///       "max_bytes": 500000000 // 500mb.
-    ///     }
+    ///   "backend": {
+    ///     "memory": {
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb"
+    ///       }
+    ///     },
     ///   },
     ///   "verify_size": true,
-    ///   "hash_verification_function": "sha256"
+    ///   "verify_hash": true
     /// }
     /// ```
     ///
@@ -134,22 +191,21 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "completeness_checking": {
-    ///     "backend": {
-    ///       "filesystem": {
-    ///         "content_path": "~/.cache/nativelink/content_path-ac",
-    ///         "temp_path": "~/.cache/nativelink/tmp_path-ac",
-    ///         "eviction_policy": {
-    ///           // 500mb.
-    ///           "max_bytes": 500000000,
-    ///         }
-    ///       }
-    ///     },
-    ///     "cas_store": {
-    ///       "ref_store": {
-    ///         "name": "CAS_MAIN_STORE"
+    ///   "backend": {
+    ///     "filesystem": {
+    ///       "content_path": "~/.cache/nativelink/content_path-ac",
+    ///       "temp_path": "~/.cache/nativelink/tmp_path-ac",
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb",
     ///       }
     ///     }
+    ///   },
+    ///   "cas_store": {
+    ///     "ref_store": {
+    ///       "name": "CAS_MAIN_STORE"
+    ///     }
     ///   }
+    /// }
     /// ```
     ///
     CompletenessChecking(Box<CompletenessCheckingSpec>),
@@ -164,20 +220,19 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "compression": {
-    ///     "compression_algorithm": {
-    ///       "lz4": {}
-    ///     },
-    ///     "backend": {
-    ///       "filesystem": {
-    ///         "content_path": "/tmp/nativelink/data/content_path-cas",
-    ///         "temp_path": "/tmp/nativelink/data/tmp_path-cas",
-    ///         "eviction_policy": {
-    ///           // 2gb.
-    ///           "max_bytes": 2000000000,
-    ///         }
+    ///   "compression_algorithm": {
+    ///     "lz4": {}
+    ///   },
+    ///   "backend": {
+    ///     "filesystem": {
+    ///       "content_path": "/tmp/nativelink/data/content_path-cas",
+    ///       "temp_path": "/tmp/nativelink/data/tmp_path-cas",
+    ///       "eviction_policy": {
+    ///         "max_bytes": "2gb",
     ///       }
     ///     }
     ///   }
+    /// }
     /// ```
     ///
     Compression(Box<CompressionSpec>),
@@ -210,32 +265,33 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "dedup": {
-    ///     "index_store": {
-    ///       "memory_store": {
-    ///         "max_size": 1000000000, // 1GB
-    ///         "eviction_policy": "LeastRecentlyUsed"
+    ///   "index_store": {
+    ///     "memory": {
+    ///       "eviction_policy": {
+    ///          "max_bytes": "1GB",
     ///       }
-    ///     },
-    ///     "content_store": {
-    ///       "compression": {
-    ///         "compression_algorithm": {
-    ///           "lz4": {}
-    ///         },
-    ///         "backend": {
-    ///           "fast_slow": {
-    ///             "fast": {
-    ///               "memory_store": {
-    ///                 "max_size": 500000000, // 500MB
-    ///                 "eviction_policy": "LeastRecentlyUsed"
+    ///     }
+    ///   },
+    ///   "content_store": {
+    ///     "compression": {
+    ///       "compression_algorithm": {
+    ///         "lz4": {}
+    ///       },
+    ///       "backend": {
+    ///         "fast_slow": {
+    ///           "fast": {
+    ///             "memory": {
+    ///               "eviction_policy": {
+    ///                 "max_bytes": "500MB",
     ///               }
-    ///             },
-    ///             "slow": {
-    ///               "filesystem": {
-    ///                 "content_path": "/tmp/nativelink/data/content_path-content",
-    ///                 "temp_path": "/tmp/nativelink/data/tmp_path-content",
-    ///                 "eviction_policy": {
-    ///                   "max_bytes": 2000000000 // 2gb.
-    ///                 }
+    ///             }
+    ///           },
+    ///           "slow": {
+    ///             "filesystem": {
+    ///               "content_path": "/tmp/nativelink/data/content_path-content",
+    ///               "temp_path": "/tmp/nativelink/data/tmp_path-content",
+    ///               "eviction_policy": {
+    ///                 "max_bytes": "2gb"
     ///               }
     ///             }
     ///           }
@@ -243,6 +299,7 @@ pub enum StoreSpec {
     ///       }
     ///     }
     ///   }
+    /// }
     /// ```
     ///
     Dedup(Box<DedupSpec>),
@@ -256,20 +313,18 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "existence_cache": {
-    ///     "backend": {
-    ///       "memory": {
-    ///         "eviction_policy": {
-    ///           // 500mb.
-    ///           "max_bytes": 500000000,
-    ///         }
-    ///       }
-    ///     },
-    ///     "cas_store": {
-    ///       "ref_store": {
-    ///         "name": "CAS_MAIN_STORE"
+    ///   "backend": {
+    ///     "memory": {
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb",
     ///       }
     ///     }
+    ///   },
+    ///   // Note this is the existence store policy, not the backend policy
+    ///   "eviction_policy": {
+    ///     "max_seconds": 100,
     ///   }
+    /// }
     /// ```
     ///
     ExistenceCache(Box<ExistenceCacheSpec>),
@@ -286,33 +341,31 @@ pub enum StoreSpec {
     /// for something like remote execution, be careful because this
     /// store will never check to see if the objects exist in the
     /// `slow` store if it exists in the `fast` store (ie: it assumes
-    /// that if an object exists `fast` store it will exist in `slow`
-    /// store).
+    /// that if an object exists in the `fast` store it will exist in
+    /// the `slow` store).
     ///
     /// ***Example JSON Config:***
     /// ```json
     /// "fast_slow": {
-    ///     "fast": {
-    ///       "filesystem": {
-    ///         "content_path": "/tmp/nativelink/data/content_path-index",
-    ///         "temp_path": "/tmp/nativelink/data/tmp_path-index",
-    ///         "eviction_policy": {
-    ///           // 500mb.
-    ///           "max_bytes": 500000000,
-    ///         }
+    ///   "fast": {
+    ///     "filesystem": {
+    ///       "content_path": "/tmp/nativelink/data/content_path-index",
+    ///       "temp_path": "/tmp/nativelink/data/tmp_path-index",
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb",
     ///       }
-    ///     },
-    ///     "slow": {
-    ///       "filesystem": {
-    ///         "content_path": "/tmp/nativelink/data/content_path-index",
-    ///         "temp_path": "/tmp/nativelink/data/tmp_path-index",
-    ///         "eviction_policy": {
-    ///           // 500mb.
-    ///           "max_bytes": 500000000,
-    ///         }
+    ///     }
+    ///   },
+    ///   "slow": {
+    ///     "filesystem": {
+    ///       "content_path": "/tmp/nativelink/data/content_path-index",
+    ///       "temp_path": "/tmp/nativelink/data/tmp_path-index",
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb",
     ///       }
     ///     }
     ///   }
+    /// }
     /// ```
     ///
     FastSlow(Box<FastSlowSpec>),
@@ -325,15 +378,17 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "shard": {
-    ///     "stores": [
-    ///         "memory": {
-    ///             "eviction_policy": {
-    ///                 // 10mb.
-    ///                 "max_bytes": 10000000
-    ///             },
-    ///             "weight": 1
-    ///         }
-    ///     ]
+    ///   "stores": [
+    ///    {
+    ///     "store": {
+    ///       "memory": {
+    ///         "eviction_policy": {
+    ///             "max_bytes": "10mb"
+    ///         },
+    ///       },
+    ///     },
+    ///     "weight": 1
+    ///   }]
     /// }
     /// ```
     ///
@@ -347,12 +402,11 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "filesystem": {
-    ///     "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
-    ///     "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
-    ///     "eviction_policy": {
-    ///       // 10gb.
-    ///       "max_bytes": 10000000000,
-    ///     }
+    ///   "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
+    ///   "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
+    ///   "eviction_policy": {
+    ///     "max_bytes": "10gb",
+    ///   }
     /// }
     /// ```
     ///
@@ -367,7 +421,7 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "ref_store": {
-    ///     "name": "FS_CONTENT_STORE"
+    ///   "name": "FS_CONTENT_STORE"
     /// }
     /// ```
     ///
@@ -384,19 +438,19 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "size_partitioning": {
-    ///     "size": 134217728, // 128mib.
-    ///     "lower_store": {
-    ///       "memory": {
-    ///         "eviction_policy": {
-    ///           "max_bytes": "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100000000}"
-    ///         }
+    ///   "size": "128mib",
+    ///   "lower_store": {
+    ///     "memory": {
+    ///       "eviction_policy": {
+    ///         "max_bytes": "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100mb}"
     ///       }
-    ///     },
-    ///     "upper_store": {
-    ///       /// This store discards data larger than 128mib.
-    ///       "noop": {}
     ///     }
+    ///   },
+    ///   "upper_store": {
+    ///     /// This store discards data larger than 128mib.
+    ///     "noop": {}
     ///   }
+    /// }
     /// ```
     ///
     SizePartitioning(Box<SizePartitioningSpec>),
@@ -414,12 +468,12 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "grpc": {
-    ///     "instance_name": "main",
-    ///     "endpoints": [
-    ///       {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
-    ///     ],
-    ///     "store_type": "ac"
-    ///   }
+    ///   "instance_name": "main",
+    ///   "endpoints": [
+    ///     {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
+    ///   ],
+    ///   "store_type": "ac"
+    /// }
     /// ```
     ///
     Grpc(GrpcSpec),
@@ -433,9 +487,10 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "redis_store": {
-    ///     "addresses": [
-    ///         "redis://127.0.0.1:6379/",
-    ///     ]
+    ///   "addresses": [
+    ///     "redis://127.0.0.1:6379/",
+    ///   ],
+    ///   "max_client_permits": 1000,
     /// }
     /// ```
     ///
@@ -452,6 +507,27 @@ pub enum StoreSpec {
     /// ```
     ///
     Noop(NoopSpec),
+
+    /// Experimental `MongoDB` store implementation.
+    ///
+    /// This store uses `MongoDB` as a backend for storing data. It supports
+    /// both CAS (Content Addressable Storage) and scheduler data with
+    /// optional change streams for real-time updates.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "experimental_mongo": {
+    ///     "connection_string": "mongodb://localhost:27017",
+    ///     "database": "nativelink",
+    ///     "cas_collection": "cas",
+    ///     "key_prefix": "cas:",
+    ///     "read_chunk_size": 65536,
+    ///     "max_concurrent_uploads": 10,
+    ///     "enable_change_streams": false
+    /// }
+    /// ```
+    ///
+    ExperimentalMongo(ExperimentalMongoSpec),
 }
 
 /// Configuration for an individual shard of the store.
@@ -536,6 +612,54 @@ pub struct FilesystemSpec {
     pub block_size: u64,
 }
 
+// NetApp ONTAP S3 Spec
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalOntapS3Spec {
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub endpoint: String,
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub vserver_name: String,
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+    #[serde(default)]
+    pub root_certificates: Option<String>,
+
+    /// Common retry and upload configuration
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct OntapS3ExistenceCacheSpec {
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub index_path: String,
+    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    pub sync_interval_seconds: u32,
+    pub backend: Box<ExperimentalOntapS3Spec>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreDirection {
+    /// The store operates normally and all get and put operations are
+    /// handled by it.
+    #[default]
+    Both,
+    /// Update operations will cause persistence to this store, but Get
+    /// operations will be ignored.
+    /// This only makes sense on the fast store as the slow store will
+    /// never get written to on Get anyway.
+    Update,
+    /// Get operations will cause persistence to this store, but Update
+    /// operations will be ignored.
+    Get,
+    /// Operate as a read only store, only really makes sense if there's
+    /// another way to write to it.
+    ReadOnly,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct FastSlowSpec {
@@ -543,9 +667,19 @@ pub struct FastSlowSpec {
     /// out to the `slow` store.
     pub fast: StoreSpec,
 
+    /// How to handle the fast store.  This can be useful to set to Get for
+    /// worker nodes such that results are persisted to the slow store only.
+    #[serde(default)]
+    pub fast_direction: StoreDirection,
+
     /// If the object does not exist in the `fast` store it will try to
     /// get it from this store.
     pub slow: StoreSpec,
+
+    /// How to handle the slow store.  This can be useful if creating a diode
+    /// and you wish to have an upstream read only store.
+    #[serde(default)]
+    pub slow_direction: StoreDirection,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
@@ -649,7 +783,7 @@ pub struct VerifySpec {
     /// computed hash. The hash function is automatically determined based
     /// request and if not set will use the global default.
     ///
-    /// This should be set to None for AC, but hashing function like `sha256` for CAS stores.
+    /// This should be set to false for AC, but true for CAS stores.
     #[serde(default)]
     pub verify_hash: bool,
 }
@@ -751,6 +885,7 @@ pub struct EvictionPolicy {
 pub enum ExperimentalCloudObjectSpec {
     Aws(ExperimentalAwsSpec),
     Gcs(ExperimentalGcsSpec),
+    Ontap(ExperimentalOntapS3Spec),
 }
 
 impl Default for ExperimentalCloudObjectSpec {
@@ -790,6 +925,20 @@ pub struct ExperimentalGcsSpec {
     /// Common retry and upload configuration
     #[serde(flatten)]
     pub common: CommonObjectSpec,
+
+    /// Error if authentication was not found.
+    #[serde(default)]
+    pub authentication_required: bool,
+
+    /// Connection timeout in milliseconds.
+    /// Default: 3000
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub connection_timeout_s: u64,
+
+    /// Read timeout in milliseconds.
+    /// Default: 3000
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub read_timeout_s: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -858,16 +1007,28 @@ pub enum StoreType {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientTlsConfig {
     /// Path to the certificate authority to use to validate the remote.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
-    pub ca_file: String,
+    ///
+    /// Default: None
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub ca_file: Option<String>,
 
     /// Path to the certificate file for client authentication.
-    #[serde(deserialize_with = "convert_optional_string_with_shellexpand")]
+    ///
+    /// Default: None
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     pub cert_file: Option<String>,
 
     /// Path to the private key file for client authentication.
-    #[serde(deserialize_with = "convert_optional_string_with_shellexpand")]
+    ///
+    /// Default: None
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     pub key_file: Option<String>,
+
+    /// If set the client will use the native roots for TLS connections.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub use_native_roots: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -933,7 +1094,7 @@ pub enum ErrorCode {
     // Note: This list is duplicated from nativelink-error/lib.rs.
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RedisSpec {
     /// The hostname or IP address of the Redis server.
     /// Ex: `["redis://username:password@redis-server-url:6380/99"]`
@@ -1057,6 +1218,12 @@ pub struct RedisSpec {
     /// ```
     #[serde(default)]
     pub retry: Retry,
+
+    /// Maximum number of permitted actions to the Redis store at any one time
+    /// This stops problems with timeouts due to many, many inflight actions
+    /// Default: 500
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_client_permits: usize,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
@@ -1128,4 +1295,92 @@ pub struct Retry {
     ///  - `DataLoss`
     #[serde(default)]
     pub retry_on_errors: Option<Vec<ErrorCode>>,
+}
+
+/// Configuration for `ExperimentalMongoDB` store.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalMongoSpec {
+    /// `ExperimentalMongoDB` connection string.
+    /// Example: <mongodb://localhost:27017> or <mongodb+srv://cluster.mongodb.net>
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub connection_string: String,
+
+    /// The database name to use.
+    /// Default: "nativelink"
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub database: String,
+
+    /// The collection name for CAS data.
+    /// Default: "cas"
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub cas_collection: String,
+
+    /// The collection name for scheduler data.
+    /// Default: "scheduler"
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub scheduler_collection: String,
+
+    /// Prefix to prepend to all keys stored in `MongoDB`.
+    /// Default: ""
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub key_prefix: Option<String>,
+
+    /// The maximum amount of data to read from `MongoDB` in a single chunk (in bytes).
+    /// Default: 65536 (64KB)
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub read_chunk_size: usize,
+
+    /// Maximum number of concurrent uploads allowed.
+    /// Default: 10
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_uploads: usize,
+
+    /// Connection timeout in milliseconds.
+    /// Default: 3000
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub connection_timeout_ms: u64,
+
+    /// Command timeout in milliseconds.
+    /// Default: 10000
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub command_timeout_ms: u64,
+
+    /// Enable `MongoDB` change streams for real-time updates.
+    /// Required for scheduler subscriptions.
+    /// Default: false
+    #[serde(default)]
+    pub enable_change_streams: bool,
+
+    /// Write concern 'w' parameter.
+    /// Can be a number (e.g., 1) or string (e.g., "majority").
+    /// Default: None (uses `MongoDB` default)
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub write_concern_w: Option<String>,
+
+    /// Write concern 'j' parameter (journal acknowledgment).
+    /// Default: None (uses `MongoDB` default)
+    #[serde(default)]
+    pub write_concern_j: Option<bool>,
+
+    /// Write concern timeout in milliseconds.
+    /// Default: None (uses `MongoDB` default)
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub write_concern_timeout_ms: Option<u32>,
+}
+
+impl Retry {
+    pub fn make_jitter_fn(&self) -> Arc<dyn Fn(Duration) -> Duration + Send + Sync> {
+        if self.jitter == 0f32 {
+            Arc::new(move |delay: Duration| delay)
+        } else {
+            let local_jitter = self.jitter;
+            Arc::new(move |delay: Duration| {
+                delay.mul_f32(local_jitter.mul_add(rand::rng().random::<f32>() - 0.5, 1.))
+            })
+        }
+    }
 }

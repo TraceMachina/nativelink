@@ -22,10 +22,15 @@ rust_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//nativelink-error",
         "@crates//:byte-unit",
         "@crates//:humantime",
+        "@crates//:rand",
         "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:serde_json5",
         "@crates//:shellexpand",
+        "@crates//:tracing",
     ],
 )
 
@@ -34,7 +39,11 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/deserialization_test.rs",
+        "tests/json5_test.rs",
     ],
+    data = glob(
+        ["examples/*.json5"],
+    ),
     deps = [
         "//nativelink-config",
         "//nativelink-error",
@@ -54,6 +63,7 @@ rust_test(
     deps = [
         "@crates//:pretty_assertions",
         "@crates//:serde_json",
+        "@crates//:tracing-test",
     ],
 )
 

@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,6 +14,7 @@
 
 use core::borrow::{Borrow, BorrowMut};
 use core::convert::Into;
+use core::fmt::{self, Debug, Display};
 use core::hash::{Hash, Hasher};
 use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
@@ -32,6 +33,7 @@ use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tracing::warn;
 
 use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair};
 use crate::common::DigestInfo;
@@ -316,6 +318,20 @@ impl From<&DigestInfo> for StoreKey<'_> {
     }
 }
 
+// mostly for use with tracing::Value
+impl Display for StoreKey<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StoreKey::Str(s) => {
+                write!(f, "{s}")
+            }
+            StoreKey::Digest(d) => {
+                write!(f, "Digest: {d}")
+            }
+        }
+    }
+}
+
 #[derive(Clone, MetricsComponent)]
 #[repr(transparent)]
 pub struct Store {
@@ -323,8 +339,8 @@ pub struct Store {
     inner: Arc<dyn StoreDriver>,
 }
 
-impl core::fmt::Debug for Store {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Debug for Store {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Store").finish_non_exhaustive()
     }
 }
@@ -333,9 +349,7 @@ impl Store {
     pub fn new(inner: Arc<dyn StoreDriver>) -> Self {
         Self { inner }
     }
-}
 
-impl Store {
     /// Returns the immediate inner store driver.
     /// Note: This does not recursively try to resolve underlying store drivers
     /// like `.inner_store()` does.
@@ -363,6 +377,14 @@ impl Store {
     #[inline]
     pub fn register_health(&self, registry: &mut HealthRegistryBuilder) {
         self.inner.clone().register_health(registry);
+    }
+
+    #[inline]
+    pub fn register_remove_callback(
+        &self,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.inner.clone().register_remove_callback(callback)
     }
 }
 
@@ -604,7 +626,7 @@ pub trait StoreDriver:
         _range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
         _handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
     ) -> Result<u64, Error> {
-        // TODO(aaronmondal) We should force all stores to implement this function instead of
+        // TODO(palfrey) We should force all stores to implement this function instead of
         // providing a default implementation.
         Err(make_err!(
             Code::Unimplemented,
@@ -636,7 +658,7 @@ pub trait StoreDriver:
         let inner_store = self.inner_store(Some(key.borrow()));
         if inner_store.optimized_for(StoreOptimizations::FileUpdates) {
             error_if!(
-                addr_eq(inner_store, &*self),
+                addr_eq(inner_store, &raw const *self),
                 "Store::inner_store() returned self when optimization present"
             );
             return Pin::new(inner_store)
@@ -649,7 +671,7 @@ pub trait StoreDriver:
 
     /// See: [`StoreLike::update_oneshot`] for details.
     async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
-        // TODO(aaronmondal) This is extremely inefficient, since we have exactly
+        // TODO(palfrey) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
         let (mut tx, rx) = make_buf_channel_pair();
@@ -704,7 +726,7 @@ pub trait StoreDriver:
             .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
             .transpose()?;
 
-        // TODO(aaronmondal) This is extremely inefficient, since we have exactly
+        // TODO(palfrey) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
         let (mut tx, mut rx) = make_buf_channel_pair();
@@ -749,6 +771,7 @@ pub trait StoreDriver:
             .update_oneshot(digest_info.borrow(), digest_bytes.clone())
             .await
         {
+            warn!(?e, "check_health Store.update_oneshot() failed");
             return HealthStatus::new_failed(
                 self.get_ref(),
                 format!("Store.update_oneshot() failed: {e}").into(),
@@ -810,13 +833,28 @@ pub trait StoreDriver:
 
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error>;
+}
+
+// Callback to be called when a store deletes an item. This is used so
+// compound stores can remove items from their internal state when their
+// underlying stores remove items e.g. caches
+pub trait RemoveItemCallback: Debug + Send + Sync {
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
 /// The instructions on how to decode a value from a Bytes & version into
 /// the underlying type.
 pub trait SchedulerStoreDecodeTo {
     type DecodeOutput;
-    fn decode(version: u64, data: Bytes) -> Result<Self::DecodeOutput, Error>;
+    fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error>;
 }
 
 pub trait SchedulerSubscription: Send + Sync {
@@ -831,6 +869,8 @@ pub trait SchedulerSubscriptionManager: Send + Sync {
     fn subscribe<K>(&self, key: K) -> Result<Self::Subscription, Error>
     where
         K: SchedulerStoreKeyProvider;
+
+    fn is_reliable() -> bool;
 }
 
 /// The API surface for a scheduler store.
@@ -847,7 +887,7 @@ pub trait SchedulerStore: Send + Sync + 'static {
     /// the version in the passed in data.
     /// No guarantees are made about when `Version` is `FalseValue`.
     /// Indexes are guaranteed to be updated atomically with the data.
-    fn update_data<T>(&self, data: T) -> impl Future<Output = Result<Option<u64>, Error>> + Send
+    fn update_data<T>(&self, data: T) -> impl Future<Output = Result<Option<i64>, Error>> + Send
     where
         T: SchedulerStoreDataProvider
             + SchedulerStoreKeyProvider
@@ -919,7 +959,7 @@ pub trait SchedulerStoreDataProvider {
 /// Provides the current version of the data in the store.
 pub trait SchedulerCurrentVersionProvider {
     /// Returns the current version of the data in the store.
-    fn current_version(&self) -> u64;
+    fn current_version(&self) -> i64;
 }
 
 /// Default implementation for when we are not providing a version
@@ -928,7 +968,7 @@ impl<T> SchedulerCurrentVersionProvider for T
 where
     T: SchedulerStoreKeyProvider<Versioned = FalseValue>,
 {
-    fn current_version(&self) -> u64 {
+    fn current_version(&self) -> i64 {
         0
     }
 }

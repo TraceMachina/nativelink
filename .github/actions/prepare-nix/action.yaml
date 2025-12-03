@@ -11,7 +11,7 @@ runs:
         remove_android: false # Takes too long.
         remove_dotnet: true
         remove_haskell: true
-        remove_tool_cache: false # TODO(aaronmondal): Do we really need this?
+        remove_tool_cache: false # TODO(palfrey): Do we really need this?
         # Note: Not deleting google-cloud-cli because it takes too long.
         remove_packages: >
           azure-cli
@@ -48,9 +48,18 @@ runs:
         fi
 
     - name: Install Nix
-      uses: >- # v16
-        DeterminateSystems/nix-installer-action@e50d5f73bfe71c2dd0aa4218de8f4afa59f8f81d
+      uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v20
+        DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196
+      with:
+        source-tag: v3.13.0
 
-    - name: Cache Nix derivations
-      uses: >- # v9
-        DeterminateSystems/magic-nix-cache-action@6221693898146dc97e38ad0e013488a16477a4c4
+    # FIXME(palfrey): Replace with better cache. Workers are currently taking minutes to upload data
+    # all the time, probably because we're at ~500GB of 10GB in the cache storage and it's breaking.
+    # We've tried Flakehub, but it doesn't work for us because it assumes "branches on an org repo"
+    # not our "fork and branch on your own repo" setup for it's auth so we can't currently use that.
+
+    # - name: Add Nix magic cache
+    #   uses: >- # https://github.com/DeterminateSystems/magic-nix-cache-action/releases/tag/v13
+    #     DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39
+    #   with:
+    #     source-tag: v0.1.6

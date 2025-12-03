@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,7 +18,7 @@ use core::str::from_utf8;
 use std::io::Cursor;
 use std::sync::Arc;
 
-use bincode::{DefaultOptions, Options};
+use bincode::serde::decode_from_slice;
 use bytes::Bytes;
 use nativelink_config::stores::{CompressionSpec, MemorySpec, StoreSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -59,10 +59,9 @@ fn extract_footer(data: &[u8]) -> Result<Footer, Error> {
         "Expected frame_type to be footer"
     );
 
-    DefaultOptions::new()
-        .with_fixint_encoding()
-        .deserialize::<Footer>(&data[pos..])
-        .map_err(|e| make_err!(Code::Internal, "Failed to deserialize header : {:?}", e))
+    let (footer, _) = decode_from_slice::<Footer, _>(&data[pos..], bincode::config::legacy())
+        .map_err(|e| make_err!(Code::Internal, "Failed to deserialize header : {:?}", e))?;
+    Ok(footer)
 }
 
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
@@ -298,7 +297,8 @@ async fn check_header_test() -> Result<(), Error> {
         );
         let upload_size = reader.read_u32_le().await?;
         assert_eq!(
-            upload_size, MAX_SIZE_INPUT as u32,
+            u64::from(upload_size),
+            MAX_SIZE_INPUT,
             "Expected upload size to match"
         );
     }
@@ -453,7 +453,7 @@ async fn check_footer_test() -> Result<(), Error> {
                     position_from_prev_index: v
                 })
                 .to_vec(),
-            index_count: EXPECTED_INDEXES.len() as u32,
+            index_count: u32::try_from(EXPECTED_INDEXES.len()).unwrap_or(u32::MAX),
             uncompressed_data_size: data_len as u64,
             config: Lz4Config {
                 block_size: BLOCK_SIZE

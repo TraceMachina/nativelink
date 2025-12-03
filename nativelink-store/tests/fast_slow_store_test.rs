@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use nativelink_config::stores::{FastSlowSpec, MemorySpec, NoopSpec, StoreSpec};
+use nativelink_config::stores::{FastSlowSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
@@ -28,25 +28,34 @@ use nativelink_store::noop_store::NoopStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike};
+use nativelink_util::store_trait::{RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike};
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 const MEGABYTE_SZ: usize = 1024 * 1024;
 
-fn make_stores() -> (Store, Store, Store) {
+fn make_stores_direction(
+    fast_direction: StoreDirection,
+    slow_direction: StoreDirection,
+) -> (Store, Store, Store) {
     let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let slow_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let fast_slow_store = Store::new(FastSlowStore::new(
         &FastSlowSpec {
             fast: StoreSpec::Memory(MemorySpec::default()),
             slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction,
+            slow_direction,
         },
         fast_store.clone(),
         slow_store.clone(),
     ));
     (fast_slow_store, fast_store, slow_store)
+}
+
+fn make_stores() -> (Store, Store, Store) {
+    make_stores_direction(StoreDirection::default(), StoreDirection::default())
 }
 
 fn make_random_data(sz: usize) -> Vec<u8> {
@@ -284,7 +293,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             // Gets called in the slow store and we provide the data that's
             // sent to the upstream and the fast store.
             let bytes = length.unwrap_or_else(|| key.into_digest().size_bytes()) - offset;
-            let data = vec![0_u8; bytes as usize];
+            let data = vec![0_u8; usize::try_from(bytes).unwrap_or(usize::MAX)];
             writer.send(Bytes::copy_from_slice(&data)).await?;
             writer.send_eof()
         }
@@ -299,6 +308,13 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
         fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
             self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
         }
     }
 
@@ -332,6 +348,8 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
         &FastSlowSpec {
             fast: StoreSpec::Memory(MemorySpec::default()),
             slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
         },
         fast_store,
         slow_store,
@@ -373,6 +391,8 @@ async fn ignore_value_in_fast_store() -> Result<(), Error> {
         &FastSlowSpec {
             fast: StoreSpec::Memory(MemorySpec::default()),
             slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
         },
         fast_store.clone(),
         slow_store,
@@ -396,6 +416,8 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
     let fast_slow_store_config = FastSlowSpec {
         fast: StoreSpec::Memory(MemorySpec::default()),
         slow: StoreSpec::Noop(NoopSpec::default()),
+        fast_direction: StoreDirection::default(),
+        slow_direction: StoreDirection::default(),
     };
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &fast_slow_store_config,
@@ -427,6 +449,124 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
         fast_slow_store.get_part_unchunked(digest, 0, None).await,
         Ok(data.into()),
         "Data read from store is not correct"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn fast_get_only_not_updated() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_direction(StoreDirection::Get, StoreDirection::Both);
+    let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
+    fast_slow_store
+        .update_oneshot(digest, make_random_data(100).into())
+        .await?;
+    assert!(
+        fast_store.has(digest).await?.is_none(),
+        "Expected data to not be in the fast store"
+    );
+    assert!(
+        slow_store.has(digest).await?.is_some(),
+        "Expected data in the slow store"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn fast_readonly_only_not_updated() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_direction(StoreDirection::ReadOnly, StoreDirection::Both);
+    let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
+    fast_slow_store
+        .update_oneshot(digest, make_random_data(100).into())
+        .await?;
+    assert!(
+        fast_store.has(digest).await?.is_none(),
+        "Expected data to not be in the fast store"
+    );
+    assert!(
+        slow_store.has(digest).await?.is_some(),
+        "Expected data in the slow store"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn slow_readonly_only_not_updated() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_direction(StoreDirection::Both, StoreDirection::ReadOnly);
+    let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
+    fast_slow_store
+        .update_oneshot(digest, make_random_data(100).into())
+        .await?;
+    assert!(
+        fast_store.has(digest).await?.is_some(),
+        "Expected data to be in the fast store"
+    );
+    assert!(
+        slow_store.has(digest).await?.is_none(),
+        "Expected data to not be in the slow store"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn slow_get_only_not_updated() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_direction(StoreDirection::Both, StoreDirection::Get);
+    let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
+    fast_slow_store
+        .update_oneshot(digest, make_random_data(100).into())
+        .await?;
+    assert!(
+        fast_store.has(digest).await?.is_some(),
+        "Expected data to be in the fast store"
+    );
+    assert!(
+        slow_store.has(digest).await?.is_none(),
+        "Expected data to not be in the slow store"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn fast_put_only_not_updated() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_direction(StoreDirection::Update, StoreDirection::Both);
+    let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
+    slow_store
+        .update_oneshot(digest, make_random_data(100).into())
+        .await?;
+    fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+    assert!(
+        fast_store.has(digest).await?.is_none(),
+        "Expected data to not be in the fast store"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn fast_readonly_only_not_updated_on_get() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_direction(StoreDirection::ReadOnly, StoreDirection::Both);
+    let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
+    slow_store
+        .update_oneshot(digest, make_random_data(100).into())
+        .await?;
+    assert!(
+        !fast_slow_store
+            .get_part_unchunked(digest, 0, None)
+            .await?
+            .is_empty(),
+        "Data not found in slow store"
+    );
+    assert!(
+        fast_store.has(digest).await?.is_none(),
+        "Expected data to not be in the fast store"
+    );
+    assert!(
+        slow_store.has(digest).await?.is_some(),
+        "Expected data in the slow store"
     );
     Ok(())
 }

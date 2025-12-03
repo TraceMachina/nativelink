@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -56,51 +56,12 @@ use nativelink_util::operation_state_manager::{
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
 use tokio::sync::{Notify, mpsc};
-use utils::scheduler_utils::{INSTANCE_NAME, make_base_action_info};
+use utils::scheduler_utils::{INSTANCE_NAME, make_base_action_info, update_eq};
 
 mod utils {
     pub(crate) mod scheduler_utils;
 }
 
-fn update_eq(expected: UpdateForWorker, actual: UpdateForWorker, ignore_id: bool) -> bool {
-    let Some(expected_update) = expected.update else {
-        return actual.update.is_none();
-    };
-    let Some(actual_update) = actual.update else {
-        return false;
-    };
-    match actual_update {
-        update_for_worker::Update::Disconnect(()) => {
-            matches!(expected_update, update_for_worker::Update::Disconnect(()))
-        }
-        update_for_worker::Update::KeepAlive(()) => {
-            matches!(expected_update, update_for_worker::Update::KeepAlive(()))
-        }
-        update_for_worker::Update::StartAction(actual_update) => match expected_update {
-            update_for_worker::Update::StartAction(mut expected_update) => {
-                if ignore_id {
-                    expected_update
-                        .operation_id
-                        .clone_from(&actual_update.operation_id);
-                }
-                expected_update == actual_update
-            }
-            _ => false,
-        },
-        update_for_worker::Update::KillOperationRequest(actual_update) => match expected_update {
-            update_for_worker::Update::KillOperationRequest(expected_update) => {
-                expected_update == actual_update
-            }
-            _ => false,
-        },
-        update_for_worker::Update::ConnectionResult(actual_update) => match expected_update {
-            update_for_worker::Update::ConnectionResult(expected_update) => {
-                expected_update == actual_update
-            }
-            _ => false,
-        },
-    }
-}
 async fn verify_initial_connection_message(
     worker_id: WorkerId,
     rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>,
@@ -212,10 +173,33 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
             client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Executing,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn bad_worker_match_logging_interval() -> Result<(), Error> {
+    let task_change_notify = Arc::new(Notify::new());
+    let (_scheduler, _worker_scheduler) = SimpleScheduler::new(
+        &SimpleSpec {
+            worker_match_logging_interval_s: -2,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        task_change_notify,
+        None,
+    );
+    assert!(logs_contain(
+        "nativelink_scheduler::simple_scheduler: Valid values for worker_match_logging_interval_s are -1 or a positive integer, setting to -1 (disabled) worker_match_logging_interval_s=-2"
+    ));
     Ok(())
 }
 
@@ -236,6 +220,7 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &SimpleSpec {
             worker_timeout_s: WORKER_TIMEOUT_S,
+            worker_match_logging_interval_s: 0,
             ..Default::default()
         },
         memory_awaited_action_db_factory(
@@ -262,7 +247,7 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
     .unwrap();
 
     // Trigger a do_try_match to ensure we get a state change.
-    scheduler.do_try_match_for_test().await.unwrap();
+    scheduler.do_try_match_for_test().await?;
     assert_eq!(
         action_listener.changed().await.unwrap().0.stage,
         ActionStage::Executing
@@ -278,7 +263,7 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
     // Advance our time by just under the timeout.
     advance_time(Duration::from_secs(WORKER_TIMEOUT_S - 1), &mut changed_fut).await;
     {
-        // Sill no update should have been received yet.
+        // Still no update should have been received yet.
         assert_eq!(poll!(&mut changed_fut).is_ready(), false);
     }
     // Advance it by just over the timeout.
@@ -288,6 +273,10 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
         // put back in the queue.
         assert_eq!(changed_fut.await.unwrap().0.stage, ActionStage::Queued);
     }
+
+    assert!(logs_contain(
+        "Oldest actions in state items=[\"stage=Executing last_transition="
+    ));
 
     Ok(())
 }
@@ -366,6 +355,7 @@ async fn find_executing_action() -> Result<(), Error> {
             client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Executing,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -628,6 +618,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
             client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Queued,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -644,6 +635,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
             client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Executing,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -703,6 +695,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
             client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Queued,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -740,6 +733,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
             client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Executing,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -777,6 +771,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         client_operation_id,
         stage: ActionStage::Queued,
         action_digest,
+        last_transition_timestamp: SystemTime::now(),
     };
 
     let insert_timestamp1 = make_system_time(1);
@@ -833,6 +828,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
 
     // Action should now be executing.
     expected_action_state.stage = ActionStage::Executing;
+    expected_action_state.last_transition_timestamp = SystemTime::now();
     {
         // Both client1 and client2 should be receiving the same updates.
         // Most importantly the `name` (which is random) will be the same.
@@ -897,6 +893,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
             client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Queued,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -904,7 +901,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
     Ok(())
 }
 
-// TODO(aaronmondal) These should be gneralized and expanded for more tests.
+// TODO(palfrey) These should be gneralized and expanded for more tests.
 struct MockAwaitedActionSubscriber {}
 impl AwaitedActionSubscriber for MockAwaitedActionSubscriber {
     async fn changed(&mut self) -> Result<AwaitedAction, Error> {
@@ -1014,6 +1011,7 @@ impl AwaitedActionDb for RxMockAwaitedAction {
         &self,
         _client_operation_id: OperationId,
         _action_info: Arc<ActionInfo>,
+        _no_event_action_timeout: Duration,
     ) -> Result<Self::Subscriber, Error> {
         unreachable!();
     }
@@ -1202,6 +1200,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
                 client_operation_id: action_state.client_operation_id.clone(),
                 stage: ActionStage::Executing,
                 action_digest: action_state.action_digest,
+                last_transition_timestamp: SystemTime::now(),
             }
         );
     }
@@ -1235,6 +1234,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
                 client_operation_id: action_state.client_operation_id.clone(),
                 stage: ActionStage::Executing,
                 action_digest: action_state.action_digest,
+                last_transition_timestamp: SystemTime::now(),
             }
         );
     }
@@ -1348,6 +1348,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
             client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(action_result),
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -1467,6 +1468,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
             client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(action_result),
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -1609,6 +1611,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         client_operation_id,
         stage: ActionStage::Executing,
         action_digest,
+        last_transition_timestamp: SystemTime::now(),
     };
 
     let insert_timestamp = make_system_time(1);
@@ -1699,6 +1702,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
     {
         // Action should now be executing.
         expected_action_state.stage = ActionStage::Completed(action_result.clone());
+        expected_action_state.last_transition_timestamp = SystemTime::now();
         assert_eq!(
             action_listener.changed().await.unwrap().0.as_ref(),
             &expected_action_state
@@ -1716,6 +1720,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
                 .unwrap();
         // We didn't disconnect our worker, so it will have scheduled it to the worker.
         expected_action_state.stage = ActionStage::Executing;
+        expected_action_state.last_transition_timestamp = SystemTime::now();
         let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         // The name of the action changed (since it's a new action), so update it.
         expected_action_state.client_operation_id = action_state.client_operation_id.clone();
@@ -1841,6 +1846,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
             client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(action_result.clone()),
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -1885,6 +1891,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
             client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(action_result.clone()),
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -2023,6 +2030,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
             client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Queued,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -2086,6 +2094,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
                 message: String::new(),
             }),
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         let mut received_state = action_state.as_ref().clone();
         if let ActionStage::Completed(stage) = &mut received_state.stage {

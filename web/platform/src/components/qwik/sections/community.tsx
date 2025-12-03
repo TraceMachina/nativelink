@@ -17,7 +17,7 @@ const communityLinks = [
   {
     name: "Slack",
     icon: <Slack />,
-    link: "https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A",
+    link: "https://forms.gle/LtaWSixEC6bYi5xF7",
     ariaLabel: "NativeLink Slack channel",
   },
   {

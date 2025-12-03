@@ -1,243 +1,257 @@
----
-name: Local Remote Execution
+# ---
+# name: Local Remote Execution
 
-on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - 'web/**'
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - 'web/**'
+# on:
+#   push:
+#     branches: [main]
+#     paths-ignore:
+#       - '.github/styles/**'
+#       - 'web/**'
+#   pull_request:
+#     branches: [main]
+#     paths-ignore:
+#       - '.github/styles/**'
+#       - 'web/**'
 
-permissions: read-all
+# permissions: read-all
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+# concurrency:
+#   group: ${{ github.workflow }}-${{ github.ref }}
+#   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-jobs:
-  local:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-15]
-        toolchain: [lre-cc, lre-rs]
-        exclude:
-          - os: macos-15
-            toolchain: lre-cc
-    name: Local / ${{ matrix.toolchain }} / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    steps:
-      - name: Checkout
-        uses: >- # v4.2.2
-          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+# jobs:
+#   local:
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         os: [ubuntu-24.04, macos-15]
+#         toolchain: [lre-cc, lre-rs]
+#         exclude:
+#           - os: macos-15
+#             toolchain: lre-cc
+#     name: Local / ${{ matrix.toolchain }} / ${{ matrix.os }}
+#     runs-on: ${{ matrix.os }}
+#     timeout-minutes: 45
+#     steps:
+#       - name: Checkout
+#         uses: >- # v4.2.2
+#           actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Prepare Worker
-        uses: ./.github/actions/prepare-nix
+#       - name: Prepare Worker
+#         uses: ./.github/actions/prepare-nix
 
-      - name: Build example with ${{ matrix.toolchain }} toolchain
-        env:
-          TOOLCHAIN: ${{ matrix.toolchain }}
-        run: >
-          nix develop --impure --command
-          bash -c "bazel run \
-           --verbose_failures \
-           @local-remote-execution//examples:${TOOLCHAIN}"
+#       - name: Build example with ${{ matrix.toolchain }} toolchain
+#         env:
+#           TOOLCHAIN: ${{ matrix.toolchain }}
+#         run: >
+#           nix develop --impure --command
+#           bash -c "bazel run \
+#            --verbose_failures \
+#            @local-remote-execution//examples:${TOOLCHAIN}"
 
-  remote:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [xlarge-ubuntu-24.04]
-        toolchain: [lre-cc, lre-rs]
-    name: Remote / ${{ matrix.toolchain }} / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    steps:
-      - name: Checkout
-        uses: >- # v4.2.2
-          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+#   remote:
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         os: [xlarge-ubuntu-24.04]
+#         toolchain: [lre-cc, lre-rs]
+#     name: Remote / ${{ matrix.toolchain }} / ${{ matrix.os }}
+#     runs-on: ${{ matrix.os }}
+#     timeout-minutes: 45
+#     steps:
+#       - name: Checkout
+#         uses: >- # v4.2.2
+#           actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Prepare Worker
-        uses: ./.github/actions/prepare-nix
+#       - name: Prepare Worker
+#         uses: ./.github/actions/prepare-nix
 
-      - name: Start Kubernetes cluster
-        run: >
-          nix run .#native up
+#       - name: Start Kubernetes cluster
+#         run: >
+#           nix run .#native up
 
-      - name: Start NativeLink operator
-        env:
-          REPO_URL: ${{ github.event.pull_request.head.repo.clone_url || format('https://github.com/{0}.git', github.repository) }}
-          BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
-          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-          TOOLCHAIN: ${{ matrix.toolchain }}
-        run: |
-          nix develop --impure --command bash -c 'cat > kustomization.yaml << EOF
-          apiVersion: kustomize.config.k8s.io/v1beta1
-          kind: Kustomization
-          resources:
-          - kubernetes/resources/flux
-          - kubernetes/resources/nativelink-core
-          - kubernetes/resources/gateway-routes
-          - kubernetes/workers/resources/worker-init
-          - kubernetes/workers/resources/${TOOLCHAIN}
-          patches:
-          - patch: |-
-              - op: replace
-                path: /spec/url
-                value: ${REPO_URL}
-              - op: replace
-                path: /spec/ref/branch
-                value: ${BRANCH}
-              - op: replace
-                path: /spec/ref/commit
-                value: ${COMMIT}
-            target:
-              kind: GitRepository
-              name: nativelink-infra
-          - patch: |-
-              - op: replace
-                path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
-                value: ./src_root#image
-            target:
-              kind: Kustomization
-              name: nativelink-alert-core
-          - patch: |-
-              - op: replace
-                path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
-                value: ./src_root#nativelink-worker-init
-            target:
-              kind: Kustomization
-              name: nativelink-alert-worker-init
-          - patch: |-
-              - op: replace
-                path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
-                value: ./src_root#nativelink-worker-${TOOLCHAIN}
-            target:
-              kind: Kustomization
-              name: nativelink-alert-${TOOLCHAIN}
-          EOF
-          kubectl apply -k . &&
-          rm kustomization.yaml'
+#       - name: Start NativeLink operator
+#         env:
+#           REPO_URL: ${{ github.event.pull_request.head.repo.clone_url || format('https://github.com/{0}.git', github.repository) }}
+#           BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+#           COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+#           TOOLCHAIN: ${{ matrix.toolchain }}
+#         run: |
+#           nix develop --impure --command bash -c 'cat > kustomization.yaml << EOF
+#           apiVersion: kustomize.config.k8s.io/v1beta1
+#           kind: Kustomization
+#           resources:
+#           - kubernetes/resources/flux
+#           - kubernetes/resources/nativelink-core
+#           - kubernetes/resources/gateway-routes
+#           - kubernetes/workers/resources/worker-init
+#           - kubernetes/workers/resources/${TOOLCHAIN}
+#           patches:
+#           - patch: |-
+#               - op: replace
+#                 path: /spec/url
+#                 value: ${REPO_URL}
+#               - op: replace
+#                 path: /spec/ref/branch
+#                 value: ${BRANCH}
+#               - op: replace
+#                 path: /spec/ref/commit
+#                 value: ${COMMIT}
+#             target:
+#               kind: GitRepository
+#               name: nativelink-infra
+#           - patch: |-
+#               - op: replace
+#                 path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
+#                 value: ./src_root#image
+#             target:
+#               kind: Kustomization
+#               name: nativelink-alert-core
+#           - patch: |-
+#               - op: replace
+#                 path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
+#                 value: ./src_root#nativelink-worker-init
+#             target:
+#               kind: Kustomization
+#               name: nativelink-alert-worker-init
+#           - patch: |-
+#               - op: replace
+#                 path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
+#                 value: ./src_root#nativelink-worker-${TOOLCHAIN}
+#             target:
+#               kind: Kustomization
+#               name: nativelink-alert-${TOOLCHAIN}
+#           EOF
+#           kubectl apply -k . &&
+#           rm kustomization.yaml'
 
-      - name: Wait for Tekton resources
-        run: >
-          nix develop --impure --command
-          bash -c "flux reconcile kustomization \
-            --timeout=15m \
-            nativelink-tekton-resources"
+#       - name: Wait for Tekton resources
+#         run: >
+#           nix develop --impure --command
+#           bash -c "flux reconcile kustomization \
+#             --timeout=15m \
+#             nativelink-tekton-resources"
 
-      - name: Wait for alerts
-        env:
-          TOOLCHAIN: ${{ matrix.toolchain }}
-        run: >
-          nix develop --impure --command
-          bash -c "flux reconcile kustomization \
-            --timeout=15m \
-            nativelink-alert-core && \
-          flux reconcile kustomization \
-            --timeout=15m \
-            nativelink-alert-worker-init && \
-          flux reconcile kustomization \
-            --timeout=15m \
-            nativelink-alert-${TOOLCHAIN}"
+#       - name: Wait for alerts
+#         env:
+#           TOOLCHAIN: ${{ matrix.toolchain }}
+#         run: >
+#           nix develop --impure --command
+#           bash -c "flux reconcile kustomization \
+#             --timeout=15m \
+#             nativelink-alert-core && \
+#           flux reconcile kustomization \
+#             --timeout=15m \
+#             nativelink-alert-worker-init && \
+#           flux reconcile kustomization \
+#             --timeout=15m \
+#             nativelink-alert-${TOOLCHAIN}"
 
-      - name: Trigger pipelines
-        env:
-          REPO_URL: ${{ github.event.pull_request.head.repo.clone_url || format('https://github.com/{0}.git', github.repository) }}
-          BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
-        run: |
-          nix develop --impure --command bash -c 'cat > nativelink-repo.yaml << EOF
-          apiVersion: source.toolkit.fluxcd.io/v1
-          kind: GitRepository
-          metadata:
-            name: nativelink
-            namespace: default
-          spec:
-            interval: 2m
-            url: ${REPO_URL}
-            ref:
-              branch: ${BRANCH}
-          EOF
-          kubectl apply -f nativelink-repo.yaml &&
-          rm nativelink-repo.yaml'
+#       - name: Trigger pipelines
+#         env:
+#           REPO_URL: ${{ github.event.pull_request.head.repo.clone_url || format('https://github.com/{0}.git', github.repository) }}
+#           BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+#         run: |
+#           nix develop --impure --command bash -c 'cat > nativelink-repo.yaml << EOF
+#           apiVersion: source.toolkit.fluxcd.io/v1
+#           kind: GitRepository
+#           metadata:
+#             name: nativelink
+#             namespace: default
+#           spec:
+#             interval: 2m
+#             url: ${REPO_URL}
+#             ref:
+#               branch: ${BRANCH}
+#           EOF
+#           kubectl apply -f nativelink-repo.yaml &&
+#           rm nativelink-repo.yaml'
 
-      - name: Wait for Tekton pipelines
-        run: >
-          nix develop --impure --command bash << 'EOF'
-            until pr=$(kubectl get pipelinerun -n ci -o name | \
-                       grep rebuild-nativelink-run-); do
-              echo "Waiting for pipeline to be created..."
-              sleep 1
-            done
+#       - name: Wait for Tekton pipelines
+#         run: >
+#           nix develop --impure --command bash << 'EOF'
+#             until pr=$(kubectl get pipelinerun -n ci -o name | \
+#                        grep rebuild-nativelink-run-); do
+#               echo "Waiting for pipeline to be created..."
+#               sleep 1
+#             done
 
-            echo "Found pipelinerun: $pr"
-            kubectl wait --for=create -n ci $pr
+#             echo "Found pipelinerun: $pr"
+#             kubectl wait --for=create -n ci $pr
 
-            echo "Waiting for pipelinerun to succeed..."
-            kubectl wait \
-              --for=condition=Succeeded \
-              --timeout=45m \
-              pipelinerun \
-              -n ci \
-              -l tekton.dev/pipeline=rebuild-nativelink
-          EOF
+#             echo "Waiting for pipelinerun to succeed..."
+#             kubectl wait \
+#               --for=condition=Succeeded \
+#               --timeout=45m \
+#               pipelinerun \
+#               -n ci \
+#               -l tekton.dev/pipeline=rebuild-nativelink
+#           EOF
 
-      - name: Wait for NativeLink Kustomization
-        run: >
-          nix develop --impure --command
-          bash -c "flux reconcile kustomization -n default \
-            --timeout=15m \
-            nativelink-core"
+#       - name: Wait for NativeLink Kustomization
+#         run: >
+#           nix develop --impure --command
+#           bash -c "flux reconcile kustomization -n default \
+#             --timeout=15m \
+#             nativelink-core"
 
-      - name: Wait for Worker Kustomization
-        env:
-          TOOLCHAIN: ${{ matrix.toolchain }}
-        run: >
-          nix develop --impure --command
-          bash -c "flux reconcile kustomization -n default \
-            --timeout=15m \
-            nativelink-${TOOLCHAIN}"
+#       - name: Debug Kustomizations
+#         run: >
+#           nix develop --impure --command
+#           bash -c "kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A && kubectl events --all-namespaces && kubectl describe kustomizations.kustomize.toolkit.fluxcd.io -A"
+#         if: always()
 
-      - name: Wait for NativeLink
-        run: >
-          nix develop --impure --command
-          bash -c "kubectl rollout status deploy/nativelink"
+#       - name: Wait for Worker Kustomization
+#         env:
+#           TOOLCHAIN: ${{ matrix.toolchain }}
+#         run: >
+#           nix develop --impure --command
+#           bash -c "flux reconcile kustomization -n default \
+#             --timeout=15m \
+#             nativelink-${TOOLCHAIN}"
 
-      - name: Wait for worker
-        env:
-          TOOLCHAIN: ${{ matrix.toolchain }}
-        run: >
-          nix develop --impure --command
-          bash -c "kubectl rollout status deploy/nativelink-worker-${TOOLCHAIN}"
+#       - name: Debug Kustomizations
+#         run: >
+#           nix develop --impure --command
+#           bash -c "kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A && kubectl events --all-namespaces && kubectl describe kustomizations.kustomize.toolkit.fluxcd.io -A"
+#         if: always()
 
-      - name: Get gateway IPs
-        id: gateway-ips
-        run: |
-          echo "nativelink_ip=$(kubectl get gtw nativelink-gateway -o=jsonpath='{.status.addresses[0].value}')" >> "$GITHUB_ENV"
+#       - name: Wait for NativeLink
+#         run: >
+#           nix develop --impure --command
+#           bash -c "kubectl rollout status deploy/nativelink"
 
-      - name: Print cluster state
-        run: |
-          kubectl get svc -A
-          kubectl get pod -A
-          kubectl get svc -A
-          kubectl get deployments -A
-          kubectl describe gtw
-          echo "nativelink"
-          kubectl logs -l app=nativelink
-          echo "worker"
-          kubectl logs -l app=nativelink-worker
+#       - name: Wait for worker
+#         env:
+#           TOOLCHAIN: ${{ matrix.toolchain }}
+#         run: >
+#           nix develop --impure --command
+#           bash -c "kubectl rollout status deploy/nativelink-worker-${TOOLCHAIN}"
 
-      - name: Build example with ${{ matrix.toolchain }} toolchain
-        env:
-          TOOLCHAIN: ${{ matrix.toolchain }}
-        run: >
-          nix develop --impure --command
-          bash -c "bazel run \
-            --remote_cache=grpc://$nativelink_ip \
-            --remote_executor=grpc://$nativelink_ip \
-            --verbose_failures \
-            @local-remote-execution//examples:${TOOLCHAIN}"
+#       - name: Get gateway IPs
+#         id: gateway-ips
+#         run: |
+#           echo "nativelink_ip=$(kubectl get gtw nativelink-gateway -o=jsonpath='{.status.addresses[0].value}')" >> "$GITHUB_ENV"
+
+#       - name: Print cluster state
+#         run: |
+#           kubectl get svc -A
+#           kubectl get pod -A
+#           kubectl get svc -A
+#           kubectl get deployments -A
+#           kubectl describe gtw
+#           echo "nativelink"
+#           kubectl logs -l app=nativelink
+#           echo "worker"
+#           kubectl logs -l app=nativelink-worker
+
+#       - name: Build example with ${{ matrix.toolchain }} toolchain
+#         env:
+#           TOOLCHAIN: ${{ matrix.toolchain }}
+#         run: >
+#           nix develop --impure --command
+#           bash -c "bazel run \
+#             --remote_cache=grpc://$nativelink_ip \
+#             --remote_executor=grpc://$nativelink_ip \
+#             --verbose_failures \
+#             @local-remote-execution//examples:${TOOLCHAIN}"

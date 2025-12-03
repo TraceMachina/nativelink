@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -34,13 +34,21 @@ pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
             reason = "`tokio::test` uses `tokio::runtime::Runtime::block_on`"
         )]
         #[tokio::test(#attr)]
+        #[::tracing_test::traced_test]
         async fn #fn_name(#fn_inputs) #fn_output {
-            nativelink_util::telemetry::init_tracing_for_tests();
-
             ::nativelink_util::__tracing::error_span!(stringify!(#fn_name))
                 .in_scope(|| async move {
                     ::nativelink_util::common::reseed_rng_for_test().unwrap();
-                    #fn_block
+                    let res = #fn_block;
+                    logs_assert(|lines: &[&str]| {
+                        for line in lines {
+                            if line.contains(" data: b") {
+                                return Err(format!("Non-redacted data in \"{line}\""));
+                            }
+                        }
+                        Ok(())
+                    });
+                    res
                 })
                 .await
         }

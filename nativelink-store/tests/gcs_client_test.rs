@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,8 +16,8 @@ use core::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use futures::join;
-use nativelink_error::{Error, ResultExt};
+use futures::{StreamExt, join};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::gcs_client::client::GcsOperations;
 use nativelink_store::gcs_client::mocks::MockGcsOperations;
@@ -86,14 +86,38 @@ async fn test_read_object_content() -> Result<(), Error> {
         .await;
 
     // Test reading the full content
-    let result = mock_ops.read_object_content(&object_path, 0, None).await?;
+    let result = mock_ops
+        .read_object_content(&object_path, 0, None)
+        .await?
+        .next()
+        .await
+        .map_or_else(
+            || {
+                Err(Error::new(
+                    Code::OutOfRange,
+                    "EOF reading result".to_string(),
+                ))
+            },
+            |result| result,
+        )?;
     assert_eq!(result, test_content);
 
     // Test reading a range of content
     let result = mock_ops
         .read_object_content(&object_path, 6, Some(11))
-        .await?;
-    assert_eq!(result, b"world");
+        .await?
+        .next()
+        .await
+        .map_or_else(
+            || {
+                Err(Error::new(
+                    Code::OutOfRange,
+                    "EOF reading result".to_string(),
+                ))
+            },
+            |result| result,
+        )?;
+    assert_eq!(result, Bytes::from_static(b"world"));
 
     // Verify call counts
     let call_counts = mock_ops.get_call_counts();
@@ -115,7 +139,20 @@ async fn test_write_object() -> Result<(), Error> {
         .await?;
 
     // Verify the object was stored
-    let result = mock_ops.read_object_content(&object_path, 0, None).await?;
+    let result = mock_ops
+        .read_object_content(&object_path, 0, None)
+        .await?
+        .next()
+        .await
+        .map_or_else(
+            || {
+                Err(Error::new(
+                    Code::OutOfRange,
+                    "EOF reading result".to_string(),
+                ))
+            },
+            |result| result,
+        )?;
     assert_eq!(result, test_content);
 
     // Verify call counts
@@ -137,8 +174,8 @@ async fn test_resumable_upload() -> Result<(), Error> {
     assert!(!upload_id.is_empty(), "Expected non-empty upload ID");
 
     // Upload chunks
-    let chunk1 = b"first chunk ".to_vec();
-    let chunk2 = b"second chunk".to_vec();
+    let chunk1 = Bytes::from_static(b"first chunk ");
+    let chunk2 = Bytes::from_static(b"second chunk");
 
     // Upload first chunk
     mock_ops
@@ -147,8 +184,8 @@ async fn test_resumable_upload() -> Result<(), Error> {
             &object_path,
             chunk1.clone(),
             0,
-            chunk1.len() as i64,
-            false,
+            chunk1.len() as u64,
+            None,
         )
         .await?;
 
@@ -158,14 +195,27 @@ async fn test_resumable_upload() -> Result<(), Error> {
             &upload_id,
             &object_path,
             chunk2.clone(),
-            chunk1.len() as i64,
-            (chunk1.len() + chunk2.len()) as i64,
-            true,
+            chunk1.len() as u64,
+            (chunk1.len() + chunk2.len()) as u64,
+            Some((chunk1.len() + chunk2.len()) as u64),
         )
         .await?;
 
     // Verify the content
-    let result = mock_ops.read_object_content(&object_path, 0, None).await?;
+    let result = mock_ops
+        .read_object_content(&object_path, 0, None)
+        .await?
+        .next()
+        .await
+        .map_or_else(
+            || {
+                Err(Error::new(
+                    Code::OutOfRange,
+                    "EOF reading result".to_string(),
+                ))
+            },
+            |result| result,
+        )?;
     assert_eq!(result, [&chunk1[..], &chunk2[..]].concat());
 
     // Verify call counts
@@ -187,7 +237,7 @@ async fn test_upload_from_reader() -> Result<(), Error> {
     let data_size = 100;
     let mut send_data = BytesMut::new();
     for i in 0..data_size {
-        send_data.put_u8(((i % 93) + 33) as u8);
+        send_data.put_u8(u8::try_from((i % 93) + 33).expect("printable ASCII range"));
     }
     let send_data = send_data.freeze();
     let (mut tx, rx) = make_buf_channel_pair();
@@ -200,7 +250,7 @@ async fn test_upload_from_reader() -> Result<(), Error> {
     let object_path_clone = object_path.clone();
     let upload_task = nativelink_util::spawn!("upload_test", async move {
         mock_ops_clone
-            .upload_from_reader(&object_path_clone, &mut reader, upload_id, data_size as i64)
+            .upload_from_reader(&object_path_clone, &mut reader, upload_id, data_size as u64)
             .await
     });
 
@@ -212,9 +262,13 @@ async fn test_upload_from_reader() -> Result<(), Error> {
     upload_task.await.unwrap()?;
 
     // Verify the content
-    let result = mock_ops.read_object_content(&object_path, 0, None).await?;
-    assert_eq!(result.len(), data_size);
-    assert_eq!(result, send_data);
+    let result = mock_ops
+        .read_object_content(&object_path, 0, None)
+        .await?
+        .next()
+        .await;
+    assert_eq!(send_data.len(), data_size);
+    assert_eq!(result, Some(Ok(send_data)));
 
     // Verify call counts
     let call_counts = mock_ops.get_call_counts();
@@ -300,19 +354,19 @@ async fn test_failure_modes() -> Result<(), Error> {
     let failure_modes = [
         (
             nativelink_store::gcs_client::mocks::FailureMode::NotFound,
-            nativelink_error::Code::NotFound,
+            Code::NotFound,
         ),
         (
             nativelink_store::gcs_client::mocks::FailureMode::NetworkError,
-            nativelink_error::Code::Unavailable,
+            Code::Unavailable,
         ),
         (
             nativelink_store::gcs_client::mocks::FailureMode::Unauthorized,
-            nativelink_error::Code::Unauthenticated,
+            Code::Unauthenticated,
         ),
         (
             nativelink_store::gcs_client::mocks::FailureMode::ServerError,
-            nativelink_error::Code::Internal,
+            Code::Internal,
         ),
     ];
 
@@ -368,7 +422,18 @@ async fn test_empty_data_handling() -> Result<(), Error> {
     // Verify the content was correctly stored
     let stored_content = mock_ops_for_verification
         .read_object_content(&object_path_for_verification, 0, None)
-        .await?;
+        .await?
+        .next()
+        .await
+        .map_or_else(
+            || {
+                Err(Error::new(
+                    Code::OutOfRange,
+                    "EOF reading result".to_string(),
+                ))
+            },
+            |result| result,
+        )?;
     assert_eq!(
         stored_content, expected_content,
         "Content wasn't stored correctly"

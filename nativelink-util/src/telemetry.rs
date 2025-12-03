@@ -1,10 +1,10 @@
 // Copyright 2025 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -67,11 +67,12 @@ fn otlp_filter() -> EnvFilter {
         .add_directive(expect_parse("h2=off"))
         .add_directive(expect_parse("reqwest=off"))
         .add_directive(expect_parse("tower=off"))
+        .add_directive(expect_parse("fred=off"))
 }
 
 // Create a tracing layer intended for stdout printing.
 //
-// The output of this layer is configurable via the `NL_LOG_FMT` environment
+// The output of this layer is configurable via the `NL_LOG` environment
 // variable.
 fn tracing_stdout_layer() -> impl Layer<Registry> {
     let nl_log_fmt = env::var("NL_LOG").unwrap_or_else(|_| "pretty".to_string());
@@ -95,18 +96,6 @@ fn tracing_stdout_layer() -> impl Layer<Registry> {
             .with_filter(stdout_filter)
             .boxed(),
     }
-}
-
-/// Initialize a minimal tracing configuration for tests.
-///
-/// The OTLP logic in the main tracing loop causes issues with the tokio runtime
-/// in tests, so we use a more naive logger implementation here. This function
-/// is idempotent and can be called multiple times safely.
-pub fn init_tracing_for_tests() {
-    static INITIALIZED: OnceLock<()> = OnceLock::new();
-    INITIALIZED.get_or_init(|| {
-        registry().with(tracing_stdout_layer()).init();
-    });
 }
 
 /// Initialize tracing with OpenTelemetry support.
@@ -207,7 +196,7 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
 const BAZEL_METADATA_KEY: &str = "bazel.metadata";
 
 /// This is the header that bazel sends when using the `--remote_header` flag.
-/// TODO(aaronmondal): There are various other headers that bazel supports.
+/// TODO(palfrey): There are various other headers that bazel supports.
 ///                    Optimize their usage.
 const BAZEL_REQUESTMETADATA_HEADER: &str = "build.bazel.remote.execution.v2.requestmetadata-bin";
 

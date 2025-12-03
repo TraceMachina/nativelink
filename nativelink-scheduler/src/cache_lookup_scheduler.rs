@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -149,7 +150,7 @@ impl ActionStateResult for CacheLookupActionStateResult {
     }
 
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
-        // TODO(aaronmondal) We should probably remove as_action_info()
+        // TODO(palfrey) We should probably remove as_action_info()
         // or implement it properly.
         return Err(make_err!(
             Code::Unimplemented,
@@ -267,6 +268,7 @@ impl CacheLookupScheduler {
                         client_operation_id: OperationId::default(),
                         stage: ActionStage::CompletedFromCache(action_result),
                         action_digest: action_info.unique_qualifier.digest(),
+                        last_transition_timestamp: SystemTime::now(),
                     };
 
                     let ctx = Context::current();
@@ -280,7 +282,7 @@ impl CacheLookupScheduler {
                                 .get(ENDUSER_ID)
                                 .map(|v| v.as_str().to_string())
                                 .unwrap_or_default(),
-                            bazel_metadata: None, // TODO(aaronmondal): Implement conversion.
+                            bazel_metadata: None, // TODO(palfrey): Implement conversion.
                         })
                     };
 
@@ -350,7 +352,7 @@ impl CacheLookupScheduler {
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream, Error> {
+    ) -> Result<ActionStateResultStream<'_>, Error> {
         self.action_scheduler
             .filter_operations(filter)
             .await

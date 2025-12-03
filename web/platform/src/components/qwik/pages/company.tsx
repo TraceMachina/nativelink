@@ -4,29 +4,6 @@ import { Label, LinearGradient } from "../components/text.tsx";
 
 import { BackgroundVideo } from "../components/video.tsx";
 
-const team = [
-  {
-    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/aaron_mondal.webp",
-    name: "Aaron Mondal",
-    title: "Software Engineer",
-  },
-  {
-    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/tim_potter.webp",
-    name: "Tim Potter",
-    title: "Chief Technology Officer",
-  },
-  {
-    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/tyrone_greenfield.webp",
-    name: "Tyrone Greenfield",
-    title: "Chief of Staff",
-  },
-  {
-    img: "https://nativelink-cdn.s3.us-east-1.amazonaws.com/marcus_eagan.webp",
-    name: "Marcus Eagan",
-    title: "Founder",
-  },
-];
-
 const _cards = [
   {
     title: "Media Kit",
@@ -88,43 +65,6 @@ const CompanyHero = component$(() => {
   );
 });
 
-const CompanyTeam = component$(() => {
-  return (
-    <div class="flex px-6 w-full md:w-[1300px] flex-col justify-center items-center gap-5">
-      <Label text="Leadership Team" class="w-1/2 md:w-1/5" />
-      <div class="flex justify-center items-center flex-col">
-        <span class="text-center px-4 text-primary">
-          Our team consists of engineers and product leaders from Apple, Google,
-          MongoDB, and Toyota that are driven by a desire
-        </span>
-        <span class="text-center text-primary">
-          to build a safer future through next generation simulation
-          infrastructure.
-        </span>
-      </div>
-
-      <div class="relative w-screen px-8 md:w-[1300px] md:justify-evenly md:flex-wrap flex gap-4 snap-x snap-mandatory overflow-x-auto">
-        {team.map((member) => (
-          <div
-            key={member.name}
-            class="w-11/12 md:w-1/5 shrink-0 flex flex-col snap-always justify-start items-center snap-center pt-8 pb-12 gap-3"
-          >
-            <img
-              class="rounded-full w-full h-full"
-              src={member.img}
-              alt={member.name}
-            />
-            <div class="flex flex-col gap-2">
-              <LinearGradient text={member.name} class="text-3xl text-center" />
-              <LinearGradient text={member.title} class="text-sm text-center" />
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-});
-
 const CompanyContact = component$(() => {
   return (
     <div class="flex px-8 flex-col justify-center items-center gap-5">
@@ -178,7 +118,6 @@ export const CompanyPage = component$(() => {
     <main class="flex w-full w-screen flex-col pt-24 items-start justify-start bg-black font-nunito text-white">
       <div class="gap-10 flex w-full flex-col justify-center items-center">
         <CompanyHero />
-        <CompanyTeam />
         <CompanyContact />
         <CompanyCards />
       </div>

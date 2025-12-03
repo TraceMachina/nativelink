@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -30,7 +30,9 @@ mod utils {
 
 use hyper::body::Frame;
 use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
-use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
+use nativelink_config::stores::{
+    FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+};
 use nativelink_error::{Code, Error, make_err, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::Platform;
@@ -55,7 +57,6 @@ use pretty_assertions::assert_eq;
 use prost::Message;
 use rand::Rng;
 use tokio::io::AsyncWriteExt;
-use tonic::Response;
 use utils::local_worker_test_utils::{
     setup_grpc_stream, setup_local_worker, setup_local_worker_with_config,
 };
@@ -403,16 +404,12 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
     assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
 
     // Now our client should be notified that our runner finished.
-    let execution_response = test_context
-        .client
-        .expect_execution_response(Ok(Response::new(())))
-        .await;
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
 
     // Now ensure the final results match our expectations.
     assert_eq!(
         execution_response,
         ExecuteResult {
-            worker_id: expected_worker_id,
             instance_name: INSTANCE_NAME.to_string(),
             operation_id: String::new(),
             result: Some(execute_result::Result::ExecuteResponse(
@@ -431,6 +428,8 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Error> {
             // Note: These are not needed for this test, so we put dummy memory stores here.
             fast: StoreSpec::Memory(MemorySpec::default()),
             slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -470,6 +469,8 @@ async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(
             // Note: These are not needed for this test, so we put dummy memory stores here.
             fast: StoreSpec::Memory(MemorySpec::default()),
             slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -547,6 +548,9 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
             std::process::Command::new("sync").output().unwrap();
         }
         std::fs::rename(&precondition_script_tmp, &precondition_script).unwrap();
+        // Add a small delay to ensure the file system has fully released the file
+        // This helps avoid "Text file busy" errors on some Linux environments
+        tokio::time::sleep(Duration::from_millis(100)).await;
         precondition_script
     };
     #[cfg(target_family = "windows")]
@@ -629,16 +633,12 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
     }
 
     // Now our client should be notified that our runner finished.
-    let execution_response = test_context
-        .client
-        .expect_execution_response(Ok(Response::new(())))
-        .await;
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
 
     // Now ensure the final results match our expectations.
     assert_eq!(
         execution_response,
         ExecuteResult {
-            worker_id: expected_worker_id,
             instance_name: INSTANCE_NAME.to_string(),
             operation_id: String::new(),
             result: Some(execute_result::Result::InternalError(

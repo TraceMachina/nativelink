@@ -22,7 +22,7 @@ export const starlightConfig = {
     {
       icon: "slack",
       label: "Slack",
-      href: "https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A",
+      href: "https://forms.gle/LtaWSixEC6bYi5xF7",
     },
   ],
   customCss: [
@@ -37,6 +37,7 @@ export const starlightConfig = {
       },
     }),
   ],
+  routeMiddleware: "./src/routeData.ts",
   sidebar: [
     // The documentation structure follows the Diátaxis framework.
     // See https://diataxis.fr/ for details.
@@ -55,39 +56,6 @@ export const starlightConfig = {
         {
           label: "Other Build Systems",
           link: `${docsRoot}/introduction/non-bre`,
-        },
-      ],
-    },
-    {
-      // Corresponds to https://diataxis.fr/tutorials/. Learning-oriented
-      // content without elaborate explanations. Tutorials should have a
-      // clear goal and a straightforward "follow-these-commands" structure.
-      label: "NativeLink Cloud",
-      collapsed: true,
-      items: [
-        {
-          label: "Bazel",
-          link: `${docsRoot}/nativelink-cloud/bazel`,
-        },
-        {
-          label: "Reclient",
-          link: `${docsRoot}/nativelink-cloud/reclient`,
-        },
-        {
-          label: "Pants",
-          link: `${docsRoot}/nativelink-cloud/pants`,
-        },
-        {
-          label: "Remote Build Execution",
-          link: `${docsRoot}/nativelink-cloud/rbe`,
-        },
-        {
-          label: "API Keys in CI",
-          link: `${docsRoot}/nativelink-cloud/api-key`,
-        },
-        {
-          label: "Nix flake module",
-          link: `${docsRoot}/nativelink-cloud/nix`,
         },
       ],
     },
@@ -268,7 +236,6 @@ export const starlightConfig = {
       label: "leadingNavLinks",
       items: [
         { label: "Docs", link: `${docsRoot}/introduction/setup` },
-        { label: "NativeLink Cloud", link: "https://app.nativelink.com/" },
         {
           label: "Coverage",
           link: "https://tracemachina.github.io/nativelink",

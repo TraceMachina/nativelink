@@ -4,20 +4,22 @@ import { BackgroundVideo } from "../components/video.tsx";
 
 const _MockUp =
   "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp";
+
 const videoMockUp =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_introduction.mp4";
+  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/Walkthrough+of+Nativelink+Cloud.mp4";
 
 export const Hero = component$(() => {
   const rotatingText = useSignal("Accelerating Advanced CI");
 
   useVisibleTask$(() => {
     const options = [
+      { text: "Hermiticity is Simplicity®", duration: 15000 },
       { text: "Accelerating Advanced CI", duration: 5000 },
-      { text: "Remote execution in Bazel", duration: 5000 },
-      { text: "Remote execution in Buck2", duration: 5000 },
-      { text: "Faster Chromium Builds", duration: 3000 },
-      { text: "Model Training on CPUs", duration: 3000 },
-      { text: "Robotics", duration: 3000 },
+      { text: "Remote Execution in Bazel", duration: 5000 },
+      { text: "Remote Execution in Buck2", duration: 5000 },
+      { text: "Faster Chromium Builds", duration: 5000 },
+      { text: "Accelrating CMake", duration: 5000 },
+      { text: "Robotics Policy Evaluation", duration: 3000 },
       { text: "Simulation for Semiconductors", duration: 3000 },
     ];
 
@@ -75,14 +77,6 @@ export const Hero = component$(() => {
         <div class="w-full p-8 flex flex-row gap-5 justify-center items-center md:flex-row">
           <a
             id="button"
-            href="https://app.nativelink.com"
-            class=" w-1/2 h-10 gap-2 text-sm flex items-center justify-center rounded-xl border border-solid bg-white text-black transition-all duration-200 hover:border-white hover:bg-black hover:text-white md:h-[37px] md:w-[193px]"
-          >
-            <Cloud /> Sign up for free
-          </a>
-
-          <a
-            id="button"
             href="/docs/introduction/setup"
             class="w-1/2 h-10 flex items-center bg-black justify-center rounded-xl border-white/80 border border-solid text-white transition-all duration-200 hover:border-white hover:text-white md:h-[37px] md:w-[193px]"
           >
@@ -90,7 +84,7 @@ export const Hero = component$(() => {
           </a>
         </div>
         <div class="w-full flex justify-center items-center">
-          <div class="w-9/11 aspect-video relative">
+          <div class="w-9/11 relative">
             <video
               src={videoMockUp}
               class="w-full h-full object-contain self-center shadow-[0px_0px_50px_0px_rgba(96,80,230,0.3)]"

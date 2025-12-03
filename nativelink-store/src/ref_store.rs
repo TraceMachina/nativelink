@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,15 +14,18 @@
 
 use core::cell::UnsafeCell;
 use core::pin::Pin;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use nativelink_config::stores::RefSpec;
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
+use parking_lot::Mutex;
 use tracing::error;
 
 use crate::store_manager::StoreManager;
@@ -45,6 +48,7 @@ pub struct RefStore {
     name: String,
     store_manager: Weak<StoreManager>,
     inner: StoreReference,
+    remove_callbacks: Mutex<Vec<Arc<dyn RemoveItemCallback>>>,
 }
 
 impl RefStore {
@@ -56,6 +60,7 @@ impl RefStore {
                 mux: Mutex::new(()),
                 cell: AlignedStoreCell(UnsafeCell::new(None)),
             },
+            remove_callbacks: Mutex::new(vec![]),
         })
     }
 
@@ -76,18 +81,16 @@ impl RefStore {
         }
         // This should protect us against multiple writers writing the same location at the same
         // time.
-        let _lock = self.inner.mux.lock().map_err(|e| {
-            make_err!(
-                Code::Internal,
-                "Failed to lock mutex in ref_store : {:?}",
-                e
-            )
-        })?;
+        let _lock = self.inner.mux.lock();
         let store_manager = self
             .store_manager
             .upgrade()
             .err_tip(|| "Store manager is gone")?;
         if let Some(store) = store_manager.get_store(&self.name) {
+            let remove_callbacks = self.remove_callbacks.lock().clone();
+            for callback in remove_callbacks {
+                store.register_remove_callback(callback)?;
+            }
             unsafe {
                 *ref_store = Some(store);
                 return Ok((*ref_store).as_ref().unwrap());
@@ -147,6 +150,20 @@ impl StoreDriver for RefStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.remove_callbacks.lock().push(callback.clone());
+        let ref_store = self.inner.cell.0.get();
+        unsafe {
+            if let Some(ref store) = *ref_store {
+                store.register_remove_callback(callback)?;
+            }
+        }
+        Ok(())
     }
 }
 

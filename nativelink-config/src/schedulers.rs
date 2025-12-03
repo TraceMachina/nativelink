@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,12 +14,15 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::serde_utils::{convert_duration_with_shellexpand, convert_numeric_with_shellexpand};
+use crate::serde_utils::{
+    convert_duration_with_shellexpand, convert_duration_with_shellexpand_and_negative,
+    convert_numeric_with_shellexpand,
+};
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum SchedulerSpec {
     Simple(SimpleSpec),
@@ -30,7 +33,7 @@ pub enum SchedulerSpec {
 
 /// When the scheduler matches tasks to workers that are capable of running
 /// the task, this value will be used to determine how the property is treated.
-#[derive(Deserialize, Debug, Clone, Copy, Hash, Eq, PartialEq)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Hash, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PropertyType {
     /// Requires the platform property to be a u64 and when the scheduler looks
@@ -46,7 +49,7 @@ pub enum PropertyType {
 
     /// Does not restrict on this value and instead will be passed to the worker
     /// as an informational piece.
-    /// TODO(aaronmondal) In the future this will be used by the scheduler and worker
+    /// TODO(palfrey) In the future this will be used by the scheduler and worker
     /// to cause the scheduler to prefer certain workers over others, but not
     /// restrict them based on these values.
     Priority,
@@ -55,7 +58,7 @@ pub enum PropertyType {
 /// When a worker is being searched for to run a job, this will be used
 /// on how to choose which worker should run the job when multiple
 /// workers are able to run the task.
-#[derive(Copy, Clone, Deserialize, Debug, Default)]
+#[derive(Copy, Clone, Deserialize, Serialize, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerAllocationStrategy {
     /// Prefer workers that have been least recently used to run a job.
@@ -65,7 +68,12 @@ pub enum WorkerAllocationStrategy {
     MostRecentlyUsed,
 }
 
-#[derive(Deserialize, Debug, Default)]
+// defaults to every 10s
+const fn default_worker_match_logging_interval_s() -> i64 {
+    10
+}
+
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SimpleSpec {
     /// A list of supported platform properties mapped to how these properties
@@ -129,9 +137,18 @@ pub struct SimpleSpec {
     /// The storage backend to use for the scheduler.
     /// Default: memory
     pub experimental_backend: Option<ExperimentalSimpleSchedulerBackend>,
+
+    /// Every N seconds, do logging of worker matching
+    /// e.g. "worker busy", "can't find any worker"
+    /// Defaults to 10s. Can be set to -1 to disable
+    #[serde(
+        default = "default_worker_match_logging_interval_s",
+        deserialize_with = "convert_duration_with_shellexpand_and_negative"
+    )]
+    pub worker_match_logging_interval_s: i64,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ExperimentalSimpleSchedulerBackend {
     /// Use an in-memory store for the scheduler.
@@ -140,7 +157,7 @@ pub enum ExperimentalSimpleSchedulerBackend {
     Redis(ExperimentalRedisSchedulerBackend),
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ExperimentalRedisSchedulerBackend {
     /// A reference to the redis store to use for the scheduler.
@@ -152,7 +169,7 @@ pub struct ExperimentalRedisSchedulerBackend {
 /// is useful to use when doing some kind of local action cache or CAS away from
 /// the main cluster of workers.  In general, it's more efficient to point the
 /// build at the main scheduler directly though.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct GrpcSpec {
     /// The upstream scheduler to forward requests to.
@@ -174,7 +191,7 @@ pub struct GrpcSpec {
     pub connections_per_endpoint: usize,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct CacheLookupSpec {
     /// The reference to the action cache store used to return cached
@@ -186,7 +203,7 @@ pub struct CacheLookupSpec {
     pub scheduler: Box<SchedulerSpec>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformPropertyAddition {
     /// The name of the property to add.
@@ -195,16 +212,33 @@ pub struct PlatformPropertyAddition {
     pub value: String,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformPropertyReplacement {
+    /// The name of the property to replace.
+    pub name: String,
+    /// The the value to match against, if unset then any instance matches.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// The new name of the property.
+    pub new_name: String,
+    /// The value to assign to the property, if unset will remain the same.
+    #[serde(default)]
+    pub new_value: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum PropertyModification {
     /// Add a property to the action properties.
     Add(PlatformPropertyAddition),
     /// Remove a named property from the action.
     Remove(String),
+    /// If a property is found, then replace it with another one.
+    Replace(PlatformPropertyReplacement),
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct PropertyModifierSpec {
     /// A list of modifications to perform to incoming actions for the nested

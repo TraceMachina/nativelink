@@ -9,7 +9,7 @@ const connectOn = [
     title: "Connect on Slack",
     description:
       "Join our Slack community to connect with fellow NativeLink users, share tips, and get support from our community and team.",
-    link: "https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A",
+    link: "https://forms.gle/LtaWSixEC6bYi5xF7",
     icon: <Slack />,
   },
   {

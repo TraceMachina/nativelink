@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,6 +21,7 @@ use nativelink_metric::{
 use nativelink_proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property as ProtoProperty;
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 /// `PlatformProperties` helps manage the configuration of platform properties to
 /// keys and types. The scheduler uses these properties to decide what jobs
@@ -43,13 +44,21 @@ impl PlatformProperties {
 
     /// Determines if the worker's `PlatformProperties` is satisfied by this struct.
     #[must_use]
-    pub fn is_satisfied_by(&self, worker_properties: &Self) -> bool {
+    pub fn is_satisfied_by(&self, worker_properties: &Self, full_worker_logging: bool) -> bool {
         for (property, check_value) in &self.properties {
             if let Some(worker_value) = worker_properties.properties.get(property) {
                 if !check_value.is_satisfied_by(worker_value) {
+                    if full_worker_logging {
+                        info!(
+                            "Property mismatch on worker property {property}. {worker_value:?} != {check_value:?}"
+                        );
+                    }
                     return false;
                 }
             } else {
+                if full_worker_logging {
+                    info!("Property missing on worker property {property}");
+                }
                 return false;
             }
         }
@@ -94,7 +103,7 @@ impl From<&PlatformProperties> for ProtoPlatform {
 /// Priority - Means the worker is given this information, but does not restrict
 ///            what workers can take this value. However, the worker must have the
 ///            associated key present to be matched.
-///            TODO(aaronmondal) In the future this will be used by the scheduler and
+///            TODO(palfrey) In the future this will be used by the scheduler and
 ///            worker to cause the scheduler to prefer certain workers over others,
 ///            but not restrict them based on these values.
 #[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug, Serialize, Deserialize)]
@@ -128,7 +137,7 @@ impl PlatformPropertyValue {
         }
     }
 
-    pub fn as_str(&self) -> Cow<str> {
+    pub fn as_str(&self) -> Cow<'_, str> {
         match self {
             Self::Exact(value) | Self::Priority(value) | Self::Unknown(value) => {
                 Cow::Borrowed(value)

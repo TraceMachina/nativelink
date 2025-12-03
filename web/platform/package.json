@@ -1,30 +1,6 @@
 {
   "name": "nativelink-web-platform",
   "type": "module",
-  "version": "0.0.1",
-  "scripts": {
-    "start": "astro dev --open",
-    "astro": "astro",
-    "biome": "biome",
-    "sync": "astro sync",
-    "build": "bun fix && astro build",
-    "docs": "bun run build.docs && bun run generate.docs",
-    "generate.docs": "bun run utils/md_to_mdx_aot.ts",
-    "build.docs": "cd ../.. && unset TMPDIR TMP; bazel build --@local-remote-execution//rust:channel=nightly nativelink-config:docs_json && cd web/platform && bun run utils/metaphase_aot.ts",
-    "check": "biome ci . && astro check",
-    "check.format": "biome format .",
-    "check.lint": "biome check .",
-    "deploy": "deployctl deploy --include=./dist ./dist/server/entry.mjs --save-config",
-    "dev": "astro dev",
-    "fix": "bun lint && bun format && bun sync",
-    "format": "biome format --write .",
-    "lint": "biome check --write --unsafe .",
-    "preview": "bun run build && bun serve",
-    "setup": "bun install && bun run deno install -gArf jsr:@deno/deployctl@1.13.1",
-    "staging": "bun setup && bun run docs && bun run build && bun run deploy",
-    "prod": "bun setup && bun run docs && bun run build && bun run deploy --prod",
-    "serve": "deno run --allow-net --allow-read --allow-env ./dist/server/entry.mjs"
-  },
   "devDependencies": {
     "@astrojs/check": "^0.9.4",
     "@astrojs/markdown-remark": "^6.3.1",
@@ -46,13 +22,13 @@
     "@react-three/fiber": "^9.1.2",
     "@tailwindcss/vite": "^4.1.5",
     "@types/bun": "^1.2.12",
-    "astro": "5.7.10",
+    "astro": "5.15.9",
     "clsx": "^2.1.1",
-    "dotenv": "^16.5.0",
+    "dotenv": "^17.0.0",
     "framer-motion": "^12.9.4",
     "mdast": "^3.0.0",
     "motion": "^12.9.4",
-    "playwright": "1.50.1",
+    "playwright": "1.52.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "rehype-autolink-headings": "^7.1.0",
@@ -65,8 +41,36 @@
     "typescript": "^5.8.3",
     "unist-util-visit": "^5.0.0"
   },
-  "trustedDependencies": ["@biomejs/biome", "esbuild", "sharp"],
   "patchedDependencies": {
     "@qwikdev/astro@0.7.12": "patches/@qwikdev%2Fastro@0.7.12.patch"
-  }
+  },
+  "scripts": {
+    "astro": "astro",
+    "biome": "biome",
+    "build": "bun fix && astro build",
+    "build.docs": "cd ../.. && unset TMPDIR TMP; bazel build --@local-remote-execution//rust:channel=nightly nativelink-config:docs_json && cd web/platform && bun run utils/metaphase_aot.ts",
+    "check": "biome ci . && astro check",
+    "check.format": "biome format .",
+    "check.lint": "biome check .",
+    "deploy": "deployctl deploy --include=./dist ./dist/server/entry.mjs --save-config",
+    "dev": "astro dev",
+    "docs": "bun run build.docs && bun run generate.docs",
+    "fix": "bun lint && bun format && bun sync",
+    "format": "biome format --write .",
+    "generate.docs": "bun run utils/md_to_mdx_aot.ts",
+    "lint": "biome check --write --unsafe .",
+    "preview": "bun run build && bun serve",
+    "prod": "bun setup && bun run docs && bun run build && bun run deploy --prod",
+    "serve": "deno run --allow-net --allow-read --allow-env ./dist/server/entry.mjs",
+    "setup": "bun install && bun run deno install -gArf jsr:@deno/deployctl@1.13.1",
+    "staging": "bun setup && bun run docs && bun run build && bun run deploy",
+    "start": "astro dev --open",
+    "sync": "astro sync"
+  },
+  "trustedDependencies": [
+    "@biomejs/biome",
+    "esbuild",
+    "sharp"
+  ],
+  "version": "0.0.1"
 }

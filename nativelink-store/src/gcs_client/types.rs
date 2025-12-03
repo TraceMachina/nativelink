@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,7 +14,7 @@
 
 // ----- File size thresholds -----
 /// Threshold for using simple upload vs. resumable upload (10MB)
-pub const SIMPLE_UPLOAD_THRESHOLD: i64 = 10 * 1024 * 1024;
+pub const SIMPLE_UPLOAD_THRESHOLD: u64 = 10 * 1024 * 1024;
 /// Minimum size for multipart upload (5MB)
 pub const MIN_MULTIPART_SIZE: u64 = 5 * 1024 * 1024;
 /// Default chunk size for uploads (~2MB)

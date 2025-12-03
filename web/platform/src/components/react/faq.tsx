@@ -12,7 +12,7 @@ const FAQData = [
   {
     question: "How do I set up NativeLink?",
     answer:
-      "You can set up NativeLink by deploying it as a Docker image or using the cloud-hosted solution. Detailed setup instructions can be found in the NativeLink documentation.",
+      "You can set up NativeLink by deploying it as a Docker image. Detailed setup instructions can be found in the NativeLink documentation.",
   },
   {
     question: "What operating systems are supported by NativeLink?",
@@ -27,7 +27,7 @@ const FAQData = [
   {
     question: "Is NativeLink free?",
     answer:
-      "Yes, NativeLink is free for individuals, open-source projects, and cloud production environments, with support for unlimited team members.",
+      "Users are free to set up the open-source version of NativeLink, which is limited in functionality but fully open source.",
   },
   {
     question: "What is the Rust-based architecture in NativeLink?",

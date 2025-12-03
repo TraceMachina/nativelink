@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,14 +19,14 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::collections::vec_deque::VecDeque;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
@@ -54,6 +54,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_store::ac_utils::{
     ESTIMATED_DIGEST_SIZE, compute_buf_digest, get_and_decode_digest, serialize_and_upload_message,
 };
+use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
@@ -64,7 +65,6 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
-use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
@@ -72,12 +72,13 @@ use prost::Message;
 use relative_path::RelativePath;
 use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{Notify, oneshot, watch};
+use tokio::time::Instant;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -150,16 +151,40 @@ pub fn download_to_directory<'a>(
                 cas_store
                     .populate_fast_store(digest.into())
                     .and_then(move |()| async move {
-                        let file_entry = filesystem_store
-                            .get_file_entry_for_digest(&digest)
-                            .await
-                            .err_tip(|| "During hard link")?;
-                        file_entry
-                            .get_file_path_locked(|src| fs::hard_link(src, &dest))
-                            .await
-                            .map_err(|e| {
-                                make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}")
-                            })?;
+                        if is_zero_digest(digest) {
+                            let mut file_slot = fs::create_file(&dest).await?;
+                            file_slot.write_all(&[]).await?;
+                        }
+                        else {
+                            let file_entry = filesystem_store
+                                .get_file_entry_for_digest(&digest)
+                                .await
+                                .err_tip(|| "During hard link")?;
+                            // TODO: add a test for #2051: deadlock with large number of files
+                            let src_path = file_entry.get_file_path_locked(|src| async move { Ok(PathBuf::from(src)) }).await?;
+                            fs::hard_link(&src_path, &dest)
+                                .await
+                                .map_err(|e| {
+                                    if e.code == Code::NotFound {
+                                        make_err!(
+                                            Code::Internal,
+                                            "Could not make hardlink, file was likely evicted from cache. {e:?} : {dest}\n\
+                                            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+                                            To fix this issue:\n\
+                                            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+                                            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+                                            3. The setting is typically found in your nativelink.json config under:\n\
+                                            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+                                            4. Restart NativeLink after making the change\n\n\
+                                            If this error persists after increasing max_bytes several times, please report at:\n\
+                                            https://github.com/TraceMachina/nativelink/issues\n\
+                                            Include your config file and both server and client logs to help us assist you."
+                                        )
+                                    } else {
+                                        make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}")
+                                    }
+                                })?;
+                            }
                         #[cfg(target_family = "unix")]
                         if let Some(unix_mode) = unix_mode {
                             fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
@@ -241,6 +266,46 @@ pub fn download_to_directory<'a>(
     .boxed()
 }
 
+/// Prepares action inputs by first trying the directory cache (if available),
+/// then falling back to traditional `download_to_directory`.
+///
+/// This provides a significant performance improvement for repeated builds
+/// with the same input directories.
+pub async fn prepare_action_inputs(
+    directory_cache: &Option<Arc<crate::directory_cache::DirectoryCache>>,
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    digest: &DigestInfo,
+    work_directory: &str,
+) -> Result<(), Error> {
+    // Try cache first if available
+    if let Some(cache) = directory_cache {
+        match cache
+            .get_or_create(*digest, Path::new(work_directory))
+            .await
+        {
+            Ok(cache_hit) => {
+                trace!(
+                    ?digest,
+                    work_directory, cache_hit, "Successfully prepared inputs via directory cache"
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                warn!(
+                    ?digest,
+                    ?e,
+                    "Directory cache failed, falling back to traditional download"
+                );
+                // Fall through to traditional path
+            }
+        }
+    }
+
+    // Traditional path (cache disabled or failed)
+    download_to_directory(cas_store, filesystem_store, digest, work_directory).await
+}
+
 #[cfg(target_family = "windows")]
 fn is_executable(_metadata: &std::fs::Metadata, full_path: &impl AsRef<Path>) -> bool {
     static EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "bat", "com"];
@@ -254,12 +319,14 @@ fn is_executable(metadata: &std::fs::Metadata, _full_path: &impl AsRef<Path>) ->
     (metadata.mode() & 0o111) != 0
 }
 
-#[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
+type DigestUploader = Arc<tokio::sync::OnceCell<()>>;
+
 async fn upload_file(
     cas_store: Pin<&impl StoreLike>,
-    full_path: impl AsRef<Path> + Debug,
+    full_path: impl AsRef<Path> + Debug + Send + Sync,
     hasher: DigestHasherFunc,
     metadata: std::fs::Metadata,
+    digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
 ) -> Result<FileInfo, Error> {
     let is_executable = is_executable(&metadata, &full_path);
     let file_size = metadata.len();
@@ -273,20 +340,45 @@ async fn upload_file(
         .await
         .err_tip(|| format!("Failed to hash file in digest_for_file failed for {full_path:?}"))?;
 
-    file.rewind().await.err_tip(|| "Could not rewind file")?;
+    let digest_uploader = match digest_uploaders.lock().entry(digest) {
+        std::collections::hash_map::Entry::Occupied(occupied_entry) => occupied_entry.get().clone(),
+        std::collections::hash_map::Entry::Vacant(vacant_entry) => vacant_entry
+            .insert(Arc::new(tokio::sync::OnceCell::new()))
+            .clone(),
+    };
 
-    // Note: For unknown reasons we appear to be hitting:
-    // https://github.com/rust-lang/rust/issues/92096
-    // or a smiliar issue if we try to use the non-store driver function, so we
-    // are using the store driver function here.
-    cas_store
-        .as_store_driver_pin()
-        .update_with_whole_file(
-            digest.into(),
-            full_path.as_ref().into(),
-            file,
-            UploadSizeInfo::ExactSize(digest.size_bytes()),
-        )
+    // Only upload a file with a given hash once.  The file may exist multiple
+    // times in the output with different names.
+    digest_uploader
+        .get_or_try_init(async || {
+            // Only upload if the digest doesn't already exist, this should be
+            // a much cheaper operation than an upload.
+            let cas_store = cas_store.as_store_driver_pin();
+            let store_key: nativelink_util::store_trait::StoreKey<'_> = digest.into();
+            if cas_store
+                .has(store_key.borrow())
+                .await
+                .is_ok_and(|result| result.is_some())
+            {
+                return Ok(());
+            }
+
+            file.rewind().await.err_tip(|| "Could not rewind file")?;
+
+            // Note: For unknown reasons we appear to be hitting:
+            // https://github.com/rust-lang/rust/issues/92096
+            // or a smiliar issue if we try to use the non-store driver function, so we
+            // are using the store driver function here.
+            cas_store
+                .update_with_whole_file(
+                    store_key,
+                    full_path.as_ref().into(),
+                    file,
+                    UploadSizeInfo::ExactSize(digest.size_bytes()),
+                )
+                .await
+                .map(|_slot| ())
+        })
         .await
         .err_tip(|| format!("for {full_path:?}"))?;
 
@@ -367,6 +459,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
     full_dir_path: P,
     full_work_directory: &'a str,
     hasher: DigestHasherFunc,
+    digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
 ) -> BoxFuture<'a, Result<(Directory, VecDeque<ProtoDirectory>), Error>> {
     Box::pin(async move {
         let file_futures = FuturesUnordered::new();
@@ -392,47 +485,51 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                 if file_type.is_dir() {
                     let full_dir_path = full_dir_path.clone();
                     dir_futures.push(
-                        upload_directory(cas_store, full_path.clone(), full_work_directory, hasher)
-                            .and_then(|(dir, all_dirs)| async move {
-                                let directory_name = full_path
-                                    .file_name()
-                                    .err_tip(|| {
-                                        format!("Expected file_name to exist on {full_dir_path:?}")
-                                    })?
-                                    .to_str()
-                                    .err_tip(|| {
-                                        make_err!(
-                                            Code::Internal,
-                                            "Could not convert {:?} to string",
-                                            full_dir_path
-                                        )
-                                    })?
-                                    .to_string();
+                        upload_directory(
+                            cas_store,
+                            full_path.clone(),
+                            full_work_directory,
+                            hasher,
+                            digest_uploaders.clone(),
+                        )
+                        .and_then(|(dir, all_dirs)| async move {
+                            let directory_name = full_path
+                                .file_name()
+                                .err_tip(|| {
+                                    format!("Expected file_name to exist on {full_dir_path:?}")
+                                })?
+                                .to_str()
+                                .err_tip(|| {
+                                    make_err!(
+                                        Code::Internal,
+                                        "Could not convert {:?} to string",
+                                        full_dir_path
+                                    )
+                                })?
+                                .to_string();
 
-                                let digest = serialize_and_upload_message(
-                                    &dir,
-                                    cas_store,
-                                    &mut hasher.hasher(),
-                                )
-                                .await
-                                .err_tip(|| format!("for {full_path:?}"))?;
+                            let digest =
+                                serialize_and_upload_message(&dir, cas_store, &mut hasher.hasher())
+                                    .await
+                                    .err_tip(|| format!("for {}", full_path.display()))?;
 
-                                Result::<(DirectoryNode, VecDeque<Directory>), Error>::Ok((
-                                    DirectoryNode {
-                                        name: directory_name,
-                                        digest: Some(digest.into()),
-                                    },
-                                    all_dirs,
-                                ))
-                            })
-                            .boxed(),
+                            Result::<(DirectoryNode, VecDeque<Directory>), Error>::Ok((
+                                DirectoryNode {
+                                    name: directory_name,
+                                    digest: Some(digest.into()),
+                                },
+                                all_dirs,
+                            ))
+                        })
+                        .boxed(),
                     );
                 } else if file_type.is_file() {
+                    let digest_uploaders = digest_uploaders.clone();
                     file_futures.push(async move {
                         let metadata = fs::metadata(&full_path)
                             .await
-                            .err_tip(|| format!("Could not open file {full_path:?}"))?;
-                        upload_file(cas_store, &full_path, hasher, metadata)
+                            .err_tip(|| format!("Could not open file {}", full_path.display()))?;
+                        upload_file(cas_store, &full_path, hasher, metadata, digest_uploaders)
                             .map_ok(TryInto::try_into)
                             .await?
                     });
@@ -523,24 +620,32 @@ async fn process_side_channel_file(
 }
 
 async fn do_cleanup(
-    running_actions_manager: &RunningActionsManagerImpl,
+    running_actions_manager: &Arc<RunningActionsManagerImpl>,
     operation_id: &OperationId,
     action_directory: &str,
 ) -> Result<(), Error> {
+    // Mark this operation as being cleaned up
+    let Some(_cleaning_guard) = running_actions_manager.perform_cleanup(operation_id.clone())
+    else {
+        // Cleanup is already happening elsewhere.
+        return Ok(());
+    };
+
     debug!("Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
     let remove_dir_result = fs::remove_dir_all(action_directory)
         .await
         .err_tip(|| format!("Could not remove working directory {action_directory}"));
+
     if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
-        error!(?operation_id, ?err, "Error cleaning up action");
-        return Result::<(), Error>::Err(err).merge(remove_dir_result);
+        error!(%operation_id, ?err, "Error cleaning up action");
+        Result::<(), Error>::Err(err).merge(remove_dir_result)
+    } else if let Err(err) = remove_dir_result {
+        error!(%operation_id, ?err, "Error removing working directory");
+        Err(err)
+    } else {
+        Ok(())
     }
-    if let Err(err) = remove_dir_result {
-        error!(?operation_id, ?err, "Error removing working directory");
-        return Err(err);
-    }
-    Ok(())
 }
 
 pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
@@ -580,7 +685,7 @@ struct RunningActionImplExecutionResult {
 #[derive(Debug)]
 struct RunningActionImplState {
     command_proto: Option<ProtoCommand>,
-    // TODO(aaronmondal) Kill is not implemented yet, but is instrumented.
+    // TODO(palfrey) Kill is not implemented yet, but is instrumented.
     // However, it is used if the worker disconnects to destroy current jobs.
     kill_channel_tx: Option<oneshot::Sender<()>>,
     kill_channel_rx: Option<oneshot::Receiver<()>>,
@@ -604,11 +709,12 @@ pub struct RunningActionImpl {
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
     state: Mutex<RunningActionImplState>,
+    has_manager_entry: AtomicBool,
     did_cleanup: AtomicBool,
 }
 
 impl RunningActionImpl {
-    fn new(
+    pub fn new(
         execution_metadata: ExecutionMetadata,
         operation_id: OperationId,
         action_directory: String,
@@ -634,7 +740,10 @@ impl RunningActionImpl {
                 execution_metadata,
                 error: None,
             }),
-            did_cleanup: AtomicBool::new(false),
+            // Always need to ensure that we're removed from the manager on Drop.
+            has_manager_entry: AtomicBool::new(true),
+            // Only needs to be cleaned up after a prepare_action call, set there.
+            did_cleanup: AtomicBool::new(true),
         }
     }
 
@@ -646,7 +755,7 @@ impl RunningActionImpl {
         &self.running_actions_manager.metrics
     }
 
-    /// Prepares any actions needed to execution this action. This action will do the following:
+    /// Prepares any actions needed to execute this action. This action will do the following:
     ///
     /// * Download any files needed to execute the action
     /// * Build a folder with all files needed to execute the action.
@@ -675,10 +784,14 @@ impl RunningActionImpl {
                 fs::create_dir(&self.work_directory)
                     .await
                     .err_tip(|| format!("Error creating work directory {}", self.work_directory))?;
+                // Now the work directory has been created, we have to clean up.
+                self.did_cleanup.store(false, Ordering::Release);
                 // Download the input files/folder and place them into the temp directory.
+                // Use directory cache if available for better performance.
                 self.metrics()
                     .download_to_directory
-                    .wrap(download_to_directory(
+                    .wrap(prepare_action_inputs(
+                        &self.running_actions_manager.directory_cache,
                         &self.running_actions_manager.cas_store,
                         filesystem_store_pin,
                         &self.action_info.input_root_digest,
@@ -726,7 +839,7 @@ impl RunningActionImpl {
                 ))
                 .await?;
         }
-        debug!(?command, "Worker received command",);
+        debug!(?command, "Worker received command");
         {
             let mut state = self.state.lock();
             state.command_proto = Some(command);
@@ -768,7 +881,7 @@ impl RunningActionImpl {
         } else {
             command_proto.arguments.iter().map(AsRef::as_ref).collect()
         };
-        // TODO(aaronmondal): This should probably be in debug, but currently
+        // TODO(palfrey): This should probably be in debug, but currently
         //                    that's too busy and we often rely on this to
         //                    figure out toolchain misconfiguration issues.
         //                    De-bloat the `debug` level by using the `trace`
@@ -866,12 +979,22 @@ impl RunningActionImpl {
             .err_tip(|| "Expected stderr to exist on command this should never happen")?;
 
         let mut child_process_guard = guard(child_process, |mut child_process| {
-            error!(
-                "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
-            );
-            background_spawn!("running_actions_manager_kill_child_process", async move {
-                child_process.kill().await
-            });
+            let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
+                child_process.try_wait();
+            match result {
+                Ok(res) if res.is_some() => {
+                    // The child already exited, probably a timeout or kill operation
+                }
+                result => {
+                    error!(
+                        ?result,
+                        "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
+                    );
+                    background_spawn!("running_actions_manager_kill_child_process", async move {
+                        child_process.kill().await
+                    });
+                }
+            }
         });
 
         let all_stdout_fut = spawn!("stdout_reader", async move {
@@ -909,31 +1032,38 @@ impl RunningActionImpl {
                 () = &mut sleep_fut => {
                     self.running_actions_manager.metrics.task_timeouts.inc();
                     killed_action = true;
-                    if let Err(err) = child_process_guard.start_kill() {
+                    if let Err(err) = child_process_guard.kill().await {
                         error!(
                             ?err,
                             "Could not kill process in RunningActionsManager for action timeout",
                         );
                     }
                     {
+                        let joined_command = args.join(OsStr::new(" "));
+                        let command = joined_command.to_string_lossy();
+                        info!(
+                            seconds = self.action_info.timeout.as_secs_f32(),
+                            %command,
+                            "Command timed out"
+                        );
                         let mut state = self.state.lock();
                         state.error = Error::merge_option(state.error.take(), Some(Error::new(
                             Code::DeadlineExceeded,
                             format!(
                                 "Command '{}' timed out after {} seconds",
-                                args.join(OsStr::new(" ")).to_string_lossy(),
+                                command,
                                 self.action_info.timeout.as_secs_f32()
                             )
                         )));
                     }
                 },
                 maybe_exit_status = child_process_guard.wait() => {
-                    // Defuse our guard so it does not try to cleanup and make nessless logs.
+                    // Defuse our guard so it does not try to cleanup and make senseless logs.
                     drop(ScopeGuard::<_, _>::into_inner(child_process_guard));
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
-                    // TODO(aaronmondal) We should implement stderr/stdout streaming to client here.
+                    // TODO(palfrey) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
-                    // TODO(aaronmondal) There is a significant bug here. If we kill the action and the action creates
+                    // TODO(palfrey) There is a significant bug here. If we kill the action and the action creates
                     // child processes, it can create zombies. See: https://github.com/tracemachina/nativelink/issues/225
                     let (stdout, stderr) = if killed_action {
                         drop(timer);
@@ -956,9 +1086,11 @@ impl RunningActionImpl {
                         exit_code
                     });
 
+                    info!(?args, "Command complete");
+
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
-                        .err_tip(|| format!("Error processing side channel file: {side_channel_file:?}"))?
+                        .err_tip(|| format!("Error processing side channel file: {}", side_channel_file.display()))?
                     } else {
                         None
                     };
@@ -978,7 +1110,7 @@ impl RunningActionImpl {
                 },
                 _ = &mut kill_channel_rx => {
                     killed_action = true;
-                    if let Err(err) = child_process_guard.start_kill() {
+                    if let Err(err) = child_process_guard.kill().await {
                         error!(
                             operation_id = ?self.operation_id,
                             ?err,
@@ -1038,6 +1170,7 @@ impl RunningActionImpl {
             output_paths.append(&mut command_proto.output_files);
             output_paths.append(&mut command_proto.output_directories);
         }
+        let digest_uploaders = Arc::new(Mutex::new(HashMap::new()));
         for entry in output_paths {
             let full_path = OsString::from(if command_proto.working_directory.is_empty() {
                 format!("{}/{}", self.work_directory, entry)
@@ -1048,6 +1181,7 @@ impl RunningActionImpl {
                 )
             });
             let work_directory = &self.work_directory;
+            let digest_uploaders = digest_uploaders.clone();
             output_path_futures.push(async move {
                 let metadata = {
                     let metadata = match fs::symlink_metadata(&full_path).await {
@@ -1058,45 +1192,59 @@ impl RunningActionImpl {
                                 // execution spec, we simply ignore it continue.
                                 return Result::<OutputType, Error>::Ok(OutputType::None);
                             }
-                            return Err(e).err_tip(|| format!("Could not open file {full_path:?}"));
+                            return Err(e).err_tip(|| {
+                                format!("Could not open file {}", full_path.display())
+                            });
                         }
                     };
 
                     if metadata.is_file() {
                         return Ok(OutputType::File(
-                            upload_file(cas_store.as_pin(), &full_path, hasher, metadata)
-                                .await
-                                .map(|mut file_info| {
-                                    file_info.name_or_path = NameOrPath::Path(entry);
-                                    file_info
-                                })
-                                .err_tip(|| format!("Uploading file {full_path:?}"))?,
+                            upload_file(
+                                cas_store.as_pin(),
+                                &full_path,
+                                hasher,
+                                metadata,
+                                digest_uploaders,
+                            )
+                            .await
+                            .map(|mut file_info| {
+                                file_info.name_or_path = NameOrPath::Path(entry);
+                                file_info
+                            })
+                            .err_tip(|| format!("Uploading file {}", full_path.display()))?,
                         ));
                     }
                     metadata
                 };
                 if metadata.is_dir() {
                     Ok(OutputType::Directory(
-                        upload_directory(cas_store.as_pin(), &full_path, work_directory, hasher)
-                            .and_then(|(root_dir, children)| async move {
-                                let tree = ProtoTree {
-                                    root: Some(root_dir),
-                                    children: children.into(),
-                                };
-                                let tree_digest = serialize_and_upload_message(
-                                    &tree,
-                                    cas_store.as_pin(),
-                                    &mut hasher.hasher(),
-                                )
-                                .await
-                                .err_tip(|| format!("While processing {entry}"))?;
-                                Ok(DirectoryInfo {
-                                    path: entry,
-                                    tree_digest,
-                                })
-                            })
+                        upload_directory(
+                            cas_store.as_pin(),
+                            &full_path,
+                            work_directory,
+                            hasher,
+                            digest_uploaders,
+                        )
+                        .and_then(|(root_dir, children)| async move {
+                            let tree = ProtoTree {
+                                root: Some(root_dir),
+                                children: children.into(),
+                            };
+                            let tree_digest = serialize_and_upload_message(
+                                &tree,
+                                cas_store.as_pin(),
+                                &mut hasher.hasher(),
+                            )
                             .await
-                            .err_tip(|| format!("Uploading directory {full_path:?}"))?,
+                            .err_tip(|| format!("While processing {entry}"))?;
+                            Ok(DirectoryInfo {
+                                path: entry,
+                                tree_digest,
+                            })
+                        })
+                        .await
+                        .err_tip(|| format!("Uploading directory {}", full_path.display()))?,
                     ))
                 } else if metadata.is_symlink() {
                     let output_symlink = upload_symlink(&full_path, work_directory)
@@ -1105,26 +1253,28 @@ impl RunningActionImpl {
                             symlink_info.name_or_path = NameOrPath::Path(entry);
                             symlink_info
                         })
-                        .err_tip(|| format!("Uploading symlink {full_path:?}"))?;
+                        .err_tip(|| format!("Uploading symlink {}", full_path.display()))?;
                     match fs::metadata(&full_path).await {
                         Ok(metadata) => {
                             if metadata.is_dir() {
-                                return Ok(OutputType::DirectorySymlink(output_symlink));
+                                Ok(OutputType::DirectorySymlink(output_symlink))
+                            } else {
+                                // Note: If it's anything but directory we put it as a file symlink.
+                                Ok(OutputType::FileSymlink(output_symlink))
                             }
-                            // Note: If it's anything but directory we put it as a file symlink.
-                            return Ok(OutputType::FileSymlink(output_symlink));
                         }
                         Err(e) => {
                             if e.code != Code::NotFound {
                                 return Err(e).err_tip(|| {
                                     format!(
-                                        "While querying target symlink metadata for {full_path:?}"
+                                        "While querying target symlink metadata for {}",
+                                        full_path.display()
                                     )
                                 });
                             }
                             // If the file doesn't exist, we consider it a file. Even though the
                             // file doesn't exist we still need to populate an entry.
-                            return Ok(OutputType::FileSymlink(output_symlink));
+                            Ok(OutputType::FileSymlink(output_symlink))
                         }
                     }
                 } else {
@@ -1211,7 +1361,7 @@ impl RunningActionImpl {
                 stdout_digest,
                 stderr_digest,
                 execution_metadata,
-                server_logs: HashMap::default(), // TODO(aaronmondal) Not implemented.
+                server_logs: HashMap::default(), // TODO(palfrey) Not implemented.
                 error: state.error.clone(),
                 message: String::new(), // Will be filled in on cache_action_result if needed.
             });
@@ -1231,11 +1381,17 @@ impl RunningActionImpl {
 impl Drop for RunningActionImpl {
     fn drop(&mut self) {
         if self.did_cleanup.load(Ordering::Acquire) {
+            if self.has_manager_entry.load(Ordering::Acquire) {
+                drop(
+                    self.running_actions_manager
+                        .cleanup_action(&self.operation_id),
+                );
+            }
             return;
         }
         let operation_id = self.operation_id.clone();
         error!(
-            ?operation_id,
+            %operation_id,
             "RunningActionImpl did not cleanup. This is a violation of the requirements, will attempt to do it in the background."
         );
         let running_actions_manager = self.running_actions_manager.clone();
@@ -1247,7 +1403,7 @@ impl Drop for RunningActionImpl {
                 return;
             };
             error!(
-                ?operation_id,
+                %operation_id,
                 ?action_directory,
                 ?err,
                 "Error cleaning up action"
@@ -1262,31 +1418,47 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics()
+        let res = self
+            .metrics()
             .clone()
             .prepare_action
             .wrap(Self::inner_prepare_action(self))
-            .await
+            .await;
+        if let Err(ref e) = res {
+            warn!(?e, "Error during prepare_action");
+        }
+        res
     }
 
     async fn execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics()
+        let res = self
+            .metrics()
             .clone()
             .execute
             .wrap(Self::inner_execute(self))
-            .await
+            .await;
+        if let Err(ref e) = res {
+            warn!(?e, "Error during prepare_action");
+        }
+        res
     }
 
     async fn upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics()
+        let res = self
+            .metrics()
             .clone()
             .upload_results
             .wrap(Self::inner_upload_results(self))
-            .await
+            .await;
+        if let Err(ref e) = res {
+            warn!(?e, "Error during upload_results");
+        }
+        res
     }
 
     async fn cleanup(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics()
+        let res = self
+            .metrics()
             .clone()
             .cleanup
             .wrap(async move {
@@ -1296,10 +1468,15 @@ impl RunningAction for RunningActionImpl {
                     &self.action_directory,
                 )
                 .await;
+                self.has_manager_entry.store(false, Ordering::Release);
                 self.did_cleanup.store(true, Ordering::Release);
                 result.map(move |()| self)
             })
-            .await
+            .await;
+        if let Err(ref e) = res {
+            warn!(?e, "Error during cleanup");
+        }
+        res
     }
 
     async fn get_finished_result(self: Arc<Self>) -> Result<ActionResult, Error> {
@@ -1330,8 +1507,6 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
         action_result: &mut ActionResult,
         hasher: DigestHasherFunc,
     ) -> impl Future<Output = Result<(), Error>> + Send;
-
-    fn complete_actions(&self, complete_msg: ShutdownGuard) -> impl Future<Output = ()> + Send;
 
     fn kill_all(&self) -> impl Future<Output = ()> + Send;
 
@@ -1633,6 +1808,23 @@ pub struct RunningActionsManagerArgs<'a> {
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
     pub timeout_handled_externally: bool,
+    pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+}
+
+struct CleanupGuard {
+    manager: Weak<RunningActionsManagerImpl>,
+    operation_id: OperationId,
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        let Some(manager) = self.manager.upgrade() else {
+            return;
+        };
+        let mut cleaning = manager.cleaning_up_operations.lock();
+        cleaning.remove(&self.operation_id);
+        manager.cleanup_complete_notify.notify_waiters();
+    }
 }
 
 /// Holds state info about what is being executed and the interface for interacting
@@ -1652,9 +1844,25 @@ pub struct RunningActionsManagerImpl {
     action_done_tx: watch::Sender<()>,
     callbacks: Callbacks,
     metrics: Arc<Metrics>,
+    /// Track operations being cleaned up to avoid directory collisions during action retries.
+    /// When an action fails and is retried on the same worker, we need to ensure the previous
+    /// attempt's directory is fully cleaned up before creating a new one.
+    /// See: <https://github.com/TraceMachina/nativelink/issues/1859>
+    cleaning_up_operations: Mutex<HashSet<OperationId>>,
+    /// Notify waiters when a cleanup operation completes. This is used in conjunction with
+    /// `cleaning_up_operations` to coordinate directory cleanup and creation.
+    cleanup_complete_notify: Arc<Notify>,
+    /// Optional directory cache for improving performance by caching reconstructed
+    /// input directories and using hardlinks.
+    directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
 }
 
 impl RunningActionsManagerImpl {
+    /// Maximum time to wait for a cleanup operation to complete before timing out.
+    /// TODO(marcussorealheis): Consider making cleanup wait timeout configurable in the future
+    const MAX_WAIT: Duration = Duration::from_secs(30);
+    /// Maximum backoff duration for exponential backoff when waiting for cleanup.
+    const MAX_BACKOFF: Duration = Duration::from_millis(500);
     pub fn new_with_callbacks(
         args: RunningActionsManagerArgs<'_>,
         callbacks: Callbacks,
@@ -1687,6 +1895,9 @@ impl RunningActionsManagerImpl {
             action_done_tx,
             callbacks,
             metrics: Arc::new(Metrics::default()),
+            cleaning_up_operations: Mutex::new(HashSet::new()),
+            cleanup_complete_notify: Arc::new(Notify::new()),
+            directory_cache: args.directory_cache,
         })
     }
 
@@ -1698,6 +1909,105 @@ impl RunningActionsManagerImpl {
                 sleep_fn: |duration| Box::pin(tokio::time::sleep(duration)),
             },
         )
+    }
+
+    /// Fixes a race condition that occurs when an action fails to execute on a worker, and the same worker
+    /// attempts to re-execute the same action before the physical cleanup (file is removed) completes.
+    /// See this issue for additional details: <https://github.com/TraceMachina/nativelink/issues/1859>
+    async fn wait_for_cleanup_if_needed(&self, operation_id: &OperationId) -> Result<(), Error> {
+        let start = Instant::now();
+        let mut backoff = Duration::from_millis(10);
+        let mut has_waited = false;
+
+        loop {
+            let should_wait = {
+                let cleaning = self.cleaning_up_operations.lock();
+                cleaning.contains(operation_id)
+            };
+
+            if !should_wait {
+                let dir_path =
+                    PathBuf::from(&self.root_action_directory).join(operation_id.to_string());
+
+                if !dir_path.exists() {
+                    return Ok(());
+                }
+
+                // Safety check: ensure we're only removing directories under root_action_directory
+                let root_path = Path::new(&self.root_action_directory);
+                let canonical_root = root_path.canonicalize().err_tip(|| {
+                    format!(
+                        "Failed to canonicalize root directory: {}",
+                        self.root_action_directory
+                    )
+                })?;
+                let canonical_dir = dir_path.canonicalize().err_tip(|| {
+                    format!("Failed to canonicalize directory: {}", dir_path.display())
+                })?;
+
+                if !canonical_dir.starts_with(&canonical_root) {
+                    return Err(make_err!(
+                        Code::Internal,
+                        "Attempted to remove directory outside of root_action_directory: {}",
+                        dir_path.display()
+                    ));
+                }
+
+                // Directory exists but not being cleaned - remove it
+                warn!(
+                    "Removing stale directory for {}: {}",
+                    operation_id,
+                    dir_path.display()
+                );
+                self.metrics.stale_removals.inc();
+
+                // Try to remove the directory, with one retry on failure
+                let remove_result = fs::remove_dir_all(&dir_path).await;
+                if let Err(e) = remove_result {
+                    // Retry once after a short delay in case the directory is temporarily locked
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    fs::remove_dir_all(&dir_path).await.err_tip(|| {
+                        format!(
+                            "Failed to remove stale directory {} for retry of {} after retry (original error: {})",
+                            dir_path.display(),
+                            operation_id,
+                            e
+                        )
+                    })?;
+                }
+                return Ok(());
+            }
+
+            if start.elapsed() > Self::MAX_WAIT {
+                self.metrics.cleanup_wait_timeouts.inc();
+                return Err(make_err!(
+                    Code::DeadlineExceeded,
+                    "Timeout waiting for previous operation cleanup: {} (waited {:?})",
+                    operation_id,
+                    start.elapsed()
+                ));
+            }
+
+            if !has_waited {
+                self.metrics.cleanup_waits.inc();
+                has_waited = true;
+            }
+
+            trace!(
+                "Waiting for cleanup of {} (elapsed: {:?}, backoff: {:?})",
+                operation_id,
+                start.elapsed(),
+                backoff
+            );
+
+            tokio::select! {
+                () = self.cleanup_complete_notify.notified() => {},
+                () = tokio::time::sleep(backoff) => {
+                    // Exponential backoff
+                    backoff = (backoff * 2).min(Self::MAX_BACKOFF);
+                },
+            }
+        }
     }
 
     fn make_action_directory<'a>(
@@ -1746,7 +2056,7 @@ impl RunningActionsManagerImpl {
     fn cleanup_action(&self, operation_id: &OperationId) -> Result<(), Error> {
         let mut running_actions = self.running_actions.lock();
         let result = running_actions.remove(operation_id).err_tip(|| {
-            format!("Expected action id '{operation_id:?}' to exist in RunningActionsManagerImpl")
+            format!("Expected operation id '{operation_id}' to exist in RunningActionsManagerImpl")
         });
         // No need to copy anything, we just are telling the receivers an event happened.
         self.action_done_tx.send_modify(|()| {});
@@ -1773,6 +2083,16 @@ impl RunningActionsManagerImpl {
             }
         }
     }
+
+    fn perform_cleanup(self: &Arc<Self>, operation_id: OperationId) -> Option<CleanupGuard> {
+        let mut cleaning = self.cleaning_up_operations.lock();
+        cleaning
+            .insert(operation_id.clone())
+            .then_some(CleanupGuard {
+                manager: Arc::downgrade(self),
+                operation_id,
+            })
+    }
 }
 
 impl RunningActionsManager for RunningActionsManagerImpl {
@@ -1797,6 +2117,8 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     ?action_info,
                     "Worker received action",
                 );
+                // Wait for any previous cleanup to complete before creating directory
+                self.wait_for_cleanup_if_needed(&operation_id).await?;
                 let action_directory = self.make_action_directory(&operation_id).await?;
                 let execution_metadata = ExecutionMetadata {
                     worker: worker_id,
@@ -1833,6 +2155,16 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 ));
                 {
                     let mut running_actions = self.running_actions.lock();
+                    // Check if action already exists and is still alive
+                    if let Some(existing_weak) = running_actions.get(&operation_id) {
+                        if let Some(_existing_action) = existing_weak.upgrade() {
+                            return Err(make_err!(
+                                Code::AlreadyExists,
+                                "Action with operation_id {} is already running",
+                                operation_id
+                            ));
+                        }
+                    }
                     running_actions.insert(operation_id, Arc::downgrade(&running_action));
                 }
                 Ok(running_action)
@@ -1868,18 +2200,6 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         Ok(())
     }
 
-    // Waits for all running actions to complete and signals completion.
-    // Use the ShutdownGuard to signal the completion of the actions
-    // Dropping the sender automatically notifies the process to terminate.
-    async fn complete_actions(&self, _complete_msg: ShutdownGuard) {
-        drop(
-            self.action_done_tx
-                .subscribe()
-                .wait_for(|()| self.running_actions.lock().is_empty())
-                .await,
-        );
-    }
-
     // Note: When the future returns the process should be fully killed and cleaned up.
     async fn kill_all(&self) {
         self.metrics
@@ -1892,9 +2212,11 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                         .filter_map(|(_operation_id, action)| action.upgrade())
                         .collect()
                 };
-                for action in kill_operations {
-                    Self::kill_operation(action).await;
-                }
+                let mut kill_futures: FuturesUnordered<_> = kill_operations
+                    .into_iter()
+                    .map(Self::kill_operation)
+                    .collect();
+                while kill_futures.next().await.is_some() {}
             })
             .await;
         // Ignore error. If error happens it means there's no sender, which is not a problem.
@@ -1936,6 +2258,12 @@ pub struct Metrics {
     cleanup: AsyncCounterWrapper,
     #[metric(help = "Stats about the get_finished_result command.")]
     get_finished_result: AsyncCounterWrapper,
+    #[metric(help = "Number of times an action waited for cleanup to complete.")]
+    cleanup_waits: CounterWithTime,
+    #[metric(help = "Number of stale directories removed during action retries.")]
+    stale_removals: CounterWithTime,
+    #[metric(help = "Number of timeouts while waiting for cleanup to complete.")]
+    cleanup_wait_timeouts: CounterWithTime,
     #[metric(help = "Stats about the get_proto_command_from_store command.")]
     get_proto_command_from_store: AsyncCounterWrapper,
     #[metric(help = "Stats about the download_to_directory command.")]

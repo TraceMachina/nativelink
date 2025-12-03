@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -66,7 +66,7 @@ pub enum OrderDirection {
 /// The filters used to query operations from the state manager.
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OperationFilter {
-    // TODO(aaronmondal): create rust builder pattern?
+    // TODO(palfrey): create rust builder pattern?
     /// The stage(s) that the operation must be in.
     pub stages: OperationStageFlags,
 
@@ -123,7 +123,7 @@ pub trait ClientStateManager: Sync + Send + Unpin + MetricsComponent + 'static {
 }
 
 /// The type of update to perform on an operation.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 #[allow(
     clippy::large_enum_variant,
     reason = "TODO Fix this. Breaks on stable, but not on nightly"
@@ -137,6 +137,12 @@ pub enum UpdateOperationType {
 
     /// Notification that the operation has been completed.
     UpdateWithError(Error),
+
+    /// Notification that the worker disconnected.
+    UpdateWithDisconnect,
+
+    /// Notification that the execution stage has completed and it's just IO happening now.
+    ExecutionComplete,
 }
 
 #[async_trait]

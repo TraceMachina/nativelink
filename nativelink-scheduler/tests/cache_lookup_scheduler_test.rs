@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,10 +13,9 @@
 // limitations under the License.
 
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 mod utils {
-    pub(crate) mod mock_scheduler;
     pub(crate) mod scheduler_utils;
 }
 
@@ -26,6 +25,7 @@ use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::ActionResult as ProtoActionResult;
 use nativelink_scheduler::cache_lookup_scheduler::CacheLookupScheduler;
+use nativelink_scheduler::mock_scheduler::MockActionScheduler;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{
     ActionResult, ActionStage, ActionState, ActionUniqueQualifier, OperationId,
@@ -38,7 +38,6 @@ use prost::Message;
 use tokio::sync::watch;
 use tokio::{self};
 use tokio_stream::StreamExt;
-use utils::mock_scheduler::MockActionScheduler;
 use utils::scheduler_utils::{TokioWatchActionStateResult, make_base_action_info};
 
 struct TestContext {
@@ -72,6 +71,7 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let ActionUniqueQualifier::Cacheable(action_key) = action_info.unique_qualifier.clone() else {
         panic!("This test should be testing when item was cached first");

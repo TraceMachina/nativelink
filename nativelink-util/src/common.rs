@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -160,7 +160,10 @@ impl<'a> DigestStackStringifier<'a> {
             cursor
                 .write_fmt(format_args!("{}", self.digest.size_bytes()))
                 .err_tip(|| format!("Could not write size_bytes to buffer - {hex:?}",))?;
-            cursor.position() as usize
+            cursor
+                .position()
+                .try_into()
+                .map_err(|e| make_input_err!("Cursor position exceeds usize bounds: {e}"))?
         };
         // Convert the buffer into utf8 string.
         core::str::from_utf8(&self.buf[..len]).map_err(|e| {
@@ -454,7 +457,7 @@ pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn core:
         // Compressed-Flag -> 0 / 1 # encoded as 1 byte unsigned integer.
         buf.put_u8(0);
         // Message-Length -> {length of Message} # encoded as 4 byte unsigned integer (big endian).
-        buf.put_u32(len as u32);
+        buf.put_u32(u32::try_from(len)?);
         // Message -> *{binary octet}.
     }
 

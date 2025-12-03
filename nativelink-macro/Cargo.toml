@@ -1,9 +1,10 @@
+#:schema ../tools/cargo-with-detailed-deps.json
 lints.workspace = true
 
 [package]
 edition = "2024"
 name = "nativelink-macro"
-version = "0.6.0"
+version = "0.7.8"
 
 [lib]
 proc-macro = true

@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -81,6 +81,7 @@ impl From<u64> for MetricKind {
 }
 
 impl MetricKind {
+    #[must_use]
     pub fn into_known_kind(&self, default_kind: Self) -> MetricPublishKnownKindData {
         let this = if matches!(self, Self::Default) {
             default_kind
@@ -98,6 +99,9 @@ impl MetricKind {
 
 /// The trait that all components that can be published must implement.
 pub trait MetricsComponent {
+    /// # Errors
+    ///
+    /// Will return `Err` if we can't publish the metric.
     fn publish(
         &self,
         kind: MetricKind,
@@ -106,6 +110,9 @@ pub trait MetricsComponent {
 }
 
 pub trait RootMetricsComponent: MetricsComponent + Send + Sync {
+    /// # Errors
+    ///
+    /// Will return `Err` if we can't publish the metric.
     fn publish(
         &self,
         kind: MetricKind,

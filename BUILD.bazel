@@ -17,7 +17,6 @@ rust_binary(
     deps = [
         "//nativelink-config",
         "//nativelink-error",
-        "//nativelink-metric",
         "//nativelink-scheduler",
         "//nativelink-service",
         "//nativelink-store",
@@ -30,19 +29,30 @@ rust_binary(
         "@crates//:hyper",
         "@crates//:hyper-util",
         "@crates//:mimalloc",
-        "@crates//:opentelemetry",
-        "@crates//:opentelemetry_sdk",
         "@crates//:parking_lot",
         "@crates//:rustls-pemfile",
-        "@crates//:scopeguard",
-        "@crates//:serde_json",
-        "@crates//:serde_json5",
         "@crates//:tokio",
         "@crates//:tokio-rustls",
         "@crates//:tonic",
         "@crates//:tower",
         "@crates//:tracing",
-        "@crates//:tracing-subscriber",
+    ],
+)
+
+rust_binary(
+    name = "redis_store_tester",
+    srcs = [
+        "src/bin/redis_store_tester.rs",
+    ],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:bytes",
+        "@crates//:rand",
+        "@crates//:tokio",
+        "@crates//:tracing",
     ],
 )
 

@@ -1,10 +1,10 @@
 // Copyright 2024 The Native Link Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -29,8 +30,10 @@ use pretty_assertions::assert_eq;
 async fn create_empty_indicator() -> Result<(), Error> {
     let mut health_registry_builder = HealthRegistryBuilder::new("nativelink");
     let health_registry = health_registry_builder.build();
-    let health_status: Vec<HealthStatusDescription> =
-        health_registry.health_status_report().collect().await;
+    let health_status: Vec<HealthStatusDescription> = health_registry
+        .health_status_report(&Duration::MAX)
+        .collect()
+        .await;
     assert_eq!(health_status.len(), 0);
     Ok(())
 }
@@ -44,8 +47,10 @@ async fn create_register_indicator() -> Result<(), Error> {
     health_registry_builder.register_indicator(Arc::new(MockComponentImpl {}));
 
     let health_registry = health_registry_builder.build();
-    let health_status: Vec<HealthStatusDescription> =
-        health_registry.health_status_report().collect().await;
+    let health_status: Vec<HealthStatusDescription> = health_registry
+        .health_status_report(&Duration::MAX)
+        .collect()
+        .await;
 
     assert_eq!(health_status.len(), 1);
     assert_eq!(
@@ -75,8 +80,10 @@ async fn create_sub_registry() -> Result<(), Error> {
     namespace1_registry.register_indicator(Arc::new(MockComponentImpl {}));
 
     let health_registry = health_registry_builder.build();
-    let health_status: Vec<HealthStatusDescription> =
-        health_registry.health_status_report().collect().await;
+    let health_status: Vec<HealthStatusDescription> = health_registry
+        .health_status_report(&Duration::MAX)
+        .collect()
+        .await;
 
     assert_eq!(health_status.len(), 2);
     let expected_health_status = vec_to_set(vec![
@@ -114,8 +121,10 @@ async fn create_multiple_indicators_same_registry() -> Result<(), Error> {
     health_registry_builder.register_indicator(Arc::new(MockComponentImpl3 {}));
 
     let health_registry = health_registry_builder.build();
-    let health_status: Vec<HealthStatusDescription> =
-        health_registry.health_status_report().collect().await;
+    let health_status: Vec<HealthStatusDescription> = health_registry
+        .health_status_report(&Duration::MAX)
+        .collect()
+        .await;
 
     assert_eq!(health_status.len(), 3);
     let expected_health_status = vec_to_set(vec![
@@ -165,8 +174,10 @@ async fn create_multiple_indicators_with_sub_registry() -> Result<(), Error> {
         .register_indicator(Arc::new(MockComponentImpl3 {}));
 
     let health_registry = health_registry_builder.build();
-    let health_status: Vec<HealthStatusDescription> =
-        health_registry.health_status_report().collect().await;
+    let health_status: Vec<HealthStatusDescription> = health_registry
+        .health_status_report(&Duration::MAX)
+        .collect()
+        .await;
 
     assert_eq!(health_status.len(), 3);
     let expected_health_status = vec_to_set(vec![

@@ -1,3 +1,4 @@
+#:schema ../tools/cargo-with-detailed-deps.json
 lints.workspace = true
 
 [package]
@@ -7,7 +8,7 @@ autoexamples = false
 autotests = false
 edition = "2024"
 name = "nativelink-error"
-version = "0.6.0"
+version = "0.7.8"
 
 [dependencies]
 nativelink-metric = { path = "../nativelink-metric" }
@@ -16,10 +17,10 @@ nativelink-proto = { path = "../nativelink-proto" }
 fred = { version = "10.1.0", default-features = false, features = [
   "enable-rustls-ring",
 ] }
-hex = { version = "0.4.3", default-features = false }
 prost = { version = "0.13.5", default-features = false }
 prost-types = { version = "0.13.5", default-features = false }
 serde = { version = "1.0.219", default-features = false }
+serde_json5 = { version = "0.2.1", default-features = false }
 tokio = { version = "1.44.1", features = [
   "fs",
   "io-util",
@@ -30,3 +31,5 @@ tonic = { version = "0.13.0", features = [
   "tls-ring",
   "transport",
 ], default-features = false }
+uuid = { version = "1.16.0", default-features = false }
+walkdir = { version = "2.5.0", default-features = false }

@@ -1,16 +1,19 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+// The utils is used by multiple tests and some the code is dead on.
+#![allow(dead_code)]
 
 use core::time::Duration;
 use std::collections::HashMap;
@@ -19,6 +22,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use nativelink_error::{Code, Error, make_err};
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    UpdateForWorker, update_for_worker,
+};
 use nativelink_util::action_messages::{
     ActionInfo, ActionState, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };
@@ -93,5 +99,49 @@ impl ActionStateResult for TokioWatchActionStateResult {
 
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
         Ok((self.action_info.clone(), None))
+    }
+}
+
+pub(crate) fn update_eq(
+    expected: UpdateForWorker,
+    actual: UpdateForWorker,
+    ignore_id: bool,
+) -> bool {
+    let Some(expected_update) = expected.update else {
+        return actual.update.is_none();
+    };
+    let Some(actual_update) = actual.update else {
+        return false;
+    };
+    match actual_update {
+        update_for_worker::Update::Disconnect(()) => {
+            matches!(expected_update, update_for_worker::Update::Disconnect(()))
+        }
+        update_for_worker::Update::KeepAlive(()) => {
+            matches!(expected_update, update_for_worker::Update::KeepAlive(()))
+        }
+        update_for_worker::Update::StartAction(actual_update) => match expected_update {
+            update_for_worker::Update::StartAction(mut expected_update) => {
+                if ignore_id {
+                    expected_update
+                        .operation_id
+                        .clone_from(&actual_update.operation_id);
+                }
+                expected_update == actual_update
+            }
+            _ => false,
+        },
+        update_for_worker::Update::KillOperationRequest(actual_update) => match expected_update {
+            update_for_worker::Update::KillOperationRequest(expected_update) => {
+                expected_update == actual_update
+            }
+            _ => false,
+        },
+        update_for_worker::Update::ConnectionResult(actual_update) => match expected_update {
+            update_for_worker::Update::ConnectionResult(expected_update) => {
+                expected_update == actual_update
+            }
+            _ => false,
+        },
     }
 }

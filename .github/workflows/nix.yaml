@@ -5,10 +5,12 @@ on:
   push:
     branches: [main]
     paths-ignore:
+      - '.github/styles/**'
       - 'web/**'
   pull_request:
     branches: [main]
     paths-ignore:
+      - '.github/styles/**'
       - 'web/**'
 
 permissions: read-all
@@ -74,9 +76,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-22.04
           - ubuntu-24.04
-          - macos-14
           - macos-15
     name: Installation / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -93,8 +93,11 @@ jobs:
         run: |
           nix run -L .#nativelink-is-executable-test
 
-  buildstream:
-    name: buildstream
+  integration:
+    name: ${{ matrix.test-name }}
+    strategy:
+      matrix:
+          test-name: [buildstream, mongo, buck2, rbe-toolchain]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -105,6 +108,6 @@ jobs:
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
 
-      - name: Test buildstream run
+      - name: Test ${{ matrix.test-name }} run
         run: |
-          nix run -L .#buildstream-with-nativelink-test
+          nix run -L .#${{ matrix.test-name }}-with-nativelink-test

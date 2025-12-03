@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,19 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::cmp;
 use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
 use core::time::Duration;
+use core::{cmp, iter};
 use std::borrow::Cow;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use const_format::formatcp;
-use fred::clients::{Pool as RedisPool, SubscriberClient};
+use fred::clients::SubscriberClient;
 use fred::interfaces::{ClientLike, KeysInterface, PubsubInterface};
-use fred::prelude::{EventInterface, HashesInterface, RediSearchInterface};
+use fred::prelude::{Client, EventInterface, HashesInterface, RediSearchInterface};
 use fred::types::config::{
     Config as RedisConfig, ConnectionConfig, PerformanceConfig, ReconnectPolicy, UnresponsiveConfig,
 };
@@ -36,7 +36,8 @@ use fred::types::scan::Scanner;
 use fred::types::scripts::Script;
 use fred::types::{Builder, Key as RedisKey, Map as RedisMap, SortOrder, Value as RedisValue};
 use futures::stream::FuturesUnordered;
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
+use futures::{FutureExt, Stream, StreamExt, TryStreamExt, future};
+use itertools::izip;
 use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
@@ -44,16 +45,17 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
-    BoolValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
-    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
+    BoolValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
+    SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
     SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
 };
 use nativelink_util::task::JoinHandleDropGuard;
 use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use tokio::select;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
@@ -94,11 +96,92 @@ const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_SCAN_COUNT: u32 = 10_000;
 
+const DEFAULT_CLIENT_PERMITS: usize = 500;
+
+#[derive(Clone, Debug)]
+pub struct RecoverablePool {
+    clients: Arc<RwLock<Vec<Client>>>,
+    builder: Builder,
+    counter: Arc<core::sync::atomic::AtomicUsize>,
+}
+
+impl RecoverablePool {
+    pub fn new(builder: Builder, size: usize) -> Result<Self, Error> {
+        let mut clients = Vec::with_capacity(size);
+        for _ in 0..size {
+            let client = builder
+                .build()
+                .err_tip(|| "Failed to build client in RecoverablePool::new")?;
+            clients.push(client);
+        }
+        Ok(Self {
+            clients: Arc::new(RwLock::new(clients)),
+            builder,
+            counter: Arc::new(core::sync::atomic::AtomicUsize::new(0)),
+        })
+    }
+
+    fn connect(&self) {
+        let clients = self.clients.read();
+        for client in clients.iter() {
+            client.connect();
+        }
+    }
+
+    fn next(&self) -> Client {
+        let clients = self.clients.read();
+        let index = self
+            .counter
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        clients[index % clients.len()].clone()
+    }
+
+    async fn replace_client(&self, old_client: &Client) -> Result<Client, Error> {
+        {
+            let clients = self.clients.read();
+            if !clients.iter().any(|c| c.id() == old_client.id()) {
+                // Someone else swapped this client already; just hand out the next pooled one.
+                return Ok(self.next());
+            }
+        }
+
+        let new_client = self
+            .builder
+            .build()
+            .err_tip(|| "Failed to build new client in RecoverablePool::replace_client")?;
+        new_client.connect();
+        new_client.wait_for_connect().await.err_tip(|| {
+            format!(
+                "Failed to connect new client while replacing Redis client {}",
+                old_client.id()
+            )
+        })?;
+
+        let replaced_client = {
+            let mut clients = self.clients.write();
+            clients
+                .iter()
+                .position(|c| c.id() == old_client.id())
+                .map(|index| core::mem::replace(&mut clients[index], new_client.clone()))
+        };
+
+        if let Some(old_client) = replaced_client {
+            let _unused = old_client.quit().await;
+            info!("Replaced Redis client {}", old_client.id());
+            Ok(new_client)
+        } else {
+            // Second race: pool entry changed after we connected the new client.
+            let _unused = new_client.quit().await;
+            Ok(self.next())
+        }
+    }
+}
+
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 #[derive(Debug, MetricsComponent)]
 pub struct RedisStore {
     /// The client pool connecting to the backing Redis instance(s).
-    client_pool: RedisPool,
+    client_pool: RecoverablePool,
 
     /// A channel to publish updates to when a key is added, removed, or modified.
     #[metric(
@@ -140,6 +223,28 @@ pub struct RedisStore {
 
     /// A manager for subscriptions to keys in Redis.
     subscription_manager: Mutex<Option<Arc<RedisSubscriptionManager>>>,
+
+    /// Permits to limit inflight Redis requests. Technically only
+    /// limits the calls to `get_client()`, but the requests per client
+    /// are small enough that it works well enough.
+    client_permits: Arc<Semaphore>,
+}
+
+struct ClientWithPermit {
+    client: Client,
+
+    // here so it sticks around with the client and doesn't get dropped until that does
+    #[allow(dead_code)]
+    semaphore_permit: OwnedSemaphorePermit,
+}
+
+impl Drop for ClientWithPermit {
+    fn drop(&mut self) {
+        trace!(
+            remaining = self.semaphore_permit.semaphore().available_permits(),
+            "Dropping a client permit"
+        );
+    }
 }
 
 impl RedisStore {
@@ -177,18 +282,22 @@ impl RedisStore {
                 spec.retry.jitter = DEFAULT_RETRY_JITTER;
             }
 
+            let to_ms = |secs: f32| -> u32 {
+                Duration::from_secs_f32(secs)
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u32::MAX)
+            };
+
             let max_retries = u32::try_from(spec.retry.max_retries)
                 .err_tip(|| "max_retries could not be converted to u32 in RedisStore::new")?;
-            let min_delay_ms = (spec.retry.delay * 1000.0) as u32;
-            let max_delay_ms = 8000;
-            let jitter = (spec.retry.jitter * spec.retry.delay * 1000.0) as u32;
 
-            let mut reconnect_policy = ReconnectPolicy::new_exponential(
-                max_retries,  /* max_retries, 0 is unlimited */
-                min_delay_ms, /* min_delay */
-                max_delay_ms, /* max_delay */
-                2,            /* mult */
-            );
+            let min_delay_ms = to_ms(spec.retry.delay);
+            let max_delay_ms = 8000;
+            let jitter = to_ms(spec.retry.jitter * spec.retry.delay);
+
+            let mut reconnect_policy =
+                ReconnectPolicy::new_exponential(max_retries, min_delay_ms, max_delay_ms, 2);
             reconnect_policy.set_jitter(jitter);
             reconnect_policy
         };
@@ -215,6 +324,9 @@ impl RedisStore {
             if spec.scan_count == 0 {
                 spec.scan_count = DEFAULT_SCAN_COUNT;
             }
+            if spec.max_client_permits == 0 {
+                spec.max_client_permits = DEFAULT_CLIENT_PERMITS;
+            }
         }
         let connection_timeout = Duration::from_millis(spec.connection_timeout_ms);
         let command_timeout = Duration::from_millis(spec.command_timeout_ms);
@@ -240,8 +352,7 @@ impl RedisStore {
             })
             .set_policy(reconnect_policy);
 
-        let client_pool = builder
-            .build_pool(spec.connection_pool_size)
+        let client_pool = RecoverablePool::new(builder.clone(), spec.connection_pool_size)
             .err_tip(|| "while creating redis connection pool")?;
 
         let subscriber_client = builder
@@ -257,6 +368,7 @@ impl RedisStore {
             spec.read_chunk_size,
             spec.max_chunk_uploads_per_update,
             spec.scan_count,
+            spec.max_client_permits,
         )
         .map(Arc::new)
     }
@@ -264,7 +376,7 @@ impl RedisStore {
     /// Used for testing when determinism is required.
     #[expect(clippy::too_many_arguments)]
     pub fn new_from_builder_and_parts(
-        client_pool: RedisPool,
+        client_pool: RecoverablePool,
         subscriber_client: SubscriberClient,
         pub_sub_channel: Option<String>,
         temp_name_generator_fn: fn() -> String,
@@ -272,6 +384,7 @@ impl RedisStore {
         read_chunk_size: usize,
         max_chunk_uploads_per_update: usize,
         scan_count: u32,
+        max_client_permits: usize,
     ) -> Result<Self, Error> {
         // Start connection pool (this will retry forever by default).
         client_pool.connect();
@@ -290,6 +403,50 @@ impl RedisStore {
             scan_count,
             update_if_version_matches_script: Script::from_lua(LUA_VERSION_SET_SCRIPT),
             subscription_manager: Mutex::new(None),
+            client_permits: Arc::new(Semaphore::new(max_client_permits)),
+        })
+    }
+
+    async fn get_client(&self) -> Result<ClientWithPermit, Error> {
+        let mut client = self.client_pool.next();
+        loop {
+            let config = client.client_config();
+            if config.mocks.is_some() {
+                break;
+            }
+            let connection_info = format!(
+                "Connection issue connecting to redis server with hosts: {:?}, username: {}, database: {}",
+                config
+                    .server
+                    .hosts()
+                    .iter()
+                    .map(|s| format!("{}:{}", s.host, s.port))
+                    .collect::<Vec<String>>(),
+                config
+                    .username
+                    .clone()
+                    .unwrap_or_else(|| "None".to_string()),
+                config.database.unwrap_or_default()
+            );
+            match client.wait_for_connect().await {
+                Ok(()) => break,
+                Err(e) => {
+                    warn!("{connection_info}: {e:?}. Replacing client.");
+                    client = self
+                        .client_pool
+                        .replace_client(&client)
+                        .await
+                        .err_tip(|| connection_info.clone())?;
+                }
+            }
+        }
+        let local_client_permits = self.client_permits.clone();
+        let remaining = local_client_permits.available_permits();
+        let semaphore_permit = local_client_permits.acquire_owned().await?;
+        trace!(remaining, "Got a client permit");
+        Ok(ClientWithPermit {
+            client,
+            semaphore_permit,
         })
     }
 
@@ -324,49 +481,59 @@ impl StoreDriver for RedisStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // TODO(aaronmondal) We could use pipeline here, but it makes retry more
+        // TODO(palfrey) We could use pipeline here, but it makes retry more
         // difficult and it doesn't work very well in cluster mode.
         // If we wanted to optimize this with pipeline be careful to
         // implement retry and to support cluster mode.
-        let client = self.client_pool.next();
-        keys.iter()
-            .zip(results.iter_mut())
-            .map(|(key, result)| async move {
-                // We need to do a special pass to ensure our zero key exist.
-                if is_zero_digest(key.borrow()) {
-                    *result = Some(0);
-                    return Ok::<_, Error>(());
-                }
-                let encoded_key = self.encode_key(key);
-                let pipeline = client.pipeline();
-                pipeline
-                    .strlen::<(), _>(encoded_key.as_ref())
-                    .await
-                    .err_tip(|| {
-                        format!("In RedisStore::has_with_results::strlen for {encoded_key}")
-                    })?;
-                // Redis returns 0 when the key doesn't exist
-                // AND when the key exists with value of length 0.
-                // Therefore, we need to check both length and existence
-                // and do it in a pipeline for efficiency.
-                pipeline
-                    .exists::<(), _>(encoded_key.as_ref())
-                    .await
-                    .err_tip(|| {
-                        format!("In RedisStore::has_with_results::exists for {encoded_key}")
-                    })?;
-                let (blob_len, exists) = pipeline
-                    .all::<(u64, bool)>()
-                    .await
-                    .err_tip(|| "In RedisStore::has_with_results::query")?;
 
-                *result = if exists { Some(blob_len) } else { None };
+        let client = self.get_client().await?;
 
-                Ok::<_, Error>(())
-            })
-            .collect::<FuturesUnordered<_>>()
-            .try_collect()
-            .await
+        // If we ask for many keys in one go, this can timeout, so limit that
+        let max_in_one_go = Arc::new(Semaphore::const_new(5));
+
+        izip!(
+            keys.iter(),
+            results.iter_mut(),
+            iter::repeat(&max_in_one_go),
+            iter::repeat(&client)
+        )
+        .map(|(key, result, local_semaphore, client)| async move {
+            // We need to do a special pass to ensure our zero key exist.
+            if is_zero_digest(key.borrow()) {
+                *result = Some(0);
+                return Ok::<_, Error>(());
+            }
+            let encoded_key = self.encode_key(key);
+
+            let guard = local_semaphore.acquire().await?;
+
+            let pipeline = client.client.pipeline();
+            pipeline
+                .strlen::<(), _>(encoded_key.as_ref())
+                .await
+                .err_tip(|| format!("In RedisStore::has_with_results::strlen for {encoded_key}"))?;
+            // Redis returns 0 when the key doesn't exist
+            // AND when the key exists with value of length 0.
+            // Therefore, we need to check both length and existence
+            // and do it in a pipeline for efficiency.
+            pipeline
+                .exists::<(), _>(encoded_key.as_ref())
+                .await
+                .err_tip(|| format!("In RedisStore::has_with_results::exists for {encoded_key}"))?;
+            let (blob_len, exists) = pipeline
+                .all::<(u64, bool)>()
+                .await
+                .err_tip(|| "In RedisStore::has_with_results::all")?;
+
+            *result = if exists { Some(blob_len) } else { None };
+
+            drop(guard);
+
+            Ok::<_, Error>(())
+        })
+        .collect::<FuturesUnordered<_>>()
+        .try_collect()
+        .await
     }
 
     async fn list(
@@ -395,8 +562,8 @@ impl StoreDriver for RedisStore {
             },
             Bound::Unbounded => format!("{}*", self.key_prefix),
         };
-        let client = self.client_pool.next();
-        let mut scan_stream = client.scan(pattern, Some(self.scan_count), None);
+        let client = self.get_client().await?;
+        let mut scan_stream = client.client.scan(pattern, Some(self.scan_count), None);
         let mut iterations = 0;
         'outer: while let Some(mut page) = scan_stream.try_next().await? {
             if let Some(keys) = page.take_results() {
@@ -458,7 +625,7 @@ impl StoreDriver for RedisStore {
             }
         }
 
-        let client = self.client_pool.next();
+        let client = self.get_client().await?;
 
         let mut read_stream = reader
             .scan(0u32, |bytes_read, chunk_res| {
@@ -481,12 +648,13 @@ impl StoreDriver for RedisStore {
             .map(|res| {
                 let (offset, end_pos, chunk) = res?;
                 let temp_key_ref = &temp_key;
+                let client = client.client.clone();
                 Ok(async move {
                     client
                         .setrange::<(), _, _>(temp_key_ref, offset, chunk)
                         .await
                         .err_tip(
-                            || "While appending to append to temp key in RedisStore::update",
+                            || format!("While appending to temp key ({temp_key_ref}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"),
                         )?;
                     Ok::<u32, Error>(end_pos)
                 })
@@ -501,6 +669,7 @@ impl StoreDriver for RedisStore {
         }
 
         let blob_len = client
+            .client
             .strlen::<u64, _>(&temp_key)
             .await
             .err_tip(|| format!("In RedisStore::update strlen check for {temp_key}"))?;
@@ -518,13 +687,17 @@ impl StoreDriver for RedisStore {
 
         // Rename the temp key so that the data appears under the real key. Any data already present in the real key is lost.
         client
+            .client
             .rename::<(), _, _>(&temp_key, final_key.as_ref())
             .await
             .err_tip(|| "While queueing key rename in RedisStore::update()")?;
 
         // If we have a publish channel configured, send a notice that the key has been set.
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
-            return Ok(client.publish(pub_sub_channel, final_key.as_ref()).await?);
+            return Ok(client
+                .client
+                .publish(pub_sub_channel, final_key.as_ref())
+                .await?);
         }
 
         Ok(())
@@ -550,7 +723,6 @@ impl StoreDriver for RedisStore {
                 .err_tip(|| "Failed to send zero EOF in redis store get_part");
         }
 
-        let client = self.client_pool.next();
         let encoded_key = self.encode_key(&key);
         let encoded_key = encoded_key.as_ref();
 
@@ -570,8 +742,10 @@ impl StoreDriver for RedisStore {
             data_end,
         );
 
+        let client = self.get_client().await?;
         loop {
             let chunk: Bytes = client
+                .client
                 .getrange(encoded_key, chunk_start, chunk_end)
                 .await
                 .err_tip(|| "In RedisStore::get_part::getrange")?;
@@ -609,6 +783,7 @@ impl StoreDriver for RedisStore {
         if writer.get_bytes_written() == 0 {
             // We're supposed to read 0 bytes, so just check if the key exists.
             let exists = client
+                .client
                 .exists::<bool, _>(encoded_key)
                 .await
                 .err_tip(|| "In RedisStore::get_part::zero_exists")?;
@@ -640,6 +815,14 @@ impl StoreDriver for RedisStore {
 
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        // As redis doesn't drop stuff, we can just ignore this
+        Ok(())
     }
 }
 
@@ -689,7 +872,7 @@ local indexes = {{}}
 
 if new_version-1 ~= expected_version then
     redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', -1)
-    return 0
+    return {{ 0, new_version-1 }}
 end
 -- Skip first 2 argvs, as they are known inputs.
 -- Remember: Lua is 1-indexed.
@@ -703,7 +886,7 @@ end
 redis.call('DEL', key)
 redis.call('HSET', key, '{DATA_FIELD_NAME}', new_data, '{VERSION_FIELD_NAME}', new_version, unpack(indexes))
 
-return new_version
+return {{ 1, new_version }}
 "
 );
 
@@ -1014,6 +1197,10 @@ impl SchedulerSubscriptionManager for RedisSubscriptionManager {
 
         Ok(subscription)
     }
+
+    fn is_reliable() -> bool {
+        false
+    }
 }
 
 impl SchedulerStore for RedisStore {
@@ -1039,7 +1226,7 @@ impl SchedulerStore for RedisStore {
         }
     }
 
-    async fn update_data<T>(&self, data: T) -> Result<Option<u64>, Error>
+    async fn update_data<T>(&self, data: T) -> Result<Option<i64>, Error>
     where
         T: SchedulerStoreDataProvider
             + SchedulerStoreKeyProvider
@@ -1047,15 +1234,15 @@ impl SchedulerStore for RedisStore {
             + Send,
     {
         let key = data.get_key();
-        let key = self.encode_key(&key);
-        let client = self.client_pool.next();
+        let redis_key = self.encode_key(&key);
+        let client = self.get_client().await?;
         let maybe_index = data.get_indexes().err_tip(|| {
-            format!("Err getting index in RedisStore::update_data::versioned for {key:?}")
+            format!("Err getting index in RedisStore::update_data::versioned for {redis_key}")
         })?;
         if <T as SchedulerStoreKeyProvider>::Versioned::VALUE {
             let current_version = data.current_version();
             let data = data.try_into_bytes().err_tip(|| {
-                format!("Could not convert value to bytes in RedisStore::update_data::versioned for {key:?}")
+                format!("Could not convert value to bytes in RedisStore::update_data::versioned for {redis_key}")
             })?;
             let mut argv = Vec::with_capacity(3 + maybe_index.len() * 2);
             argv.push(Bytes::from(format!("{current_version}")));
@@ -1064,22 +1251,39 @@ impl SchedulerStore for RedisStore {
                 argv.push(Bytes::from_static(name.as_bytes()));
                 argv.push(value);
             }
-            let new_version = self
+            let (success, new_version): (bool, i64) = self
                 .update_if_version_matches_script
-                .evalsha_with_reload::<u64, _, Vec<Bytes>>(client, vec![key.as_ref()], argv)
+                .evalsha_with_reload(&client.client, vec![redis_key.as_ref()], argv)
                 .await
                 .err_tip(|| format!("In RedisStore::update_data::versioned for {key:?}"))?;
-            if new_version == 0 {
+            if !success {
+                warn!(
+                    %redis_key,
+                    %key,
+                    %current_version,
+                    %new_version,
+                    "Error updating Redis key"
+                );
                 return Ok(None);
             }
+            trace!(
+                %redis_key,
+                %key,
+                old_version = %current_version,
+                %new_version,
+                "Updated redis key to new version"
+            );
             // If we have a publish channel configured, send a notice that the key has been set.
             if let Some(pub_sub_channel) = &self.pub_sub_channel {
-                return Ok(client.publish(pub_sub_channel, key.as_ref()).await?);
+                return Ok(client
+                    .client
+                    .publish(pub_sub_channel, redis_key.as_ref())
+                    .await?);
             }
             Ok(Some(new_version))
         } else {
             let data = data.try_into_bytes().err_tip(|| {
-                format!("Could not convert value to bytes in RedisStore::update_data::noversion for {key:?}")
+                format!("Could not convert value to bytes in RedisStore::update_data::noversion for {redis_key}")
             })?;
             let mut fields = RedisMap::new();
             fields.reserve(1 + maybe_index.len());
@@ -1088,12 +1292,16 @@ impl SchedulerStore for RedisStore {
                 fields.insert(name.into(), value.into());
             }
             client
-                .hset::<(), _, _>(key.as_ref(), fields)
+                .client
+                .hset::<(), _, _>(redis_key.as_ref(), fields)
                 .await
-                .err_tip(|| format!("In RedisStore::update_data::noversion for {key:?}"))?;
+                .err_tip(|| format!("In RedisStore::update_data::noversion for {redis_key}"))?;
             // If we have a publish channel configured, send a notice that the key has been set.
             if let Some(pub_sub_channel) = &self.pub_sub_channel {
-                return Ok(client.publish(pub_sub_channel, key.as_ref()).await?);
+                return Ok(client
+                    .client
+                    .publish(pub_sub_channel, redis_key.as_ref())
+                    .await?);
             }
             Ok(Some(0)) // Always use "0" version since this is not a versioned request.
         }
@@ -1110,82 +1318,93 @@ impl SchedulerStore for RedisStore {
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
     {
         let index_value = index.index_value();
-        let run_ft_aggregate = || {
-            let client = self.client_pool.next().clone();
-            let sanitized_field = try_sanitize(index_value.as_ref()).err_tip(|| {
+        let sanitized_field = try_sanitize(index_value.as_ref())
+            .err_tip(|| {
                 format!("In RedisStore::search_by_index_prefix::try_sanitize - {index_value:?}")
-            })?;
-            Ok::<_, Error>(async move {
-                ft_aggregate(
-                    client,
-                    format!(
-                        "{}",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
-                    ),
-                    format!("@{}:{{ {} }}", K::INDEX_NAME, sanitized_field),
-                    FtAggregateOptions {
-                        load: Some(Load::Some(vec![
-                            SearchField {
-                                identifier: DATA_FIELD_NAME.into(),
-                                property: None,
-                            },
-                            SearchField {
-                                identifier: VERSION_FIELD_NAME.into(),
-                                property: None,
-                            },
-                        ])),
-                        cursor: Some(WithCursor {
-                            count: Some(MAX_COUNT_PER_CURSOR),
-                            max_idle: Some(CURSOR_IDLE_MS),
+            })?
+            .to_string();
+        let index_name = format!(
+            "{}",
+            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+        );
+
+        let run_ft_aggregate = |client: Arc<ClientWithPermit>,
+                                index_name: String,
+                                sanitized_field: String| async move {
+            ft_aggregate(
+                client.client.clone(),
+                index_name,
+                if sanitized_field.is_empty() {
+                    "*".to_string()
+                } else {
+                    format!("@{}:{{ {} }}", K::INDEX_NAME, sanitized_field)
+                },
+                FtAggregateOptions {
+                    load: Some(Load::Some(vec![
+                        SearchField {
+                            identifier: DATA_FIELD_NAME.into(),
+                            property: None,
+                        },
+                        SearchField {
+                            identifier: VERSION_FIELD_NAME.into(),
+                            property: None,
+                        },
+                    ])),
+                    cursor: Some(WithCursor {
+                        count: Some(MAX_COUNT_PER_CURSOR),
+                        max_idle: Some(CURSOR_IDLE_MS),
+                    }),
+                    pipeline: vec![AggregateOperation::SortBy {
+                        properties: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| {
+                            vec![(format!("@{v}").into(), SortOrder::Asc)]
                         }),
-                        pipeline: vec![AggregateOperation::SortBy {
-                            properties: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| {
-                                vec![(format!("@{v}").into(), SortOrder::Asc)]
-                            }),
-                            max: None,
-                        }],
-                        ..Default::default()
-                    },
-                )
-                .await
-            })
+                        max: None,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|stream| (stream, client))
         };
-        let stream = run_ft_aggregate()?
-            .or_else(|_| async move {
-                let mut schema = vec![SearchSchema {
-                    field_name: K::INDEX_NAME.into(),
+
+        let client = Arc::new(self.get_client().await?);
+        let (stream, client_guard) = if let Ok(result) =
+            run_ft_aggregate(client.clone(), index_name.clone(), sanitized_field.clone()).await
+        {
+            result
+        } else {
+            let mut schema = vec![SearchSchema {
+                field_name: K::INDEX_NAME.into(),
+                alias: None,
+                kind: SearchSchemaKind::Tag {
+                    sortable: false,
+                    unf: false,
+                    separator: None,
+                    casesensitive: false,
+                    withsuffixtrie: false,
+                    noindex: false,
+                },
+            }];
+            if let Some(sort_key) = K::MAYBE_SORT_KEY {
+                schema.push(SearchSchema {
+                    field_name: sort_key.into(),
                     alias: None,
                     kind: SearchSchemaKind::Tag {
-                        sortable: false,
+                        sortable: true,
                         unf: false,
                         separator: None,
                         casesensitive: false,
                         withsuffixtrie: false,
                         noindex: false,
                     },
-                }];
-                if let Some(sort_key) = K::MAYBE_SORT_KEY {
-                    schema.push(SearchSchema {
-                        field_name: sort_key.into(),
-                        alias: None,
-                        kind: SearchSchemaKind::Tag {
-                            sortable: true,
-                            unf: false,
-                            separator: None,
-                            casesensitive: false,
-                            withsuffixtrie: false,
-                            noindex: false,
-                        },
-                    });
-                }
-                let create_result = self
-                    .client_pool
-                    .next()
+                });
+            }
+            let create_result: Result<(), Error> = {
+                let create_client = self.get_client().await?;
+                create_client
+                    .client
                     .ft_create::<(), _>(
-                        format!(
-                            "{}",
-                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
-                        ),
+                        index_name.clone(),
                         FtCreateOptions {
                             on: Some(IndexKind::Hash),
                             prefixes: vec![K::KEY_PREFIX.into()],
@@ -1204,19 +1423,30 @@ impl SchedulerStore for RedisStore {
                             "Error with ft_create in RedisStore::search_by_index_prefix({})",
                             get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
                         )
-                    });
-                let run_result = run_ft_aggregate()?.await.err_tip(|| {
-                    format!(
-                        "Error with second ft_aggregate in RedisStore::search_by_index_prefix({})",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
-                    )
-                });
-                // Creating the index will race which is ok. If it fails to create, we only
-                // error if the second ft_aggregate call fails and fails to create.
-                run_result.or_else(move |e| create_result.merge(Err(e)))
-            })
-            .await?;
-        Ok(stream.map(|result| {
+                    })?;
+                Ok(())
+            };
+            let retry_client = Arc::new(self.get_client().await?);
+            let retry_result =
+                run_ft_aggregate(retry_client, index_name.clone(), sanitized_field.clone()).await;
+            if let Ok(result) = retry_result {
+                result
+            } else {
+                let e: Error = retry_result
+                    .err()
+                    .expect("Checked for Ok result above")
+                    .into();
+                let err = match create_result {
+                    Ok(()) => e,
+                    Err(create_err) => create_err.merge(e),
+                };
+                return Err(err);
+            }
+        };
+
+        Ok(stream.map(move |result| {
+            let keep_alive = client_guard.clone();
+            let _ = &keep_alive;
             let mut redis_map =
                 result.err_tip(|| "Error in stream of in RedisStore::search_by_index_prefix")?;
             let bytes_data = redis_map
@@ -1230,7 +1460,7 @@ impl SchedulerStore for RedisStore {
                 redis_map
                     .remove(&RedisKey::from_static_str(VERSION_FIELD_NAME))
                     .err_tip(|| "Missing version field in RedisStore::search_by_index_prefix")?
-                    .as_u64()
+                    .as_i64()
                     .err_tip(|| {
                         formatcp!("'{VERSION_FIELD_NAME}' is not u64 in RedisStore::search_by_index_prefix::as_u64")
                     })?
@@ -1251,9 +1481,10 @@ impl SchedulerStore for RedisStore {
     {
         let key = key.get_key();
         let key = self.encode_key(&key);
-        let client = self.client_pool.next();
+        let client = self.get_client().await?;
         let (maybe_version, maybe_data) = client
-            .hmget::<(Option<u64>, Option<Bytes>), _, _>(
+            .client
+            .hmget::<(Option<i64>, Option<Bytes>), _, _>(
                 key.as_ref(),
                 vec![
                     RedisKey::from(VERSION_FIELD_NAME),

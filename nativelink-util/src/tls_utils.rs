@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,6 +15,7 @@
 use nativelink_config::stores::{ClientTlsConfig, GrpcEndpoint};
 use nativelink_error::{Code, Error, make_err, make_input_err};
 use tonic::transport::Uri;
+use tracing::warn;
 
 pub fn load_client_config(
     config: &Option<ClientTlsConfig>,
@@ -23,8 +24,24 @@ pub fn load_client_config(
         return Ok(None);
     };
 
+    if config.use_native_roots == Some(true) {
+        if config.ca_file.is_some() {
+            warn!("Native root certificates are being used, all certificate files will be ignored");
+        }
+        return Ok(Some(
+            tonic::transport::ClientTlsConfig::new().with_native_roots(),
+        ));
+    }
+
+    let Some(ca_file) = &config.ca_file else {
+        return Err(make_err!(
+            Code::Internal,
+            "CA certificate must be provided if not using native root certificates"
+        ));
+    };
+
     let read_config = tonic::transport::ClientTlsConfig::new().ca_certificate(
-        tonic::transport::Certificate::from_pem(std::fs::read_to_string(&config.ca_file)?),
+        tonic::transport::Certificate::from_pem(std::fs::read_to_string(ca_file)?),
     );
     let config = if let Some(client_certificate) = &config.cert_file {
         let Some(client_key) = &config.key_file else {
@@ -93,6 +110,11 @@ pub fn endpoint_from(
             .tls_config(tls_config)
             .map_err(|e| make_input_err!("Setting mTLS configuration: {e:?}"))?
     } else {
+        if endpoint.scheme_str() == Some("https") {
+            return Err(make_input_err!(
+                "The scheme of {endpoint} is https or grpcs, but no TLS configuration was provided"
+            ));
+        }
         tonic::transport::Endpoint::from(endpoint)
     };
 

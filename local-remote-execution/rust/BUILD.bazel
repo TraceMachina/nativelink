@@ -96,7 +96,7 @@ config_setting(
             "aarch64-darwin": "aarch64-apple-darwin",
         }[nix_system],
 
-        # TODO(aaronmondal): Make these easily configurable.
+        # TODO(palfrey): Make these easily configurable.
         extra_exec_rustc_flags = [],
         extra_rustc_flags = [],
         extra_rustc_flags_for_crate_types = {},
@@ -105,7 +105,7 @@ config_setting(
             "//conditions:default": "@rules_rust//ffi/cc/global_allocator_library",
         }),
 
-        # TODO(aaronmondal): Implement these.
+        # TODO(palfrey): Implement these.
         # llvm_cov,
         # llvm_profdata,
         # llvm_tools,

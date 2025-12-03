@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -39,7 +39,7 @@ use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
 
-// TODO(aaronmondal): Figure out how to test the connector retry mechanism.
+// TODO(palfrey): Figure out how to test the connector retry mechanism.
 
 const BUCKET_NAME: &str = "dummy-bucket-name";
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
@@ -55,7 +55,7 @@ async fn simple_has_object_found() -> Result<(), Error> {
             .unwrap(),
     )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -90,7 +90,7 @@ async fn simple_has_object_not_found() -> Result<(), Error> {
             .unwrap(),
     )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -148,7 +148,7 @@ async fn simple_has_retries() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -184,7 +184,7 @@ async fn simple_has_retries() -> Result<(), Error> {
     Ok(())
 }
 
-// As of `BehaviorVersion::v2025_01_17` responses contain checksums. This helper
+// As of `BehaviorVersion::v2025_08_07` responses contain checksums. This helper
 // function removes them for easier comparison.
 fn extract_payload_from_chunked_data(chunked_data: &[u8]) -> Result<Bytes, Error> {
     let data_str = core::str::from_utf8(chunked_data)
@@ -204,7 +204,7 @@ async fn simple_update_ac() -> Result<(), Error> {
     const CONTENT_LENGTH: usize = 50;
     let mut send_data = BytesMut::new();
     for i in 0..CONTENT_LENGTH {
-        send_data.put_u8(((i % 93) + 33) as u8); // Printable characters only.
+        send_data.put_u8(u8::try_from((i % 93) + 33).expect("printable ASCII range"));
     }
     let send_data = send_data.freeze();
 
@@ -218,7 +218,7 @@ async fn simple_update_ac() -> Result<(), Error> {
             .unwrap(),
         ));
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -314,7 +314,7 @@ async fn simple_get_ac() -> Result<(), Error> {
             .unwrap(),
     )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -359,7 +359,7 @@ async fn smoke_test_get_part() -> Result<(), Error> {
                 .unwrap(),
         )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(REGION))
         .http_client(mock_client.clone())
         .build();
@@ -419,7 +419,7 @@ async fn get_part_simple_retries() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -456,9 +456,9 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
     const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
     const AC_ENTRY_SIZE: usize = MIN_MULTIPART_SIZE * 2 + 50;
 
-    let mut send_data = Vec::with_capacity(AC_ENTRY_SIZE);
+    let mut send_data: Vec<u8> = Vec::with_capacity(AC_ENTRY_SIZE);
     for i in 0..send_data.capacity() {
-        send_data.push(((i * 3) % 256) as u8);
+        send_data.push(u8::try_from((i * 3) % 256).expect("modulo 256 always fits in u8"));
     }
     let digest = DigestInfo::try_new(VALID_HASH1, send_data.len())?;
 
@@ -554,7 +554,7 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
             ),
         ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(REGION))
         .http_client(mock_client.clone())
         .build();
@@ -597,7 +597,7 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
                 .unwrap(),
         )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(REGION))
         .http_client(mock_client.clone())
         .build();
@@ -651,7 +651,7 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
 
     let mock_client = StaticReplayClient::new(vec![]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -693,7 +693,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
 
     let mock_client = StaticReplayClient::new(vec![]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
@@ -736,7 +736,7 @@ async fn has_with_expired_result() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2025_01_17())
+        .behavior_version(BehaviorVersion::v2025_08_07())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();

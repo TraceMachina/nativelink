@@ -41,14 +41,10 @@ and get tagged with nix derivation hashes.
 To build an image locally and make it available to your container runtime:
 
 ```sh
-nix run github:TraceMachina/nativelink#image.copyToDockerDaemon
+nix run create-local-image
 ```
 
-To view the tag of an image
-
-```sh
-nix eval github:TraceMachina/nativelink#image.imageTag --raw
-```
+which will be called `local-nativelink:latest`
 
 ## On NixOS
 

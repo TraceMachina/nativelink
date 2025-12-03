@@ -16,12 +16,14 @@ rust_library(
         "//nativelink-metric",
         "//nativelink-proto",
         "@crates//:fred",
-        "@crates//:hex",
         "@crates//:prost",
         "@crates//:prost-types",
         "@crates//:serde",
+        "@crates//:serde_json5",
         "@crates//:tokio",
         "@crates//:tonic",
+        "@crates//:uuid",
+        "@crates//:walkdir",
     ],
 )
 

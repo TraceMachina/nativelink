@@ -23,6 +23,43 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
       <LinearGradient text="Resources" class="z-10 text-thin text-5xl self-start pl-8 md:pl-48 py-8"/>
     </div>
 
+    <LinearGradient text="Books & Publications" class="text-thin text-4xl self-start pl-8 md:pl-48 py-8"/>
+
+    <div class="relative w-screen px-8 md:px-0 md:w-9/12 flex gap-4 pb-16 mb-6">
+      <a
+        href="/resources/oreilly-bazel-book"
+        class="h-96 w-full md:w-96 shrink-0 flex flex-col justify-evenly rounded-xl items-center border border-solid border-white bg-gradient-to-br from-purple-900/20 to-blue-900/20 hover:from-purple-900/30 hover:to-blue-900/30 transition-colors"
+      >
+        <div class="text-8xl">📘</div>
+        <div class="w-full h-full flex flex-col justify-between items-start p-6">
+          <LinearGradient text="Extending Bazel to Its Full Potential" class="text-2xl w-full" />
+          <p class="text-sm text-gray-300 mb-4">Leveraging Cloud and Parallelization to Ship Reliable Code Faster</p>
+          <span class="text-lg">Download Now →</span>
+        </div>
+      </a>
+    </div>
+
+    <LinearGradient text="Case Studies" class="text-thin text-4xl self-start pl-8 md:pl-48 py-8" />
+
+    <div id="Card" class="relative w-screen px-8 md:px-2 md:w-9/12 flex gap-4 snap-x snap-mandatory overflow-x-auto pb-16 mb-6 ">
+      {caseStudies
+        .sort((a, b) => new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime())
+        .map((post) => (
+          <a
+            href={"/resources/blog/" + post.id}
+            class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-white snap-center"
+          >
+            {post.data.image && (
+              <img src={post.data.image} alt={post.data.title || "Blog post image"} class="w-full h-48 object-contain rounded-t-xl" />
+            )}
+            <div class="w-full h-full flex flex-col justify-between items-start p-6">
+              <LinearGradient text={post.data.title} class="text-lg w-full" />
+              <span class="text-lg">Read More</span>
+            </div>
+          </a>
+        ))}
+    </div>
+
     <LinearGradient text="Blog Posts" class="text-thin text-4xl self-start pl-8 md:pl-48 py-8"/>
 
     <div id="Card" class="relative w-screen px-8 md:px-0 md:w-9/12 flex gap-4 snap-x snap-mandatory overflow-x-auto pb-16 mb-6 ">
@@ -69,27 +106,6 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
           >
             {post.data.image && (
               <img src={post.data.image} alt={post.data.title || "Blog post image"} class="w-full h-48 object-cover rounded-t-xl" />
-            )}
-            <div class="w-full h-full flex flex-col justify-between items-start p-6">
-              <LinearGradient text={post.data.title} class="text-lg w-full" />
-              <span class="text-lg">Read More</span>
-            </div>
-          </a>
-        ))}
-    </div>
-
-    <LinearGradient text="Case Studies" class="text-thin text-4xl self-start pl-8 md:pl-48 py-8" />
-
-    <div id="Card" class="relative w-screen px-8 md:px-2 md:w-9/12 flex gap-4 snap-x snap-mandatory overflow-x-auto pb-16 mb-6 ">
-      {caseStudies
-        .sort((a, b) => new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime())
-        .map((post) => (
-          <a
-            href={"/resources/blog/" + post.id}
-            class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-white snap-center"
-          >
-            {post.data.image && (
-              <img src={post.data.image} alt={post.data.title || "Blog post image"} class="w-full h-48 object-contain rounded-t-xl" />
             )}
             <div class="w-full h-full flex flex-col justify-between items-start p-6">
               <LinearGradient text={post.data.title} class="text-lg w-full" />

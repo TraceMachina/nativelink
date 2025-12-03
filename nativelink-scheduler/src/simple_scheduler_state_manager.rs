@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,6 @@ use core::ops::Bound;
 use core::time::Duration;
 use std::string::ToString;
 use std::sync::{Arc, Weak};
-use std::time::SystemTime;
 
 use async_lock::Mutex;
 use async_trait::async_trait;
@@ -245,8 +244,8 @@ where
 /// Scheduler state includes the actions that are queued, active, and recently completed.
 /// It also includes the workers that are available to execute actions based on allocation
 /// strategy.
-#[derive(MetricsComponent)]
-pub(crate) struct SimpleSchedulerStateManager<T, I, NowFn>
+#[derive(MetricsComponent, Debug)]
+pub struct SimpleSchedulerStateManager<T, I, NowFn>
 where
     T: AwaitedActionDb,
     I: InstantWrapper,
@@ -257,7 +256,7 @@ where
     action_db: T,
 
     /// Maximum number of times a job can be retried.
-    // TODO(aaronmondal) This should be a scheduler decorator instead
+    // TODO(palfrey) This should be a scheduler decorator instead
     // of always having it on every SimpleScheduler.
     #[metric(help = "Maximum number of times a job can be retried")]
     max_job_retries: usize,
@@ -294,7 +293,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
-    pub(crate) fn new(
+    pub fn new(
         max_job_retries: usize,
         no_event_action_timeout: Duration,
         client_action_timeout: Duration,
@@ -315,13 +314,16 @@ where
     async fn apply_filter_predicate(
         &self,
         awaited_action: &AwaitedAction,
+        subscriber: &T::Subscriber,
         filter: &OperationFilter,
     ) -> bool {
         // Note: The caller must filter `client_operation_id`.
 
-        if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout
-            < (self.now_fn)().now()
-        {
+        let mut maybe_reloaded_awaited_action: Option<AwaitedAction> = None;
+        let now = (self.now_fn)().now();
+        if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout < now {
+            // This may change if the version is out of date.
+            let mut timed_out = true;
             if !awaited_action.state().stage.is_finished() {
                 let mut state = awaited_action.state().as_ref().clone();
                 state.stage = ActionStage::Completed(ActionResult {
@@ -332,20 +334,67 @@ where
                     )),
                     ..ActionResult::default()
                 });
-                let mut new_awaited_action = awaited_action.clone();
-                new_awaited_action.worker_set_state(Arc::new(state), (self.now_fn)().now());
-                if let Err(err) = self
-                    .action_db
-                    .update_awaited_action(new_awaited_action)
-                    .await
-                {
-                    warn!(
-                        "Failed to update action to timed out state after client keepalive timeout. This is ok if multiple schedulers tried to set the state at the same time: {err}",
-                    );
+                state.last_transition_timestamp = now;
+                let state = Arc::new(state);
+                // We may be competing with an client timestamp update, so try
+                // this a few times.
+                for attempt in 1..=MAX_UPDATE_RETRIES {
+                    let mut new_awaited_action = match &maybe_reloaded_awaited_action {
+                        None => awaited_action.clone(),
+                        Some(reloaded_awaited_action) => reloaded_awaited_action.clone(),
+                    };
+                    new_awaited_action.worker_set_state(state.clone(), (self.now_fn)().now());
+                    let err = match self
+                        .action_db
+                        .update_awaited_action(new_awaited_action)
+                        .await
+                    {
+                        Ok(()) => break,
+                        Err(err) => err,
+                    };
+                    // Reload from the database if the action was outdated.
+                    let maybe_awaited_action =
+                        if attempt == MAX_UPDATE_RETRIES || err.code != Code::Aborted {
+                            None
+                        } else {
+                            subscriber.borrow().await.ok()
+                        };
+                    if let Some(reloaded_awaited_action) = maybe_awaited_action {
+                        maybe_reloaded_awaited_action = Some(reloaded_awaited_action);
+                    } else {
+                        warn!(
+                            "Failed to update action to timed out state after client keepalive timeout. This is ok if multiple schedulers tried to set the state at the same time: {err}",
+                        );
+                        break;
+                    }
+                    // Re-check the predicate after reload.
+                    if maybe_reloaded_awaited_action
+                        .as_ref()
+                        .is_some_and(|awaited_action| {
+                            awaited_action.last_client_keepalive_timestamp()
+                                + self.client_action_timeout
+                                >= (self.now_fn)().now()
+                        })
+                    {
+                        timed_out = false;
+                        break;
+                    } else if maybe_reloaded_awaited_action
+                        .as_ref()
+                        .is_some_and(|awaited_action| awaited_action.state().stage.is_finished())
+                    {
+                        break;
+                    }
                 }
             }
-            return false;
+            if timed_out {
+                return false;
+            }
         }
+        // If the action was reloaded, then use that for the rest of the checks
+        // instead of the input parameter.
+        let awaited_action = maybe_reloaded_awaited_action
+            .as_ref()
+            .unwrap_or(awaited_action);
 
         if let Some(operation_id) = &filter.operation_id {
             if operation_id != awaited_action.operation_id() {
@@ -439,19 +488,16 @@ where
             return Ok(());
         }
 
-        let last_worker_updated = awaited_action
+        let worker_should_update_before = awaited_action
             .last_worker_updated_timestamp()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|e| {
+            .checked_add(self.no_event_action_timeout)
+            .ok_or_else(|| {
                 make_err!(
                     Code::Internal,
-                    "Failed to convert last_worker_updated to duration since epoch {e:?}"
+                    "Timestamp overflow for operation {operation_id} in SimpleSchedulerStateManager::timeout_operation_id"
                 )
             })?;
-        let worker_should_update_before = last_worker_updated
-            .checked_add(self.no_event_action_timeout)
-            .err_tip(|| "Timestamp too big in SimpleSchedulerStateManager::timeout_operation_id")?;
-        if worker_should_update_before < (self.now_fn)().elapsed() {
+        if worker_should_update_before >= (self.now_fn)().now() {
             // The action was updated recently, we should not timeout the action.
             // This is to prevent timing out actions that have recently been updated
             // (like multiple clients timeout the same action at the same time).
@@ -486,6 +532,10 @@ where
                 // No action found. It is ok if the action was not found. It
                 // probably means that the action was dropped, but worker was
                 // still processing it.
+                warn!(
+                    %operation_id,
+                    "Unable to update action due to it being missing, probably dropped"
+                );
                 return Ok(());
             };
 
@@ -522,22 +572,38 @@ where
 
             // Make sure we don't update an action that is already completed.
             if awaited_action.state().stage.is_finished() {
-                return Err(make_err!(
-                    Code::Internal,
-                    "Action {operation_id:?} is already completed with state {:?} - maybe_worker_id: {:?}",
-                    awaited_action.state().stage,
-                    maybe_worker_id,
-                ));
+                match &update {
+                    UpdateOperationType::UpdateWithDisconnect | UpdateOperationType::KeepAlive => {
+                        // No need to error a keep-alive when it's completed, it's just
+                        // unnecessary log noise.
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(make_err!(
+                            Code::Internal,
+                            "Action {operation_id} is already completed with state {:?} - maybe_worker_id: {:?}",
+                            awaited_action.state().stage,
+                            maybe_worker_id,
+                        ));
+                    }
+                }
             }
 
             let stage = match &update {
                 UpdateOperationType::KeepAlive => {
                     awaited_action.worker_keep_alive((self.now_fn)().now());
-                    return self
+                    match self
                         .action_db
                         .update_awaited_action(awaited_action)
                         .await
-                        .err_tip(|| "Failed to send KeepAlive in SimpleSchedulerStateManager::update_operation");
+                        .err_tip(|| "Failed to send KeepAlive in SimpleSchedulerStateManager::update_operation") {
+                        // Try again if there was a version mismatch.
+                        Err(err) if err.code == Code::Aborted => {
+                            last_err = Some(err);
+                            continue;
+                        }
+                        result => return result,
+                    }
                 }
                 UpdateOperationType::UpdateWithActionStage(stage) => stage.clone(),
                 UpdateOperationType::UpdateWithError(err) => {
@@ -566,6 +632,12 @@ where
                         ActionStage::Queued
                     }
                 }
+                UpdateOperationType::UpdateWithDisconnect => ActionStage::Queued,
+                // We shouldn't get here, but we just ignore it if we do.
+                UpdateOperationType::ExecutionComplete => {
+                    warn!("inner_update_operation got an ExecutionComplete, that's unexpected.");
+                    return Ok(());
+                }
             };
             let now = (self.now_fn)().now();
             if matches!(stage, ActionStage::Queued) {
@@ -583,6 +655,7 @@ where
                     // correct client id.
                     client_operation_id: operation_id.clone(),
                     action_digest: awaited_action.action_info().digest(),
+                    last_transition_timestamp: now,
                 }),
                 now,
             );
@@ -619,7 +692,11 @@ where
         action_info: Arc<ActionInfo>,
     ) -> Result<T::Subscriber, Error> {
         self.action_db
-            .add_action(new_client_operation_id, action_info)
+            .add_action(
+                new_client_operation_id,
+                action_info,
+                self.no_event_action_timeout,
+            )
             .await
             .err_tip(|| "In SimpleSchedulerStateManager::add_operation")
     }
@@ -657,7 +734,10 @@ where
                 .borrow()
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
-            if !self.apply_filter_predicate(&awaited_action, &filter).await {
+            if !self
+                .apply_filter_predicate(&awaited_action, &subscriber, &filter)
+                .await
+            {
                 return Ok(Box::pin(stream::empty()));
             }
             return Ok(Box::pin(stream::once(async move {
@@ -677,7 +757,10 @@ where
                 .borrow()
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
-            if !self.apply_filter_predicate(&awaited_action, &filter).await {
+            if !self
+                .apply_filter_predicate(&awaited_action, &subscriber, &filter)
+                .await
+            {
                 return Ok(Box::pin(stream::empty()));
             }
             return Ok(Box::pin(stream::once(async move {
@@ -703,11 +786,10 @@ where
                 .try_filter_map(|(subscriber, awaited_action)| {
                     let filter = filter.clone();
                     async move {
-                        if self.apply_filter_predicate(&awaited_action, &filter).await {
-                            Ok(Some((subscriber, awaited_action.sort_key())))
-                        } else {
-                            Ok(None)
-                        }
+                        Ok(self
+                            .apply_filter_predicate(&awaited_action, &subscriber, &filter)
+                            .await
+                            .then_some((subscriber, awaited_action.sort_key())))
                     }
                 })
                 .try_collect()
@@ -749,11 +831,10 @@ where
             .try_filter_map(move |(subscriber, awaited_action)| {
                 let filter = filter.clone();
                 async move {
-                    if self.apply_filter_predicate(&awaited_action, &filter).await {
-                        Ok(Some(subscriber))
-                    } else {
-                        Ok(None)
-                    }
+                    Ok(self
+                        .apply_filter_predicate(&awaited_action, &subscriber, &filter)
+                        .await
+                        .then_some(subscriber))
                 }
             })
             .map(move |result| -> Box<dyn ActionStateResult> {

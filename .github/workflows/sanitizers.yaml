@@ -5,10 +5,12 @@ on:
   push:
     branches: [main]
     paths-ignore:
+      - '.github/styles/**'
       - 'web/**'
   pull_request:
     branches: [main]
     paths-ignore:
+      - '.github/styles/**'
       - 'web/**'
 
 permissions: read-all
@@ -31,6 +33,14 @@ jobs:
       - name: Checkout
         uses: >- # v4.2.2
           actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Free disk space
+        uses: >- # v2.0.0
+          endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
+        with:
+          remove_android: false # Takes too long.
+          remove_dotnet: true
+          remove_haskell: true
 
       - name: Setup Bazel
         uses: >- # v0.13.0

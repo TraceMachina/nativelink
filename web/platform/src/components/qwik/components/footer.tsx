@@ -1,7 +1,5 @@
 import { $, component$, useSignal } from "@builder.io/qwik";
-
-const videoLink =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/background_file.mp4";
+import { BackgroundVideo } from "./video.tsx";
 
 const Logo =
   "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo.webp";
@@ -45,8 +43,6 @@ const law = [
 ];
 
 export const Footer = component$(() => {
-  const videoElementSignal = useSignal<HTMLAudioElement | undefined>();
-
   const email = useSignal("");
   const message = useSignal("");
 
@@ -81,19 +77,7 @@ export const Footer = component$(() => {
     <footer class="relative w-full text-white bg-black py-4 overflow-hidden">
       <div class="absolute bottom-0 mx-0 left-0 right-0 w-full h-full ">
         {/* Background Video */}
-        <video
-          class="absolute bottom-[0] md:bottom-[-20vh] left-0 z-0 h-full md:h-auto object-cover md:w-screen"
-          autoplay={true}
-          loop={true}
-          muted={true}
-          ref={videoElementSignal}
-          controls={false}
-          src={videoLink}
-          playsInline={true}
-        >
-          <source type="video/mp4" />
-          Your browser does not support the video tag.
-        </video>
+        <BackgroundVideo class="absolute bottom-[0] md:bottom-[-20vh] left-0 z-0 h-full md:h-auto object-cover md:w-screen" />
         {/* <div class="absolute w-[150vw] bottom-0 left-1/2 transform -translate-x-1/2 translate-y-5/12">
             <Background class="rotate-180 w-full" />
         </div> */}
@@ -118,7 +102,6 @@ export const Footer = component$(() => {
             <div class="text-center">
               Lets <span class="text-[#AD96FF]">build</span> together.
             </div>
-            <div class="text-center">We launched!</div>
           </div>
         </div>
 

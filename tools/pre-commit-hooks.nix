@@ -1,6 +1,8 @@
 {
   pkgs,
   nightly-rust,
+  generate-bazel-rc,
+  generate-stores-config,
   ...
 }: let
   excludes = ["nativelink-proto/genproto" "native-cli/vendor"];
@@ -98,13 +100,13 @@ in {
     name = "gofumpt";
     types = ["go"];
   };
-  # TODO(aaronmondal): This linter works in the nix developmen environment, but
+  # TODO(palfrey): This linter works in the nix developmen environment, but
   #                    not with `nix flake check`. It's unclear how to fix this.
   golangci-lint-in-shell = {
     enable = true;
     entry = let
       script = pkgs.writeShellScript "precommit-golangci-lint" ''
-        # TODO(aaronmondal): This linter works in the nix development
+        # TODO(palfrey): This linter works in the nix development
         #                    environment, but not with `nix flake check`. It's
         #                    unclear how to fix this.
         if [ ''${IN_NIX_SHELL} = "impure" ]; then
@@ -140,9 +142,18 @@ in {
     packageOverrides.cargo = nightly-rust.cargo;
     packageOverrides.rustfmt = nightly-rust.rustfmt;
   };
+
+  # Taplo fmt
   taplo = {
     enable = true;
-    excludes = ["nativelink-proto"];
+    types = ["toml"];
+  };
+
+  # Taplo validate
+  taplo-validate = {
+    enable = true;
+    entry = "${pkgs.taplo}/bin/taplo validate";
+    name = "taplo validate";
     types = ["toml"];
   };
 
@@ -172,5 +183,60 @@ in {
     excludes = ["local-remote-execution/generated-cc/cc/cc_toolchain_config.bzl"];
     name = "buildifier lint";
     types = ["bazel"];
+  };
+
+  # bazelrc
+  generate-bazel-rc = {
+    description = "Generate bazelrc";
+    enable = true;
+    entry = "${generate-bazel-rc}/bin/generate-bazel-rc Cargo.toml .bazelrc";
+    name = "generate-bazel-rc";
+    files = "Cargo.toml|.bazelrc";
+    pass_filenames = false;
+  };
+
+  pretty-format-json = {
+    enable = true;
+    args = ["--autofix" "--top-keys" "name,type"];
+  };
+
+  # json5
+  formatjson5 = {
+    excludes =
+      excludes
+      ++ ["nativelink-config/examples/stores-config.json5"];
+    description = "Format json5 files";
+    enable = true;
+    entry = "${pkgs.formatjson5}/bin/formatjson5";
+    args = ["-r" "--indent" "2"];
+    types = ["json5"];
+  };
+
+  # Renovate config validator
+  renovate = {
+    description = "Validate renovate config";
+    enable = true;
+    entry = "${pkgs.renovate}/bin/renovate-config-validator";
+    args = ["--strict"];
+    files = "renovate.json5";
+  };
+
+  # Detect unused cargo deps
+  machete = {
+    description = "Detect unused cargo deps";
+    enable = true;
+    entry = "${pkgs.cargo-machete}/bin/cargo-machete";
+    args = ["--with-metadata" "."];
+    pass_filenames = false;
+  };
+
+  # Generate demo config to test stores.rs comments
+  generate-stores-config = {
+    description = "Generate stores config";
+    enable = true;
+    entry = "${generate-stores-config}/bin/generate-stores-config nativelink-config/src/stores.rs nativelink-config/examples/stores-config.json5";
+    name = "generate-stores-config";
+    files = "nativelink-config/src/stores.rs|nativelink-config/examples/stores-config.json5";
+    pass_filenames = false;
   };
 }

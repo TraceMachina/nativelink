@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,8 +17,7 @@ use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bincode::config::{FixintEncoding, WithOtherIntEncoding};
-use bincode::{DefaultOptions, Options};
+use bincode::serde::{decode_from_slice, encode_to_vec};
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BufMut, BytesMut};
 use futures::future::FutureExt;
@@ -31,7 +30,9 @@ use nativelink_util::buf_channel::{
 };
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::cas_utils::is_zero_digest;
@@ -44,8 +45,6 @@ pub const CURRENT_STREAM_FORMAT_VERSION: u8 = 1;
 pub const DEFAULT_BLOCK_SIZE: u32 = 64 * 1024;
 
 const U32_SZ: u64 = size_of::<u8>() as u64;
-
-type BincodeOptions = WithOtherIntEncoding<DefaultOptions, FixintEncoding>;
 
 // We use a custom frame format here because I wanted the ability in the future to:
 // * Read a random part of the data without needing to parse entire file.
@@ -150,6 +149,21 @@ const fn lz4_compress_bound(input_size: u64) -> u64 {
     input_size + (input_size / 255) + 16
 }
 
+fn serialized_size<C>(value: &impl Serialize, config: C) -> Result<u64, Error>
+where
+    C: bincode::config::Config,
+{
+    let mut size_writer = bincode::enc::write::SizeWriter { bytes_written: 0 };
+    bincode::serde::encode_into_writer(value, &mut size_writer, config).map_err(|e| {
+        make_err!(
+            Code::Internal,
+            "Failed to calculate serialized size: {:?}",
+            e
+        )
+    })?;
+    Ok(size_writer.bytes_written as u64)
+}
+
 struct UploadState {
     header: Header,
     footer: Footer,
@@ -181,7 +195,8 @@ impl UploadState {
                 usize::try_from(max_index_count)
                     .err_tip(|| "Could not convert max_index_count to usize")?
             ],
-            index_count: max_index_count as u32,
+            index_count: u32::try_from(max_index_count)
+                .err_tip(|| "Could not convert max_index_count to u32")?,
             uncompressed_data_size: 0, // Updated later.
             config: header.config,
             version: CURRENT_STREAM_FORMAT_VERSION,
@@ -191,10 +206,9 @@ impl UploadState {
         let max_block_size = lz4_compress_bound(u64::from(store.config.block_size)) + U32_SZ + 1;
 
         let max_output_size = {
-            let header_size = store.bincode_options.serialized_size(&header).unwrap();
+            let header_size = serialized_size(&header, store.bincode_config)?;
             let max_content_size = max_block_size * max_index_count;
-            let max_footer_size =
-                U32_SZ + 1 + store.bincode_options.serialized_size(&footer).unwrap();
+            let max_footer_size = U32_SZ + 1 + serialized_size(&footer, store.bincode_config)?;
             header_size + max_content_size + max_footer_size
         };
 
@@ -207,6 +221,13 @@ impl UploadState {
     }
 }
 
+// TODO(jaroeichler): Use the default `standard` config.
+type LegacyBincodeConfig = bincode::config::Configuration<
+    bincode::config::LittleEndian,
+    bincode::config::Fixint,
+    bincode::config::NoLimit,
+>;
+
 /// This store will compress data before sending it on to the inner store.
 /// Note: Currently using `get_part()` and trying to read part of the data will
 /// result in the entire contents being read from the inner store but will
@@ -216,7 +237,7 @@ pub struct CompressionStore {
     #[metric(group = "inner_store")]
     inner_store: Store,
     config: nativelink_config::stores::Lz4Config,
-    bincode_options: BincodeOptions,
+    bincode_config: LegacyBincodeConfig,
 }
 
 impl core::fmt::Debug for CompressionStore {
@@ -244,7 +265,7 @@ impl CompressionStore {
         Ok(Arc::new(Self {
             inner_store,
             config: lz4_config,
-            bincode_options: DefaultOptions::new().with_fixint_encoding(),
+            bincode_config: bincode::config::legacy(),
         }))
     }
 }
@@ -293,9 +314,7 @@ impl StoreDriver for CompressionStore {
         let write_fut = async move {
             {
                 // Write Header.
-                let serialized_header = self
-                    .bincode_options
-                    .serialize(&output_state.header)
+                let serialized_header = encode_to_vec(output_state.header, self.bincode_config)
                     .map_err(|e| {
                         make_err!(Code::Internal, "Failed to serialize header : {:?}", e)
                     })?;
@@ -343,14 +362,18 @@ impl StoreDriver for CompressionStore {
                 }
 
                 // Now fill the size in our slice.
-                LittleEndian::write_u32(&mut compressed_data_buf[1..5], compressed_data_sz as u32);
+                LittleEndian::write_u32(
+                    &mut compressed_data_buf[1..5],
+                    u32::try_from(compressed_data_sz).unwrap_or(u32::MAX),
+                );
 
                 // Now send our chunk.
                 tx.send(compressed_data_buf.freeze())
                     .await
                     .err_tip(|| "Failed to write chunk to inner store in compression store")?;
 
-                index.position_from_prev_index = compressed_data_sz as u32;
+                index.position_from_prev_index =
+                    u32::try_from(compressed_data_sz).unwrap_or(u32::MAX);
 
                 index_count += 1;
             }
@@ -366,20 +389,19 @@ impl StoreDriver for CompressionStore {
                 .footer
                 .indexes
                 .resize(index_count as usize, SliceIndex::default());
-            output_state.footer.index_count = output_state.footer.indexes.len() as u32;
+            output_state.footer.index_count =
+                u32::try_from(output_state.footer.indexes.len()).unwrap_or(u32::MAX);
             output_state.footer.uncompressed_data_size = received_amt;
             {
                 // Write Footer.
-                let serialized_footer = self
-                    .bincode_options
-                    .serialize(&output_state.footer)
+                let serialized_footer = encode_to_vec(output_state.footer, self.bincode_config)
                     .map_err(|e| {
                         make_err!(Code::Internal, "Failed to serialize header : {:?}", e)
                     })?;
 
                 let mut footer = BytesMut::with_capacity(1 + 4 + serialized_footer.len());
                 footer.put_u8(FOOTER_FRAME_TYPE);
-                footer.put_u32_le(serialized_footer.len() as u32);
+                footer.put_u32_le(u32::try_from(serialized_footer.len()).unwrap_or(u32::MAX));
                 footer.extend_from_slice(&serialized_footer);
 
                 tx.send(footer.freeze())
@@ -435,9 +457,9 @@ impl StoreDriver for CompressionStore {
                     config: Lz4Config { block_size: 0 },
                     upload_size: UploadSizeInfo::ExactSize(0),
                 };
-                let header_size = self.bincode_options.serialized_size(&EMPTY_HEADER).unwrap();
+                let header_size = serialized_size(&EMPTY_HEADER, self.bincode_config)?;
                 let chunk = rx
-                    .consume(Some(header_size as usize))
+                    .consume(Some(usize::try_from(header_size).unwrap_or(usize::MAX)))
                     .await
                     .err_tip(|| "Failed to read header in get_part compression store")?;
                 error_if!(
@@ -447,11 +469,11 @@ impl StoreDriver for CompressionStore {
                     header_size,
                 );
 
-                self.bincode_options
-                    .deserialize::<Header>(&chunk)
+                let (header, _) = decode_from_slice::<Header, _>(&chunk, self.bincode_config)
                     .map_err(|e| {
                         make_err!(Code::Internal, "Failed to deserialize header : {:?}", e)
-                    })?
+                    })?;
+                header
             };
 
             error_if!(
@@ -520,10 +542,13 @@ impl StoreDriver for CompressionStore {
                     let new_uncompressed_data_sz =
                         uncompressed_data_sz + uncompressed_chunk_sz as u64;
                     if new_uncompressed_data_sz >= offset && remaining_bytes_to_send > 0 {
-                        let start_pos = offset.saturating_sub(uncompressed_data_sz) as usize;
-                        // Use saturating_add to prevent overflow when remaining_bytes_to_send is very large
+                        let start_pos =
+                            usize::try_from(offset.saturating_sub(uncompressed_data_sz))
+                                .unwrap_or(usize::MAX);
                         let end_pos = cmp::min(
-                            start_pos.saturating_add(remaining_bytes_to_send as usize),
+                            start_pos.saturating_add(
+                                usize::try_from(remaining_bytes_to_send).unwrap_or(usize::MAX),
+                            ),
                             uncompressed_chunk_sz,
                         );
                         if end_pos != start_pos {
@@ -564,9 +589,7 @@ impl StoreDriver for CompressionStore {
                     "Unexpected EOF when reading footer in compression store get_part"
                 );
 
-                let footer = self
-                    .bincode_options
-                    .deserialize::<Footer>(&chunk)
+                let (footer, _) = decode_from_slice::<Footer, _>(&chunk, self.bincode_config)
                     .map_err(|e| {
                         make_err!(Code::Internal, "Failed to deserialize footer : {:?}", e)
                     })?;
@@ -627,6 +650,13 @@ impl StoreDriver for CompressionStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.inner_store.register_remove_callback(callback)
     }
 }
 

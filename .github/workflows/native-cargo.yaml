@@ -5,10 +5,12 @@ on:
   push:
     branches: [main]
     paths-ignore:
+      - '.github/styles/**'
       - 'web/**'
   pull_request:
     branches: [main]
     paths-ignore:
+      - '.github/styles/**'
       - 'web/**'
 
 permissions: read-all
@@ -38,6 +40,10 @@ jobs:
       - name: Set up Rust toolchain
         run: rustup update && rustup default ${{ matrix.toolchain }}
         shell: bash
+
+      - name: Rust cache
+        # https://github.com/Swatinem/rust-cache/releases/tag/v2.8.1
+        uses: Swatinem/rust-cache@a84bfdc502f07db5a85dd9d7a30f91a931516cc5
 
       - name: Build on ${{ runner.os }}
         run: cargo build --all --profile=smol

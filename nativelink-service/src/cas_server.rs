@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -177,7 +177,7 @@ impl CasServer {
             .into_iter()
             .map(|digest| async move {
                 let digest_copy = DigestInfo::try_from(digest.clone())?;
-                // TODO(aaronmondal) There is a security risk here of someone taking all the memory on the instance.
+                // TODO(palfrey) There is a security risk here of someone taking all the memory on the instance.
                 let result = store_ref
                     .get_part_unchunked(digest_copy, 0, None)
                     .await
@@ -278,9 +278,12 @@ impl CasServer {
                     .err_tip(|| "In Directory::file::digest")?;
                 deque.push_back(digest);
             }
+
+            let page_size_usize = usize::try_from(page_size).unwrap_or(usize::MAX);
+
             if page_token_matched {
                 directories.push(directory);
-                if directories.len() as i32 == page_size {
+                if directories.len() == page_size_usize {
                     break;
                 }
             }
@@ -310,7 +313,11 @@ impl ContentAddressableStorage for CasServer {
         ret(level = Level::DEBUG),
         level = Level::ERROR,
         skip_all,
-        fields(request = ?grpc_request.get_ref())
+        fields(
+            // Mostly to skip request.blob_digests which is sometimes enormous
+            request.instance_name = ?grpc_request.get_ref().instance_name,
+            request.digest_function = ?grpc_request.get_ref().digest_function
+        )
     )]
     async fn find_missing_blobs(
         &self,

@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,10 +14,12 @@
 
 use core::pin::Pin;
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use nativelink_config::stores::{EvictionPolicy, ExistenceCacheSpec};
 use nativelink_error::{Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
@@ -26,7 +28,11 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
+use parking_lot::Mutex;
+use tracing::{debug, info, trace};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -47,12 +53,61 @@ impl LenEntry for ExistenceItem {
 pub struct ExistenceCacheStore<I: InstantWrapper> {
     #[metric(group = "inner_store")]
     inner_store: Store,
-    existence_cache: EvictingMap<DigestInfo, ExistenceItem, I>,
+    existence_cache: EvictingMap<DigestInfo, DigestInfo, ExistenceItem, I>,
+
+    // We need to pause them temporarily when inserting into the inner store
+    // as if it immediately expires them, we should only apply the remove callbacks
+    // afterwards. If this is None, we're not pausing; if it's Some it's the location to
+    // store them in temporarily
+    pause_remove_callbacks: Mutex<Option<Vec<StoreKey<'static>>>>,
 }
 
 impl ExistenceCacheStore<SystemTime> {
     pub fn new(spec: &ExistenceCacheSpec, inner_store: Store) -> Arc<Self> {
         Self::new_with_time(spec, inner_store, SystemTime::now())
+    }
+}
+
+impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheStore<I> {
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        debug!(?store_key, "Removing item from cache due to callback");
+        let digest = store_key.borrow().into_digest();
+        Box::pin(async move {
+            let deleted_key = self.existence_cache.remove(&digest).await;
+            if !deleted_key {
+                info!(?store_key, "Failed to delete key from cache on callback");
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
+struct ExistenceCacheCallback<I: InstantWrapper> {
+    cache: Weak<ExistenceCacheStore<I>>,
+}
+
+impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let cache = self.cache.upgrade();
+        if let Some(local_cache) = cache {
+            if let Some(callbacks) = local_cache.pause_remove_callbacks.lock().as_mut() {
+                callbacks.push(store_key.into_owned());
+            } else {
+                let store_key = store_key.into_owned();
+                return Box::pin(async move {
+                    local_cache.callback(store_key).await;
+                });
+            }
+        } else {
+            debug!("Cache dropped, so not doing callback");
+        }
+        Box::pin(async {})
     }
 }
 
@@ -64,10 +119,17 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
     ) -> Arc<Self> {
         let empty_policy = EvictionPolicy::default();
         let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
-        Arc::new(Self {
+        let existence_cache_store = Arc::new(Self {
             inner_store,
             existence_cache: EvictingMap::new(eviction_policy, anchor_time),
-        })
+            pause_remove_callbacks: Mutex::new(None),
+        });
+        let other_ref = Arc::downgrade(&existence_cache_store);
+        existence_cache_store
+            .inner_store
+            .register_remove_callback(Arc::new(ExistenceCacheCallback { cache: other_ref }))
+            .expect("Register remove callback should work");
+        existence_cache_store
     }
 
     pub async fn exists_in_cache(&self, digest: &DigestInfo) -> bool {
@@ -153,7 +215,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // TODO(aaronmondal) This is a bit of a hack to get around the lifetime issues with the
+        // TODO(palfrey) This is a bit of a hack to get around the lifetime issues with the
         // existence_cache. We need to convert the digests to owned values to be able to
         // insert them into the cache. In theory it should be able to elide this conversion
         // but it seems to be a bit tricky to get right.
@@ -184,13 +246,31 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 .err_tip(|| "In ExistenceCacheStore::update")?;
             return Ok(());
         }
+        {
+            let mut locked_callbacks = self.pause_remove_callbacks.lock();
+            if locked_callbacks.is_none() {
+                locked_callbacks.replace(vec![]);
+            }
+        }
+        trace!(?digest, "Inserting into inner cache");
         let result = self.inner_store.update(digest, reader, size_info).await;
         if result.is_ok() {
+            trace!(?digest, "Inserting into existence cache");
             if let UploadSizeInfo::ExactSize(size) = size_info {
                 let _ = self
                     .existence_cache
                     .insert(digest, ExistenceItem(size))
                     .await;
+            }
+        }
+        {
+            let maybe_keys = self.pause_remove_callbacks.lock().take();
+            if let Some(keys) = maybe_keys {
+                let mut callbacks: FuturesUnordered<_> = keys
+                    .into_iter()
+                    .map(|store_key| self.callback(store_key))
+                    .collect();
+                while callbacks.next().await.is_some() {}
             }
         }
         result
@@ -227,6 +307,13 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.inner_store.register_remove_callback(callback)
     }
 }
 

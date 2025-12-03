@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,7 +17,8 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
+use bytes::Bytes;
+use futures::Stream;
 use nativelink_error::{Code, Error, make_err};
 use nativelink_util::buf_channel::DropCloserReadHalf;
 use tokio::sync::RwLock;
@@ -82,8 +83,8 @@ pub enum MockRequest {
     },
     ReadContent {
         object_path: ObjectPath,
-        start: i64,
-        end: Option<i64>,
+        start: u64,
+        end: Option<u64>,
     },
     Write {
         object_path: ObjectPath,
@@ -96,14 +97,14 @@ pub enum MockRequest {
         upload_url: String,
         object_path: ObjectPath,
         data_len: usize,
-        offset: i64,
-        end_offset: i64,
-        is_final: bool,
+        offset: u64,
+        end_offset: u64,
+        total_size: Option<u64>,
     },
     UploadFromReader {
         object_path: ObjectPath,
         upload_id: String,
-        max_size: i64,
+        max_size: u64,
     },
     ObjectExists {
         object_path: ObjectPath,
@@ -271,7 +272,6 @@ impl MockGcsOperations {
     }
 }
 
-#[async_trait]
 impl GcsOperations for MockGcsOperations {
     async fn read_object_metadata(
         &self,
@@ -295,9 +295,30 @@ impl GcsOperations for MockGcsOperations {
     async fn read_object_content(
         &self,
         object_path: &ObjectPath,
-        start: i64,
-        end: Option<i64>,
-    ) -> Result<Vec<u8>, Error> {
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + Unpin>, Error> {
+        struct OnceStream {
+            content: Option<Bytes>,
+        }
+        impl Stream for OnceStream {
+            type Item = Result<Bytes, Error>;
+
+            fn poll_next(
+                mut self: core::pin::Pin<&mut Self>,
+                _cx: &mut core::task::Context<'_>,
+            ) -> core::task::Poll<Option<Self::Item>> {
+                core::task::Poll::Ready(self.content.take().map(Ok))
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                match &self.content {
+                    Some(bytes) => (bytes.len(), Some(bytes.len())),
+                    None => (0, Some(0)),
+                }
+            }
+        }
+
         self.call_counts.read_calls.fetch_add(1, Ordering::Relaxed);
         self.requests.write().await.push(MockRequest::ReadContent {
             object_path: object_path.clone(),
@@ -312,15 +333,8 @@ impl GcsOperations for MockGcsOperations {
 
         if let Some(obj) = objects.get(&object_key) {
             let content = &obj.content;
-            if start < 0 {
-                return Err(make_err!(
-                    Code::InvalidArgument,
-                    "Start index {} must be non-negative",
-                    start
-                ));
-            }
 
-            let start_idx = start as usize;
+            let start_idx = usize::try_from(start).unwrap_or(usize::MAX);
             if start_idx > content.len() {
                 return Err(make_err!(
                     Code::OutOfRange,
@@ -340,12 +354,14 @@ impl GcsOperations for MockGcsOperations {
                         start
                     ));
                 }
-                core::cmp::min(e as usize, content.len())
+                core::cmp::min(usize::try_from(e).unwrap_or(usize::MAX), content.len())
             } else {
                 content.len()
             };
 
-            Ok(content[start_idx..end_idx].to_vec())
+            Ok(Box::new(OnceStream {
+                content: Some(Bytes::copy_from_slice(&content[start_idx..end_idx])),
+            }))
         } else {
             Err(make_err!(Code::NotFound, "Object not found"))
         }
@@ -383,10 +399,10 @@ impl GcsOperations for MockGcsOperations {
         &self,
         upload_url: &str,
         object_path: &ObjectPath,
-        data: Vec<u8>,
-        offset: i64,
-        end_offset: i64,
-        is_final: bool,
+        data: Bytes,
+        offset: u64,
+        end_offset: u64,
+        total_size: Option<u64>,
     ) -> Result<(), Error> {
         self.call_counts
             .upload_chunk_calls
@@ -397,7 +413,7 @@ impl GcsOperations for MockGcsOperations {
             data_len: data.len(),
             offset,
             end_offset,
-            is_final,
+            total_size,
         });
 
         self.handle_failure().await?;
@@ -423,7 +439,7 @@ impl GcsOperations for MockGcsOperations {
             });
 
         // Handle the chunk data
-        let offset_usize = offset as usize;
+        let offset_usize = usize::try_from(offset).unwrap_or(usize::MAX);
         if mock_object.content.len() < offset_usize + data.len() {
             mock_object.content.resize(offset_usize + data.len(), 0);
         }
@@ -433,7 +449,7 @@ impl GcsOperations for MockGcsOperations {
         }
 
         // Update metadata if this is the final chunk
-        if is_final {
+        if total_size.map(|size| size == end_offset) == Some(true) {
             mock_object.metadata.size = mock_object.content.len() as i64;
             mock_object.metadata.update_time = Some(Timestamp {
                 seconds: self.get_current_timestamp(),
@@ -449,7 +465,7 @@ impl GcsOperations for MockGcsOperations {
         object_path: &ObjectPath,
         reader: &mut DropCloserReadHalf,
         upload_id: &str,
-        max_size: i64,
+        max_size: u64,
     ) -> Result<(), Error> {
         self.call_counts
             .upload_from_reader_calls
@@ -467,10 +483,11 @@ impl GcsOperations for MockGcsOperations {
 
         // Read all data from the reader
         let mut buffer = Vec::new();
-        let mut total_read = 0i64;
+        let max_size = usize::try_from(max_size).unwrap_or(usize::MAX);
+        let mut total_read = 0usize;
 
         while total_read < max_size {
-            let to_read = core::cmp::min((max_size - total_read) as usize, 8192); // 8KB chunks
+            let to_read = core::cmp::min(max_size - total_read, 8192); // 8KB chunks
             let chunk = reader.consume(Some(to_read)).await?;
 
             if chunk.is_empty() {
@@ -478,7 +495,7 @@ impl GcsOperations for MockGcsOperations {
             }
 
             buffer.extend_from_slice(&chunk);
-            total_read += chunk.len() as i64;
+            total_read += chunk.len();
         }
 
         self.write_object(object_path, buffer).await?;

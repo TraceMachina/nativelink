@@ -64,8 +64,7 @@
               # Getting started
 
               Enter the Nix environment with `nix develop`.
-              Get your credentials for the NativeLink cloud on
-              https://app.nativelink.com/ and paste them into `user.bazelrc`.
+              Get your credentials for NativeLink and paste them into `user.bazelrc`.
               Run `bazel build hello-world` to build the example with local
               remote execution.
 
@@ -79,6 +78,7 @@
         config,
         pkgs,
         system,
+        lib,
         ...
       }: let
         craneLibFor = p: (crane.mkLib p).overrideToolchain pkgs.lre.stableRustFor;
@@ -87,7 +87,7 @@
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
           filter = path: type:
-            (builtins.match "^.*(data/SekienAkashita\.jpg|nativelink-config/README\.md)" path != null)
+            (builtins.match "^.*(examples/.+\.json5|data/.+|nativelink-config/README\.md)" path != null)
             || ((craneLibFor pkgs).filterCargoSources path type);
         };
 
@@ -108,9 +108,9 @@
                   "aarch64-linux" = "aarch64-unknown-linux-musl";
                   "x86_64-darwin" = "x86_64-apple-darwin";
                   "aarch64-darwin" = "aarch64-apple-darwin";
-                }
-                .${nixSystem}
-                or (throw "Unsupported Nix host platform: ${nixSystem}")
+                }.${
+                  nixSystem
+                } or (throw "Unsupported Nix host platform: ${nixSystem}")
             )
             p.stdenv.targetPlatform.system;
 
@@ -190,7 +190,7 @@
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
 
-        # TODO(aaronmondal): Allow "crosscompiling" this image. At the moment
+        # TODO(palfrey): Allow "crosscompiling" this image. At the moment
         #                    this would set a wrong container architecture. See:
         #                    https://github.com/nlewo/nix2container/issues/138.
         nativelink-image = let
@@ -213,7 +213,7 @@
               Labels = {
                 "org.opencontainers.image.description" = "An RBE compatible, high-performance cache and remote executor.";
                 "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
-                "org.opencontainers.image.licenses" = "Apache-2.0";
+                "org.opencontainers.image.licenses" = "FSL-1.1-Apache-2.0";
                 "org.opencontainers.image.revision" = "${self.rev or self.dirtyRev or "dirty"}";
                 "org.opencontainers.image.source" = "https://github.com/TraceMachina/nativelink";
                 "org.opencontainers.image.title" = "NativeLink";
@@ -292,7 +292,7 @@
           coverageArgs =
             (commonArgsFor p)
             // {
-              # TODO(aaronmondal): For some reason we're triggering an edgecase where
+              # TODO(palfrey): For some reason we're triggering an edgecase where
               #                    mimalloc builds against glibc headers in coverage
               #                    builds. This leads to nonexistend __memcpy_chk and
               #                    __memset_chk symbols if fortification is enabled.
@@ -318,6 +318,10 @@
       in rec {
         _module.args.pkgs = import self.inputs.nixpkgs {
           inherit system;
+          config.allowUnfreePredicate = pkg:
+            builtins.elem (lib.getName pkg) [
+              "mongodb"
+            ];
           overlays = [
             self.overlays.lre
             self.overlays.tools
@@ -347,7 +351,8 @@
               nativelink-x86_64-linux
               ;
 
-            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr native-cli;
+            # Used by the CI
+            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr;
 
             default = nativelink;
 
@@ -361,14 +366,23 @@
             nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
-            pyroaring = pkgs.callPackage ./tools/buildstream/pyroaring.nix {pythonPkgs = pkgs.python312Packages;};
-            bst = pkgs.callPackage ./tools/buildstream/bst.nix {
-              inherit pkgs pyroaring;
-              pythonPkgs = pkgs.python312Packages;
-            };
+
+            inherit (pkgs) buildstream buildbox buck2 mongodb wait4x bazelisk;
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
-              inherit nativelink bst;
+              inherit nativelink buildstream buildbox;
             };
+            mongo-with-nativelink-test = pkgs.callPackage integration_tests/mongo/mongo-with-nativelink-test.nix {
+              inherit nativelink mongodb wait4x bazelisk;
+            };
+            rbe-toolchain-with-nativelink-test = pkgs.callPackage toolchain-examples/rbe-toolchain-test.nix {
+              inherit nativelink bazelisk;
+            };
+            buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
+              inherit nativelink buck2;
+            };
+
+            generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
+            generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
           }
           // (
             # It's not possible to crosscompile to darwin, not even between
@@ -385,7 +399,7 @@
             else {}
           );
         checks = {
-          # TODO(aaronmondal): Fix the tests.
+          # TODO(palfrey): Fix the tests.
           # tests = craneLib.cargoNextest (commonArgs
           #   // {
           #   inherit cargoArtifacts;
@@ -397,6 +411,7 @@
         pre-commit.settings = {
           hooks = import ./tools/pre-commit-hooks.nix {
             inherit pkgs;
+            inherit (packages) generate-bazel-rc generate-stores-config;
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
@@ -448,6 +463,8 @@
               # Development tooling
               pkgs.git
               pkgs.pre-commit
+              pkgs.git-cliff
+              pkgs.buck2
 
               # Rust
               bazel
@@ -491,6 +508,7 @@
               pkgs.lre.lre-cc.lre-cc-configs-gen
               pkgs.nativelink-tools.local-image-test
               pkgs.nativelink-tools.native-cli
+              pkgs.nativelink-tools.create-local-image
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.darwin.apple_sdk.frameworks.CoreFoundation
@@ -525,7 +543,7 @@
               ${config.darwin.installationScript}
 
               # The Bazel and Cargo builds in nix require a Clang toolchain.
-              # TODO(aaronmondal): The Bazel build currently uses the
+              # TODO(palfrey): The Bazel build currently uses the
               #                    irreproducible host C++ toolchain. Provide
               #                    this toolchain via nix for bitwise identical
               #                    binaries across machines.
@@ -536,7 +554,7 @@
               export PATH=$HOME/.deno/bin:$PATH
               deno types > web/platform/utils/deno.d.ts
             ''
-            # TODO(aaronmondal): Generalize this.
+            # TODO(palfrey): Generalize this.
             + pkgs.lib.optionalString (system == "x86_64-linux") ''
               export CC_x86_64_unknown_linux_gnu=customClang
             '';

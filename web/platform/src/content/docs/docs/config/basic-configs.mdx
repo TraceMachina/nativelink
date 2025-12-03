@@ -1,6 +1,6 @@
 ---
 title: "Basic Config Examples"
-description: "NativeLink basic configurations for testing and simple deployments"
+description: "NativeLink configurations for testing and basic deployments"
 pagefind: true
 ---
 
@@ -148,11 +148,10 @@ memory and filesystem stores instead of S3 and Redis.
           "scheduler": "MAIN_SCHEDULER",
         }
       }],
-      "bytestream": {
-        "cas_stores": {
-          "main": "WORKER_FAST_SLOW_STORE",
-        }
-      }
+      "bytestream": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+      }]
     }
   }, {
     "name": "private_workers_servers",
@@ -320,11 +319,10 @@ memory and filesystem stores instead of S3 and Redis.
           "scheduler": "MAIN_SCHEDULER",
         }
       }],
-      "bytestream": {
-        "cas_stores": {
-          "main": "WORKER_FAST_SLOW_STORE",
-        }
-      }
+      "bytestream": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+      }]
     }
   }, {
     "name": "private_workers_servers",

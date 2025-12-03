@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,15 +23,17 @@ use fred::bytes_utils::string::Str;
 use fred::clients::SubscriberClient;
 use fred::error::Error as RedisError;
 use fred::mocks::{MockCommand, Mocks};
-use fred::prelude::{Builder, Pool as RedisPool};
+use fred::prelude::Builder;
 use fred::types::Value as RedisValue;
-use fred::types::config::{Config as RedisConfig, PerformanceConfig};
+use fred::types::config::Config as RedisConfig;
+use nativelink_config::stores::RedisSpec;
 use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
-use nativelink_store::redis_store::RedisStore;
+use nativelink_store::redis_store::{RecoverablePool, RedisStore};
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::health_utils::HealthStatus;
 use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use tokio::sync::watch;
@@ -42,6 +44,7 @@ const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 const DEFAULT_READ_CHUNK_SIZE: usize = 1024;
 const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 const DEFAULT_SCAN_COUNT: u32 = 10_000;
+const DEFAULT_MAX_PERMITS: usize = 100;
 
 fn mock_uuid_generator() -> String {
     uuid::Uuid::parse_str(TEMP_UUID).unwrap().to_string()
@@ -167,18 +170,38 @@ impl Drop for MockRedisBackend {
     }
 }
 
-fn make_clients(mut builder: Builder) -> (RedisPool, SubscriberClient) {
+fn make_clients(builder: &Builder) -> (RecoverablePool, SubscriberClient) {
     const CONNECTION_POOL_SIZE: usize = 1;
-    let client_pool = builder
-        .set_performance_config(PerformanceConfig {
-            broadcast_channel_capacity: 4096,
-            ..Default::default()
-        })
-        .build_pool(CONNECTION_POOL_SIZE)
-        .unwrap();
+    let client_pool = RecoverablePool::new(builder.clone(), CONNECTION_POOL_SIZE).unwrap();
 
     let subscriber_client = builder.build_subscriber_client().unwrap();
     (client_pool, subscriber_client)
+}
+
+fn make_mock_store(mocks: &Arc<MockRedisBackend>) -> RedisStore {
+    make_mock_store_with_prefix(mocks, String::new())
+}
+
+fn make_mock_store_with_prefix(mocks: &Arc<MockRedisBackend>, key_prefix: String) -> RedisStore {
+    let mut builder = Builder::default_centralized();
+    let mocks = Arc::clone(mocks);
+    builder.set_config(RedisConfig {
+        mocks: Some(mocks),
+        ..Default::default()
+    });
+    let (client_pool, subscriber_client) = make_clients(&builder);
+    RedisStore::new_from_builder_and_parts(
+        client_pool,
+        subscriber_client,
+        None,
+        mock_uuid_generator,
+        key_prefix,
+        DEFAULT_READ_CHUNK_SIZE,
+        DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
+        DEFAULT_SCAN_COUNT,
+        DEFAULT_MAX_PERMITS,
+    )
+    .unwrap()
 }
 
 #[nativelink_test]
@@ -257,26 +280,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
             Ok(RedisValue::String(Str::from_static("14"))),
         );
 
-    let store = {
-        let mut builder = Builder::default_centralized();
-        let mocks = Arc::clone(&mocks);
-        builder.set_config(RedisConfig {
-            mocks: Some(mocks),
-            ..Default::default()
-        });
-        let (client_pool, subscriber_client) = make_clients(builder);
-        RedisStore::new_from_builder_and_parts(
-            client_pool,
-            subscriber_client,
-            None,
-            mock_uuid_generator,
-            String::new(),
-            DEFAULT_READ_CHUNK_SIZE,
-            DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
-            DEFAULT_SCAN_COUNT,
-        )
-        .unwrap()
-    };
+    let store = make_mock_store(&mocks);
 
     store.update_oneshot(digest, data.clone()).await.unwrap();
 
@@ -362,27 +366,7 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
             Ok(RedisValue::String(Str::from_static("14"))),
         );
 
-    let store = {
-        let mut builder = Builder::default_centralized();
-        let mocks = Arc::clone(&mocks);
-        builder.set_config(RedisConfig {
-            mocks: Some(mocks),
-            ..Default::default()
-        });
-
-        let (client_pool, subscriber_client) = make_clients(builder);
-        RedisStore::new_from_builder_and_parts(
-            client_pool,
-            subscriber_client,
-            None,
-            mock_uuid_generator,
-            prefix.to_string(),
-            DEFAULT_READ_CHUNK_SIZE,
-            DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
-            DEFAULT_SCAN_COUNT,
-        )
-        .unwrap()
-    };
+    let store = make_mock_store_with_prefix(&mocks, prefix.to_string());
 
     store.update_oneshot(digest, data.clone()).await.unwrap();
 
@@ -407,20 +391,8 @@ async fn upload_empty_data() -> Result<(), Error> {
     let data = Bytes::from_static(b"");
     let digest = ZERO_BYTE_DIGESTS[0];
 
-    let (client_pool, subscriber_client) = make_clients(Builder::default_centralized());
-    // We expect to skip both uploading and downloading when the digest is known zero.
-    let store = RedisStore::new_from_builder_and_parts(
-        client_pool,
-        subscriber_client,
-        None,
-        mock_uuid_generator,
-        String::new(),
-        DEFAULT_READ_CHUNK_SIZE,
-        DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
-        DEFAULT_SCAN_COUNT,
-    )
-    .unwrap();
-
+    let mocks = Arc::new(MockRedisBackend::new());
+    let store = make_mock_store(&mocks);
     store.update_oneshot(digest, data).await.unwrap();
 
     let result = store.has(digest).await.unwrap();
@@ -438,19 +410,8 @@ async fn upload_empty_data_with_prefix() -> Result<(), Error> {
     let digest = ZERO_BYTE_DIGESTS[0];
     let prefix = "TEST_PREFIX-";
 
-    let (client_pool, subscriber_client) = make_clients(Builder::default_centralized());
-    let store = RedisStore::new_from_builder_and_parts(
-        client_pool,
-        subscriber_client,
-        None,
-        mock_uuid_generator,
-        prefix.to_string(),
-        DEFAULT_READ_CHUNK_SIZE,
-        DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
-        DEFAULT_SCAN_COUNT,
-    )
-    .unwrap();
-
+    let mocks = Arc::new(MockRedisBackend::new());
+    let store = make_mock_store_with_prefix(&mocks, prefix.to_string());
     store.update_oneshot(digest, data).await.unwrap();
 
     let result = store.has(digest).await.unwrap();
@@ -546,26 +507,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
             Ok(RedisValue::Bytes(data.slice(READ_CHUNK_SIZE..))),
         );
 
-    let store = {
-        let mut builder = Builder::default_centralized();
-        builder.set_config(RedisConfig {
-            mocks: Some(mocks),
-            ..Default::default()
-        });
-
-        let (client_pool, subscriber_client) = make_clients(builder);
-        RedisStore::new_from_builder_and_parts(
-            client_pool,
-            subscriber_client,
-            None,
-            mock_uuid_generator,
-            String::new(),
-            READ_CHUNK_SIZE,
-            DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
-            DEFAULT_SCAN_COUNT,
-        )
-        .unwrap()
-    };
+    let store = make_mock_store(&mocks);
 
     store.update_oneshot(digest, data.clone()).await.unwrap();
 
@@ -700,27 +642,7 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
             Ok(RedisValue::Bytes(data.clone())),
         );
 
-    let store = {
-        let mut builder = Builder::default_centralized();
-        let mocks = Arc::clone(&mocks);
-        builder.set_config(RedisConfig {
-            mocks: Some(mocks),
-            ..Default::default()
-        });
-
-        let (client_pool, subscriber_client) = make_clients(builder);
-        RedisStore::new_from_builder_and_parts(
-            client_pool,
-            subscriber_client,
-            None,
-            mock_uuid_generator,
-            String::new(),
-            DEFAULT_READ_CHUNK_SIZE,
-            DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
-            DEFAULT_SCAN_COUNT,
-        )
-        .unwrap()
-    };
+    let store = make_mock_store(&mocks);
 
     let (mut tx, rx) = make_buf_channel_pair();
 
@@ -792,26 +714,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
             Ok(RedisValue::Integer(0)),
         );
 
-    let store = {
-        let mut builder = Builder::default_centralized();
-        builder.set_config(RedisConfig {
-            mocks: Some(mocks),
-            ..Default::default()
-        });
-
-        let (client_pool, subscriber_client) = make_clients(builder);
-        RedisStore::new_from_builder_and_parts(
-            client_pool,
-            subscriber_client,
-            None,
-            mock_uuid_generator,
-            String::new(),
-            DEFAULT_READ_CHUNK_SIZE,
-            DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
-            DEFAULT_SCAN_COUNT,
-        )
-        .unwrap()
-    };
+    let store = make_mock_store(&mocks);
 
     let result = store.get_part_unchunked(digest, 0, None).await;
     assert_eq!(result.unwrap_err().code, Code::NotFound);
@@ -882,26 +785,7 @@ async fn list_test() -> Result<(), Error> {
         .expect(command.clone(), result.clone())
         .expect(command_open, result);
 
-    let store = {
-        let mut builder = Builder::default_centralized();
-        builder.set_config(RedisConfig {
-            mocks: Some(mocks),
-            ..Default::default()
-        });
-
-        let (client_pool, subscriber_client) = make_clients(builder);
-        RedisStore::new_from_builder_and_parts(
-            client_pool,
-            subscriber_client,
-            None,
-            mock_uuid_generator,
-            String::new(),
-            DEFAULT_READ_CHUNK_SIZE,
-            DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
-            DEFAULT_SCAN_COUNT,
-        )
-        .unwrap()
-    };
+    let store = make_mock_store(&mocks);
 
     // Test listing all keys.
     let keys = get_list(&store, ..).await;
@@ -941,28 +825,8 @@ async fn list_test() -> Result<(), Error> {
 // Prevent regressions to https://reviewable.io/reviews/TraceMachina/nativelink/1188#-O2pu9LV5ux4ILuT6MND
 #[nativelink_test]
 async fn dont_loop_forever_on_empty() -> Result<(), Error> {
-    let store = {
-        let mut builder = Builder::default_centralized();
-        let mocks = Arc::new(MockRedisBackend::new());
-        builder.set_config(RedisConfig {
-            mocks: Some(mocks),
-            ..Default::default()
-        });
-
-        let (client_pool, subscriber_client) = make_clients(builder);
-        RedisStore::new_from_builder_and_parts(
-            client_pool,
-            subscriber_client,
-            None,
-            mock_uuid_generator,
-            String::new(),
-            DEFAULT_READ_CHUNK_SIZE,
-            DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
-            DEFAULT_SCAN_COUNT,
-        )
-        .unwrap()
-    };
-
+    let mocks = Arc::new(MockRedisBackend::new());
+    let store = make_mock_store(&mocks);
     let digest = DigestInfo::try_new(VALID_HASH1, 2).unwrap();
     let (tx, rx) = make_buf_channel_pair();
 
@@ -979,4 +843,59 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
     );
 
     Ok(())
+}
+
+#[nativelink_test]
+fn test_connection_errors() {
+    let spec = RedisSpec {
+        addresses: vec!["redis://non-existent-server:6379/".to_string()],
+        ..Default::default()
+    };
+    let store = RedisStore::new(spec).expect("Working spec");
+    let err = store
+        .has("1234")
+        .await
+        .expect_err("Wanted connection error");
+    assert!(
+        err.messages.len() >= 2,
+        "Expected at least two error messages, got {:?}",
+        err.messages
+    );
+    // The exact error message depends on where the failure is caught (pipeline vs connection)
+    // and how it's propagated. We just want to ensure it failed.
+    assert!(
+        !err.messages.is_empty(),
+        "Expected some error messages, got none"
+    );
+}
+
+#[nativelink_test]
+fn test_health() {
+    let spec = RedisSpec {
+        addresses: vec!["redis://nativelink.com:6379/".to_string()],
+        ..Default::default()
+    };
+    let store = RedisStore::new(spec).expect("Working spec");
+    match store.check_health(std::borrow::Cow::Borrowed("foo")).await {
+        HealthStatus::Ok {
+            struct_name: _,
+            message: _,
+        } => {
+            panic!("Expected failure");
+        }
+        HealthStatus::Failed {
+            struct_name,
+            message,
+        } => {
+            assert_eq!(struct_name, "nativelink_store::redis_store::RedisStore");
+            assert!(
+                message.contains("Connection issue connecting to redis server")
+                    || message.contains("Timeout Error: Request timed out"),
+                "Error message mismatch: {message:?}"
+            );
+        }
+        health_result => {
+            panic!("Other result: {health_result:?}");
+        }
+    }
 }

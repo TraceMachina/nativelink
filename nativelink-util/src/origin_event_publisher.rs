@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,9 +18,8 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{OriginEve
 use prost::Message;
 use tokio::sync::{broadcast, mpsc};
 use tracing::error;
-use uuid::Uuid;
+use uuid::{Timestamp, Uuid};
 
-use crate::origin_event::get_node_id;
 use crate::shutdown_guard::{Priority, ShutdownGuard};
 use crate::store_trait::{Store, StoreLike};
 
@@ -30,18 +29,26 @@ pub struct OriginEventPublisher {
     store: Store,
     rx: mpsc::Receiver<OriginEvent>,
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
+    node_id: [u8; 6],
 }
 
 impl OriginEventPublisher {
-    pub const fn new(
+    pub fn new(
         store: Store,
         rx: mpsc::Receiver<OriginEvent>,
         shutdown_tx: broadcast::Sender<ShutdownGuard>,
     ) -> Self {
+        // Generate a random node_id for this instance
+        use rand::Rng;
+        let mut rng = rand::rng();
+        let mut node_id = [0u8; 6];
+        rng.fill(&mut node_id);
+
         Self {
             store,
             rx,
             shutdown_tx,
+            node_id,
         }
     }
 
@@ -85,7 +92,17 @@ impl OriginEventPublisher {
     }
 
     async fn handle_batch(&self, batch: &mut Vec<OriginEvent>) {
-        let uuid = Uuid::now_v6(&get_node_id(None));
+        // UUID v6 requires a timestamp and node ID
+        // Create timestamp from current system time with nanosecond precision
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let ts = Timestamp::from_unix(
+            uuid::timestamp::context::NoContext,
+            now.as_secs(),
+            now.subsec_nanos(),
+        );
+        let uuid = Uuid::new_v6(ts, &self.node_id);
         let events = OriginEvents {
             #[expect(
                 clippy::drain_collect,

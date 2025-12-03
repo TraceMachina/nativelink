@@ -39,7 +39,7 @@ rust_binary(
     ],
 )
 
-# TODO(aaronmondal): The config settings we create here don't follow good
+# TODO(palfrey): The config settings we create here don't follow good
 #                    practices and are purely created this way to work around a
 #                    suboptimal naming scheme in toolchains_protoc. Don't use
 #                    this outside of getting protoc. Consider upstreaming a
@@ -151,6 +151,7 @@ rust_library(
     tags = ["no-rustfmt"],
     visibility = ["//visibility:public"],
     deps = [
+        "@crates//:derive_more",
         "@crates//:prost",
         "@crates//:prost-types",
         "@crates//:tonic",

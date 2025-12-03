@@ -1,10 +1,10 @@
-// Copyright 2022 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -1269,7 +1269,9 @@ pub struct BatchUpdateBlobsRequest {
 /// Nested message and enum types in `BatchUpdateBlobsRequest`.
 pub mod batch_update_blobs_request {
     /// A request corresponding to a single blob that the client wants to upload.
+    #[derive(::derive_more::Debug)]
     #[derive(Clone, PartialEq, ::prost::Message)]
+    #[prost(skip_debug)]
     pub struct Request {
         /// The digest of the blob. This MUST be the digest of `data`. All
         /// digests MUST use the same digest function.
@@ -1277,6 +1279,7 @@ pub mod batch_update_blobs_request {
         pub digest: ::core::option::Option<super::Digest>,
         /// The raw binary data.
         #[prost(bytes = "bytes", tag = "2")]
+        #[debug(ignore)]
         pub data: ::prost::bytes::Bytes,
         /// The format of `data`. Must be `IDENTITY`/unspecified, or one of the
         /// compressors advertised by the
@@ -1349,13 +1352,16 @@ pub struct BatchReadBlobsResponse {
 /// Nested message and enum types in `BatchReadBlobsResponse`.
 pub mod batch_read_blobs_response {
     /// A response corresponding to a single blob that the client tried to download.
+    #[derive(::derive_more::Debug)]
     #[derive(Clone, PartialEq, ::prost::Message)]
+    #[prost(skip_debug)]
     pub struct Response {
         /// The digest to which this response corresponds.
         #[prost(message, optional, tag = "1")]
         pub digest: ::core::option::Option<super::Digest>,
         /// The raw binary data.
         #[prost(bytes = "bytes", tag = "2")]
+        #[debug(ignore)]
         pub data: ::prost::bytes::Bytes,
         /// The format the data is encoded in. MUST be `IDENTITY`/unspecified,
         /// or one of the acceptable compressors specified in the `BatchReadBlobsRequest`.

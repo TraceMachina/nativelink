@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,9 @@
 // limitations under the License.
 
 pub mod ac_utils;
+pub mod callback_utils;
 pub mod cas_utils;
+pub mod common_s3_utils;
 pub mod completeness_checking_store;
 pub mod compression_store;
 pub mod dedup_store;
@@ -25,7 +27,10 @@ pub mod gcs_client;
 pub mod gcs_store;
 pub mod grpc_store;
 pub mod memory_store;
+pub mod mongo_store;
 pub mod noop_store;
+pub mod ontap_s3_existence_cache_store;
+pub mod ontap_s3_store;
 pub mod redis_store;
 mod redis_utils;
 pub mod ref_store;

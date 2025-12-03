@@ -60,27 +60,39 @@ split_commits = false
 # regex for preprocessing the commit messages
 commit_preprocessors = [
   { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](<REPO>/issues/${2}))" },
+  { pattern = 'a license to protect the team', replace = 'Extended license to FSL-Apache' },
 ]
 # regex for parsing and grouping commits
 commit_parsers = [
   # Custom rules for specific commits.
   { message = "Account for block size in filesystem store for eviction purposes", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Add ONTAP S3 Store with existence cache", group = "<!-- 1 -->⛰️  Features" },
   { message = "Add OSFamily property in basic_cas.json", group = "<!-- 3 -->📚 Documentation" },
   { message = "Add configuration breakdown page", group = "<!-- 3 -->📚 Documentation" },
   { message = "Add rt-tokio feature to aws-sdk-s3", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Add trending badge", group = "<!-- 6 -->⚙️ Miscellaneous" },
   { message = "Basic config updated", group = "<!-- 3 -->📚 Documentation" },
   { message = "Build nativelink with musl", group = "<!-- 1 -->⛰️  Features" },
   { message = "Completeness checking store should not check if directory digests exist", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Create directory for action", group = "<!-- 1 -->⛰️  Features" },
+  { message = "De-dupe the fast-slow store", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Detect anonymous GCS auth and optionally quit", group = "<!-- 1 -->⛰️  Features" },
   { message = "Don't retry permanent failures", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Draw a General Purpose Diagram", group = "<!-- 3 -->📚 Documentation" },
   { message = "Evict on touch failure", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Existence cache remove callbacks", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Fix incorrect bazel version 6.4.0", group = "<!-- 3 -->📚 Documentation" },
   { message = "GrpcStore now sends digest function from context", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Implement .* feature", group = "<!-- 1 -->⛰️  Features" },
   { message = "Implement `ClientStateManager` for `SimpleScheduler`", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Log failures to update actions", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Log on command complete", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Make the error on a size field clearer", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Migrate to callPackage syntax", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Move Bytestream to array config", group = "<!-- 1 -->⛰️  Features" },
   { message = "Move `update_action_with_internal_error` into `StateManager`", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Prevent UUID collision", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Redo worker_find_logging as config", group = "<!-- 1 -->⛰️  Features" },
   { message = "Remove nativelink-proto as build dependency", group = "<!-- 4 -->🧪 Testing & CI" },
   { message = "Retry GrpcStore get_part_ref", group = "<!-- 1 -->⛰️  Features" },
   { message = "Shard store weight scale distribution", group = "<!-- 1 -->⛰️  Features" },
@@ -122,6 +134,10 @@ commit_parsers = [
   { message = "Handle", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Resolve", group = "<!-- 2 -->🐛 Bug Fixes" },
 
+  { message = "Merge branch", skip = true },
+  { message = "Prepare.+release", skip = true },
+  { message = "Release", skip = true },
+
   # Catch-all in miscellaneous
   { message = ".*", group = "<!-- 6 -->⚙️ Miscellaneous" },
 ]
@@ -134,7 +150,7 @@ tag_pattern = "v[0-9].*"
 # regex for skipping tags
 skip_tags = "beta|alpha"
 # regex for ignoring tags
-ignore_tags = "rc"
+ignore_tags = "rc|v0.3.0"
 # sort the tags topologically
 topo_order = false
 # sort the commits inside sections by oldest/newest order

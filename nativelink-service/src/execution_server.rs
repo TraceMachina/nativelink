@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -216,15 +216,9 @@ impl ExecutionServer {
                 match action_listener.changed().await {
                     Ok((action_update, _maybe_origin_metadata)) => {
                         debug!(?action_update, "Execute Resp Stream");
-                        // If the action is finished we won't be sending any more updates.
-                        let maybe_action_listener = if action_update.stage.is_finished() {
-                            None
-                        } else {
-                            Some(action_listener)
-                        };
                         Some((
                             Ok(action_update.as_operation(client_operation_id)),
-                            maybe_action_listener,
+                            (!action_update.stage.is_finished()).then_some(action_listener),
                         ))
                     }
                     Err(err) => {
@@ -245,7 +239,7 @@ impl ExecutionServer {
         let instance_info = self
             .instance_infos
             .get(&instance_name)
-            .err_tip(|| "Instance name '{}' not configured")?;
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
 
         let digest = DigestInfo::try_from(
             request
