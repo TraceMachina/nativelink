@@ -269,14 +269,10 @@ impl FastSlowStore {
                     },
                 )
             }
-            Err(err) => {
-                if let Err(slow_err) = &slow_res {
-                    if slow_err.code == Code::NotFound {
-                        return Err(slow_err.clone());
-                    }
-                }
-                fast_res.merge(slow_res).merge(Err(err))
-            }
+            Err(err) => match slow_res {
+                Err(slow_err) if slow_err.code == Code::NotFound => Err(slow_err),
+                _ => fast_res.merge(slow_res).merge(Err(err)),
+            },
         }
     }
 
