@@ -389,7 +389,8 @@ impl RedisStore<ConnectionManager> {
                 .set_response_timeout(command_timeout)
         };
 
-        let (tx, subscriber_channel) = unbounded_channel();
+        // FIXME(palfrey): connect sender
+        let (_tx, subscriber_channel) = unbounded_channel();
 
         let connection_manager: ConnectionManager = ConnectionManager::new_with_config(
             client,
