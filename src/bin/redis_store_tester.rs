@@ -5,7 +5,7 @@ use std::env;
 use std::sync::{Arc, RwLock};
 
 use bytes::Bytes;
-use clap::{Parser, command};
+use clap::{Parser, ValueEnum, command};
 use futures::TryStreamExt;
 use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt};
@@ -112,11 +112,21 @@ fn random_key() -> StoreKey<'static> {
     StoreKey::new_str(&key.to_string()).into_owned()
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum TestMode {
+    #[default]
+    Random,
+    Sequential,
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
     #[arg(value_enum, short, long, default_value_t)]
     redis_mode: RedisMode,
+
+    #[arg(value_enum, short, long, default_value_t)]
+    mode: TestMode,
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
@@ -197,11 +207,17 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                 let local_fail = failed.clone();
                 let local_in_flight = in_flight.clone();
 
+                let max_action_value = 7;
+                let action_value = match args.mode {
+                    TestMode::Random => rand::rng().random_range(0..max_action_value),
+                    TestMode::Sequential => count % max_action_value,
+                };
+
                 background_spawn!("action", async move {
                     async fn run_action(
+                        action_value: usize,
                         store_clone: Arc<RedisStore<ConnectionManager>>,
                     ) -> Result<(), Error> {
-                        let action_value = rand::rng().random_range(0..7);
                         match action_value {
                             0 => {
                                 store_clone.has(random_key()).await?;
@@ -275,7 +291,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                         }
                         Ok(())
                     }
-                    match run_action(store_clone).await {
+                    match run_action(action_value, store_clone).await {
                         Ok(()) => {}
                         Err(e) => {
                             error!(?e, "Error!");

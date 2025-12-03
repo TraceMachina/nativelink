@@ -85,22 +85,20 @@ jobs:
         run: |
           bazel run //:redis_store_tester \
             --extra_toolchains=@rust_toolchains//:all \
-            --verbose_failures -- --redis-mode sentinel
+            --verbose_failures -- --redis-mode sentinel --mode sequential
         env:
           RUST_LOG: trace
           REDIS_HOST: localhost
-          MAX_REDIS_PERMITS: 50 # because CI times out sometimes
-          MAX_LOOPS: 100000 # Seems to hit timeout with more than this. Probably overloaded nodes
+          MAX_LOOPS: 10 # running sequentially just to test all the actions work
         shell: bash
 
       - name: Run Store tester
         run: |
           bazel run //:redis_store_tester \
             --extra_toolchains=@rust_toolchains//:all \
-            --verbose_failures
+            --verbose_failures -- --redis-mode standard --mode sequential
         env:
           RUST_LOG: trace
           REDIS_HOST: localhost
-          MAX_REDIS_PERMITS: 50 # because CI times out sometimes
-          MAX_LOOPS: 100000 # Seems to hit timeout with more than this. Probably overloaded nodes
+          MAX_LOOPS: 10 # running sequentially just to test all the actions work
         shell: bash
