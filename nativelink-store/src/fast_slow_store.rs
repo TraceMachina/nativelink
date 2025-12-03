@@ -37,7 +37,7 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
-use tracing::debug;
+use tracing::trace;
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -169,19 +169,19 @@ impl FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        let known_reader_stream_size = if self
+        let reader_stream_size = if self
             .slow_store
             .inner_store(Some(key.borrow()))
             .optimized_for(StoreOptimizations::LazyExistenceOnSync)
         {
-            debug!(
-                key = %key.as_str(),
+            trace!(
+                %key,
                 store_name = %self.slow_store.inner_store(Some(key.borrow())).get_name(),
                 "Skipping .has() check due to LazyExistenceOnSync optimization"
             );
-            None
+            UploadSizeInfo::MaxSize(u64::MAX)
         } else {
-            Some(self
+            UploadSizeInfo::ExactSize(self
                     .slow_store
                     .has(key.borrow())
                     .await
@@ -193,7 +193,8 @@ impl FastSlowStore {
                                 If using multiple workers, ensure all workers share the same CAS storage path.",
                             key.as_str()
                         )
-                    })?)
+                    })?
+            )
         };
 
         let send_range = offset..length.map_or(u64::MAX, |length| length + offset);
@@ -249,14 +250,9 @@ impl FastSlowStore {
         };
 
         let slow_store_fut = self.slow_store.get(key.borrow(), slow_tx);
-        let fast_store_fut = self.fast_store.update(
-            key.borrow(),
-            fast_rx,
-            match known_reader_stream_size {
-                Some(size) => UploadSizeInfo::ExactSize(size),
-                None => UploadSizeInfo::MaxSize(u64::MAX),
-            },
-        );
+        let fast_store_fut = self
+            .fast_store
+            .update(key.borrow(), fast_rx, reader_stream_size);
 
         let (data_stream_res, slow_res, fast_res) =
             join!(data_stream_fut, slow_store_fut, fast_store_fut);
