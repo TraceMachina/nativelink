@@ -15,15 +15,16 @@
 use core::fmt::Debug;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use futures::Stream;
 use nativelink_error::{Code, Error, make_err};
 use nativelink_util::buf_channel::DropCloserReadHalf;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
-use crate::gcs_client::client::GcsOperations;
+use crate::gcs_client::client::{GcsOperations, UploadRef};
 use crate::gcs_client::types::{DEFAULT_CONTENT_TYPE, GcsObject, ObjectPath, Timestamp};
 
 /// A mock implementation of `GcsOperations` for testing
@@ -379,7 +380,7 @@ impl GcsOperations for MockGcsOperations {
         Ok(())
     }
 
-    async fn start_resumable_write(&self, object_path: &ObjectPath) -> Result<String, Error> {
+    async fn start_resumable_write(&self, object_path: &ObjectPath) -> Result<UploadRef, Error> {
         self.call_counts
             .start_resumable_calls
             .fetch_add(1, Ordering::Relaxed);
@@ -392,12 +393,15 @@ impl GcsOperations for MockGcsOperations {
 
         self.handle_failure().await?;
         let upload_id = format!("mock-upload-{}-{}", object_path.bucket, object_path.path);
-        Ok(upload_id)
+        Ok(UploadRef {
+            upload_ref: upload_id,
+            _permit: Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap(),
+        })
     }
 
     async fn upload_chunk(
         &self,
-        upload_url: &str,
+        upload_url: &UploadRef,
         object_path: &ObjectPath,
         data: Bytes,
         offset: u64,
@@ -408,7 +412,7 @@ impl GcsOperations for MockGcsOperations {
             .upload_chunk_calls
             .fetch_add(1, Ordering::Relaxed);
         self.requests.write().await.push(MockRequest::UploadChunk {
-            upload_url: upload_url.to_string(),
+            upload_url: upload_url.upload_ref.clone(),
             object_path: object_path.clone(),
             data_len: data.len(),
             offset,

@@ -41,6 +41,12 @@ use crate::gcs_client::types::{
     SIMPLE_UPLOAD_THRESHOLD, Timestamp,
 };
 
+#[derive(Debug)]
+pub struct UploadRef {
+    pub upload_ref: String,
+    pub(crate) _permit: OwnedSemaphorePermit,
+}
+
 /// A trait that defines the required GCS operations.
 /// This abstraction allows for easier testing by mocking GCS responses.
 pub trait GcsOperations: Send + Sync + Debug {
@@ -71,12 +77,12 @@ pub trait GcsOperations: Send + Sync + Debug {
     fn start_resumable_write(
         &self,
         object_path: &ObjectPath,
-    ) -> impl Future<Output = Result<String, Error>> + Send;
+    ) -> impl Future<Output = Result<UploadRef, Error>> + Send;
 
     /// Upload a chunk of data in a resumable upload session
     fn upload_chunk(
         &self,
-        upload_url: &str,
+        upload_url: &UploadRef,
         object_path: &ObjectPath,
         data: Bytes,
         offset: u64,
@@ -336,12 +342,21 @@ impl GcsClient {
             }
 
             // Check if the object exists
-            match self.read_object_metadata(object_path).await? {
-                Some(_) => Ok(()),
-                None => Err(make_err!(
-                    Code::Internal,
-                    "Upload completed but object not found"
-                )),
+            let request = GetObjectRequest {
+                bucket: object_path.bucket.clone(),
+                object: object_path.path.clone(),
+                ..Default::default()
+            };
+
+            match self.client.get_object(&request).await {
+                Ok(_) => Ok(()),
+                Err(GcsError::Response(resp)) if resp.code == 404 => {
+                    return Err(make_err!(
+                        Code::Internal,
+                        "Upload completed but object not found"
+                    ));
+                }
+                Err(err) => Err(Self::handle_gcs_error(&err)),
             }
         })
         .await
@@ -470,55 +485,58 @@ impl GcsOperations for GcsClient {
         .await
     }
 
-    async fn start_resumable_write(&self, object_path: &ObjectPath) -> Result<String, Error> {
-        self.with_connection(|| async {
-            let request = UploadObjectRequest {
-                bucket: object_path.bucket.clone(),
-                ..Default::default()
-            };
+    async fn start_resumable_write(&self, object_path: &ObjectPath) -> Result<UploadRef, Error> {
+        let permit =
+            self.semaphore.clone().acquire_owned().await.map_err(|e| {
+                make_err!(Code::Internal, "Failed to acquire connection permit: {}", e)
+            })?;
+        let request = UploadObjectRequest {
+            bucket: object_path.bucket.clone(),
+            ..Default::default()
+        };
 
-            let upload_type = UploadType::Multipart(Box::new(Object {
-                name: object_path.path.clone(),
-                content_type: Some(DEFAULT_CONTENT_TYPE.to_string()),
-                ..Default::default()
-            }));
+        let upload_type = UploadType::Multipart(Box::new(Object {
+            name: object_path.path.clone(),
+            content_type: Some(DEFAULT_CONTENT_TYPE.to_string()),
+            ..Default::default()
+        }));
 
-            // Start resumable upload session
-            let uploader = self
-                .client
-                .prepare_resumable_upload(&request, &upload_type)
-                .await
-                .map_err(|e| Self::handle_gcs_error(&e))?;
+        // Start resumable upload session
+        let uploader = self
+            .client
+            .prepare_resumable_upload(&request, &upload_type)
+            .await
+            .map_err(|e| Self::handle_gcs_error(&e))?;
 
-            Ok(uploader.url().to_string())
+        Ok(UploadRef {
+            upload_ref: uploader.url().to_string(),
+            _permit: permit,
         })
-        .await
     }
 
     async fn upload_chunk(
         &self,
-        upload_url: &str,
+        upload_url: &UploadRef,
         _object_path: &ObjectPath,
         data: Bytes,
         offset: u64,
         end_offset: u64,
         total_size: Option<u64>,
     ) -> Result<(), Error> {
-        self.with_connection(|| async {
-            let uploader = self.client.get_resumable_upload(upload_url.to_string());
+        let uploader = self
+            .client
+            .get_resumable_upload(upload_url.upload_ref.clone());
 
-            let last_byte = if end_offset == 0 { 0 } else { end_offset - 1 };
-            let chunk_def = ChunkSize::new(offset, last_byte, total_size);
+        let last_byte = if end_offset == 0 { 0 } else { end_offset - 1 };
+        let chunk_def = ChunkSize::new(offset, last_byte, total_size);
 
-            // Upload chunk
-            uploader
-                .upload_multiple_chunk(data, &chunk_def)
-                .await
-                .map_err(|e| Self::handle_gcs_error(&e))?;
+        // Upload chunk
+        uploader
+            .upload_multiple_chunk(data, &chunk_def)
+            .await
+            .map_err(|e| Self::handle_gcs_error(&e))?;
 
-            Ok(())
-        })
-        .await
+        Ok(())
     }
 
     async fn upload_from_reader(

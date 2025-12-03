@@ -39,12 +39,14 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
     // a little time for another thread to wake up and consume data if another
     // thread is pumping large amounts of data into the channel.
     let (tx, rx) = mpsc::channel(2);
+    let (recv_tx, recv_rx) = tokio::sync::oneshot::channel();
     let eof_sent = Arc::new(AtomicBool::new(false));
     (
         DropCloserWriteHalf {
             tx: Some(tx),
             bytes_written: 0,
             eof_sent: eof_sent.clone(),
+            recv_rx: Some(recv_rx),
         },
         DropCloserReadHalf {
             rx,
@@ -54,6 +56,7 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
             bytes_received: 0,
             recent_data: Vec::new(),
             max_recent_data_size: 0,
+            recv_tx: Some(recv_tx),
         },
     )
 }
@@ -64,12 +67,25 @@ pub struct DropCloserWriteHalf {
     tx: Option<mpsc::Sender<Bytes>>,
     bytes_written: u64,
     eof_sent: Arc<AtomicBool>,
+    recv_rx: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl DropCloserWriteHalf {
     /// Sends data over the channel to the receiver.
     pub fn send(&mut self, buf: Bytes) -> impl Future<Output = Result<(), Error>> + '_ {
         self.send_get_bytes_on_error(buf).map_err(|err| err.0)
+    }
+
+    /// Returns when the DropCloserReadHalf has called recv() for the first time.
+    pub async fn is_waiting(&mut self) -> Result<(), Error> {
+        let Some(recv_rx) = self.recv_rx.take() else {
+            // Once it's None then it's already been successful.
+            return Ok(());
+        };
+        match recv_rx.await {
+            Ok(()) => Ok(()),
+            Err(_err) => Err(make_err!(Code::Internal, "Dropped before recv")),
+        }
     }
 
     /// Sends data over the channel to the receiver.
@@ -207,6 +223,8 @@ pub struct DropCloserReadHalf {
     /// Amount of data to keep in the `recent_data` buffer before clearing it
     /// and no longer populating it.
     max_recent_data_size: u64,
+    /// A one shot that's sent when the first call to recv() is called.
+    recv_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl DropCloserReadHalf {
@@ -238,6 +256,9 @@ impl DropCloserReadHalf {
 
     /// Try to receive a chunk of data, returning `None` if none is available.
     pub fn try_recv(&mut self) -> Option<Result<Bytes, Error>> {
+        if let Some(recv_tx) = self.recv_tx.take() {
+            let _ = recv_tx.send(());
+        }
         if let Some(err) = &self.last_err {
             return Some(Err(err.clone()));
         }
