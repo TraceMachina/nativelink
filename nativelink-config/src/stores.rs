@@ -15,6 +15,7 @@
 use core::time::Duration;
 use std::sync::Arc;
 
+use clap::ValueEnum;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
@@ -1145,10 +1146,7 @@ pub struct RedisSpec {
     #[serde(default)]
     pub mode: RedisMode,
 
-    /// When using pubsub interface, this is the maximum number of items to keep
-    /// queued up before dropping old items.
-    ///
-    /// Default: 4096
+    /// Deprecated as redis-rs doesn't use it
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub broadcast_channel_capacity: usize,
 
@@ -1203,7 +1201,7 @@ pub struct RedisSpec {
     ///
     /// Default: 10000
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
-    pub scan_count: u32,
+    pub scan_count: usize,
 
     /// Retry configuration to use when a network request fails.
     /// See the `Retry` struct for more information.
@@ -1228,6 +1226,7 @@ pub struct RedisSpec {
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(ValueEnum)]
 pub enum RedisMode {
     Cluster,
     Sentinel,
