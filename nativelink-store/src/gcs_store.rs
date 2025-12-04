@@ -28,7 +28,9 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+};
 use rand::Rng;
 use tokio::time::sleep;
 
@@ -220,6 +222,10 @@ where
             .collect::<FuturesUnordered<_>>()
             .try_collect()
             .await
+    }
+
+    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+        matches!(optimization, StoreOptimizations::LazyExistenceOnSync)
     }
 
     async fn update(
