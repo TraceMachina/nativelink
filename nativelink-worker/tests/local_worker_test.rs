@@ -57,6 +57,7 @@ use pretty_assertions::assert_eq;
 use prost::Message;
 use rand::Rng;
 use tokio::io::AsyncWriteExt;
+use tokio::time::timeout;
 use utils::local_worker_test_utils::{
     setup_grpc_stream, setup_local_worker, setup_local_worker_with_config,
 };
@@ -286,6 +287,81 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
         .expect_cache_action_result()
         .await;
     assert_eq!(digest_hasher, DigestHasherFunc::Blake3);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn disconnect_with_action_in_transit_does_not_panic() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    {
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(props, ConnectWorkerRequest::default());
+    }
+
+    let expected_worker_id = "foobar".to_string();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some(nativelink_proto::build::bazel::remote::execution::v2::ExecuteRequest {
+                            action_digest: None,
+                            digest_function: nativelink_proto::build::bazel::remote::execution::v2::digest_function::Value::Sha256 as i32,
+                            ..Default::default()
+                        }),
+                        operation_id: "pending-op".to_string(),
+                        queued_timestamp: None,
+                        platform: None,
+                        worker_id: expected_worker_id,
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    // Ensure the start action is in-flight but do not respond so it stays pending.
+    let (_worker_id, pending_start_execute) = test_context
+        .actions_manager
+        .wait_for_create_and_add_action_call()
+        .await;
+    assert_eq!(pending_start_execute.operation_id, "pending-op");
+
+    drop(tx_stream);
+
+    timeout(
+        Duration::from_secs(2),
+        test_context.actions_manager.expect_kill_all(),
+    )
+    .await
+    .expect("kill_all should be called when disconnecting with pending actions");
+
+    // Unblock any pending create_and_add_action future so the worker can settle.
+    test_context
+        .actions_manager
+        .send_create_and_add_action_response(Err(make_input_err!("Disconnected")));
 
     Ok(())
 }
