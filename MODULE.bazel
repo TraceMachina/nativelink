@@ -34,6 +34,7 @@ crate.from_cargo(
     cargo_lockfile = "//:Cargo.lock",
     manifests = [
         "//:Cargo.toml",
+        "//nativelink-crio-worker-pool:Cargo.toml",
         "//nativelink-config:Cargo.toml",
         "//nativelink-error:Cargo.toml",
         "//nativelink-macro:Cargo.toml",

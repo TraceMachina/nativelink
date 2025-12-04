@@ -41,6 +41,15 @@ jobs:
         run: rustup update && rustup default ${{ matrix.toolchain }}
         shell: bash
 
+      - name: Install protoc
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            choco install protoc
+          fi
+        shell: bash
+
       - name: Rust cache
         # https://github.com/Swatinem/rust-cache/releases/tag/v2.8.1
         uses: Swatinem/rust-cache@a84bfdc502f07db5a85dd9d7a30f91a931516cc5

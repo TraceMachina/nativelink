@@ -21,6 +21,9 @@ use crate::serde_utils::{
     convert_numeric_with_shellexpand,
 };
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
+// Import warm worker pool configuration
+#[cfg(feature = "warm-worker-pools")]
+use crate::warm_worker_pools::WarmWorkerPoolsConfig;
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -146,6 +149,30 @@ pub struct SimpleSpec {
         deserialize_with = "convert_duration_with_shellexpand_and_negative"
     )]
     pub worker_match_logging_interval_s: i64,
+
+    /// Optional configuration for warm worker pools (CRI-O based).
+    /// When configured, actions matching specific criteria will be routed
+    /// to pre-warmed worker containers, significantly reducing build times
+    /// for languages with slow cold-start (Java, TypeScript, etc).
+    ///
+    /// Example:
+    /// ```json5
+    /// {
+    ///   pools: [{
+    ///     name: "java-pool",
+    ///     language: "jvm",
+    ///     container_image: "nativelink-worker-java:latest",
+    ///     min_warm_workers: 5,
+    ///     max_workers: 50,
+    ///     warmup: {
+    ///       commands: [{ argv: ["/opt/warmup/jvm-warmup.sh"] }]
+    ///     }
+    ///   }]
+    /// }
+    /// ```
+    #[cfg(feature = "warm-worker-pools")]
+    #[serde(default)]
+    pub warm_worker_pools: Option<WarmWorkerPoolsConfig>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
