@@ -1,0 +1,40 @@
+div.nativelink-item {
+    display: flex;
+    gap: 8px;
+    font-size: 12px;
+    user-select: none;
+    &:not(.connected) {
+        div.connection-status {
+            display: none;
+        }
+    }
+
+    span.brand {
+        font-weight: 900;
+        color: white;
+    }
+
+    div.connection-status {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        span.address {
+            color: white;
+            opacity: 0.6;
+        }
+        span.status-indicator {
+            color: var(--color-ref-primary80);
+            opacity: 0.8;
+            font-size: 16px;
+        }
+    }
+}
+
+div.divider {
+    display: flex;
+    width: 1px;
+    height: 16px;
+    margin: 0 2px;
+    align-items: center;
+    background: var(--color-ref-secondary25);
+}

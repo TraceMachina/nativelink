@@ -1,0 +1,31 @@
+{
+  "name": "nativelink-live",
+  "type": "module",
+  "dependencies": {
+    "material-symbols": "^0.36.3",
+    "solid-js": "^1.9.9"
+  },
+  "description": "Live view for nativelink",
+  "devDependencies": {
+    "@solidjs/testing-library": "^0.8.10",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/user-event": "^14.6.1",
+    "@vitest/browser": "4.0.0-beta.17",
+    "@vitest/browser-preview": "4.0.0-beta.17",
+    "jsdom": "^25.0.1",
+    "solid-devtools": "^0.34.4",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.9",
+    "vite-plugin-solid": "2.11.8",
+    "vitest": "4.0.0-beta.17"
+  },
+  "license": "MIT",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "serve": "vite preview",
+    "start": "vite",
+    "test": "vitest"
+  },
+  "version": "0.0.0"
+}

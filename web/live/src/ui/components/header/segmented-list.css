@@ -1,0 +1,42 @@
+div.segmented-list {
+    display: flex;
+    position: relative;
+    div.segmented-list-item-unwrapped {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        font-size: 12px;
+        font-weight: 500;
+        button.segmented-list-item-wrapped {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+            padding: 0 12px;
+            height: 28px;
+            gap: 4px;
+            background: var(--color-ref-secondary25);
+            color: var(--color-ref-neutral80);
+            border: 0;
+
+            &:hover {
+                background: var(--color-ref-secondary40);
+                color: var(--color-ref-primary100);
+            }
+            &.active {
+                color: var(--color-ref-primary80);
+            }
+            span.extra {
+                opacity: .6;
+            }
+        }
+    }
+    div.active-line {
+        position: absolute;
+        bottom: 0;
+        height: 3px;
+        background: var(--color-ref-primary80);
+        transition: all 0.3s ease;
+        border-radius: 10px 10px 0 0;
+    }
+}
