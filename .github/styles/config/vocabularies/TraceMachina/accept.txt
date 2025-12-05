@@ -11,12 +11,14 @@ Colab
 composable
 CPUs
 [Dd]eduplication
+eviction_policy
 ELB
 Eskandar
 FFI
 FFIs
 GPUs
 Goma
+[Hh]ardlinks
 [Hh]ermeticity
 Istio
 JDK
@@ -52,6 +54,7 @@ Tokio
 TraceMachina
 [Tt]oolchain
 [Tt]oolchains
+[Tt]mpfs
 Qwik
 [Uu]psert
 Verilator
