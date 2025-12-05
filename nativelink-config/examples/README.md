@@ -550,4 +550,52 @@ Below, you will find a fully tested example that you can also find in [basic_cas
 
 </details>
 
+<details>
+  <summary>High-Performance tmpfs Configuration</summary>
+
+### Using tmpfs for Maximum I/O Performance
+
+NativeLink uses hardlinks to efficiently set up action sandboxes from the CAS filesystem store.
+This requires the `work_directory` and the CAS `content_path` to be on the **same filesystem**.
+
+For maximum I/O performance, you can place both on a tmpfs (RAM-based filesystem).
+Users have reported **3-4x build time improvements** when using tmpfs.
+
+#### Setup Instructions
+
+1. Create a tmpfs mount point:
+```bash
+sudo mkdir -p /mnt/tmpfs/nativelink
+sudo mount -t tmpfs -o size=50G tmpfs /mnt/tmpfs/nativelink
+```
+
+2. To make it persistent across reboots, add to `/etc/fstab`:
+```
+tmpfs /mnt/tmpfs/nativelink tmpfs size=50G,mode=1777 0 0
+```
+
+3. Configure NativeLink to use the tmpfs paths. See [tmpfs-worker.json5](tmpfs-worker.json5) for a complete example.
+
+#### Key Configuration Points
+
+Both paths must be on the same tmpfs mount:
+- CAS `content_path`: `/mnt/tmpfs/nativelink/cas`
+- Worker `work_directory`: `/mnt/tmpfs/nativelink/work`
+
+#### Trade-offs
+
+| Pros | Cons |
+|------|------|
+| Maximum I/O performance (RAM speed) | Cache is lost on restart/reboot |
+| Hardlinks work correctly (same filesystem) | Limited by available RAM |
+| Eliminates disk I/O bottleneck | Not suitable for very large CAS |
+
+#### Sizing Guidance
+
+- Set tmpfs size to ~50% of available RAM
+- Set `max_bytes` in eviction_policy to ~80% of tmpfs size
+- Monitor memory usage and adjust as needed
+
+</details>
+
 <img referrerpolicy="no-referrer-when-downgrade" src="https://nativelink.matomo.cloud/matomo.php?idsite=2&amp;rec=1&amp;action_name=nativelink-config%20examples%20Readme.md" style="border:0" alt="" />
