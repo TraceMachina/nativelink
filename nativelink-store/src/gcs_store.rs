@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -28,7 +28,9 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+};
 use rand::Rng;
 use tokio::time::sleep;
 
@@ -40,8 +42,8 @@ use crate::gcs_client::types::{
 };
 
 #[derive(MetricsComponent, Debug)]
-pub struct GcsStore<NowFn> {
-    client: Arc<dyn GcsOperations>,
+pub struct GcsStore<Client: GcsOperations, NowFn> {
+    client: Arc<Client>,
     now_fn: NowFn,
     #[metric(help = "The bucket name for the GCS store")]
     bucket: String,
@@ -58,22 +60,27 @@ pub struct GcsStore<NowFn> {
     max_concurrent_uploads: usize,
 }
 
-impl<I, NowFn> GcsStore<NowFn>
+impl<I, NowFn> GcsStore<GcsClient, NowFn>
 where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
     pub async fn new(spec: &ExperimentalGcsSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
-        let client = GcsClient::new(spec).await?;
-        let client: Arc<dyn GcsOperations> = Arc::new(client);
-
+        let client = Arc::new(GcsClient::new(spec).await?);
         Self::new_with_ops(spec, client, now_fn)
     }
+}
 
+impl<I, Client, NowFn> GcsStore<Client, NowFn>
+where
+    I: InstantWrapper,
+    Client: GcsOperations + Send + Sync,
+    NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
+{
     // Primarily used for injecting a mock or real operations implementation
     pub fn new_with_ops(
         spec: &ExperimentalGcsSpec,
-        client: Arc<dyn GcsOperations>,
+        client: Arc<Client>,
         now_fn: NowFn,
     ) -> Result<Arc<Self>, Error> {
         // Chunks must be a multiple of 256kb according to the documentation.
@@ -95,10 +102,10 @@ where
         let max_chunk_size =
             core::cmp::min(spec.resumable_chunk_size.unwrap_or(CHUNK_SIZE), CHUNK_SIZE);
 
-        let max_chunk_size = if max_chunk_size % CHUNK_MULTIPLE != 0 {
-            ((max_chunk_size + CHUNK_MULTIPLE / 2) / CHUNK_MULTIPLE) * CHUNK_MULTIPLE
-        } else {
+        let max_chunk_size = if max_chunk_size.is_multiple_of(CHUNK_MULTIPLE) {
             max_chunk_size
+        } else {
+            ((max_chunk_size + CHUNK_MULTIPLE / 2) / CHUNK_MULTIPLE) * CHUNK_MULTIPLE
         };
 
         let max_retry_buffer_size = spec
@@ -191,9 +198,10 @@ where
 }
 
 #[async_trait]
-impl<I, NowFn> StoreDriver for GcsStore<NowFn>
+impl<I, Client, NowFn> StoreDriver for GcsStore<Client, NowFn>
 where
     I: InstantWrapper,
+    Client: GcsOperations + 'static,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
     async fn has_with_results(
@@ -216,12 +224,25 @@ where
             .await
     }
 
+    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+        matches!(optimization, StoreOptimizations::LazyExistenceOnSync)
+    }
+
     async fn update(
         self: Pin<&Self>,
         digest: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
+        if is_zero_digest(digest.borrow()) {
+            return reader.recv().await.and_then(|should_be_empty| {
+                should_be_empty
+                    .is_empty()
+                    .then_some(())
+                    .ok_or_else(|| make_err!(Code::Internal, "Zero byte hash not empty"))
+            });
+        }
+
         let object_path = self.make_object_path(&digest);
 
         reader.set_max_recent_data_size(
@@ -232,7 +253,7 @@ where
         // For small files with exact size, we'll use simple upload
         if let UploadSizeInfo::ExactSize(size) = upload_size {
             if size < MIN_MULTIPART_SIZE {
-                let content = reader.consume(Some(size as usize)).await?;
+                let content = reader.consume(Some(usize::try_from(size)?)).await?;
                 let client = &self.client;
 
                 return self
@@ -443,12 +464,22 @@ where
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
     }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        // As we're backed by GCS, this store doesn't actually drop stuff
+        // so we can actually just ignore this
+        Ok(())
+    }
 }
 
 #[async_trait]
-impl<I, NowFn> HealthStatusIndicator for GcsStore<NowFn>
+impl<I, Client, NowFn> HealthStatusIndicator for GcsStore<Client, NowFn>
 where
     I: InstantWrapper,
+    Client: GcsOperations + 'static,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
     fn get_name(&self) -> &'static str {

@@ -1,13 +1,9 @@
 # Getting started
 
-Get your credentials for the [NativeLink cloud](https://app.nativelink.com/) and
-paste them into `user.bazelrc`
+Get your credentials and paste them into `user.bazelrc`
 ```
 build --remote_cache=grpcs://TODO
-build --remote_header=x-nativelink-api-key=TODO
 build --bes_backend=grpcs://TODO
-build --bes_header=x-nativelink-api-key=TODO
-build --bes_results_url=TODO
 build --remote_timeout=600
 build --remote_executor=grpcs://TODO
 ```
@@ -30,7 +26,7 @@ You're ready to build the provided example with `bazel build hello-world`.
 - **`user.bazelrc`**:
   Add Bazel flags to your builds, see
   [Command-Line Reference](https://bazel.build/reference/command-line-reference).
-  Don't forget to add your NativeLink cloud credentials or set `remote_cache`
+  Don't forget to set `remote_cache`
   and `remote_executor` to your on-prem solution, see
   [remote execution infrastructure](https://www.nativelink.com/docs/rbe/remote-execution-examples#preparing-the-remote-execution-infrastructure).
 
@@ -40,7 +36,7 @@ You're ready to build the provided example with `bazel build hello-world`.
 
 - **`platforms/BUILD.bazel`**:
   The platform `lre-cc` specifies the URL of the `container-image` that gets
-  passed to the NativeLink cloud with `exec_properties`.
+  passed to your Nativelink instance with `exec_properties`.
   This platform inherits its properties from the LRE Bazel module.
 
 # Code quality and CI

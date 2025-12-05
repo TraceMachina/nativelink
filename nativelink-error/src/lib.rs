@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,12 +13,14 @@
 // limitations under the License.
 
 use core::convert::Into;
+use std::sync::{MutexGuard, PoisonError};
 
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use prost_types::TimestampError;
 use serde::{Deserialize, Serialize};
+use tokio::sync::AcquireError;
 // Reexport of tonic's error codes which we use as "nativelink_error::Code".
 pub use tonic::Code;
 
@@ -187,9 +189,29 @@ impl From<tokio::task::JoinError> for Error {
     }
 }
 
+impl<T> From<PoisonError<MutexGuard<'_, T>>> for Error {
+    fn from(err: PoisonError<MutexGuard<'_, T>>) -> Self {
+        make_err!(Code::Internal, "{}", err.to_string())
+    }
+}
+
 impl From<serde_json5::Error> for Error {
     fn from(err: serde_json5::Error) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
+        match err {
+            serde_json5::Error::Message { msg, location } => {
+                if let Some(has_location) = location {
+                    make_err!(
+                        Code::Internal,
+                        "line {}, column {} - {}",
+                        has_location.line,
+                        has_location.column,
+                        msg
+                    )
+                } else {
+                    make_err!(Code::Internal, "{}", msg)
+                }
+            }
+        }
     }
 }
 
@@ -209,6 +231,12 @@ impl From<core::convert::Infallible> for Error {
 impl From<TimestampError> for Error {
     fn from(err: TimestampError) -> Self {
         make_err!(Code::InvalidArgument, "{}", err)
+    }
+}
+
+impl From<AcquireError> for Error {
+    fn from(err: AcquireError) -> Self {
+        make_err!(Code::Internal, "{}", err)
     }
 }
 
@@ -253,6 +281,18 @@ impl From<tonic::Status> for Error {
 impl From<Error> for tonic::Status {
     fn from(val: Error) -> Self {
         Self::new(val.code, val.messages.join(" : "))
+    }
+}
+
+impl From<walkdir::Error> for Error {
+    fn from(value: walkdir::Error) -> Self {
+        Self::new(Code::Internal, value.to_string())
+    }
+}
+
+impl From<uuid::Error> for Error {
+    fn from(value: uuid::Error) -> Self {
+        Self::new(Code::Internal, value.to_string())
     }
 }
 

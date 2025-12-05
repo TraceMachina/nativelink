@@ -13,6 +13,7 @@ export const Hero = component$(() => {
 
   useVisibleTask$(() => {
     const options = [
+      { text: "Hermiticity is Simplicity®", duration: 15000 },
       { text: "Accelerating Advanced CI", duration: 5000 },
       { text: "Remote Execution in Bazel", duration: 5000 },
       { text: "Remote Execution in Buck2", duration: 5000 },
@@ -74,14 +75,6 @@ export const Hero = component$(() => {
         </div>
 
         <div class="w-full p-8 flex flex-row gap-5 justify-center items-center md:flex-row">
-          <a
-            id="button"
-            href="https://app.nativelink.com"
-            class=" w-1/2 h-10 gap-2 text-sm flex items-center justify-center rounded-xl border border-solid bg-white text-black transition-all duration-200 hover:border-white hover:bg-black hover:text-white md:h-[37px] md:w-[193px]"
-          >
-            <Cloud /> Sign up today
-          </a>
-
           <a
             id="button"
             href="/docs/introduction/setup"

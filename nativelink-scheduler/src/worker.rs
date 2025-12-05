@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use core::hash::{Hash, Hasher};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -78,6 +78,9 @@ pub struct Worker {
     #[metric(group = "running_action_infos")]
     pub running_action_infos: HashMap<OperationId, PendingActionInfoData>,
 
+    /// If the properties were restored already then it's added to this set.
+    pub restored_platform_properties: HashSet<OperationId>,
+
     /// Timestamp of last time this worker had been communicated with.
     // Warning: Do not update this timestamp without updating the placement of the worker in
     // the LRUCache in the Workers struct.
@@ -112,7 +115,7 @@ fn reduce_platform_properties(
     parent_props: &mut PlatformProperties,
     reduction_props: &PlatformProperties,
 ) {
-    debug_assert!(reduction_props.is_satisfied_by(parent_props));
+    debug_assert!(reduction_props.is_satisfied_by(parent_props, false));
     for (property, prop_value) in &reduction_props.properties {
         if let PlatformPropertyValue::Minimum(value) = prop_value {
             let worker_props = &mut parent_props.properties;
@@ -137,6 +140,7 @@ impl Worker {
             platform_properties,
             tx,
             running_action_infos: HashMap::new(),
+            restored_platform_properties: HashSet::new(),
             last_update_timestamp: timestamp,
             is_paused: false,
             is_draining: false,
@@ -219,6 +223,18 @@ impl Worker {
             .await
     }
 
+    pub(crate) fn execution_complete(&mut self, operation_id: &OperationId) {
+        if let Some((operation_id, pending_action_info)) =
+            self.running_action_infos.remove_entry(operation_id)
+        {
+            self.restored_platform_properties
+                .insert(operation_id.clone());
+            self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
+            self.running_action_infos
+                .insert(operation_id, pending_action_info);
+        }
+    }
+
     pub(crate) async fn complete_action(
         &mut self,
         operation_id: &OperationId,
@@ -229,7 +245,9 @@ impl Worker {
                 self.id, operation_id
             )
         })?;
-        self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
+        if !self.restored_platform_properties.remove(operation_id) {
+            self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
+        }
         self.is_paused = false;
         self.metrics.actions_completed.inc();
         Ok(())

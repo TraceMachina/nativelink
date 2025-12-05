@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -46,14 +46,13 @@ use nativelink_util::proto_stream_utils::{
 };
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::{default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
 use parking_lot::Mutex;
 use prost::Message;
-use rand::Rng;
 use tokio::time::sleep;
-use tonic::{IntoRequest, Request, Response, Status, Streaming};
+use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
 use tracing::error;
 use uuid::Uuid;
 
@@ -71,24 +70,12 @@ pub struct GrpcStore {
 
 impl GrpcStore {
     pub async fn new(spec: &GrpcSpec) -> Result<Arc<Self>, Error> {
-        let jitter_amt = spec.retry.jitter;
-        Self::new_with_jitter(
-            spec,
-            Box::new(move |delay: Duration| {
-                if jitter_amt == 0. {
-                    return delay;
-                }
-                let min = 1. - (jitter_amt / 2.);
-                let max = 1. + (jitter_amt / 2.);
-                delay.mul_f32(rand::rng().random_range(min..max))
-            }),
-        )
-        .await
+        Self::new_with_jitter(spec, spec.retry.make_jitter_fn()).await
     }
 
     pub async fn new_with_jitter(
         spec: &GrpcSpec,
-        jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
+        jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Arc<Self>, Error> {
         error_if!(
             spec.endpoints.is_empty(),
@@ -101,7 +88,6 @@ impl GrpcStore {
             endpoints.push(endpoint);
         }
 
-        let jitter_fn = Arc::new(jitter_fn);
         Ok(Arc::new(Self {
             instance_name: spec.instance_name.clone(),
             store_type: spec.store_type,
@@ -582,6 +568,13 @@ impl StoreDriver for GrpcStore {
         reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        struct LocalState {
+            resource_name: String,
+            reader: DropCloserReadHalf,
+            did_error: bool,
+            bytes_received: i64,
+        }
+
         let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             return self.update_action_result_from_bytes(digest, reader).await;
@@ -593,6 +586,7 @@ impl StoreDriver for GrpcStore {
             .proto_digest_func()
             .as_str_name()
             .to_ascii_lowercase();
+
         let mut buf = Uuid::encode_buffer();
         let resource_name = format!(
             "{}/uploads/{}/blobs/{}/{}/{}",
@@ -602,13 +596,6 @@ impl StoreDriver for GrpcStore {
             digest.packed_hash(),
             digest.size_bytes(),
         );
-
-        struct LocalState {
-            resource_name: String,
-            reader: DropCloserReadHalf,
-            did_error: bool,
-            bytes_received: i64,
-        }
         let local_state = LocalState {
             resource_name,
             reader,
@@ -666,6 +653,13 @@ impl StoreDriver for GrpcStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
+        struct LocalState<'a> {
+            resource_name: String,
+            writer: &'a mut DropCloserWriteHalf,
+            read_offset: i64,
+            read_limit: i64,
+        }
+
         let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
@@ -689,6 +683,7 @@ impl StoreDriver for GrpcStore {
             .proto_digest_func()
             .as_str_name()
             .to_ascii_lowercase();
+
         let resource_name = format!(
             "{}/blobs/{}/{}/{}",
             &self.instance_name,
@@ -696,13 +691,6 @@ impl StoreDriver for GrpcStore {
             digest.packed_hash(),
             digest.size_bytes(),
         );
-
-        struct LocalState<'a> {
-            resource_name: String,
-            writer: &'a mut DropCloserWriteHalf,
-            read_offset: i64,
-            read_limit: i64,
-        }
 
         let local_state = LocalState {
             resource_name,
@@ -778,6 +766,16 @@ impl StoreDriver for GrpcStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Err(Error::new(
+            Code::Internal,
+            "gRPC stores are incompatible with removal callbacks".to_string(),
+        ))
     }
 }
 

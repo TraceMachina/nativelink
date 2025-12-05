@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -306,7 +306,8 @@ impl SortedAwaitedActions {
 pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
     /// A lookup table to lookup the state of an action by its client operation id.
     #[metric(group = "client_operation_ids")]
-    client_operation_to_awaited_action: EvictingMap<OperationId, Arc<ClientAwaitedAction>, I>,
+    client_operation_to_awaited_action:
+        EvictingMap<OperationId, OperationId, Arc<ClientAwaitedAction>, I>,
 
     /// A lookup table to lookup the state of an action by its worker operation id.
     #[metric(group = "operation_ids")]
@@ -377,7 +378,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     // Cleanup operation_id_to_awaited_action.
                     let Some(tx) = self.operation_id_to_awaited_action.remove(&operation_id) else {
                         error!(
-                            ?operation_id,
+                            %operation_id,
                             "operation_id_to_awaited_action does not have operation_id"
                         );
                         continue;
@@ -394,7 +395,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         }
                         Entry::Vacant(_) => {
                             error!(
-                                ?operation_id,
+                                %operation_id,
                                 "connected_clients_for_operation_id does not have operation_id"
                             );
                             0
@@ -413,7 +414,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             .insert(operation_id, connected_clients);
                         continue;
                     }
-                    debug!(?operation_id, "Clearing operation from state manager");
+                    debug!(%operation_id, "Clearing operation from state manager");
                     let awaited_action = tx.borrow().clone();
                     // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
                     match &awaited_action.action_info().unique_qualifier {
@@ -425,7 +426,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                                 && maybe_awaited_action.is_none()
                             {
                                 error!(
-                                    ?operation_id,
+                                    %operation_id,
                                     ?awaited_action,
                                     ?action_key,
                                     "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
@@ -450,7 +451,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         });
                     if maybe_sorted_awaited_action.is_none() {
                         error!(
-                            ?operation_id,
+                            %operation_id,
                             ?sort_key,
                             "Expected maybe_sorted_awaited_action to have {sort_key:?}",
                         );
@@ -759,8 +760,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             self.make_client_awaited_action(&operation_id.clone(), awaited_action);
 
         debug!(
-            ?client_operation_id,
-            ?operation_id,
+            %client_operation_id,
+            %operation_id,
             ?client_awaited_action,
             "Adding action"
         );
@@ -776,7 +777,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 .insert(unique_key, operation_id.clone());
             if let Some(old_value) = old_value {
                 error!(
-                    ?operation_id,
+                    %operation_id,
                     ?old_value,
                     "action_info_hash_key_to_awaited_action already has unique_key"
                 );

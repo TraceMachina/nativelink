@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,7 +15,7 @@
 use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::{Context, Poll};
-use std::fs::Metadata;
+use std::fs::{Metadata, Permissions};
 use std::io::{IoSlice, Seek};
 use std::path::{Path, PathBuf};
 
@@ -255,10 +255,7 @@ pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(
     call_with_permit(move |_| std::fs::hard_link(src, dst).map_err(Into::<Error>::into)).await
 }
 
-pub async fn set_permissions(
-    src: impl AsRef<Path>,
-    perm: std::fs::Permissions,
-) -> Result<(), Error> {
+pub async fn set_permissions(src: impl AsRef<Path>, perm: Permissions) -> Result<(), Error> {
     let src = src.as_ref().to_owned();
     call_with_permit(move |_| std::fs::set_permissions(src, perm).map_err(Into::<Error>::into))
         .await
@@ -276,14 +273,9 @@ pub async fn create_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
 
 #[cfg(target_family = "unix")]
 pub async fn symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
-    let src = src.as_ref().to_owned();
-    let dst = dst.as_ref().to_owned();
-    call_with_permit(move |_| {
-        tokio::runtime::Handle::current()
-            .block_on(tokio::fs::symlink(src, dst))
-            .map_err(Into::<Error>::into)
-    })
-    .await
+    // TODO: add a test for #2051: deadlock with large number of files
+    let _permit = get_permit().await?;
+    tokio::fs::symlink(src, dst).await.map_err(Into::into)
 }
 
 pub async fn read_link(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
@@ -361,7 +353,63 @@ pub async fn symlink_metadata(path: impl AsRef<Path>) -> Result<Metadata, Error>
     call_with_permit(move |_| std::fs::symlink_metadata(path).map_err(Into::<Error>::into)).await
 }
 
+// We can't just use the stock remove_dir_all as it falls over if someone's set readonly
+// permissions. This version walks the directories and fixes the permissions where needed
+// before deleting everything.
+#[cfg(not(target_family = "windows"))]
+fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
+    // Because otherwise Windows builds complain about these things not being used
+    use std::io::ErrorKind;
+    use std::os::unix::fs::PermissionsExt;
+
+    use tracing::debug;
+    use walkdir::WalkDir;
+
+    for entry in WalkDir::new(&path) {
+        let Ok(entry) = &entry else {
+            debug!("Can't get into {entry:?}, assuming already deleted");
+            continue;
+        };
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => {}
+                Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                    std::fs::set_permissions(entry.path(), Permissions::from_mode(0o700)).err_tip(
+                        || format!("Setting permissions for {}", entry.path().display()),
+                    )?;
+                }
+                e @ Err(_) => e.err_tip(|| format!("Removing {}", entry.path().display()))?,
+            }
+        } else if metadata.is_file() {
+            std::fs::set_permissions(entry.path(), Permissions::from_mode(0o600))
+                .err_tip(|| format!("Setting permissions for {}", entry.path().display()))?;
+        }
+    }
+
+    // should now be safe to delete after we fixed all the permissions in the walk loop
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        e @ Err(_) => e.err_tip(|| {
+            format!(
+                "Removing {} after permissions fixes",
+                path.as_ref().display()
+            )
+        })?,
+    }
+    Ok(())
+}
+
+// We can't set the permissions easily in Windows, so just fallback to
+// the stock Rust remove_dir_all
+#[cfg(target_family = "windows")]
+fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
+    std::fs::remove_dir_all(&path)?;
+    Ok(())
+}
+
 pub async fn remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
     let path = path.as_ref().to_owned();
-    call_with_permit(move |_| std::fs::remove_dir_all(path).map_err(Into::<Error>::into)).await
+    call_with_permit(move |_| internal_remove_dir_all(path)).await
 }

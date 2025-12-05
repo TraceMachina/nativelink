@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,11 +14,13 @@
 
 use core::cmp::Ordering;
 use core::convert::Into;
+use core::fmt::Display;
 use core::hash::Hash;
 use core::time::Duration;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+use humantime::format_duration;
 use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, publish,
@@ -69,7 +71,7 @@ impl Default for OperationId {
     }
 }
 
-impl core::fmt::Display for OperationId {
+impl Display for OperationId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Uuid(uuid) => uuid.fmt(f),
@@ -144,7 +146,7 @@ impl MetricsComponent for WorkerId {
     }
 }
 
-impl core::fmt::Display for WorkerId {
+impl Display for WorkerId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("{}", self.0))
     }
@@ -152,7 +154,7 @@ impl core::fmt::Display for WorkerId {
 
 impl core::fmt::Debug for WorkerId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(&self, f)
+        Display::fmt(&self, f)
     }
 }
 
@@ -173,8 +175,10 @@ impl From<String> for WorkerId {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionUniqueQualifier {
     /// The action is cacheable.
+    #[serde(alias = "Cachable")] // Pre 0.7.0 spelling
     Cacheable(ActionUniqueKey),
     /// The action is uncacheable.
+    #[serde(alias = "Uncachable")] // Pre 0.7.0 spelling
     Uncacheable(ActionUniqueKey),
 }
 
@@ -223,7 +227,7 @@ impl ActionUniqueQualifier {
     }
 }
 
-impl core::fmt::Display for ActionUniqueQualifier {
+impl Display for ActionUniqueQualifier {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let (cacheable, unique_key) = match self {
             Self::Cacheable(action) => (true, action),
@@ -257,7 +261,7 @@ pub struct ActionUniqueKey {
     pub digest: DigestInfo,
 }
 
-impl core::fmt::Display for ActionUniqueKey {
+impl Display for ActionUniqueKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!(
             "{}/{}/{}",
@@ -800,6 +804,17 @@ impl ActionStage {
                 | (Self::CompletedFromCache(_), Self::CompletedFromCache(_))
         )
     }
+
+    pub fn name(&self) -> String {
+        match self {
+            Self::Unknown => "Unknown".to_string(),
+            Self::CacheCheck => "CacheCheck".to_string(),
+            Self::Queued => "Queued".to_string(),
+            Self::Executing => "Executing".to_string(),
+            Self::Completed(_) => "Completed".to_string(),
+            Self::CompletedFromCache(_) => "CompletedFromCache".to_string(),
+        }
+    }
 }
 
 impl MetricsComponent for ActionStage {
@@ -808,15 +823,7 @@ impl MetricsComponent for ActionStage {
         _kind: MetricKind,
         _field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
-        let value = match self {
-            Self::Unknown => "Unknown".to_string(),
-            Self::CacheCheck => "CacheCheck".to_string(),
-            Self::Queued => "Queued".to_string(),
-            Self::Executing => "Executing".to_string(),
-            Self::Completed(_) => "Completed".to_string(),
-            Self::CompletedFromCache(_) => "CompletedFromCache".to_string(),
-        };
-        Ok(MetricPublishKnownKindData::String(value))
+        Ok(MetricPublishKnownKindData::String(self.name()))
     }
 }
 
@@ -1091,15 +1098,57 @@ where
 
 /// Current state of the action.
 /// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
-#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, MetricsComponent)]
+#[derive(Debug, Clone, Serialize, Deserialize, MetricsComponent)]
 pub struct ActionState {
     #[metric(help = "The current stage of the action.")]
     pub stage: ActionStage,
+    #[metric(help = "Last time this action changed stage")]
+    pub last_transition_timestamp: SystemTime,
     #[metric(help = "The unique identifier of the action.")]
     pub client_operation_id: OperationId,
     #[metric(help = "The digest of the action.")]
     pub action_digest: DigestInfo,
 }
+
+impl Display for ActionState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "stage={} last_transition={} client_operation_id={} action_digest={}",
+            self.stage.name(),
+            self.last_transition_timestamp.elapsed().map_or_else(
+                |_| "<unknown duration>".to_string(),
+                |d| { format_duration(d).to_string() }
+            ),
+            self.client_operation_id,
+            self.action_digest
+        )
+    }
+}
+
+impl PartialOrd for ActionState {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ActionState {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.last_transition_timestamp
+            .cmp(&other.last_transition_timestamp)
+    }
+}
+
+impl PartialEq for ActionState {
+    fn eq(&self, other: &Self) -> bool {
+        // Ignore last_transition_timestamp as the actions can still be the same even if they happened at different times
+        self.stage == other.stage
+            && self.client_operation_id == other.client_operation_id
+            && self.action_digest == other.action_digest
+    }
+}
+
+impl Eq for ActionState {}
 
 impl ActionState {
     pub fn try_from_operation(
@@ -1154,6 +1203,7 @@ impl ActionState {
             stage,
             client_operation_id,
             action_digest,
+            last_transition_timestamp: SystemTime::now(),
         })
     }
 

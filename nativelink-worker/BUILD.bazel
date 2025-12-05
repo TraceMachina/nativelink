@@ -10,6 +10,7 @@ load(
 rust_library(
     name = "nativelink-worker",
     srcs = [
+        "src/directory_cache.rs",
         "src/lib.rs",
         "src/local_worker.rs",
         "src/running_actions_manager.rs",
@@ -72,7 +73,7 @@ rust_test_suite(
         "@crates//:async-lock",
         "@crates//:bytes",
         "@crates//:futures",
-        "@crates//:hyper-1.6.0",
+        "@crates//:hyper-1.7.0",
         "@crates//:pin-project-lite",
         "@crates//:pretty_assertions",
         "@crates//:prost",
@@ -95,11 +96,11 @@ rust_test(
     ],
     deps = [
         "@crates//:hyper",
-        "@crates//:hyper-util",
         "@crates//:pretty_assertions",
         "@crates//:prost-types",
         "@crates//:rand",
         "@crates//:serial_test",
+        "@crates//:tempfile",
     ],
 )
 

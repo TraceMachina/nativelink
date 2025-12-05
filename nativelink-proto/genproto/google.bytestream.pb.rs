@@ -1,10 +1,10 @@
-// Copyright 2022 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -37,8 +37,7 @@ pub struct ReadRequest {
     pub read_limit: i64,
 }
 /// Response object for ByteStream.Read.
-#[derive(::derivative::Derivative)]
-#[derivative(Debug)]
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 #[prost(skip_debug)]
 pub struct ReadResponse {
@@ -47,12 +46,11 @@ pub struct ReadResponse {
     /// client that the request is still live while it is running an operation to
     /// generate more data.
     #[prost(bytes = "bytes", tag = "10")]
-    #[derivative(Debug = "ignore")]
+    #[debug(ignore)]
     pub data: ::prost::bytes::Bytes,
 }
 /// Request object for ByteStream.Write.
-#[derive(::derivative::Derivative)]
-#[derivative(Debug)]
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 #[prost(skip_debug)]
 pub struct WriteRequest {
@@ -85,7 +83,7 @@ pub struct WriteRequest {
     /// service that the request is still live while it is running an operation to
     /// generate more data.
     #[prost(bytes = "bytes", tag = "10")]
-    #[derivative(Debug = "ignore")]
+    #[debug(ignore)]
     pub data: ::prost::bytes::Bytes,
 }
 /// Response object for ByteStream.Write.

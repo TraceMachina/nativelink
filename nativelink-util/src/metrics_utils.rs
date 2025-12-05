@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -104,9 +104,10 @@ pub struct AsyncTimer<'a> {
 impl AsyncTimer<'_> {
     #[inline]
     pub fn measure(self) {
-        self.counter
-            .sum_func_duration_ns
-            .fetch_add(self.start.elapsed().as_nanos() as u64, Ordering::Acquire);
+        self.counter.sum_func_duration_ns.fetch_add(
+            u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            Ordering::Acquire,
+        );
         self.counter.calls.fetch_add(1, Ordering::Acquire);
         self.counter.successes.fetch_add(1, Ordering::Acquire);
         // This causes DropCounter's drop to never be called.
@@ -227,8 +228,10 @@ impl AsyncCounterWrapper {
         // By default `drop_counter` will increment the drop counter when it goes out of scope.
         // This will ensure we don't increment the counter if we make it here with a zero cost.
         forget(drop_counter);
-        self.sum_func_duration_ns
-            .fetch_add(instant.elapsed().as_nanos() as u64, Ordering::Acquire);
+        self.sum_func_duration_ns.fetch_add(
+            u64::try_from(instant.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            Ordering::Acquire,
+        );
         result
     }
 

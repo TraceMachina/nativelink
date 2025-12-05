@@ -291,11 +291,10 @@ The `public` server consists of a `listener` object and a `services` object. The
           "scheduler": "MAIN_SCHEDULER",
         }
       }],
-      "bytestream": {
-        "cas_stores": {
-          "main": "WORKER_FAST_SLOW_STORE",
-        }
-      }
+      "bytestream": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+      }]
     },
   },{
     "name": "private_workers_servers"
@@ -342,11 +341,10 @@ The `private` server consists of a `listener` object and a `services` object. Th
           "scheduler": "MAIN_SCHEDULER",
         }
       }],
-      "bytestream": {
-        "cas_stores": {
-          "main": "WORKER_FAST_SLOW_STORE",
-        }
-      }
+      "bytestream": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+      }]
     },
   },{
     "name": "private_workers_servers",
@@ -364,7 +362,9 @@ The `private` server consists of a `listener` object and a `services` object. Th
         "scheduler": "MAIN_SCHEDULER",
       },
       "admin": {},
-      "health": {},
+      "health": {
+        "timeout_seconds": 2
+      },
     }
   }],
   "global": {},
@@ -519,11 +519,10 @@ Below, you will find a fully tested example that you can also find in [basic_cas
           "scheduler": "MAIN_SCHEDULER",
         }
       }],
-      "bytestream": {
-        "cas_stores": {
-          "main": "WORKER_FAST_SLOW_STORE",
-        }
-      }
+      "bytestream": [{
+        "instance_name": "main",
+        "cas_store": "WORKER_FAST_SLOW_STORE",
+      }]
     }
   }, {
     "name": "private_workers_servers",

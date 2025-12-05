@@ -45,7 +45,6 @@ rust_library(
         "@crates//:opentelemetry",
         "@crates//:opentelemetry-semantic-conventions",
         "@crates//:parking_lot",
-        "@crates//:rand",
         "@crates//:scopeguard",
         "@crates//:serde",
         "@crates//:serde_json",
@@ -65,6 +64,7 @@ rust_test_suite(
         "tests/cache_lookup_scheduler_test.rs",
         "tests/property_modifier_scheduler_test.rs",
         "tests/redis_store_awaited_action_db_test.rs",
+        "tests/simple_scheduler_state_manager_test.rs",
         "tests/simple_scheduler_test.rs",
     ],
     compile_data = [
@@ -93,6 +93,7 @@ rust_test_suite(
         "@crates//:serde_json",
         "@crates//:tokio",
         "@crates//:tokio-stream",
+        "@crates//:tonic",
         "@crates//:tracing",
         "@crates//:tracing-test",
         "@crates//:uuid",

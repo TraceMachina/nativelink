@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -34,6 +34,8 @@ use crate::grpc_store::GrpcStore;
 use crate::memory_store::MemoryStore;
 use crate::mongo_store::ExperimentalMongoStore;
 use crate::noop_store::NoopStore;
+use crate::ontap_s3_existence_cache_store::OntapS3ExistenceCache;
+use crate::ontap_s3_store::OntapS3Store;
 use crate::redis_store::RedisStore;
 use crate::ref_store::RefStore;
 use crate::s3_store::S3Store;
@@ -55,6 +57,9 @@ pub fn store_factory<'a>(
             StoreSpec::ExperimentalCloudObjectStore(spec) => match spec {
                 ExperimentalCloudObjectSpec::Aws(aws_config) => {
                     S3Store::new(aws_config, SystemTime::now).await?
+                }
+                ExperimentalCloudObjectSpec::Ontap(ontap_config) => {
+                    OntapS3Store::new(ontap_config, SystemTime::now).await?
                 }
                 ExperimentalCloudObjectSpec::Gcs(gcs_config) => {
                     GcsStore::new(gcs_config, SystemTime::now).await?
@@ -78,6 +83,9 @@ pub fn store_factory<'a>(
                 spec,
                 store_factory(&spec.backend, store_manager, None).await?,
             ),
+            StoreSpec::OntapS3ExistenceCache(spec) => {
+                OntapS3ExistenceCache::new(spec, SystemTime::now).await?
+            }
             StoreSpec::CompletenessChecking(spec) => CompletenessCheckingStore::new(
                 store_factory(&spec.backend, store_manager, None).await?,
                 store_factory(&spec.cas_store, store_manager, None).await?,

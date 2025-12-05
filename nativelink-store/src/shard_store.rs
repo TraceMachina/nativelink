@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,7 +25,9 @@ use nativelink_error::{Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 
 #[derive(Debug, MetricsComponent)]
 struct StoreAndWeight {
@@ -65,8 +67,11 @@ impl ShardStore {
             .stores
             .iter()
             .map(|shard_config| {
-                (u64::from(u32::MAX) * u64::from(shard_config.weight.unwrap_or(1)) / total_weight)
-                    as u32
+                u32::try_from(
+                    u64::from(u32::MAX) * u64::from(shard_config.weight.unwrap_or(1))
+                        / total_weight,
+                )
+                .unwrap_or(u32::MAX)
             })
             .scan(0, |state, weight| {
                 *state += weight;
@@ -146,6 +151,9 @@ impl StoreDriver for ShardStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        type KeyIdxVec = Vec<usize>;
+        type KeyVec<'a> = Vec<StoreKey<'a>>;
+
         if keys.len() == 1 {
             // Hot path: It is very common to lookup only one key.
             let store_idx = self.get_store_index(&keys[0]);
@@ -155,8 +163,6 @@ impl StoreDriver for ShardStore {
                 .await
                 .err_tip(|| "In ShardStore::has_with_results() for store {store_idx}}");
         }
-        type KeyIdxVec = Vec<usize>;
-        type KeyVec<'a> = Vec<StoreKey<'a>>;
         let mut keys_for_store: Vec<(KeyIdxVec, KeyVec)> = self
             .weights_and_stores
             .iter()
@@ -236,6 +242,16 @@ impl StoreDriver for ShardStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        for store in &self.weights_and_stores {
+            store.store.register_remove_callback(callback.clone())?;
+        }
+        Ok(())
     }
 }
 

@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -30,7 +30,9 @@ mod utils {
 
 use hyper::body::Frame;
 use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
-use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
+use nativelink_config::stores::{
+    FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+};
 use nativelink_error::{Code, Error, make_err, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::Platform;
@@ -55,7 +57,6 @@ use pretty_assertions::assert_eq;
 use prost::Message;
 use rand::Rng;
 use tokio::io::AsyncWriteExt;
-use tonic::Response;
 use utils::local_worker_test_utils::{
     setup_grpc_stream, setup_local_worker, setup_local_worker_with_config,
 };
@@ -273,14 +274,10 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
-    // Now the RunningAction needs to send a series of state updates.
-    running_action.simple_expect_prepare_and_execute().await?;
-    test_context
-        .client
-        .expect_execution_complete(Ok(Response::new(())))
-        .await;
+    // Now the RunningAction needs to send a series of state updates. This shortcuts them
+    // into a single call (shortcut for prepare, execute, upload, collect_results, cleanup).
     running_action
-        .simple_expect_upload_and_complete(Ok(ActionResult::default()))
+        .simple_expect_get_finished_result(Ok(ActionResult::default()))
         .await?;
 
     // Expect the action to be updated in the action cache.
@@ -391,14 +388,10 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
-    // Now the RunningAction needs to send a series of state updates.
-    running_action.simple_expect_prepare_and_execute().await?;
-    test_context
-        .client
-        .expect_execution_complete(Ok(Response::new(())))
-        .await;
+    // Now the RunningAction needs to send a series of state updates. This shortcuts them
+    // into a single call (shortcut for prepare, execute, upload, collect_results, cleanup).
     running_action
-        .simple_expect_upload_and_complete(Ok(action_result.clone()))
+        .simple_expect_get_finished_result(Ok(action_result.clone()))
         .await?;
 
     // Expect the action to be updated in the action cache.
@@ -411,16 +404,12 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
     assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
 
     // Now our client should be notified that our runner finished.
-    let execution_response = test_context
-        .client
-        .expect_execution_response(Ok(Response::new(())))
-        .await;
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
 
     // Now ensure the final results match our expectations.
     assert_eq!(
         execution_response,
         ExecuteResult {
-            worker_id: expected_worker_id,
             instance_name: INSTANCE_NAME.to_string(),
             operation_id: String::new(),
             result: Some(execute_result::Result::ExecuteResponse(
@@ -439,6 +428,8 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Error> {
             // Note: These are not needed for this test, so we put dummy memory stores here.
             fast: StoreSpec::Memory(MemorySpec::default()),
             slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -478,6 +469,8 @@ async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(
             // Note: These are not needed for this test, so we put dummy memory stores here.
             fast: StoreSpec::Memory(MemorySpec::default()),
             slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -640,16 +633,12 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
     }
 
     // Now our client should be notified that our runner finished.
-    let execution_response = test_context
-        .client
-        .expect_execution_response(Ok(Response::new(())))
-        .await;
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
 
     // Now ensure the final results match our expectations.
     assert_eq!(
         execution_response,
         ExecuteResult {
-            worker_id: expected_worker_id,
             instance_name: INSTANCE_NAME.to_string(),
             operation_id: String::new(),
             result: Some(execute_result::Result::InternalError(

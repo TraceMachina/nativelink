@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,7 +14,7 @@
 
 use core::borrow::{Borrow, BorrowMut};
 use core::convert::Into;
-use core::fmt::{self, Display};
+use core::fmt::{self, Debug, Display};
 use core::hash::{Hash, Hasher};
 use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
@@ -33,6 +33,7 @@ use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tracing::warn;
 
 use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair};
 use crate::common::DigestInfo;
@@ -126,6 +127,10 @@ pub enum StoreOptimizations {
 
     /// If the store will never serve downloads.
     NoopDownloads,
+
+    /// If the store will determine whether a key has associated data once a read has been
+    /// attempted instead of calling .has() first.
+    LazyExistenceOnSync,
 }
 
 /// A wrapper struct for [`StoreKey`] to work around
@@ -338,7 +343,7 @@ pub struct Store {
     inner: Arc<dyn StoreDriver>,
 }
 
-impl fmt::Debug for Store {
+impl Debug for Store {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Store").finish_non_exhaustive()
     }
@@ -348,9 +353,7 @@ impl Store {
     pub fn new(inner: Arc<dyn StoreDriver>) -> Self {
         Self { inner }
     }
-}
 
-impl Store {
     /// Returns the immediate inner store driver.
     /// Note: This does not recursively try to resolve underlying store drivers
     /// like `.inner_store()` does.
@@ -378,6 +381,14 @@ impl Store {
     #[inline]
     pub fn register_health(&self, registry: &mut HealthRegistryBuilder) {
         self.inner.clone().register_health(registry);
+    }
+
+    #[inline]
+    pub fn register_remove_callback(
+        &self,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.inner.clone().register_remove_callback(callback)
     }
 }
 
@@ -764,6 +775,7 @@ pub trait StoreDriver:
             .update_oneshot(digest_info.borrow(), digest_bytes.clone())
             .await
         {
+            warn!(?e, "check_health Store.update_oneshot() failed");
             return HealthStatus::new_failed(
                 self.get_ref(),
                 format!("Store.update_oneshot() failed: {e}").into(),
@@ -825,6 +837,21 @@ pub trait StoreDriver:
 
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error>;
+}
+
+// Callback to be called when a store deletes an item. This is used so
+// compound stores can remove items from their internal state when their
+// underlying stores remove items e.g. caches
+pub trait RemoveItemCallback: Debug + Send + Sync {
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
 /// The instructions on how to decode a value from a Bytes & version into
@@ -846,6 +873,8 @@ pub trait SchedulerSubscriptionManager: Send + Sync {
     fn subscribe<K>(&self, key: K) -> Result<Self::Subscription, Error>
     where
         K: SchedulerStoreKeyProvider;
+
+    fn is_reliable() -> bool;
 }
 
 /// The API surface for a scheduler store.

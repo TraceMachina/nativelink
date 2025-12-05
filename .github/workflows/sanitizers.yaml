@@ -34,6 +34,14 @@ jobs:
         uses: >- # v4.2.2
           actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
+      - name: Free disk space
+        uses: >- # v2.0.0
+          endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
+        with:
+          remove_android: false # Takes too long.
+          remove_dotnet: true
+          remove_haskell: true
+
       - name: Setup Bazel
         uses: >- # v0.13.0
           bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551

@@ -24,8 +24,10 @@
   [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
   [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
   [![Slack](https://img.shields.io/badge/slack--channel-blue?logo=slack)](https://forms.gle/LtaWSixEC6bYi5xF7)
-  [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+  [![License](https://img.shields.io/badge/License-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
 </div>
+
+<a href="https://trendshift.io/repositories/11202" target="_blank"><img src="https://trendshift.io/api/badge/repositories/11202" alt="TraceMachina%2Fnativelink | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
 ## What's NativeLink?
 
@@ -55,9 +57,7 @@ NativeLink seamlessly integrates with build tools that use the Remote Execution 
 
 ## 🚀 Quickstart
 
-To start, you can deploy NativeLink as a Docker image (as shown below) or by using our cloud-hosted solution, [NativeLink Cloud](https://app.nativelink.com). It's **FREE** for individuals, open-source projects, and cloud production environments, with support for unlimited team members.
-
-The setups below are **production-grade** installations. See the [contribution docs](https://nativelink.com/docs/contribute/nix/) for instructions on how to build from source with [Bazel](https://nativelink.com/docs/contribute/bazel/), [Cargo](https://nativelink.com/docs/contribute/cargo/), and [Nix](https://nativelink.com/docs/contribute/nix/).
+To start, you can deploy NativeLink as a Docker image (as shown below). The setups below are **production-grade** installations. See the [contribution docs](https://nativelink.com/docs/contribute/nix/) for instructions on how to build from source with [Bazel](https://nativelink.com/docs/contribute/bazel/), [Cargo](https://nativelink.com/docs/contribute/cargo/), and [Nix](https://nativelink.com/docs/contribute/nix/).
 
 You can find a few example deployments in the [Docs](https://nativelink.com/docs/deployment-examples/kubernetes).
 
@@ -72,14 +72,14 @@ for how to build the images yourself.
 
 ```bash
 curl -O \
-    https://raw.githubusercontent.com/TraceMachina/nativelink/v0.7.0/nativelink-config/examples/basic_cas.json5
+    https://raw.githubusercontent.com/TraceMachina/nativelink/v0.7.5/nativelink-config/examples/basic_cas.json5
 
 # See https://github.com/TraceMachina/nativelink/pkgs/container/nativelink
 # to find the latest tag
 docker run \
     -v $(pwd)/basic_cas.json5:/config \
     -p 50051:50051 \
-    ghcr.io/tracemachina/nativelink:v0.7.0 \
+    ghcr.io/tracemachina/nativelink:v0.7.5 \
     config
 ```
 
@@ -88,7 +88,7 @@ docker run \
 ```powershell
 # Download the configuration file
 Invoke-WebRequest `
-    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v0.7.0/nativelink-config/examples/basic_cas.json5" `
+    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v0.7.5/nativelink-config/examples/basic_cas.json5" `
     -OutFile "basic_cas.json5"
 
 # Run the Docker container
@@ -96,7 +96,7 @@ Invoke-WebRequest `
 docker run `
     -v ${PWD}/basic_cas.json5:/config `
     -p 50051:50051 `
-    ghcr.io/tracemachina/nativelink:v0.7.0 `
+    ghcr.io/tracemachina/nativelink:v0.7.5 `
     config
 ```
 
@@ -135,4 +135,8 @@ Visit our [Contributing](https://github.com/tracemachina/nativelink/blob/main/CO
 
 Copyright 2020–2025 Trace Machina, Inc.
 
-Licensed under the Apache 2.0 License, SPDX identifier `Apache-2.0`.
+Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License.
+SPDX identifier: `FSL-1.1-Apache-2.0`.
+
+After the second anniversary of the date this version was made available, you may use this
+software under the Apache License, Version 2.0.

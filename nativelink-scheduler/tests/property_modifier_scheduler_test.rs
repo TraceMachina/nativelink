@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 mod utils {
     pub(crate) mod scheduler_utils;
@@ -22,7 +22,8 @@ mod utils {
 
 use futures::{StreamExt, join};
 use nativelink_config::schedulers::{
-    PlatformPropertyAddition, PropertyModification, PropertyModifierSpec, SchedulerSpec, SimpleSpec,
+    PlatformPropertyAddition, PlatformPropertyReplacement, PropertyModification,
+    PropertyModifierSpec, SchedulerSpec, SimpleSpec,
 };
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
@@ -69,6 +70,7 @@ async fn add_action_adds_property() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let client_operation_id = OperationId::default();
     let (_, (passed_client_operation_id, action_info)) = join!(
@@ -113,6 +115,7 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let client_operation_id = OperationId::default();
     let (_, (passed_client_operation_id, action_info)) = join!(
@@ -152,6 +155,7 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let client_operation_id = OperationId::default();
     let (_, (passed_client_operation_id, action_info)) = join!(
@@ -181,7 +185,7 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
     let context = make_modifier_scheduler(vec![
         PropertyModification::Add(PlatformPropertyAddition {
             name: name.clone(),
-            value: value.clone(),
+            value,
         }),
         PropertyModification::Remove(name.clone()),
     ]);
@@ -191,6 +195,7 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let client_operation_id = OperationId::default();
     let (_, (passed_client_operation_id, action_info)) = join!(
@@ -211,6 +216,142 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn add_action_property_replace() -> Result<(), Error> {
+    let name = "name".to_string();
+    let new_name = "new_name".to_string();
+    let value = "value".to_string();
+    let context = make_modifier_scheduler(vec![PropertyModification::Replace(
+        PlatformPropertyReplacement {
+            name: name.clone(),
+            value: None,
+            new_name: new_name.clone(),
+            new_value: None,
+        },
+    )]);
+    let mut action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+    Arc::make_mut(&mut action_info)
+        .platform_properties
+        .insert(name, value.clone());
+    let (_forward_watch_channel_tx, forward_watch_channel_rx) =
+        watch::channel(Arc::new(ActionState {
+            client_operation_id: OperationId::default(),
+            stage: ActionStage::Queued,
+            action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
+        }));
+    let client_operation_id = OperationId::default();
+    let (_, (passed_client_operation_id, action_info)) = join!(
+        context
+            .modifier_scheduler
+            .add_action(client_operation_id.clone(), action_info.clone()),
+        context
+            .mock_scheduler
+            .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
+                client_operation_id.clone(),
+                action_info,
+                forward_watch_channel_rx
+            )))),
+    );
+    assert_eq!(client_operation_id, passed_client_operation_id);
+    assert_eq!(
+        HashMap::from([(new_name, value)]),
+        action_info.platform_properties
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn add_action_property_replace_match_value() -> Result<(), Error> {
+    let name = "name".to_string();
+    let new_name = "new_name".to_string();
+    let value = "value".to_string();
+    let context = make_modifier_scheduler(vec![PropertyModification::Replace(
+        PlatformPropertyReplacement {
+            name: name.clone(),
+            value: Some(value.clone()),
+            new_name: new_name.clone(),
+            new_value: None,
+        },
+    )]);
+    let mut action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+    Arc::make_mut(&mut action_info)
+        .platform_properties
+        .insert(name.clone(), value.clone());
+    let (_forward_watch_channel_tx, forward_watch_channel_rx) =
+        watch::channel(Arc::new(ActionState {
+            client_operation_id: OperationId::default(),
+            stage: ActionStage::Queued,
+            action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
+        }));
+    let client_operation_id = OperationId::default();
+    let (_, (passed_client_operation_id, action_info)) = join!(
+        context
+            .modifier_scheduler
+            .add_action(client_operation_id.clone(), action_info.clone()),
+        context
+            .mock_scheduler
+            .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
+                client_operation_id.clone(),
+                action_info,
+                forward_watch_channel_rx
+            )))),
+    );
+    assert_eq!(client_operation_id, passed_client_operation_id);
+    assert_eq!(
+        HashMap::from([(new_name, value)]),
+        action_info.platform_properties
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn add_action_property_replace_value() -> Result<(), Error> {
+    let name = "name".to_string();
+    let new_name = "new_name".to_string();
+    let value = "value".to_string();
+    let value_two = "value_two".to_string();
+    let context = make_modifier_scheduler(vec![PropertyModification::Replace(
+        PlatformPropertyReplacement {
+            name: name.clone(),
+            value: None,
+            new_name: new_name.clone(),
+            new_value: Some(value_two.clone()),
+        },
+    )]);
+    let mut action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+    Arc::make_mut(&mut action_info)
+        .platform_properties
+        .insert(name.clone(), value.clone());
+    let (_forward_watch_channel_tx, forward_watch_channel_rx) =
+        watch::channel(Arc::new(ActionState {
+            client_operation_id: OperationId::default(),
+            stage: ActionStage::Queued,
+            action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
+        }));
+    let client_operation_id = OperationId::default();
+    let (_, (passed_client_operation_id, action_info)) = join!(
+        context
+            .modifier_scheduler
+            .add_action(client_operation_id.clone(), action_info.clone()),
+        context
+            .mock_scheduler
+            .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
+                client_operation_id.clone(),
+                action_info,
+                forward_watch_channel_rx
+            )))),
+    );
+    assert_eq!(client_operation_id, passed_client_operation_id);
+    assert_eq!(
+        HashMap::from([(new_name, value_two)]),
+        action_info.platform_properties
+    );
+    Ok(())
+}
+
+#[nativelink_test]
 async fn add_action_property_remove() -> Result<(), Error> {
     let name = "name".to_string();
     let value = "value".to_string();
@@ -225,6 +366,7 @@ async fn add_action_property_remove() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     // let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
     let client_operation_id = OperationId::default();
@@ -292,6 +434,29 @@ async fn remove_adds_to_underlying_manager() -> Result<(), Error> {
 async fn remove_retains_type_in_underlying_manager() -> Result<(), Error> {
     let name = "name".to_string();
     let context = make_modifier_scheduler(vec![PropertyModification::Remove(name.clone())]);
+    let known_properties = vec![name.clone()];
+    let instance_name_fut = context
+        .mock_scheduler
+        .expect_get_known_properties(Ok(known_properties));
+    let known_props_fut = context
+        .modifier_scheduler
+        .get_known_properties(INSTANCE_NAME);
+    let (_, known_props) = join!(instance_name_fut, known_props_fut);
+    assert_eq!(Ok(vec![name]), known_props);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn replace_retains_type_in_underlying_manager() -> Result<(), Error> {
+    let name = "name".to_string();
+    let context = make_modifier_scheduler(vec![PropertyModification::Replace(
+        PlatformPropertyReplacement {
+            name: name.clone(),
+            value: None,
+            new_name: "new_name".to_string(),
+            new_value: None,
+        },
+    )]);
     let known_properties = vec![name.clone()];
     let instance_name_fut = context
         .mock_scheduler

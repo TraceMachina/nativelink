@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
 use core::future::Future;
 use core::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -20,7 +21,7 @@ use mock_instant::thread_local::{Instant as MockInstant, MockClock};
 
 /// Wrapper used to abstract away which underlying Instant impl we are using.
 /// This is needed for testing.
-pub trait InstantWrapper: Send + Sync + Unpin + 'static {
+pub trait InstantWrapper: Send + Sync + Unpin + Debug + 'static {
     fn from_secs(secs: u64) -> Self;
     fn unix_timestamp(&self) -> u64;
     fn now(&self) -> SystemTime;

@@ -76,9 +76,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-22.04
           - ubuntu-24.04
-          - macos-14
           - macos-15
     name: Installation / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -99,7 +97,7 @@ jobs:
     name: ${{ matrix.test-name }}
     strategy:
       matrix:
-          test-name: [buildstream, mongo]
+          test-name: [buildstream, mongo, buck2, rbe-toolchain]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

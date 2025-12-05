@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -230,15 +230,12 @@ impl MockRunningAction {
         }
     }
 
-    pub(crate) async fn simple_expect_prepare_and_execute(self: &Arc<Self>) -> Result<(), Error> {
-        self.expect_prepare_action(Ok(())).await?;
-        self.expect_execute(Ok(())).await
-    }
-
-    pub(crate) async fn simple_expect_upload_and_complete(
+    pub(crate) async fn simple_expect_get_finished_result(
         self: &Arc<Self>,
         result: Result<ActionResult, Error>,
     ) -> Result<(), Error> {
+        self.expect_prepare_action(Ok(())).await?;
+        self.expect_execute(Ok(())).await?;
         self.upload_results(Ok(())).await?;
         let result = self.get_finished_result(result).await;
         self.cleanup(Ok(())).await?;

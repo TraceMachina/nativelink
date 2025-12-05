@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -237,6 +237,9 @@ where
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
             let expanded = shellexpand::env(v).map_err(de::Error::custom)?;
             let s = expanded.as_ref().trim();
+            if v.is_empty() {
+                return Err(de::Error::custom("Missing value in a size field"));
+            }
             let byte_size = Byte::parse_str(s, true).map_err(de::Error::custom)?;
             let bytes = byte_size.as_u128();
             T::try_from(bytes).map_err(de::Error::custom)
@@ -277,12 +280,12 @@ where
                 return Err(de::Error::custom("Negative duration is not allowed"));
             }
             let v_u64 = u64::try_from(v).map_err(de::Error::custom)?;
-            T::try_from(v_u64).map_err(de::Error::custom)
+            self.visit_u64(v_u64)
         }
 
         fn visit_u128<E: de::Error>(self, v: u128) -> Result<Self::Value, E> {
             let v_u64 = u64::try_from(v).map_err(de::Error::custom)?;
-            T::try_from(v_u64).map_err(de::Error::custom)
+            self.visit_u64(v_u64)
         }
 
         fn visit_i128<E: de::Error>(self, v: i128) -> Result<Self::Value, E> {
@@ -290,7 +293,7 @@ where
                 return Err(de::Error::custom("Negative duration is not allowed"));
             }
             let v_u64 = u64::try_from(v).map_err(de::Error::custom)?;
-            T::try_from(v_u64).map_err(de::Error::custom)
+            self.visit_u64(v_u64)
         }
 
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
@@ -298,7 +301,62 @@ where
             let expanded = expanded.as_ref().trim();
             let duration = parse_duration(expanded).map_err(de::Error::custom)?;
             let secs = duration.as_secs();
-            T::try_from(secs).map_err(de::Error::custom)
+            self.visit_u64(secs)
+        }
+    }
+
+    deserializer.deserialize_any(DurationVisitor::<T>(PhantomData))
+}
+
+/// # Errors
+///
+/// Will return `Err` if deserialization fails.
+pub fn convert_duration_with_shellexpand_and_negative<'de, D, T>(
+    deserializer: D,
+) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<i64>,
+    <T as TryFrom<i64>>::Error: fmt::Display,
+{
+    struct DurationVisitor<T: TryFrom<i64>>(PhantomData<T>);
+
+    impl<T> Visitor<'_> for DurationVisitor<T>
+    where
+        T: TryFrom<i64>,
+        <T as TryFrom<i64>>::Error: fmt::Display,
+    {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("either a number of seconds as an integer, or a string with a duration format (e.g., \"1h2m3s\", \"30m\", \"1d\")")
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            let v_i64 = i64::try_from(v).map_err(de::Error::custom)?;
+            self.visit_i64(v_i64)
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            T::try_from(v).map_err(de::Error::custom)
+        }
+
+        fn visit_u128<E: de::Error>(self, v: u128) -> Result<Self::Value, E> {
+            let v_i64 = i64::try_from(v).map_err(de::Error::custom)?;
+            self.visit_i64(v_i64)
+        }
+
+        fn visit_i128<E: de::Error>(self, v: i128) -> Result<Self::Value, E> {
+            let v_i64 = i64::try_from(v).map_err(de::Error::custom)?;
+            self.visit_i64(v_i64)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let expanded = shellexpand::env(v).map_err(de::Error::custom)?;
+            let expanded = expanded.as_ref().trim();
+            let duration = parse_duration(expanded).map_err(de::Error::custom)?;
+            let secs = duration.as_secs();
+            self.visit_u64(secs)
         }
     }
 

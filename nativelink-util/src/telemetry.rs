@@ -1,10 +1,10 @@
 // Copyright 2025 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -67,11 +67,12 @@ fn otlp_filter() -> EnvFilter {
         .add_directive(expect_parse("h2=off"))
         .add_directive(expect_parse("reqwest=off"))
         .add_directive(expect_parse("tower=off"))
+        .add_directive(expect_parse("fred=off"))
 }
 
 // Create a tracing layer intended for stdout printing.
 //
-// The output of this layer is configurable via the `NL_LOG_FMT` environment
+// The output of this layer is configurable via the `NL_LOG` environment
 // variable.
 fn tracing_stdout_layer() -> impl Layer<Registry> {
     let nl_log_fmt = env::var("NL_LOG").unwrap_or_else(|_| "pretty".to_string());

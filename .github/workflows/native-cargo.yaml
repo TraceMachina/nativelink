@@ -41,12 +41,12 @@ jobs:
         run: rustup update && rustup default ${{ matrix.toolchain }}
         shell: bash
 
+      - name: Rust cache
+        # https://github.com/Swatinem/rust-cache/releases/tag/v2.8.1
+        uses: Swatinem/rust-cache@a84bfdc502f07db5a85dd9d7a30f91a931516cc5
+
       - name: Build on ${{ runner.os }}
         run: cargo build --all --profile=smol
 
       - name: Test on ${{ runner.os }}
         run: cargo test --all --profile=smol
-
-      # Not a default target, but need to make sure we don't actually break it
-      - name: Test worker_find_logging
-        run: cargo build --features worker_find_logging --all-targets

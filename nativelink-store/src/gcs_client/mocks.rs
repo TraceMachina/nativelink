@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,7 +17,6 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use futures::Stream;
 use nativelink_error::{Code, Error, make_err};
@@ -273,7 +272,6 @@ impl MockGcsOperations {
     }
 }
 
-#[async_trait]
 impl GcsOperations for MockGcsOperations {
     async fn read_object_metadata(
         &self,
@@ -336,7 +334,7 @@ impl GcsOperations for MockGcsOperations {
         if let Some(obj) = objects.get(&object_key) {
             let content = &obj.content;
 
-            let start_idx = start as usize;
+            let start_idx = usize::try_from(start).unwrap_or(usize::MAX);
             if start_idx > content.len() {
                 return Err(make_err!(
                     Code::OutOfRange,
@@ -356,7 +354,7 @@ impl GcsOperations for MockGcsOperations {
                         start
                     ));
                 }
-                core::cmp::min(e as usize, content.len())
+                core::cmp::min(usize::try_from(e).unwrap_or(usize::MAX), content.len())
             } else {
                 content.len()
             };
@@ -441,7 +439,7 @@ impl GcsOperations for MockGcsOperations {
             });
 
         // Handle the chunk data
-        let offset_usize = offset as usize;
+        let offset_usize = usize::try_from(offset).unwrap_or(usize::MAX);
         if mock_object.content.len() < offset_usize + data.len() {
             mock_object.content.resize(offset_usize + data.len(), 0);
         }
@@ -485,7 +483,7 @@ impl GcsOperations for MockGcsOperations {
 
         // Read all data from the reader
         let mut buffer = Vec::new();
-        let max_size = max_size as usize;
+        let max_size = usize::try_from(max_size).unwrap_or(usize::MAX);
         let mut total_read = 0usize;
 
         while total_read < max_size {

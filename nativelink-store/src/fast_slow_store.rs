@@ -1,10 +1,10 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024-2025 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,7 +23,7 @@ use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use futures::{FutureExt, join};
-use nativelink_config::stores::FastSlowSpec;
+use nativelink_config::stores::{FastSlowSpec, StoreDirection};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
@@ -32,11 +32,12 @@ use nativelink_util::buf_channel::{
 use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
-    slow_update_store_with_file,
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
+    UploadSizeInfo, slow_update_store_with_file,
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
+use tracing::trace;
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -51,20 +52,76 @@ type Loader = Arc<OnceCell<()>>;
 pub struct FastSlowStore {
     #[metric(group = "fast_store")]
     fast_store: Store,
+    fast_direction: StoreDirection,
     #[metric(group = "slow_store")]
     slow_store: Store,
+    slow_direction: StoreDirection,
     weak_self: Weak<Self>,
     #[metric]
     metrics: FastSlowStoreMetrics,
-    // De-duplicate the populate_fast_store requests.
+    // De-duplicate requests for the fast store, only the first streams, others
+    // are blocked.  This may feel like it's causing a slow down of tasks, but
+    // actually it's faster because we're not downloading the file multiple
+    // times are doing loads of duplicate IO.
     populating_digests: Mutex<HashMap<StoreKey<'static>, Loader>>,
 }
 
+// This guard ensures that the populating_digests is cleared even if the future
+// is dropped, it is cancel safe.
+struct LoaderGuard<'a> {
+    weak_store: Weak<FastSlowStore>,
+    key: StoreKey<'a>,
+    loader: Option<Loader>,
+}
+
+impl LoaderGuard<'_> {
+    async fn get_or_try_init<E, F, Fut>(&self, f: F) -> Result<(), E>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<(), E>>,
+    {
+        if let Some(loader) = &self.loader {
+            loader.get_or_try_init(f).await.map(|&()| ())
+        } else {
+            // This is impossible, but we do it anyway.
+            f().await
+        }
+    }
+}
+
+impl Drop for LoaderGuard<'_> {
+    fn drop(&mut self) {
+        let Some(store) = self.weak_store.upgrade() else {
+            // The store has already gone away, nothing to remove from.
+            return;
+        };
+        let Some(loader) = self.loader.take() else {
+            // This should never happen, but we do it to be safe.
+            return;
+        };
+
+        let mut guard = store.populating_digests.lock();
+        if let std::collections::hash_map::Entry::Occupied(occupied_entry) =
+            guard.entry(self.key.borrow().into_owned())
+        {
+            if Arc::ptr_eq(occupied_entry.get(), &loader) {
+                drop(loader);
+                if Arc::strong_count(occupied_entry.get()) == 1 {
+                    // This is the last loader, so remove it.
+                    occupied_entry.remove();
+                }
+            }
+        }
+    }
+}
+
 impl FastSlowStore {
-    pub fn new(_spec: &FastSlowSpec, fast_store: Store, slow_store: Store) -> Arc<Self> {
+    pub fn new(spec: &FastSlowSpec, fast_store: Store, slow_store: Store) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| Self {
             fast_store,
+            fast_direction: spec.fast_direction,
             slow_store,
+            slow_direction: spec.slow_direction,
             weak_self: weak_self.clone(),
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
@@ -83,19 +140,7 @@ impl FastSlowStore {
         self.weak_self.upgrade()
     }
 
-    /// Ensure our fast store is populated. This should be kept as a low
-    /// cost function. Since the data itself is shared and not copied it should be fairly
-    /// low cost to just discard the data, but does cost a few mutex locks while
-    /// streaming.
-    pub async fn populate_fast_store(&self, key: StoreKey<'_>) -> Result<(), Error> {
-        let maybe_size_info = self
-            .fast_store
-            .has(key.borrow())
-            .await
-            .err_tip(|| "While querying in populate_fast_store")?;
-        if maybe_size_info.is_some() {
-            return Ok(());
-        }
+    fn get_loader<'a>(&self, key: StoreKey<'a>) -> LoaderGuard<'a> {
         // Get a single loader instance that's used to populate the fast store
         // for this digest.  If another request comes in then it's de-duplicated.
         let loader = match self
@@ -110,25 +155,161 @@ impl FastSlowStore {
                 vacant_entry.insert(Arc::new(OnceCell::new())).clone()
             }
         };
-        loader
-            .get_or_try_init(async move || {
-                // TODO(palfrey) This is extremely inefficient, since we are just trying
-                // to send the stream to /dev/null. Maybe we could instead make a version of
-                // the stream that can send to the drain more efficiently?
-                let (tx, mut rx) = make_buf_channel_pair();
-                let drain_fut = async move {
-                    while !rx.recv().await?.is_empty() {}
-                    Ok(())
-                };
-                let key_owned = key.borrow().into_owned();
-                let (drain_res, get_res) =
-                    join!(drain_fut, StoreDriver::get(Pin::new(self), key, tx));
-                // Now the store is populated, remove the loader.
-                self.populating_digests.lock().remove_entry(&key_owned);
-                get_res.err_tip(|| "Failed to populate()").merge(drain_res)
+        LoaderGuard {
+            weak_store: self.weak_self.clone(),
+            key,
+            loader: Some(loader),
+        }
+    }
+
+    async fn populate_and_maybe_stream(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        maybe_writer: Option<&mut DropCloserWriteHalf>,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        let reader_stream_size = if self
+            .slow_store
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::LazyExistenceOnSync)
+        {
+            trace!(
+                %key,
+                store_name = %self.slow_store.inner_store(Some(key.borrow())).get_name(),
+                "Skipping .has() check due to LazyExistenceOnSync optimization"
+            );
+            UploadSizeInfo::MaxSize(u64::MAX)
+        } else {
+            UploadSizeInfo::ExactSize(self
+                    .slow_store
+                    .has(key.borrow())
+                    .await
+                    .err_tip(|| "Failed to run has() on slow store")?
+                    .ok_or_else(|| {
+                        make_err!(
+                            Code::NotFound,
+                            "Object {} not found in either fast or slow store. \
+                                If using multiple workers, ensure all workers share the same CAS storage path.",
+                            key.as_str()
+                        )
+                    })?
+            )
+        };
+
+        let send_range = offset..length.map_or(u64::MAX, |length| length + offset);
+        let mut bytes_received: u64 = 0;
+        let mut counted_hit = false;
+
+        let (mut fast_tx, fast_rx) = make_buf_channel_pair();
+        let (slow_tx, mut slow_rx) = make_buf_channel_pair();
+        let data_stream_fut = async move {
+            let mut maybe_writer_pin = maybe_writer.map(Pin::new);
+            loop {
+                let output_buf = slow_rx
+                    .recv()
+                    .await
+                    .err_tip(|| "Failed to read data data buffer from slow store")?;
+                if output_buf.is_empty() {
+                    // Write out our EOF.
+                    // We are dropped as soon as we send_eof to writer_pin, so
+                    // we wait until we've finished all of our joins to do that.
+                    let fast_res = fast_tx.send_eof();
+                    return Ok::<_, Error>((fast_res, maybe_writer_pin));
+                }
+
+                if !counted_hit {
+                    self.metrics
+                        .slow_store_hit_count
+                        .fetch_add(1, Ordering::Acquire);
+                    counted_hit = true;
+                }
+
+                let output_buf_len = u64::try_from(output_buf.len())
+                    .err_tip(|| "Could not output_buf.len() to u64")?;
+                self.metrics
+                    .slow_store_downloaded_bytes
+                    .fetch_add(output_buf_len, Ordering::Acquire);
+
+                let writer_fut = Self::calculate_range(
+                    &(bytes_received..bytes_received + output_buf_len),
+                    &send_range,
+                )?
+                .zip(maybe_writer_pin.as_mut())
+                .map_or_else(
+                    || futures::future::ready(Ok(())).left_future(),
+                    |(range, writer_pin)| writer_pin.send(output_buf.slice(range)).right_future(),
+                );
+
+                bytes_received += output_buf_len;
+
+                let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf), writer_fut);
+                fast_tx_res.err_tip(|| "Failed to write to fast store in fast_slow store")?;
+                writer_res.err_tip(|| "Failed to write result to writer in fast_slow store")?;
+            }
+        };
+
+        let slow_store_fut = self.slow_store.get(key.borrow(), slow_tx);
+        let fast_store_fut = self
+            .fast_store
+            .update(key.borrow(), fast_rx, reader_stream_size);
+
+        let (data_stream_res, slow_res, fast_res) =
+            join!(data_stream_fut, slow_store_fut, fast_store_fut);
+        match data_stream_res {
+            Ok((fast_eof_res, maybe_writer_pin)) =>
+            // Sending the EOF will drop us almost immediately in bytestream_server
+            // so we perform it as the very last action in this method.
+            {
+                fast_eof_res.merge(fast_res).merge(slow_res).merge(
+                    if let Some(mut writer_pin) = maybe_writer_pin {
+                        writer_pin.send_eof()
+                    } else {
+                        Ok(())
+                    },
+                )
+            }
+            Err(err) => match slow_res {
+                Err(slow_err) if slow_err.code == Code::NotFound => Err(slow_err),
+                _ => fast_res.merge(slow_res).merge(Err(err)),
+            },
+        }
+    }
+
+    /// Ensure our fast store is populated. This should be kept as a low
+    /// cost function. Since the data itself is shared and not copied it should be fairly
+    /// low cost to just discard the data, but does cost a few mutex locks while
+    /// streaming.
+    pub async fn populate_fast_store(&self, key: StoreKey<'_>) -> Result<(), Error> {
+        let maybe_size_info = self
+            .fast_store
+            .has(key.borrow())
+            .await
+            .err_tip(|| "While querying in populate_fast_store")?;
+        if maybe_size_info.is_some() {
+            return Ok(());
+        }
+
+        // If the fast store is noop or read only or update only then this is an error.
+        if self
+            .fast_store
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.fast_direction == StoreDirection::ReadOnly
+            || self.fast_direction == StoreDirection::Update
+        {
+            return Err(make_err!(
+                Code::Internal,
+                "Attempt to populate fast store that is read only or noop"
+            ));
+        }
+
+        self.get_loader(key.borrow())
+            .get_or_try_init(|| {
+                Pin::new(self).populate_and_maybe_stream(key.borrow(), None, 0, None)
             })
-            .await?;
-        Ok(())
+            .await
+            .err_tip(|| "Failed to populate()")
     }
 
     /// Returns the range of bytes that should be sent given a slice bounds
@@ -187,12 +368,31 @@ impl StoreDriver for FastSlowStore {
     ) -> Result<(), Error> {
         // If either one of our stores is a noop store, bypass the multiplexing
         // and just use the store that is not a noop store.
-        let slow_store = self.slow_store.inner_store(Some(key.borrow()));
-        if slow_store.optimized_for(StoreOptimizations::NoopUpdates) {
+        let ignore_slow = self
+            .slow_store
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.slow_direction == StoreDirection::ReadOnly
+            || self.slow_direction == StoreDirection::Get;
+        let ignore_fast = self
+            .fast_store
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.fast_direction == StoreDirection::ReadOnly
+            || self.fast_direction == StoreDirection::Get;
+        if ignore_slow && ignore_fast {
+            // We need to drain the reader to avoid the writer complaining that we dropped
+            // the connection prematurely.
+            reader
+                .drain()
+                .await
+                .err_tip(|| "In FastFlowStore::update")?;
+            return Ok(());
+        }
+        if ignore_slow {
             return self.fast_store.update(key, reader, size_info).await;
         }
-        let fast_store = self.fast_store.inner_store(Some(key.borrow()));
-        if fast_store.optimized_for(StoreOptimizations::NoopUpdates) {
+        if ignore_fast {
             return self.slow_store.update(key, reader, size_info).await;
         }
 
@@ -245,7 +445,7 @@ impl StoreDriver for FastSlowStore {
         Ok(())
     }
 
-    /// FastSlowStore has optimizations for dealing with files.
+    /// `FastSlowStore` has optimizations for dealing with files.
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
         optimization == StoreOptimizations::FileUpdates
     }
@@ -266,7 +466,10 @@ impl StoreDriver for FastSlowStore {
         {
             if !self
                 .slow_store
+                .inner_store(Some(key.borrow()))
                 .optimized_for(StoreOptimizations::NoopUpdates)
+                && self.slow_direction != StoreDirection::ReadOnly
+                && self.slow_direction != StoreDirection::Get
             {
                 slow_update_store_with_file(
                     self.slow_store.as_store_driver_pin(),
@@ -276,6 +479,11 @@ impl StoreDriver for FastSlowStore {
                 )
                 .await
                 .err_tip(|| "In FastSlowStore::update_with_whole_file slow_store")?;
+            }
+            if self.fast_direction == StoreDirection::ReadOnly
+                || self.fast_direction == StoreDirection::Get
+            {
+                return Ok(Some(file));
             }
             return self
                 .fast_store
@@ -287,10 +495,13 @@ impl StoreDriver for FastSlowStore {
             .slow_store
             .optimized_for(StoreOptimizations::FileUpdates)
         {
-            if !self
+            let ignore_fast = self
                 .fast_store
+                .inner_store(Some(key.borrow()))
                 .optimized_for(StoreOptimizations::NoopUpdates)
-            {
+                || self.fast_direction == StoreDirection::ReadOnly
+                || self.fast_direction == StoreDirection::Get;
+            if !ignore_fast {
                 slow_update_store_with_file(
                     self.fast_store.as_store_driver_pin(),
                     key.borrow(),
@@ -299,6 +510,11 @@ impl StoreDriver for FastSlowStore {
                 )
                 .await
                 .err_tip(|| "In FastSlowStore::update_with_whole_file fast_store")?;
+            }
+            let ignore_slow = self.slow_direction == StoreDirection::ReadOnly
+                || self.slow_direction == StoreDirection::Get;
+            if ignore_slow {
+                return Ok(Some(file));
             }
             return self
                 .slow_store
@@ -320,7 +536,7 @@ impl StoreDriver for FastSlowStore {
         length: Option<u64>,
     ) -> Result<(), Error> {
         // TODO(palfrey) Investigate if we should maybe ignore errors here instead of
-        // forwarding the up.
+        // forwarding them up.
         if self.fast_store.has(key.borrow()).await?.is_some() {
             self.metrics
                 .fast_store_hit_count
@@ -334,82 +550,43 @@ impl StoreDriver for FastSlowStore {
             return Ok(());
         }
 
-        let sz = self
-            .slow_store
-            .has(key.borrow())
-            .await
-            .err_tip(|| "Failed to run has() on slow store")?
-            .ok_or_else(|| {
-                make_err!(
-                    Code::NotFound,
-                    "Object {} not found in either fast or slow store",
-                    key.as_str()
-                )
-            })?;
-        self.metrics
-            .slow_store_hit_count
-            .fetch_add(1, Ordering::Acquire);
+        // If the fast store is noop or read only or update only then bypass it.
+        if self
+            .fast_store
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.fast_direction == StoreDirection::ReadOnly
+            || self.fast_direction == StoreDirection::Update
+        {
+            self.metrics
+                .slow_store_hit_count
+                .fetch_add(1, Ordering::Acquire);
+            self.slow_store
+                .get_part(key, writer.borrow_mut(), offset, length)
+                .await?;
+            self.metrics
+                .slow_store_downloaded_bytes
+                .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+            return Ok(());
+        }
 
-        let send_range = offset..length.map_or(u64::MAX, |length| length + offset);
-        let mut bytes_received: u64 = 0;
+        let mut writer = Some(writer);
+        self.get_loader(key.borrow())
+            .get_or_try_init(|| {
+                self.populate_and_maybe_stream(key.borrow(), writer.take(), offset, length)
+            })
+            .await?;
 
-        let (mut fast_tx, fast_rx) = make_buf_channel_pair();
-        let (slow_tx, mut slow_rx) = make_buf_channel_pair();
-        let data_stream_fut = async move {
-            let mut writer_pin = Pin::new(writer);
-            loop {
-                let output_buf = slow_rx
-                    .recv()
-                    .await
-                    .err_tip(|| "Failed to read data data buffer from slow store")?;
-                if output_buf.is_empty() {
-                    // Write out our EOF.
-                    // We are dropped as soon as we send_eof to writer_pin, so
-                    // we wait until we've finished all of our joins to do that.
-                    let fast_res = fast_tx.send_eof();
-                    return Ok::<_, Error>((fast_res, writer_pin));
-                }
-                let output_buf_len = u64::try_from(output_buf.len())
-                    .err_tip(|| "Could not output_buf.len() to u64")?;
-                self.metrics
-                    .slow_store_downloaded_bytes
-                    .fetch_add(output_buf_len, Ordering::Acquire);
-
-                let writer_fut = Self::calculate_range(
-                    &(bytes_received..bytes_received + output_buf_len),
-                    &send_range,
-                )?
-                .map_or_else(
-                    || futures::future::ready(Ok(())).left_future(),
-                    |range| writer_pin.send(output_buf.slice(range)).right_future(),
-                );
-
-                bytes_received += output_buf_len;
-
-                let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf), writer_fut);
-                fast_tx_res.err_tip(|| "Failed to write to fast store in fast_slow store")?;
-                writer_res.err_tip(|| "Failed to write result to writer in fast_slow store")?;
-            }
-        };
-
-        let slow_store_fut = self.slow_store.get(key.borrow(), slow_tx);
-        let fast_store_fut =
-            self.fast_store
-                .update(key.borrow(), fast_rx, UploadSizeInfo::ExactSize(sz));
-
-        let (data_stream_res, slow_res, fast_res) =
-            join!(data_stream_fut, slow_store_fut, fast_store_fut);
-        match data_stream_res {
-            Ok((fast_eof_res, mut writer_pin)) =>
-            // Sending the EOF will drop us almost immediately in bytestream_server
-            // so we perform it as the very last action in this method.
-            {
-                fast_eof_res
-                    .merge(fast_res)
-                    .merge(slow_res)
-                    .merge(writer_pin.send_eof())
-            }
-            Err(err) => fast_res.merge(slow_res).merge(Err(err)),
+        // If we didn't stream then re-enter which will stream from the fast
+        // store, or retry the download.  We should not get in a loop here
+        // because OnceCell has the good sense to retry for all callers so in
+        // order to get here the fast store will have been populated.  There's
+        // an outside chance it was evicted, but that's slim.
+        if let Some(writer) = writer.take() {
+            self.get_part(key, writer, offset, length).await
+        } else {
+            // This was the thread that did the streaming already, lucky duck.
+            Ok(())
         }
     }
 
@@ -423,6 +600,15 @@ impl StoreDriver for FastSlowStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.fast_store.register_remove_callback(callback.clone())?;
+        self.slow_store.register_remove_callback(callback)?;
+        Ok(())
     }
 }
 

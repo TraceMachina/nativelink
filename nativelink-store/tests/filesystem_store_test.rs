@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -44,13 +44,18 @@ use pretty_assertions::assert_eq;
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Take};
-use tokio::sync::Barrier;
+use tokio::sync::{Barrier, Semaphore};
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::Instrument;
 
 trait FileEntryHooks {
+    fn on_make_and_open(
+        _encoded_file_path: &EncodedFilePath,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        core::future::ready(Ok(()))
+    }
     fn on_unref<Fe: FileEntry>(_entry: &Fe) {}
     fn on_drop<Fe: FileEntry>(_entry: &Fe) {}
 }
@@ -84,6 +89,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         block_size: u64,
         encoded_file_path: EncodedFilePath,
     ) -> Result<(Self, fs::FileSlot, OsString), Error> {
+        Hooks::on_make_and_open(&encoded_file_path).await?;
         let (inner, file_slot, path) =
             FileEntryImpl::make_and_open_file(block_size, encoded_file_path).await?;
         Ok((
@@ -220,9 +226,9 @@ async fn wait_for_no_open_files() -> Result<(), Error> {
     Ok(())
 }
 
-/// Helper function to ensure there are no temporary files left.
-async fn check_temp_empty(temp_path: &str) -> Result<(), Error> {
-    let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
+/// Helper function to ensure there are no temporary or content files left.
+async fn check_storage_dir_empty(storage_path: &str) -> Result<(), Error> {
+    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{DIGEST_FOLDER}"))
         .await
         .err_tip(|| "Failed opening temp directory")?
         .into_inner();
@@ -237,7 +243,7 @@ async fn check_temp_empty(temp_path: &str) -> Result<(), Error> {
         );
     }
 
-    let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{STR_FOLDER}"))
+    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{STR_FOLDER}"))
         .await
         .err_tip(|| "Failed opening temp directory")?
         .into_inner();
@@ -367,7 +373,14 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
         tokio::task::yield_now().await;
     }
 
-    check_temp_empty(&temp_path).await
+    assert!(logs_contain(
+        "Spawned a filesystem_delete_file current_active_drop_spawns=1"
+    ));
+    assert!(logs_contain(
+        "Dropped a filesystem_delete_file current_active_drop_spawns=0"
+    ));
+
+    check_storage_dir_empty(&temp_path).await
 }
 
 // This test ensures that if a file is overridden and an open stream to the file already
@@ -474,7 +487,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
     }
 
     // Now ensure our temp file was cleaned up.
-    check_temp_empty(&temp_path).await
+    check_storage_dir_empty(&temp_path).await
 }
 
 // Eviction has a different code path than a file replacement, so we check that if a
@@ -570,7 +583,7 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
     }
 
     // Now ensure our temp file was cleaned up.
-    check_temp_empty(&temp_path).await
+    check_storage_dir_empty(&temp_path).await
 }
 
 // Test to ensure that if we are holding a reference to `FileEntry` and the contents are
@@ -792,7 +805,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
 
     // Now it should have cleaned up its temp files.
     {
-        check_temp_empty(&temp_path).await?;
+        check_storage_dir_empty(&temp_path).await?;
     }
 
     // Finally ensure that our entry is not in the store.
@@ -894,32 +907,6 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn has_with_results_on_zero_digests() -> Result<(), Error> {
-    async fn wait_for_empty_content_file<
-        Fut: Future<Output = Result<(), Error>>,
-        F: Fn() -> Fut,
-    >(
-        content_path: &str,
-        digest: DigestInfo,
-        yield_fn: F,
-    ) -> Result<(), Error> {
-        loop {
-            yield_fn().await?;
-
-            let empty_digest_file_name =
-                OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
-
-            let file_metadata = fs::metadata(empty_digest_file_name)
-                .await
-                .err_tip(|| "Failed to open content file")?;
-
-            // Test that the empty digest file is created and contains an empty length.
-            if file_metadata.is_file() && file_metadata.len() == 0 {
-                return Ok(());
-            }
-        }
-        // Unreachable.
-    }
-
     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
@@ -947,12 +934,93 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
     );
     assert_eq!(results, vec![Some(0)]);
 
-    wait_for_empty_content_file(&content_path, digest, || async move {
-        tokio::task::yield_now().await;
+    check_storage_dir_empty(&content_path).await?;
+
+    Ok(())
+}
+
+async fn wrap_update_zero_digest<F>(updater: F) -> Result<(), Error>
+where
+    F: AsyncFnOnce(DigestInfo, Arc<FilesystemStore>) -> Result<(), Error>,
+{
+    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let store = FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+        &FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            read_buffer_size: 1,
+            ..Default::default()
+        },
+        |from, to| std::fs::rename(from, to),
+    )
+    .await?;
+    updater(digest, store).await?;
+    check_storage_dir_empty(&content_path).await?;
+    check_storage_dir_empty(&temp_path).await?;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn update_whole_file_with_zero_digest() -> Result<(), Error> {
+    wrap_update_zero_digest(async |digest, store| {
+        let temp_file_dir = make_temp_path("update_with_zero_digest");
+        std::fs::create_dir_all(&temp_file_dir)?;
+        let temp_file_path = Path::new(&temp_file_dir).join("zero-length-file");
+        std::fs::write(&temp_file_path, b"")
+            .err_tip(|| format!("Writing to {temp_file_path:?}"))?;
+        let file_slot = fs::open_file(&temp_file_path, 0, 0).await?.into_inner();
+        store
+            .update_with_whole_file(
+                digest,
+                temp_file_path.into(),
+                file_slot,
+                UploadSizeInfo::ExactSize(0),
+            )
+            .await?;
         Ok(())
     })
+    .await
+}
+
+#[nativelink_test]
+async fn update_oneshot_with_zero_digest() -> Result<(), Error> {
+    wrap_update_zero_digest(async |digest, store| store.update_oneshot(digest, Bytes::new()).await)
+        .await
+}
+
+#[nativelink_test]
+async fn update_with_zero_digest() -> Result<(), Error> {
+    wrap_update_zero_digest(async |digest, store| {
+        let (_writer, reader) = make_buf_channel_pair();
+        store
+            .update(digest, reader, UploadSizeInfo::ExactSize(0))
+            .await
+    })
+    .await
+}
+
+#[nativelink_test]
+async fn get_file_entry_for_zero_digest() -> Result<(), Error> {
+    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let store = FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+        &FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            read_buffer_size: 1,
+            ..Default::default()
+        },
+        |from, to| std::fs::rename(from, to),
+    )
     .await?;
 
+    let file_entry = store.get_file_entry_for_digest(&digest).await?;
+    assert!(file_entry.is_empty());
     Ok(())
 }
 
@@ -1239,4 +1307,96 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
     );
 
     Ok(())
+}
+
+#[nativelink_test]
+async fn file_slot_taken_when_ready() -> Result<(), Error> {
+    static FILE_SEMAPHORE: Semaphore = Semaphore::const_new(1);
+    static WRITER_SEMAPHORE: Semaphore = Semaphore::const_new(1);
+    static FILE_PERMIT: Mutex<Option<tokio::sync::SemaphorePermit<'_>>> = Mutex::new(None);
+    static WRITER_PERMIT: Mutex<Option<tokio::sync::SemaphorePermit<'_>>> = Mutex::new(None);
+
+    struct SingleSemaphoreHooks;
+    impl FileEntryHooks for SingleSemaphoreHooks {
+        async fn on_make_and_open(_encoded_file_path: &EncodedFilePath) -> Result<(), Error> {
+            *FILE_PERMIT.lock() =
+                Some(FILE_SEMAPHORE.acquire().await.map_err(|e| {
+                    make_err!(Code::Internal, "Unable to acquire semaphore: {e:?}")
+                })?);
+            // Drop the writer permit now that we have one.
+            WRITER_PERMIT.lock().take();
+            Ok(())
+        }
+    }
+
+    *WRITER_PERMIT.lock() = Some(WRITER_SEMAPHORE.acquire().await.unwrap());
+    *FILE_PERMIT.lock() = Some(FILE_SEMAPHORE.acquire().await.unwrap());
+
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let value_1: String = "x".repeat(1024);
+    let value_2: String = "y".repeat(1024);
+
+    let digest_1 = DigestInfo::try_new(HASH1, value_1.len())?;
+    let digest_2 = DigestInfo::try_new(HASH2, value_2.len())?;
+
+    let store = Box::pin(
+        FilesystemStore::<TestFileEntry<SingleSemaphoreHooks>>::new_with_timeout_and_rename_fn(
+            &FilesystemSpec {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                read_buffer_size: 1,
+                ..Default::default()
+            },
+            |from, to| std::fs::rename(from, to),
+        )
+        .await?,
+    );
+
+    let value_1 = Bytes::from(value_1);
+    let value_2 = Bytes::from(value_2);
+
+    let (mut writer_1, reader_1) = make_buf_channel_pair();
+    let (mut writer_2, reader_2) = make_buf_channel_pair();
+    let size_1 = UploadSizeInfo::ExactSize(value_1.len().try_into()?);
+    let size_2 = UploadSizeInfo::ExactSize(value_2.len().try_into()?);
+    let store_ref = &store;
+    let update_1_fut = async move {
+        let result = store_ref.update(digest_1, reader_1, size_1).await;
+        FILE_PERMIT.lock().take();
+        result
+    };
+    let update_2_fut = async move {
+        let result = store_ref.update(digest_2, reader_2, size_2).await;
+        FILE_PERMIT.lock().take();
+        result
+    };
+
+    let writer_1_fut = async move {
+        let _permit = WRITER_SEMAPHORE.acquire().await.unwrap();
+        writer_1.send(value_1.slice(0..1)).await?;
+        writer_1.send(value_1.slice(1..2)).await?;
+        writer_1.send(value_1.slice(2..3)).await?;
+        writer_1.send(value_1.slice(3..)).await?;
+        writer_1.send_eof()?;
+        Ok::<_, Error>(())
+    };
+    let writer_2_fut = async move {
+        writer_2.send(value_2.slice(0..1)).await?;
+        writer_2.send(value_2.slice(1..2)).await?;
+        writer_2.send(value_2.slice(2..3)).await?;
+        // Allow the update to get a file permit.
+        FILE_PERMIT.lock().take();
+        writer_2.send(value_2.slice(3..)).await?;
+        writer_2.send_eof()?;
+        Ok::<_, Error>(())
+    };
+
+    let (res_1, res_2, res_3, res_4) = tokio::time::timeout(Duration::from_secs(10), async move {
+        tokio::join!(update_1_fut, update_2_fut, writer_1_fut, writer_2_fut)
+    })
+    .await
+    .map_err(|_| make_err!(Code::Internal, "Deadlock detected"))?;
+    res_1.merge(res_2).merge(res_3).merge(res_4)
 }

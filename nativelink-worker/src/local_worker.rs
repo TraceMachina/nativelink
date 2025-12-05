@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -45,7 +45,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
-use tracing::{Level, debug, error, info, info_span, instrument, warn};
+use tracing::{Level, debug, error, event, info, info_span, instrument, warn};
 
 use crate::running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
@@ -116,7 +116,7 @@ async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Er
     }
 }
 
-impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, T, U> {
+impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorkerImpl<'a, T, U> {
     fn new(
         config: &'a LocalWorkerConfig,
         grpc_client: T,
@@ -152,12 +152,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
             // We always send 2 keep alive requests per timeout. Http2 should manage most of our
             // timeout issues, this is a secondary check to ensure we can still send data.
             sleep(Duration::from_secs_f32(timeout / 2.)).await;
-            if let Err(e) = grpc_client
-                .keep_alive(KeepAliveRequest {
-                    worker_id: self.worker_id.clone(),
-                })
-                .await
-            {
+            if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
                 return Err(make_err!(
                     Code::Internal,
                     "Failed to send KeepAlive in LocalWorker : {:?}",
@@ -201,7 +196,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
         loop {
             select! {
-                maybe_update = update_for_worker_stream.next() => {
+                maybe_update = update_for_worker_stream.next() => if !shutting_down || maybe_update.is_some() {
                     match maybe_update
                         .err_tip(|| "UpdateForWorker stream closed early")?
                         .err_tip(|| "Got error in UpdateForWorker stream")?
@@ -224,7 +219,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let operation_id = OperationId::from(kill_operation_request.operation_id);
                             if let Err(err) = self.running_actions_manager.kill_operation(&operation_id).await {
                                 error!(
-                                    ?operation_id,
+                                    %operation_id,
                                     ?err,
                                     "Failed to send kill request for operation"
                                 );
@@ -236,7 +231,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
                                     self.grpc_client.clone().execution_response(
                                         ExecuteResult{
-                                            worker_id: self.worker_id.clone(),
                                             instance_name,
                                             operation_id: start_execute.operation_id,
                                             result: Some(execute_result::Result::InternalError(make_err!(Code::ResourceExhausted, "Worker shutting down").into())),
@@ -250,6 +244,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
                             let execute_request = start_execute.execute_request.as_ref();
                             let operation_id = start_execute.operation_id.clone();
+                            let operation_id_to_log = operation_id.clone();
                             let maybe_instance_name = execute_request.map(|v| v.instance_name.clone());
                             let action_digest = execute_request.and_then(|v| v.action_digest.clone());
                             let digest_hasher = execute_request
@@ -262,12 +257,10 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 let actions_in_transit = self.actions_in_transit.clone();
                                 let worker_id = self.worker_id.clone();
                                 let running_actions_manager = self.running_actions_manager.clone();
-                                let execute_complete = maybe_instance_name.as_ref().map(|instance_name| ExecuteComplete{
-                                    worker_id: worker_id.clone(),
-                                    instance_name: instance_name.clone(),
-                                    operation_id: operation_id.clone(),
-                                });
                                 let mut grpc_client = self.grpc_client.clone();
+                                let complete = ExecuteComplete {
+                                    operation_id: operation_id.clone(),
+                                };
                                 self.metrics.clone().wrap(move |metrics| async move {
                                     metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
                                     .and_then(|()| running_actions_manager.create_and_add_action(worker_id, start_execute))
@@ -277,28 +270,24 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         actions_in_transit.fetch_sub(1, Ordering::Release);
                                         r
                                     })
-                                    .and_then(move |action| {
+                                    .and_then(|action| {
                                         debug!(
-                                            operation_id = ?action.get_operation_id(),
+                                            operation_id = %action.get_operation_id(),
                                             "Received request to run action"
                                         );
                                         action
                                             .clone()
                                             .prepare_action()
                                             .and_then(RunningAction::execute)
-                                            .and_then(move |result| async move {
-                                                // Notify that we're completed with execution and simply uploading results.
-                                                // We only do this on success as otherwise the action may be retried and
-                                                // cause a conflict with our existing operation ID.
-                                                if let Some(execute_complete) = execute_complete {
-                                                    drop(grpc_client.execution_complete(execute_complete).await);
-                                                }
+                                            .and_then(|result| async move {
+                                                // Notify that execution has completed so it can schedule a new action.
+                                                drop(grpc_client.execution_complete(complete).await);
                                                 Ok(result)
                                             })
                                             .and_then(RunningAction::upload_results)
                                             .and_then(RunningAction::get_finished_result)
                                             // Note: We need ensure we run cleanup even if one of the other steps fail.
-                                            .then(move |result| async move {
+                                            .then(|result| async move {
                                                 if let Err(e) = action.cleanup().await {
                                                     return Result::<ActionResult, Error>::Err(e).merge(result);
                                                 }
@@ -311,7 +300,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let make_publish_future = {
                                 let mut grpc_client = self.grpc_client.clone();
 
-                                let worker_id = self.worker_id.clone();
                                 let running_actions_manager = self.running_actions_manager.clone();
                                 move |res: Result<ActionResult, Error>| async move {
                                     let instance_name = maybe_instance_name
@@ -331,7 +319,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                             let action_stage = ActionStage::Completed(action_result);
                                             grpc_client.execution_response(
                                                 ExecuteResult{
-                                                    worker_id,
                                                     instance_name,
                                                     operation_id,
                                                     result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
@@ -342,7 +329,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         },
                                         Err(e) => {
                                             grpc_client.execution_response(ExecuteResult{
-                                                worker_id,
                                                 instance_name,
                                                 operation_id,
                                                 result: Some(execute_result::Result::InternalError(e.into())),
@@ -359,6 +345,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
                             info_span!(
                                 "worker_start_action_ctx",
+                                operation_id = operation_id_to_log,
                                 digest_function = %digest_hasher.to_string(),
                             ).in_scope(|| {
                                 let _guard = Context::current_with_value(digest_hasher)
@@ -405,7 +392,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                 complete_msg = shutdown_rx.recv().fuse() => {
                     warn!("Worker loop received shutdown signal. Shutting down worker...",);
                     let mut grpc_client = self.grpc_client.clone();
-                    let worker_id = self.worker_id.clone();
                     let shutdown_guard = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?;
                     let actions_in_flight = actions_in_flight.clone();
                     let actions_notify = actions_notify.clone();
@@ -416,9 +402,9 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                         }
                         // Sending this message immediately evicts all jobs from
                         // this worker, of which there should be none.
-                        if let Err(e) = grpc_client.going_away(GoingAwayRequest { worker_id }).await {
+                        if let Err(e) = grpc_client.going_away(GoingAwayRequest {}).await {
                             error!("Failed to send GoingAwayRequest: {e}",);
-                            return Err(e.into());
+                            return Err(e);
                         }
                         // Allow shutdown to occur now.
                         drop(shutdown_guard);
@@ -443,8 +429,10 @@ pub struct LocalWorker<T: WorkerApiClientTrait + 'static, U: RunningActionsManag
     metrics: Arc<Metrics>,
 }
 
-impl<T: WorkerApiClientTrait + core::fmt::Debug, U: RunningActionsManager + core::fmt::Debug>
-    core::fmt::Debug for LocalWorker<T, U>
+impl<
+    T: WorkerApiClientTrait + core::fmt::Debug + 'static,
+    U: RunningActionsManager + core::fmt::Debug,
+> core::fmt::Debug for LocalWorker<T, U>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LocalWorker")
@@ -469,10 +457,22 @@ pub async fn new_local_worker(
         .get_arc()
         .err_tip(|| "FastSlowStore's Arc doesn't exist")?;
 
+    // Log warning about CAS configuration for multi-worker setups
+    event!(
+        Level::INFO,
+        worker_name = %config.name,
+        "Starting worker '{}'. IMPORTANT: If running multiple workers, all workers \
+        must share the same CAS storage path to avoid 'Object not found' errors.",
+        config.name
+    );
+
     if let Ok(path) = fs::canonicalize(&config.work_directory).await {
-        fs::remove_dir_all(path)
-            .await
-            .err_tip(|| "Could not remove work_directory in LocalWorker")?;
+        fs::remove_dir_all(&path).await.err_tip(|| {
+            format!(
+                "Could not remove work_directory '{}' in LocalWorker",
+                &path.as_path().to_str().unwrap_or("bad path")
+            )
+        })?;
     }
 
     fs::create_dir_all(&config.work_directory)
@@ -488,6 +488,44 @@ pub async fn new_local_worker(
     } else {
         Duration::from_secs(config.max_action_timeout as u64)
     };
+
+    // Initialize directory cache if configured
+    let directory_cache = if let Some(cache_config) = &config.directory_cache {
+        use std::path::PathBuf;
+
+        use crate::directory_cache::{
+            DirectoryCache, DirectoryCacheConfig as WorkerDirCacheConfig,
+        };
+
+        let cache_root = if cache_config.cache_root.is_empty() {
+            PathBuf::from(&config.work_directory).parent().map_or_else(
+                || PathBuf::from("/tmp/nativelink_directory_cache"),
+                |p| p.join("directory_cache"),
+            )
+        } else {
+            PathBuf::from(&cache_config.cache_root)
+        };
+
+        let worker_cache_config = WorkerDirCacheConfig {
+            max_entries: cache_config.max_entries,
+            max_size_bytes: cache_config.max_size_bytes,
+            cache_root,
+        };
+
+        match DirectoryCache::new(worker_cache_config, Store::new(fast_slow_store.clone())).await {
+            Ok(cache) => {
+                tracing::info!("Directory cache initialized successfully");
+                Some(Arc::new(cache))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize directory cache: {:?}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
@@ -501,6 +539,7 @@ pub async fn new_local_worker(
             upload_action_result_config: &config.upload_action_result,
             max_action_timeout,
             timeout_handled_externally: config.timeout_handled_externally,
+            directory_cache,
         })?);
     let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),
@@ -537,7 +576,7 @@ pub async fn new_local_worker(
     Ok(local_worker)
 }
 
-impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
+impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T, U> {
     pub fn new_with_connection_factory_and_actions_manager(
         config: Arc<LocalWorkerConfig>,
         running_actions_manager: Arc<U>,

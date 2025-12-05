@@ -1,10 +1,10 @@
 // Copyright 2025 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -32,8 +32,8 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
-    BoolValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
-    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
+    BoolValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
+    SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
     SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
 };
 use nativelink_util::task::JoinHandleDropGuard;
@@ -518,7 +518,7 @@ impl StoreDriver for ExperimentalMongoStore {
             }
         };
 
-        let offset = offset as usize;
+        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
         let data_len = data.len();
 
         if offset > data_len {
@@ -531,7 +531,10 @@ impl StoreDriver for ExperimentalMongoStore {
         }
 
         let end = if let Some(len) = length {
-            cmp::min(offset + len as usize, data_len)
+            cmp::min(
+                offset.saturating_add(usize::try_from(len).unwrap_or(usize::MAX)),
+                data_len,
+            )
         } else {
             data_len
         };
@@ -572,6 +575,14 @@ impl StoreDriver for ExperimentalMongoStore {
 
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        // drop because we don't remove anything from Mongo
+        Ok(())
     }
 }
 
@@ -828,6 +839,10 @@ impl SchedulerSubscriptionManager for ExperimentalMongoSubscriptionManager {
             .mark_changed();
 
         Ok(subscription)
+    }
+
+    fn is_reliable() -> bool {
+        true
     }
 }
 

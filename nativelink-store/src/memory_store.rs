@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::any::Any;
 use core::borrow::Borrow;
 use core::fmt::Debug;
 use core::ops::Bound;
@@ -29,8 +30,11 @@ use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{
     HealthRegistryBuilder, HealthStatusIndicator, default_health_status_indicator,
 };
-use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreKeyBorrow, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, UploadSizeInfo,
+};
 
+use crate::callback_utils::RemoveItemCallbackHolder;
 use crate::cas_utils::is_zero_digest;
 
 #[derive(Clone)]
@@ -57,7 +61,13 @@ impl LenEntry for BytesWrapper {
 #[derive(Debug, MetricsComponent)]
 pub struct MemoryStore {
     #[metric(group = "evicting_map")]
-    evicting_map: EvictingMap<StoreKeyBorrow, BytesWrapper, SystemTime>,
+    evicting_map: EvictingMap<
+        StoreKeyBorrow,
+        StoreKey<'static>,
+        BytesWrapper,
+        SystemTime,
+        RemoveItemCallbackHolder,
+    >,
 }
 
 impl MemoryStore {
@@ -71,12 +81,12 @@ impl MemoryStore {
 
     /// Returns the number of key-value pairs that are currently in the the cache.
     /// Function is not for production code paths.
-    pub async fn len_for_test(&self) -> usize {
-        self.evicting_map.len_for_test().await
+    pub fn len_for_test(&self) -> usize {
+        self.evicting_map.len_for_test()
     }
 
     pub async fn remove_entry(&self, key: StoreKey<'_>) -> bool {
-        self.evicting_map.remove(&key).await
+        self.evicting_map.remove(&key.into_owned()).await
     }
 }
 
@@ -87,12 +97,12 @@ impl StoreDriver for MemoryStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        let own_keys = keys
+            .iter()
+            .map(|sk| sk.borrow().into_owned())
+            .collect::<Vec<_>>();
         self.evicting_map
-            .sizes_for_keys::<_, StoreKey<'_>, &StoreKey<'_>>(
-                keys.iter(),
-                results,
-                false, /* peek */
-            )
+            .sizes_for_keys(own_keys.iter(), results, false /* peek */)
             .await;
         // We need to do a special pass to ensure our zero digest exist.
         keys.iter()
@@ -116,8 +126,7 @@ impl StoreDriver for MemoryStore {
         );
         let iterations = self
             .evicting_map
-            .range(range, move |key, _value| handler(key.borrow()))
-            .await;
+            .range(range, move |key, _value| handler(key.borrow()));
         Ok(iterations)
     }
 
@@ -157,7 +166,8 @@ impl StoreDriver for MemoryStore {
             .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
             .transpose()?;
 
-        if is_zero_digest(key.borrow()) {
+        let owned_key = key.into_owned();
+        if is_zero_digest(owned_key.clone()) {
             writer
                 .send_eof()
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
@@ -166,9 +176,9 @@ impl StoreDriver for MemoryStore {
 
         let value = self
             .evicting_map
-            .get(&key)
+            .get(&owned_key)
             .await
-            .err_tip_with_code(|_| (Code::NotFound, format!("Key {key:?} not found")))?;
+            .err_tip_with_code(|_| (Code::NotFound, format!("Key {owned_key:?} not found")))?;
         let default_len = usize::try_from(value.len())
             .err_tip(|| "Could not convert value.len() to usize")?
             .saturating_sub(offset);
@@ -189,16 +199,25 @@ impl StoreDriver for MemoryStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Sync + Send + 'static> {
         self
     }
 
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.evicting_map
+            .add_remove_callback(RemoveItemCallbackHolder::new(callback));
+        Ok(())
     }
 }
 

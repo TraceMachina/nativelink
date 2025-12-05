@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -36,12 +36,13 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{
-    StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
+    RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{debug, error, warn};
 
+use crate::callback_utils::RemoveItemCallbackHolder;
 use crate::cas_utils::is_zero_digest;
 
 // Default size to allocate memory of the buffer when reading files.
@@ -122,9 +123,15 @@ impl Drop for EncodedFilePath {
 
         let file_path = self.get_file_path().to_os_string();
         let shared_context = self.shared_context.clone();
-        shared_context
+        // .fetch_add returns previous value, so we add one to get approximate current value
+        let current_active_drop_spawns = shared_context
             .active_drop_spawns
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        debug!(
+            ?current_active_drop_spawns,
+            "Spawned a filesystem_delete_file"
+        );
         background_spawn!("filesystem_delete_file", async move {
             let result = fs::remove_file(&file_path)
                 .await
@@ -134,9 +141,15 @@ impl Drop for EncodedFilePath {
             } else {
                 debug!(?file_path, "File deleted",);
             }
-            shared_context
+            // .fetch_sub returns previous value, so we subtract one to get approximate current value
+            let current_active_drop_spawns = shared_context
                 .active_drop_spawns
-                .fetch_sub(1, Ordering::Relaxed);
+                .fetch_sub(1, Ordering::Relaxed)
+                - 1;
+            debug!(
+                ?current_active_drop_spawns,
+                "Dropped a filesystem_delete_file"
+            );
         });
     }
 }
@@ -402,8 +415,11 @@ pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_
 /// `add_files_to_cache`.
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
+type FsEvictingMap<'a, Fe> =
+    EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime, RemoveItemCallbackHolder>;
+
 async fn add_files_to_cache<Fe: FileEntry>(
-    evicting_map: &EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>,
+    evicting_map: &FsEvictingMap<'_, Fe>,
     anchor_time: &SystemTime,
     shared_context: &Arc<SharedContext>,
     block_size: u64,
@@ -411,7 +427,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
 ) -> Result<(), Error> {
     #[expect(clippy::too_many_arguments)]
     async fn process_entry<Fe: FileEntry>(
-        evicting_map: &EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>,
+        evicting_map: &FsEvictingMap<'_, Fe>,
         file_name: &str,
         file_type: FileType,
         atime: SystemTime,
@@ -438,7 +454,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
             .insert_with_time(
                 key.into_owned().into(),
                 Arc::new(file_entry),
-                time_since_anchor.as_secs() as i32,
+                i32::try_from(time_since_anchor.as_secs()).unwrap_or(i32::MAX),
             )
             .await;
         Ok(())
@@ -522,7 +538,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
     }
 
     async fn add_files_to_cache<Fe: FileEntry>(
-        evicting_map: &EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>,
+        evicting_map: &FsEvictingMap<'_, Fe>,
         anchor_time: &SystemTime,
         shared_context: &Arc<SharedContext>,
         block_size: u64,
@@ -609,7 +625,7 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
     shared_context: Arc<SharedContext>,
     #[metric(group = "evicting_map")]
-    evicting_map: Arc<EvictingMap<StoreKeyBorrow, Arc<Fe>, SystemTime>>,
+    evicting_map: Arc<FsEvictingMap<'static, Fe>>,
     #[metric(help = "Block size of the configured filesystem")]
     block_size: u64,
     #[metric(help = "Size of the configured read buffer size")]
@@ -688,8 +704,19 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
+        if is_zero_digest(digest) {
+            return Ok(Arc::new(Fe::create(
+                0,
+                0,
+                RwLock::new(EncodedFilePath {
+                    shared_context: self.shared_context.clone(),
+                    path_type: PathType::Content,
+                    key: digest.into(),
+                }),
+            )));
+        }
         self.evicting_map
-            .get::<StoreKey<'static>>(&digest.into())
+            .get(&digest.into())
             .await
             .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store. This may indicate the file was evicted due to cache pressure. Consider increasing 'max_bytes' in your filesystem store's eviction_policy configuration."))
     }
@@ -731,7 +758,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     }
 
     async fn emplace_file(&self, key: StoreKey<'static>, entry: Arc<Fe>) -> Result<(), Error> {
-        // This sequence of events is quite ticky to understand due to the amount of triggers that
+        // This sequence of events is quite tricky to understand due to the amount of triggers that
         // happen, async'ness of it and the locking. So here is a breakdown of what happens:
         // 1. Here will hold a write lock on any file operations of this FileEntry.
         // 2. Then insert the entry into the evicting map. This may trigger an eviction of other
@@ -809,12 +836,12 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        let own_keys = keys
+            .iter()
+            .map(|sk| sk.borrow().into_owned())
+            .collect::<Vec<_>>();
         self.evicting_map
-            .sizes_for_keys::<_, StoreKey<'_>, &StoreKey<'_>>(
-                keys.iter(),
-                results,
-                false, /* peek */
-            )
+            .sizes_for_keys(own_keys.iter(), results, false /* peek */)
             .await;
         // We need to do a special pass to ensure our zero files exist.
         // If our results failed and the result was a zero file, we need to
@@ -841,10 +868,24 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn update(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        reader: DropCloserReadHalf,
+        mut reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
+        if is_zero_digest(key.borrow()) {
+            // don't need to add, because zero length files are just assumed to exist
+            return Ok(());
+        }
+
         let temp_key = make_temp_key(&key);
+
+        // There's a possibility of deadlock here where we take all of the
+        // file semaphores with make_and_open_file and the semaphores for
+        // whatever is populating reader is exhasted on the threads that
+        // have the FileSlots and not on those which can't.  To work around
+        // this we don't take the FileSlot until there's something on the
+        // reader available to know that the populator is active.
+        reader.peek().await?;
+
         let (entry, temp_file, temp_full_path) = Fe::make_and_open_file(
             self.block_size,
             EncodedFilePath {
@@ -885,6 +926,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .err_tip(|| format!("While reading metadata for {}", path.display()))?
                 .len(),
         };
+        if file_size == 0 {
+            // don't need to add, because zero length files are just assumed to exist
+            return Ok(None);
+        }
         let entry = Fe::create(
             file_size,
             self.block_size,
@@ -919,11 +964,12 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
             return Ok(());
         }
-        let entry = self.evicting_map.get(&key).await.ok_or_else(|| {
+        let owned_key = key.into_owned();
+        let entry = self.evicting_map.get(&owned_key).await.ok_or_else(|| {
             make_err!(
                 Code::NotFound,
                 "{} not found in filesystem store here",
-                key.as_str()
+                owned_key.as_str()
             )
         })?;
         let read_limit = length.unwrap_or(u64::MAX);
@@ -932,10 +978,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             if err.code == Code::NotFound {
                 error!(
                     ?err,
-                    ?key,
+                    key = ?owned_key,
                     "Entry was in our map, but not found on disk. Removing from map as a precaution, but process probably need restarted."
                 );
-                self.evicting_map.remove(&key).await;
+                self.evicting_map.remove(&owned_key).await;
             }
             Err(err)
         }).await?;
@@ -975,6 +1021,15 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.evicting_map
+            .add_remove_callback(RemoveItemCallbackHolder::new(callback));
+        Ok(())
     }
 }
 

@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::serde_utils::{convert_duration_with_shellexpand, convert_numeric_with_shellexpand};
+use crate::serde_utils::{
+    convert_duration_with_shellexpand, convert_duration_with_shellexpand_and_negative,
+    convert_numeric_with_shellexpand,
+};
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -63,6 +66,11 @@ pub enum WorkerAllocationStrategy {
     LeastRecentlyUsed,
     /// Prefer workers that have been most recently used to run a job.
     MostRecentlyUsed,
+}
+
+// defaults to every 10s
+const fn default_worker_match_logging_interval_s() -> i64 {
+    10
 }
 
 #[derive(Deserialize, Serialize, Debug, Default)]
@@ -129,6 +137,15 @@ pub struct SimpleSpec {
     /// The storage backend to use for the scheduler.
     /// Default: memory
     pub experimental_backend: Option<ExperimentalSimpleSchedulerBackend>,
+
+    /// Every N seconds, do logging of worker matching
+    /// e.g. "worker busy", "can't find any worker"
+    /// Defaults to 10s. Can be set to -1 to disable
+    #[serde(
+        default = "default_worker_match_logging_interval_s",
+        deserialize_with = "convert_duration_with_shellexpand_and_negative"
+    )]
+    pub worker_match_logging_interval_s: i64,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -196,12 +213,29 @@ pub struct PlatformPropertyAddition {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformPropertyReplacement {
+    /// The name of the property to replace.
+    pub name: String,
+    /// The the value to match against, if unset then any instance matches.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// The new name of the property.
+    pub new_name: String,
+    /// The value to assign to the property, if unset will remain the same.
+    #[serde(default)]
+    pub new_value: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum PropertyModification {
     /// Add a property to the action properties.
     Add(PlatformPropertyAddition),
     /// Remove a named property from the action.
     Remove(String),
+    /// If a property is found, then replace it with another one.
+    Replace(PlatformPropertyReplacement),
 }
 
 #[derive(Deserialize, Serialize, Debug)]

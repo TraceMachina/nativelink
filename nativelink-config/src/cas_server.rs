@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -176,11 +176,16 @@ pub struct PushConfig {
     pub read_only: bool,
 }
 
-#[derive(Deserialize, Serialize, Debug, Default)]
+// From https://github.com/serde-rs/serde/issues/818#issuecomment-287438544
+fn default<T: Default + PartialEq>(t: &T) -> bool {
+    *t == Default::default()
+}
+
+#[derive(Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
-    pub cas_stores: HashMap<InstanceName, StoreRefName>,
+    pub cas_store: StoreRefName,
 
     /// Max number of bytes to send on each grpc stream chunk.
     /// According to <https://github.com/grpc/grpc.github.io/issues/371>
@@ -188,13 +193,12 @@ pub struct ByteStreamConfig {
     ///
     ///
     /// Default: 64KiB
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_data_size_with_shellexpand",
+        skip_serializing_if = "default"
+    )]
     pub max_bytes_per_stream: usize,
-
-    /// Maximum number of bytes to decode on each grpc stream chunk.
-    /// Default: 4 MiB
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
-    pub max_decoding_message_size: usize,
 
     /// In the event a client disconnects while uploading a blob, we will hold
     /// the internal stream open for this many seconds before closing it.
@@ -202,7 +206,38 @@ pub struct ByteStreamConfig {
     /// the same blob.
     ///
     /// Default: 10 (seconds)
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        skip_serializing_if = "default"
+    )]
+    pub persist_stream_on_disconnect_timeout: usize,
+}
+
+// Older bytestream config. All fields are as per the newer docs, but this requires
+// the hashed cas_stores v.s. the WithInstanceName approach. This should _not_ be updated
+// with newer fields, and eventually dropped
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct OldByteStreamConfig {
+    pub cas_stores: HashMap<InstanceName, StoreRefName>,
+    #[serde(
+        default,
+        deserialize_with = "convert_data_size_with_shellexpand",
+        skip_serializing_if = "default"
+    )]
+    pub max_bytes_per_stream: usize,
+    #[serde(
+        default,
+        deserialize_with = "convert_data_size_with_shellexpand",
+        skip_serializing_if = "default"
+    )]
+    pub max_decoding_message_size: usize,
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        skip_serializing_if = "default"
+    )]
     pub persist_stream_on_disconnect_timeout: usize,
 }
 
@@ -236,6 +271,10 @@ pub struct HealthConfig {
     /// Default: "/status"
     #[serde(default)]
     pub path: String,
+
+    // Timeout on health checks. Defaults to 5s.
+    #[serde(default)]
+    pub timeout_seconds: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -322,7 +361,8 @@ pub struct ServicesConfig {
     /// This is the service used to stream data to and from the CAS.
     /// Bazel's protocol strongly encourages users to use this streaming
     /// interface to interact with the CAS when the data is large.
-    pub bytestream: Option<ByteStreamConfig>,
+    #[serde(default, deserialize_with = "super::backcompat::opt_bytestream")]
+    pub bytestream: Option<Vec<WithInstanceName<ByteStreamConfig>>>,
 
     /// These two are collectively the Remote Asset protocol, but it's
     /// defined as two separate services
@@ -462,7 +502,7 @@ pub enum ListenerConfig {
     Http(HttpListener),
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct HttpListener {
     /// Address to listen on. Example: `127.0.0.1:8080` or `:8080` to listen
@@ -477,6 +517,11 @@ pub struct HttpListener {
     /// Advanced Http server configuration.
     #[serde(default)]
     pub advanced_http: HttpServerConfig,
+
+    /// Maximum number of bytes to decode on each grpc stream chunk.
+    /// Default: 4 MiB
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_decoding_message_size: usize,
 
     /// Tls Configuration for this server.
     /// If not set, the server will not use TLS.
@@ -752,6 +797,43 @@ pub struct LocalWorkerConfig {
     /// of the environment variable being the value of the property of the
     /// action being executed of that name or the fixed value.
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
+
+    /// Optional directory cache configuration for improving performance by caching
+    /// reconstructed input directories and using hardlinks instead of rebuilding
+    /// them from CAS for every action.
+    /// Default: None (directory cache disabled)
+    pub directory_cache: Option<DirectoryCacheConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryCacheConfig {
+    /// Maximum number of cached directories.
+    /// Default: 1000
+    #[serde(default = "default_directory_cache_max_entries")]
+    pub max_entries: usize,
+
+    /// Maximum total size in bytes for all cached directories (0 = unlimited).
+    /// Default: 10737418240 (10 GB)
+    #[serde(
+        default = "default_directory_cache_max_size_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_size_bytes: u64,
+
+    /// Base directory for cache storage. This directory will be managed by
+    /// the worker and should be on the same filesystem as `work_directory`.
+    /// Default: `{work_directory}/../directory_cache`
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub cache_root: String,
+}
+
+const fn default_directory_cache_max_entries() -> usize {
+    1000
+}
+
+const fn default_directory_cache_max_size_bytes() -> u64 {
+    10 * 1024 * 1024 * 1024 // 10 GB
 }
 
 #[derive(Deserialize, Serialize, Debug)]

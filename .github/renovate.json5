@@ -8,6 +8,7 @@
       matchUpdateTypes: [
         "patch",
         "minor",
+        "digest",
       ],
       enabled: false,
     },
