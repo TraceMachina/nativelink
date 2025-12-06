@@ -26,6 +26,10 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
     OperationId, WorkerId,
 };
+use nativelink_util::metrics::{
+    EXECUTION_METRICS, EXECUTION_RESULT, EXECUTION_STAGE, ExecutionResult, ExecutionStage,
+};
+use opentelemetry::KeyValue;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
@@ -662,7 +666,7 @@ where
 
             let update_action_result = self
                 .action_db
-                .update_awaited_action(awaited_action)
+                .update_awaited_action(awaited_action.clone())
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::update_operation");
             if let Err(err) = update_action_result {
@@ -675,6 +679,49 @@ where
                 }
                 return Err(err);
             }
+
+            // Record execution metrics after successful state update
+            let action_state = awaited_action.state();
+            let instance_name = awaited_action
+                .action_info()
+                .unique_qualifier
+                .instance_name()
+                .as_str();
+            let worker_id = awaited_action.worker_id().map(|w| w.to_string());
+            let priority = Some(awaited_action.action_info().priority);
+
+            // Build base attributes for metrics
+            let mut attrs = nativelink_util::metrics::make_execution_attributes(
+                instance_name,
+                worker_id.as_deref(),
+                priority,
+            );
+
+            // Add stage attribute
+            let execution_stage: ExecutionStage = (&action_state.stage).into();
+            attrs.push(KeyValue::new(EXECUTION_STAGE, execution_stage));
+
+            // Record stage transition
+            EXECUTION_METRICS.execution_stage_transitions.add(1, &attrs);
+
+            // For completed actions, record the completion count with result
+            match &action_state.stage {
+                ActionStage::Completed(action_result) => {
+                    let result = if action_result.exit_code == 0 {
+                        ExecutionResult::Success
+                    } else {
+                        ExecutionResult::Failure
+                    };
+                    attrs.push(KeyValue::new(EXECUTION_RESULT, result));
+                    EXECUTION_METRICS.execution_completed_count.add(1, &attrs);
+                }
+                ActionStage::CompletedFromCache(_) => {
+                    attrs.push(KeyValue::new(EXECUTION_RESULT, ExecutionResult::CacheHit));
+                    EXECUTION_METRICS.execution_completed_count.add(1, &attrs);
+                }
+                _ => {}
+            }
+
             return Ok(());
         }
         Err(last_err.unwrap_or_else(|| {
