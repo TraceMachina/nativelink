@@ -118,8 +118,8 @@ data:
           - alert: NativeLinkHighErrorRate
             expr: |
               (1 - (
-                sum(rate(nativelink_execution_completed_count{execution_result="success"}[5m])) /
-                sum(rate(nativelink_execution_completed_count[5m]))
+                sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
+                sum(rate(nativelink_execution_completed_count_total[5m]))
               )) > 0.05
             for: 5m
             labels:
@@ -132,8 +132,8 @@ data:
           - alert: NativeLinkCacheMissRateHigh
             expr: |
               (1 - (
-                sum(rate(nativelink_cache_operations{cache_operation_result="hit"}[5m])) by (cache_type) /
-                sum(rate(nativelink_cache_operations{cache_operation_name="read"}[5m])) by (cache_type)
+                sum(rate(nativelink_cache_operations_total{cache_operation_result="hit"}[5m])) by (cache_type) /
+                sum(rate(nativelink_cache_operations_total{cache_operation_name="read"}[5m])) by (cache_type)
               )) > 0.5
             for: 10m
             labels:
@@ -168,7 +168,7 @@ data:
 
           - alert: NativeLinkCacheEvictionRateHigh
             expr: |
-              sum(rate(nativelink_cache_operations{cache_operation_name="evict"}[5m])) by (cache_type) > 10
+              sum(rate(nativelink_cache_operations_total{cache_operation_name="evict"}[5m])) by (cache_type) > 10
             for: 10m
             labels:
               severity: warning
