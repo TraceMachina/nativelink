@@ -26,17 +26,17 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
     OperationId, WorkerId,
 };
+use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::metrics::{
     EXECUTION_METRICS, EXECUTION_RESULT, EXECUTION_STAGE, ExecutionResult, ExecutionStage,
 };
-use opentelemetry::KeyValue;
-use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
+use opentelemetry::KeyValue;
 use tracing::{info, warn};
 
 use super::awaited_action_db::{
@@ -687,7 +687,9 @@ where
                 .unique_qualifier
                 .instance_name()
                 .as_str();
-            let worker_id = awaited_action.worker_id().map(|w| w.to_string());
+            let worker_id = awaited_action
+                .worker_id()
+                .map(std::string::ToString::to_string);
             let priority = Some(awaited_action.action_info().priority);
 
             // Build base attributes for metrics
