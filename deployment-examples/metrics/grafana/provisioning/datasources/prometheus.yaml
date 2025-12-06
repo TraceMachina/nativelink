@@ -21,3 +21,9 @@ datasources:
       timeInterval: "15s"
       queryTimeout: "60s"
       httpMethod: POST
+
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    editable: false

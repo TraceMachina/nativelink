@@ -68,6 +68,12 @@ exporters:
       max_interval: 30s
       max_elapsed_time: 300s
 
+  # Export traces to Jaeger
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
   # Export to other OTLP backends (e.g., Grafana Cloud, ClickHouse)
   otlp/backend:
     endpoint: "${OTLP_BACKEND_ENDPOINT}"
@@ -115,6 +121,12 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, resource, transform/nativelink, batch]
       exporters: [otlphttp/prometheus]
+
+    # Traces pipeline - exports to Jaeger
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/jaeger]
 
     # Optional: Send to additional backend
     # Uncomment and configure OTLP_BACKEND_ENDPOINT environment variable

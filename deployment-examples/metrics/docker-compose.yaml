@@ -23,7 +23,7 @@ services:
 
   # Prometheus with OTLP support
   prometheus:
-    image: prom/prometheus:v2.50.0
+    image: prom/prometheus:v3.0.0
     container_name: prometheus
     restart: unless-stopped
     command:
@@ -34,7 +34,6 @@ services:
       - '--web.enable-lifecycle'
       - '--web.enable-otlp-receiver'  # Enable OTLP receiver
       - '--storage.tsdb.retention.time=30d'
-      - '--storage.tsdb.out-of-order-time-window=30m'  # Handle out-of-order samples
     volumes:
       - ./prometheus-config.yaml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus-recording-rules.yml:/etc/prometheus/rules/nativelink.yml:ro

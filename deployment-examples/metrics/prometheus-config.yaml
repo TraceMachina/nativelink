@@ -38,22 +38,9 @@ otlp:
     - nativelink.worker_id
     - nativelink.scheduler_name
 
-  # Keep identifying resource attributes in target_info
-  keep_identifying_resource_attributes: true
-
   # Use NoTranslation to preserve metric names with UTF-8 support
   # This keeps OpenTelemetry semantic convention names intact
   translation_strategy: NoUTF8EscapingWithSuffixes
-
-# Storage configuration for handling out-of-order samples
-storage:
-  tsdb:
-    # Allow 30 minutes of out-of-order samples (for batched OTLP data)
-    out_of_order_time_window: 30m
-    # Retention period for metrics
-    retention.time: 30d
-    # Maximum number of concurrent queries
-    max_concurrent_queries: 20
 
 # Scrape configurations
 scrape_configs:

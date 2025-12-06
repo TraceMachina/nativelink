@@ -32,6 +32,7 @@ pub const EXECUTION_INSTANCE: &str = "execution.instance";
 pub const EXECUTION_PRIORITY: &str = "execution.priority";
 pub const EXECUTION_WORKER_ID: &str = "execution.worker_id";
 pub const EXECUTION_EXIT_CODE: &str = "execution.exit_code";
+pub const EXECUTION_ACTION_DIGEST: &str = "execution.action_digest";
 
 /// Cache operation types for metrics classification.
 #[derive(Debug, Clone, Copy)]
