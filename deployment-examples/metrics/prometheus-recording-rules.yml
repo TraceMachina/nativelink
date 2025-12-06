@@ -1,0 +1,286 @@
+# Recording Rules for NativeLink Metrics
+# These rules pre-calculate common queries for better dashboard performance
+#
+# NOTE: Prometheus v3 with OTLP ingestion adds a `_total` suffix to counter metrics.
+# If you are using Prometheus v3 with OTLP, you may need to add `_total` to counter
+# metric names below (e.g., `nativelink_execution_completed_count` becomes
+# `nativelink_execution_completed_count_total`). See prometheus-config.yaml for
+# the translation_strategy setting.
+#
+# Alternatively, use `translation_strategy: NoUTF8EscapingWithSuffixes` in your
+# Prometheus OTLP configuration to preserve original metric names.
+
+groups:
+  - name: nativelink_execution
+    interval: 30s
+    rules:
+      # Execution success rate by instance
+      - record: nativelink:execution_success_rate
+        expr: |
+          sum by (instance_name, execution_instance) (
+            rate(nativelink_execution_completed_count{execution_result="success"}[5m])
+          ) /
+          sum by (instance_name, execution_instance) (
+            rate(nativelink_execution_completed_count[5m])
+          )
+
+      # Cache hit rate from executions
+      - record: nativelink:execution_cache_hit_rate
+        expr: |
+          sum by (instance_name) (
+            rate(nativelink_execution_completed_count{execution_result="cache_hit"}[5m])
+          ) /
+          sum by (instance_name) (
+            rate(nativelink_execution_completed_count[5m])
+          )
+
+      # Average queue time (median)
+      - record: nativelink:execution_queue_time_p50
+        expr: |
+          histogram_quantile(0.5,
+            sum by (le, instance_name, execution_instance) (
+              rate(nativelink_execution_queue_time_bucket[5m])
+            )
+          )
+
+      # Queue time 95th percentile
+      - record: nativelink:execution_queue_time_p95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, instance_name, execution_instance) (
+              rate(nativelink_execution_queue_time_bucket[5m])
+            )
+          )
+
+      # Actions currently in each stage
+      - record: nativelink:execution_active_by_stage
+        expr: |
+          sum by (execution_stage, instance_name, execution_instance) (
+            nativelink_execution_active_count
+          )
+
+      # Stage transition rate
+      - record: nativelink:stage_transition_rate
+        expr: |
+          sum by (instance_name, execution_instance, execution_priority) (
+            rate(nativelink_execution_stage_transitions[5m])
+          )
+
+      # Execution duration by stage (p50, p95, p99)
+      - record: nativelink:execution_stage_duration_p50
+        expr: |
+          histogram_quantile(0.5,
+            sum by (le, execution_stage, instance_name) (
+              rate(nativelink_execution_stage_duration_bucket[5m])
+            )
+          )
+
+      - record: nativelink:execution_stage_duration_p95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, execution_stage, instance_name) (
+              rate(nativelink_execution_stage_duration_bucket[5m])
+            )
+          )
+
+      - record: nativelink:execution_stage_duration_p99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, execution_stage, instance_name) (
+              rate(nativelink_execution_stage_duration_bucket[5m])
+            )
+          )
+
+      # Total execution time from submission to completion
+      - record: nativelink:execution_total_duration_p50
+        expr: |
+          histogram_quantile(0.5,
+            sum by (le, instance_name, execution_instance) (
+              rate(nativelink_execution_total_duration_bucket[5m])
+            )
+          )
+
+      - record: nativelink:execution_total_duration_p95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, instance_name, execution_instance) (
+              rate(nativelink_execution_total_duration_bucket[5m])
+            )
+          )
+
+      # Execution output size distribution
+      - record: nativelink:execution_output_size_p50
+        expr: |
+          histogram_quantile(0.5,
+            sum by (le, instance_name) (
+              rate(nativelink_execution_output_size_bucket[5m])
+            )
+          )
+
+      - record: nativelink:execution_output_size_p95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, instance_name) (
+              rate(nativelink_execution_output_size_bucket[5m])
+            )
+          )
+
+  - name: nativelink_cache
+    interval: 30s
+    rules:
+      # Cache hit rate by operation and cache type
+      - record: nativelink:cache_hit_rate
+        expr: |
+          sum by (cache_type, instance_name) (
+            rate(nativelink_cache_operations{cache_operation_result="hit"}[5m])
+          ) /
+          sum by (cache_type, instance_name) (
+            rate(nativelink_cache_operations{cache_operation_name="read"}[5m])
+          )
+
+      # Cache operation latency percentiles
+      - record: nativelink:cache_operation_latency_p50
+        expr: |
+          histogram_quantile(0.5,
+            sum by (le, cache_type, cache_operation_name, instance_name) (
+              rate(nativelink_cache_operation_duration_bucket[5m])
+            )
+          )
+
+      - record: nativelink:cache_operation_latency_p95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, cache_type, cache_operation_name, instance_name) (
+              rate(nativelink_cache_operation_duration_bucket[5m])
+            )
+          )
+
+      - record: nativelink:cache_operation_latency_p99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, cache_type, cache_operation_name, instance_name) (
+              rate(nativelink_cache_operation_duration_bucket[5m])
+            )
+          )
+
+      # Cache size and entry count
+      - record: nativelink:cache_size_bytes
+        expr: |
+          sum by (cache_type, instance_name) (nativelink_cache_size)
+
+      - record: nativelink:cache_entry_count
+        expr: |
+          sum by (cache_type, instance_name) (nativelink_cache_entries)
+
+      # Cache eviction rate
+      - record: nativelink:cache_eviction_rate
+        expr: |
+          sum by (cache_type, instance_name) (
+            rate(nativelink_cache_operations{cache_operation_name="evict"}[5m])
+          )
+
+      # Cache throughput (bytes/sec)
+      - record: nativelink:cache_read_throughput_bytes
+        expr: |
+          sum by (cache_type, instance_name) (
+            rate(nativelink_cache_io{cache_operation_name="read"}[5m])
+          )
+
+      - record: nativelink:cache_write_throughput_bytes
+        expr: |
+          sum by (cache_type, instance_name) (
+            rate(nativelink_cache_io{cache_operation_name="write"}[5m])
+          )
+
+      # Cache error rate
+      - record: nativelink:cache_error_rate
+        expr: |
+          sum by (cache_type, cache_operation_name, instance_name) (
+            rate(nativelink_cache_operations{cache_operation_result="error"}[5m])
+          )
+
+  - name: nativelink_performance
+    interval: 60s
+    rules:
+      # Overall system throughput (actions/sec)
+      - record: nativelink:system_throughput
+        expr: |
+          sum(rate(nativelink_execution_completed_count[5m]))
+
+      # System success rate
+      - record: nativelink:system_success_rate
+        expr: |
+          sum(rate(nativelink_execution_completed_count{execution_result="success"}[5m])) /
+          sum(rate(nativelink_execution_completed_count[5m]))
+
+      # Worker utilization (percentage of workers executing)
+      - record: nativelink:worker_utilization
+        expr: |
+          count by (instance_name) (
+            nativelink_execution_active_count{execution_stage="executing"} > 0
+          ) /
+          count by (instance_name) (
+            nativelink_execution_active_count
+          )
+
+      # Queue depth (actions waiting)
+      - record: nativelink:queue_depth
+        expr: |
+          sum by (instance_name, execution_priority) (
+            nativelink_execution_active_count{execution_stage="queued"}
+          )
+
+      # Average actions per worker
+      - record: nativelink:actions_per_worker
+        expr: |
+          sum by (execution_worker_id) (
+            nativelink_execution_active_count{execution_stage="executing"}
+          )
+
+      # Memory usage estimation from output sizes
+      - record: nativelink:estimated_memory_usage_bytes
+        expr: |
+          sum by (instance_name) (
+            nativelink_execution_output_size_sum
+          )
+
+      # Retry rate
+      - record: nativelink:execution_retry_rate
+        expr: |
+          sum by (instance_name) (
+            rate(nativelink_execution_retry_count[5m])
+          )
+
+  - name: nativelink_slo
+    interval: 60s
+    rules:
+      # SLO: 99% of executions should complete successfully
+      - record: nativelink:slo_execution_success_rate
+        expr: |
+          sum(rate(nativelink_execution_completed_count{execution_result="success"}[1h])) /
+          sum(rate(nativelink_execution_completed_count[1h]))
+
+      # SLO: 95% of cache reads should be under 100ms
+      - record: nativelink:slo_cache_read_latency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(nativelink_cache_operation_duration_bucket{cache_operation_name="read"}[1h])) by (le)
+          ) < 0.1
+
+      # SLO: Queue time should be under 30s for 90% of actions
+      - record: nativelink:slo_queue_time
+        expr: |
+          histogram_quantile(0.9,
+            sum(rate(nativelink_execution_queue_time_bucket[1h])) by (le)
+          ) < 30
+
+      # Error budget remaining (based on 99% success SLO)
+      - record: nativelink:error_budget_remaining
+        expr: |
+          1 - (
+            (1 - 0.99) -
+            (1 - (
+              sum(rate(nativelink_execution_completed_count{execution_result="success"}[30d])) /
+              sum(rate(nativelink_execution_completed_count[30d]))
+            ))
+          ) / (1 - 0.99)

@@ -1,0 +1,161 @@
+# Prometheus Configuration for NativeLink Metrics
+# This configuration sets up Prometheus to receive metrics via OTLP and scrape format
+#
+# NOTE: This configuration uses `translation_strategy: NoUTF8EscapingWithSuffixes` which
+# adds the `_total` suffix to counter metrics when using OTLP ingestion (Prometheus v3+).
+# The included Grafana dashboards use `_total` suffix for counter metrics to match this.
+# See README.md for more information on metric naming.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'nativelink-cluster'
+    environment: 'production'
+
+# Enable OTLP receiver (requires --web.enable-otlp-receiver flag)
+otlp:
+  # Promote NativeLink-specific resource attributes to labels
+  promote_resource_attributes:
+    - service.instance.id
+    - service.name
+    - service.namespace
+    - service.version
+    # Cloud/Infrastructure attributes
+    - cloud.availability_zone
+    - cloud.region
+    - container.name
+    - deployment.environment
+    - deployment.environment.name
+    # Kubernetes attributes
+    - k8s.cluster.name
+    - k8s.container.name
+    - k8s.cronjob.name
+    - k8s.daemonset.name
+    - k8s.deployment.name
+    - k8s.job.name
+    - k8s.namespace.name
+    - k8s.pod.name
+    - k8s.replicaset.name
+    - k8s.statefulset.name
+    # NativeLink-specific attributes
+    - nativelink.instance_name
+    - nativelink.worker_id
+    - nativelink.scheduler_name
+
+  # Use NoTranslation to preserve metric names with UTF-8 support
+  # This keeps OpenTelemetry semantic convention names intact
+  translation_strategy: NoUTF8EscapingWithSuffixes
+
+# Scrape configurations
+scrape_configs:
+  # Scrape the OTEL Collector's Prometheus endpoint
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:9090']
+    metric_relabel_configs:
+      # Add nativelink prefix to all metrics from collector
+      - source_labels: [__name__]
+        regex: '(nativelink_.*)'
+        target_label: __name__
+        replacement: '${1}'
+
+  # Scrape Prometheus's own metrics
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Optional: Direct scrape of NativeLink instances (if metrics endpoint is exposed)
+  # - job_name: 'nativelink-direct'
+  #   static_configs:
+  #     - targets: ['nativelink-cas:8080', 'nativelink-scheduler:8080']
+  #   metrics_path: '/metrics'
+
+# Recording rules for common NativeLink queries
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# Alerting configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+# Example recording rules for NativeLink metrics
+# Save this as a separate file: rules/nativelink-recording-rules.yml
+# rule_files content example:
+---
+# Recording Rules for NativeLink Metrics
+groups:
+  - name: nativelink_execution
+    interval: 30s
+    rules:
+      # Execution success rate
+      - record: nativelink:execution_success_rate
+        expr: |
+          sum(rate(nativelink_execution_completed_count{execution_result="success"}[5m])) /
+          sum(rate(nativelink_execution_completed_count[5m]))
+
+      # Average queue time
+      - record: nativelink:execution_queue_time_avg
+        expr: |
+          histogram_quantile(0.5,
+            sum(rate(nativelink_execution_queue_time_bucket[5m])) by (le, instance_name)
+          )
+
+      # Actions per stage
+      - record: nativelink:execution_active_by_stage
+        expr: |
+          sum(nativelink_execution_active_count) by (execution_stage, instance_name)
+
+      # Stage transition rate
+      - record: nativelink:stage_transition_rate
+        expr: |
+          sum(rate(nativelink_execution_stage_transitions[5m])) by (instance_name)
+
+  - name: nativelink_cache
+    interval: 30s
+    rules:
+      # Cache hit rate
+      - record: nativelink:cache_hit_rate
+        expr: |
+          sum(rate(nativelink_cache_operations{cache_operation_result="hit"}[5m])) by (cache_type) /
+          sum(rate(nativelink_cache_operations{cache_operation_name="read"}[5m])) by (cache_type)
+
+      # Cache operation latency p95
+      - record: nativelink:cache_operation_latency_p95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(nativelink_cache_operation_duration_bucket[5m])) by (le, cache_type, cache_operation_name)
+          )
+
+      # Cache size utilization
+      - record: nativelink:cache_size_bytes
+        expr: |
+          sum(nativelink_cache_size) by (cache_type, instance_name)
+
+      # Cache eviction rate
+      - record: nativelink:cache_eviction_rate
+        expr: |
+          sum(rate(nativelink_cache_operations{cache_operation_name="evict"}[5m])) by (cache_type)
+
+  - name: nativelink_performance
+    interval: 60s
+    rules:
+      # Overall system throughput
+      - record: nativelink:system_throughput
+        expr: |
+          sum(rate(nativelink_execution_completed_count[5m]))
+
+      # Worker utilization
+      - record: nativelink:worker_utilization
+        expr: |
+          sum(nativelink_execution_active_count{execution_stage="executing"}) by (execution_worker_id) /
+          count(count by (execution_worker_id) (nativelink_execution_active_count))
+
+      # Action completion time (from queued to completed)
+      - record: nativelink:action_total_duration_p99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(nativelink_execution_total_duration_bucket[5m])) by (le, instance_name)
+          )

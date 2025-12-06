@@ -1,0 +1,138 @@
+version: '3.8'
+
+services:
+  # OpenTelemetry Collector
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.98.0
+    container_name: otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel-collector/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+      - "9090:9090"   # Prometheus metrics exporter
+      - "8888:8888"   # Collector metrics
+      - "13133:13133" # Health check
+    environment:
+      - OTLP_BACKEND_ENDPOINT=${OTLP_BACKEND_ENDPOINT:-otlp-backend:4317}
+      - OTLP_BACKEND_TOKEN=${OTLP_BACKEND_TOKEN:-}
+    networks:
+      - metrics
+
+  # Prometheus with OTLP support
+  prometheus:
+    image: prom/prometheus:v3.0.0
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-otlp-receiver'  # Enable OTLP receiver
+      - '--storage.tsdb.retention.time=30d'
+    volumes:
+      - ./prometheus-config.yaml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus-recording-rules.yml:/etc/prometheus/rules/nativelink.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9091:9090"  # Prometheus web UI (different port to avoid conflict with collector)
+    networks:
+      - metrics
+    depends_on:
+      - otel-collector
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:10.3.0
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - metrics
+    depends_on:
+      - prometheus
+
+  # Optional: AlertManager for alerts
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager-config.yml:/etc/alertmanager/config.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "9093:9093"
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+    networks:
+      - metrics
+
+  # Optional: Node exporter for host metrics
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: node-exporter
+    restart: unless-stopped
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    networks:
+      - metrics
+
+  # Optional: Jaeger for trace visualization (if traces are enabled)
+  jaeger:
+    image: jaegertracing/all-in-one:1.53
+    container_name: jaeger
+    restart: unless-stopped
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14268:14268"  # Jaeger collector HTTP
+    networks:
+      - metrics
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  alertmanager_data:
+
+networks:
+  metrics:
+    driver: bridge
+
+# Usage Instructions:
+# 1. Start the stack: docker-compose up -d
+# 2. Configure NativeLink with these environment variables:
+#    export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+#    export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+#    export OTEL_SERVICE_NAME=nativelink
+#    export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=dev"
+# 3. Access services:
+#    - Prometheus: http://localhost:9091
+#    - Grafana: http://localhost:3000 (admin/admin)
+#    - Jaeger: http://localhost:16686
+#    - AlertManager: http://localhost:9093
+#    - OTEL Collector metrics: http://localhost:8888/metrics
