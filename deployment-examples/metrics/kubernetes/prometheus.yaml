@@ -1,4 +1,10 @@
 # Prometheus Deployment for NativeLink Metrics
+#
+# NOTE: This configuration uses `translation_strategy: NoUTF8EscapingWithSuffixes` which
+# adds the `_total` suffix to counter metrics when using OTLP ingestion (Prometheus v3+).
+# Recording rules and alerts using counter metrics should use the `_total` suffix
+# (e.g., `nativelink_execution_completed_count_total`).
+#
 apiVersion: v1
 kind: Namespace
 metadata:

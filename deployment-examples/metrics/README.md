@@ -95,7 +95,7 @@ env:
 | `nativelink_execution_total_duration` | Histogram | Total execution time from submission to completion | `execution_instance` |
 | `nativelink_execution_queue_time` | Histogram | Time spent waiting in queue | `execution_priority` |
 | `nativelink_execution_active_count` | Gauge | Current actions in each stage | `execution_stage` |
-| `nativelink_execution_completed_count` | Counter | Completed executions | `execution_result` |
+| `nativelink_execution_completed_count` | Counter | Completed executions | `execution_result`, `execution_action_digest` |
 | `nativelink_execution_stage_transitions` | Counter | Stage transition events | `execution_instance`, `execution_priority` |
 | `nativelink_execution_output_size` | Histogram | Size of execution outputs | - |
 | `nativelink_execution_retry_count` | Counter | Number of retries | - |
@@ -113,6 +113,13 @@ env:
 - `cancelled`: Execution was cancelled
 - `timeout`: Execution timed out
 - `cache_hit`: Result found in cache
+
+> **Note on Prometheus v3 and OTLP Counters:** When using Prometheus v3 with OTLP ingestion,
+> counter metrics receive a `_total` suffix (for example, `nativelink_execution_completed_count_total`).
+> The included Grafana dashboards use the `_total` suffix for Prometheus v3 compatibility.
+> If using Prometheus v2 or scrape-based collection, you may need to adjust the queries to
+> remove the `_total` suffix. See the [Prometheus OTLP documentation](https://prometheus.io/docs/prometheus/latest/feature_flags/#otlp-receiver)
+> for more details.
 
 ## Configuration
 

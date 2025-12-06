@@ -1,5 +1,14 @@
 # Recording Rules for NativeLink Metrics
 # These rules pre-calculate common queries for better dashboard performance
+#
+# NOTE: Prometheus v3 with OTLP ingestion adds a `_total` suffix to counter metrics.
+# If you are using Prometheus v3 with OTLP, you may need to add `_total` to counter
+# metric names below (e.g., `nativelink_execution_completed_count` becomes
+# `nativelink_execution_completed_count_total`). See prometheus-config.yaml for
+# the translation_strategy setting.
+#
+# Alternatively, use `translation_strategy: NoUTF8EscapingWithSuffixes` in your
+# Prometheus OTLP configuration to preserve original metric names.
 
 groups:
   - name: nativelink_execution

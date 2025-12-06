@@ -613,8 +613,8 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "sum(increase(nativelink_execution_completed_count_total{execution_result=\"failure\"}[5m]))",
-          "legendFormat": "Failures",
+          "expr": "sum(increase(nativelink_execution_completed_count_total{execution_result=\"failure\"}[5m])) or vector(0)",
+          "legendFormat": "Failures (exit_code != 0)",
           "refId": "A"
         },
         {
@@ -622,16 +622,43 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "sum(increase(nativelink_execution_completed_count_total{execution_result=\"success\"}[5m]))",
+          "expr": "sum(increase(nativelink_execution_completed_count_total{execution_result=\"success\"}[5m])) or vector(0)",
           "legendFormat": "Successes",
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "sum(increase(nativelink_execution_completed_count_total{execution_result=\"cancelled\"}[5m])) or vector(0)",
+          "legendFormat": "Cancelled",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "sum(increase(nativelink_execution_completed_count_total{execution_result=\"timeout\"}[5m])) or vector(0)",
+          "legendFormat": "Timeout",
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "sum(increase(nativelink_execution_completed_count_total{execution_result=\"cache_hit\"}[5m])) or vector(0)",
+          "legendFormat": "Cache Hits",
+          "refId": "E"
         }
       ],
       "title": "Execution Results Over Time"
     },
     {
       "type": "table",
-      "description": "Shows action digests that have failed. Rebuild NativeLink with latest code to see action digest labels.",
+      "description": "Shows action digests that have failed with non-zero exit code, timed out, or were cancelled. Note: Bazel build failures (client-side) may not appear here if the action never reached completion in NativeLink.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -644,7 +671,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Failures"
+              "options": "Count"
             },
             "properties": [
               {
@@ -681,7 +708,19 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 500
+                "value": 400
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Result"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
               }
             ]
           }
@@ -702,7 +741,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "Failures"
+            "displayName": "Count"
           }
         ]
       },
@@ -713,14 +752,14 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "sum by (execution_action_digest) (increase(nativelink_execution_completed_count_total{execution_result=\"failure\"}[1h]))",
+          "expr": "sum by (execution_action_digest, execution_result) (increase(nativelink_execution_completed_count_total{execution_result=~\"failure|cancelled|timeout\"}[1h])) > 0",
           "format": "table",
           "instant": true,
           "legendFormat": "",
           "refId": "A"
         }
       ],
-      "title": "Failed Actions by Digest",
+      "title": "Failed/Cancelled/Timed Out Actions by Digest",
       "transformations": [
         {
           "id": "organize",
@@ -729,8 +768,9 @@
               "Time": true
             },
             "renameByName": {
-              "Value": "Failures",
-              "execution_action_digest": "Action Digest"
+              "Value": "Count",
+              "execution_action_digest": "Action Digest",
+              "execution_result": "Result"
             }
           }
         },
@@ -741,7 +781,7 @@
             "sort": [
               {
                 "desc": true,
-                "field": "Failures"
+                "field": "Count"
               }
             ]
           }

@@ -1,5 +1,10 @@
 # Prometheus Configuration for NativeLink Metrics
 # This configuration sets up Prometheus to receive metrics via OTLP and scrape format
+#
+# NOTE: This configuration uses `translation_strategy: NoUTF8EscapingWithSuffixes` which
+# adds the `_total` suffix to counter metrics when using OTLP ingestion (Prometheus v3+).
+# The included Grafana dashboards use `_total` suffix for counter metrics to match this.
+# See README.md for more information on metric naming.
 
 global:
   scrape_interval: 15s
