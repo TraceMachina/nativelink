@@ -259,15 +259,14 @@ impl From<std::io::Error> for Error {
 impl From<redis::RedisError> for Error {
     fn from(error: redis::RedisError) -> Self {
         use redis::ErrorKind::{
-            AuthenticationFailed, InvalidClientConfig, IoError, ParseError, ResponseError,
-            TypeError,
+            AuthenticationFailed, InvalidClientConfig, Io as IoError, Parse as ParseError,
+            UnexpectedReturnType,
         };
 
         // Conversions here are based on https://grpc.github.io/grpc/core/md_doc_statuscodes.html.
         let code = match error.kind() {
             AuthenticationFailed => Code::PermissionDenied,
-            ResponseError => Code::Internal,
-            ParseError | TypeError | InvalidClientConfig => Code::InvalidArgument,
+            ParseError | UnexpectedReturnType | InvalidClientConfig => Code::InvalidArgument,
             IoError => {
                 if error.is_timeout() {
                     Code::DeadlineExceeded

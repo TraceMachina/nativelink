@@ -71,19 +71,16 @@ prost = { version = "0.13.5", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
-redis = { version = "0.32.7", default-features = false, features = [
+redis = { version = "1.0.0", default-features = false, features = [
   "ahash",
   "cluster-async",
   "connection-manager",
-  "safe_iterators",
   "script",
   "sentinel",
   "tokio-comp",
 ] }
 # needed here for Psubscribe implementation
-redis-test = { version = "0.12.0", default-features = false, features = [
-  "aio",
-] }
+redis-test = { version = "1.0.0", default-features = false, features = ["aio"] }
 regex = { version = "1.11.1", default-features = false }
 reqwest = { version = "0.12", default-features = false }
 reqwest-middleware = { version = "0.4.2", default-features = false }

@@ -115,11 +115,11 @@ impl TryFrom<Value> for RedisCursorData {
     type Error = RedisError;
     fn try_from(raw_value: Value) -> Result<Self, RedisError> {
         let Value::Array(value) = raw_value else {
-            return Err(RedisError::from((ErrorKind::ParseError, "Expected array")));
+            return Err(RedisError::from((ErrorKind::Parse, "Expected array")));
         };
         if value.len() < 2 {
             return Err(RedisError::from((
-                ErrorKind::ParseError,
+                ErrorKind::Parse,
                 "Expected at least 2 elements",
             )));
         }
@@ -130,7 +130,7 @@ impl TryFrom<Value> for RedisCursorData {
             other => {
                 error!(?other, "Bad data in ft.aggregate, expected array");
                 return Err(RedisError::from((
-                    ErrorKind::ParseError,
+                    ErrorKind::Parse,
                     "Non map item",
                     format!("{other:?}"),
                 )));
@@ -144,7 +144,7 @@ impl TryFrom<Value> for RedisCursorData {
             Some(other) => {
                 error!(?other, "Non-int for first value in ft.aggregate");
                 return Err(RedisError::from((
-                    ErrorKind::ParseError,
+                    ErrorKind::Parse,
                     "Non int for aggregate total",
                     format!("{other:?}"),
                 )));
@@ -152,7 +152,7 @@ impl TryFrom<Value> for RedisCursorData {
             None => {
                 error!("No items in results array for ft.aggregate!");
                 return Err(RedisError::from((
-                    ErrorKind::ParseError,
+                    ErrorKind::Parse,
                     "No items in results array for ft.aggregate",
                 )));
             }
@@ -167,7 +167,7 @@ impl TryFrom<Value> for RedisCursorData {
                         "Expected an array of size 4, didn't get it for aggregate value"
                     );
                     return Err(RedisError::from((
-                        ErrorKind::ParseError,
+                        ErrorKind::Parse,
                         "Expected an array of size 4, didn't get it for aggregate value",
                         format!("{other:?}"),
                     )));
@@ -178,7 +178,7 @@ impl TryFrom<Value> for RedisCursorData {
         }
         let Value::Int(cursor) = value.next().unwrap() else {
             return Err(RedisError::from((
-                ErrorKind::ParseError,
+                ErrorKind::Parse,
                 "Expected integer as last element",
             )));
         };

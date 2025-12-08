@@ -196,7 +196,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
     let mut commands = vec![];
     commands.push(MockCmd::new(
         ft_aggregate_cmd(),
-        Err::<i64, _>(RedisError::from((ErrorKind::ResponseError, ""))),
+        Err::<i64, _>(RedisError::from((ErrorKind::Parse, ""))),
     ));
     commands.push(MockCmd::new(
         redis::cmd("SUBSCRIBE").arg(SUB_CHANNEL),

@@ -32,27 +32,27 @@ where
         .query_async::<Value>(connection_manager)
         .await?;
     let Value::Array(value) = data else {
-        return Err(RedisError::from((ErrorKind::ParseError, "Expected array")));
+        return Err(RedisError::from((ErrorKind::Parse, "Expected array")));
     };
     if value.len() < 2 {
         return Err(RedisError::from((
-            ErrorKind::ParseError,
+            ErrorKind::Parse,
             "Expected at least 2 elements",
         )));
     }
     let mut value = value.into_iter();
     let Value::Array(data_ary) = value.next().unwrap() else {
-        return Err(RedisError::from((ErrorKind::ParseError, "Non map item")));
+        return Err(RedisError::from((ErrorKind::Parse, "Non map item")));
     };
     if data_ary.is_empty() {
         return Err(RedisError::from((
-            ErrorKind::ParseError,
+            ErrorKind::Parse,
             "Expected at least 1 element in data array",
         )));
     }
     let Value::Int(new_cursor_id) = value.next().unwrap() else {
         return Err(RedisError::from((
-            ErrorKind::ParseError,
+            ErrorKind::Parse,
             "Expected cursor id as second element",
         )));
     };

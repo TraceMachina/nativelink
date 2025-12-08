@@ -16,7 +16,7 @@ nativelink-proto = { path = "../nativelink-proto" }
 
 prost = { version = "0.13.5", default-features = false }
 prost-types = { version = "0.13.5", default-features = false }
-redis = { version = "0.32.4", default-features = false }
+redis = { version = "1.0.0", default-features = false }
 serde = { version = "1.0.219", default-features = false }
 serde_json5 = { version = "0.2.1", default-features = false }
 tokio = { version = "1.44.1", features = [
