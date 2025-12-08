@@ -2476,7 +2476,6 @@ name = "nativelink-config"
 version = "0.7.8"
 dependencies = [
  "byte-unit",
- "clap",
  "humantime",
  "nativelink-error",
  "pretty_assertions",

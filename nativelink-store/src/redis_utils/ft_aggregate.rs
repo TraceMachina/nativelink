@@ -156,7 +156,7 @@ impl TryFrom<Value> for RedisCursorData {
                     "No items in results array for ft.aggregate",
                 )));
             }
-        };
+        }
 
         for item in results_iter {
             match item {
@@ -172,7 +172,7 @@ impl TryFrom<Value> for RedisCursorData {
                         format!("{other:?}"),
                     )));
                 }
-            };
+            }
 
             output.data.push_back(item.clone());
         }

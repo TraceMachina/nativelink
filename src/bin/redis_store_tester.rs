@@ -107,6 +107,25 @@ impl SchedulerStoreDecodeTo for SearchByContentPrefix {
 
 const MAX_KEY: u16 = 1024;
 
+/// Wrapper type for CLI parsing since we can't implement foreign traits on foreign types.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum RedisModeArg {
+    Cluster,
+    Sentinel,
+    #[default]
+    Standard,
+}
+
+impl From<RedisModeArg> for RedisMode {
+    fn from(arg: RedisModeArg) -> Self {
+        match arg {
+            RedisModeArg::Standard => RedisMode::Standard,
+            RedisModeArg::Sentinel => RedisMode::Sentinel,
+            RedisModeArg::Cluster => RedisMode::Cluster,
+        }
+    }
+}
+
 fn random_key() -> StoreKey<'static> {
     let key = rand::rng().random_range(0..MAX_KEY);
     StoreKey::new_str(&key.to_string()).into_owned()
@@ -123,7 +142,7 @@ enum TestMode {
 #[command(version, about)]
 struct Args {
     #[arg(value_enum, short, long, default_value_t)]
-    redis_mode: RedisMode,
+    redis_mode: RedisModeArg,
 
     #[arg(value_enum, short, long, default_value_t)]
     mode: TestMode,
@@ -131,6 +150,7 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
     let args = Args::parse();
+    let redis_mode: RedisMode = args.redis_mode.into();
 
     let failed = Arc::new(RwLock::new(false));
     let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -155,7 +175,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                 .await?
                 .expect("Init tracing should work");
 
-            let redis_port = match args.redis_mode {
+            let redis_port = match redis_mode {
                 RedisMode::Standard => 6379,
                 RedisMode::Sentinel => 26379,
                 RedisMode::Cluster => 36379,
@@ -164,7 +184,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                 addresses: vec![format!("redis://{redis_host}:{redis_port}/")],
                 connection_timeout_ms: 1000,
                 max_client_permits,
-                mode: args.redis_mode,
+                mode: redis_mode,
                 ..Default::default()
             };
             let store = match spec.mode {

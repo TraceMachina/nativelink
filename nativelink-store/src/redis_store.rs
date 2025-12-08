@@ -136,7 +136,9 @@ where
     /// A manager for subscriptions to keys in Redis.
     subscription_manager: Mutex<Option<Arc<RedisSubscriptionManager>>>,
 
-    // Channel for getting subscription messages
+    /// Channel for getting subscription messages. Only used by cluster mode where
+    /// the sender is connected at construction time. For standard mode, this is
+    /// None and created on demand in `subscription_manager()`.
     subscriber_channel: Mutex<Option<UnboundedReceiver<PushInfo>>>,
 
     /// Permits to limit inflight Redis requests. Technically only
@@ -197,7 +199,7 @@ impl<C: ConnectionLike + Clone + Sync> RedisStore<C> {
         max_chunk_uploads_per_update: usize,
         scan_count: usize,
         max_client_permits: usize,
-        subscriber_channel: UnboundedReceiver<PushInfo>,
+        subscriber_channel: Option<UnboundedReceiver<PushInfo>>,
     ) -> Result<Self, Error> {
         info!("Redis index fingerprint: {FINGERPRINT_CREATE_INDEX_HEX}");
 
@@ -216,12 +218,12 @@ impl<C: ConnectionLike + Clone + Sync> RedisStore<C> {
             scan_count,
             update_if_version_matches_script: version_set_script,
             subscription_manager: Mutex::new(None),
-            subscriber_channel: Mutex::new(Some(subscriber_channel)),
+            subscriber_channel: Mutex::new(subscriber_channel),
             client_permits: Arc::new(Semaphore::new(max_client_permits)),
         })
     }
 
-    async fn get_client(&'_ self) -> Result<ClientWithPermit<C>, Error> {
+    async fn get_client(&self) -> Result<ClientWithPermit<C>, Error> {
         let local_client_permits = self.client_permits.clone();
         let remaining = local_client_permits.available_permits();
         let semaphore_permit = local_client_permits.acquire_owned().await?;
@@ -335,7 +337,7 @@ impl RedisStore<ClusterConnection> {
             spec.max_chunk_uploads_per_update,
             spec.scan_count,
             spec.max_client_permits,
-            subscriber_channel,
+            Some(subscriber_channel),
         )
         .await
         .map(Arc::new)
@@ -383,22 +385,15 @@ impl RedisStore<ConnectionManager> {
 
         let connection_manager_config = {
             ConnectionManagerConfig::new()
-                // .set_automatic_resubscription()
                 .set_number_of_retries(spec.retry.max_retries)
                 .set_connection_timeout(connection_timeout)
                 .set_response_timeout(command_timeout)
         };
 
-        // FIXME(palfrey): connect sender
-        let (_tx, subscriber_channel) = unbounded_channel();
-
-        let connection_manager: ConnectionManager = ConnectionManager::new_with_config(
-            client,
-            connection_manager_config,
-            // connection_manager_config.set_push_sender(tx),
-        )
-        .await
-        .err_tip(|| format!("While connecting to {addr}"))?;
+        let connection_manager: ConnectionManager =
+            ConnectionManager::new_with_config(client, connection_manager_config)
+                .await
+                .err_tip(|| format!("While connecting to {addr}"))?;
 
         Self::new_from_builder_and_parts(
             connection_manager,
@@ -409,7 +404,7 @@ impl RedisStore<ConnectionManager> {
             spec.max_chunk_uploads_per_update,
             spec.scan_count,
             spec.max_client_permits,
-            subscriber_channel,
+            None, // Standard mode creates subscription channel on demand
         )
         .await
         .map(Arc::new)
@@ -1019,13 +1014,17 @@ pub struct RedisSubscriptionManager {
     _subscription_spawn: JoinHandleDropGuard<()>,
 }
 
-pub trait Psubscribe: Send + 'static {
-    fn psubscribe(&mut self, channel_pattern: &str)
-    -> impl Future<Output = RedisResult<()>> + Send;
+/// Trait for subscribing to Redis pub/sub channels with pattern matching.
+pub trait RedisPatternSubscriber: Send + 'static {
+    /// Subscribe to channels matching the given pattern.
+    fn subscribe_to_pattern(
+        &mut self,
+        channel_pattern: &str,
+    ) -> impl Future<Output = RedisResult<()>> + Send;
 }
 
-impl Psubscribe for ConnectionManager {
-    fn psubscribe(
+impl RedisPatternSubscriber for ConnectionManager {
+    fn subscribe_to_pattern(
         &mut self,
         channel_pattern: &str,
     ) -> impl Future<Output = RedisResult<()>> + Send {
@@ -1033,8 +1032,8 @@ impl Psubscribe for ConnectionManager {
     }
 }
 
-impl Psubscribe for MockRedisConnection {
-    fn psubscribe(
+impl RedisPatternSubscriber for MockRedisConnection {
+    fn subscribe_to_pattern(
         &mut self,
         _channel_pattern: &str,
     ) -> impl Future<Output = RedisResult<()>> + Send {
@@ -1049,7 +1048,7 @@ impl RedisSubscriptionManager {
         pub_sub_channel: String,
     ) -> Self
     where
-        C: Psubscribe,
+        C: RedisPatternSubscriber,
     {
         let subscribed_keys = Arc::new(RwLock::new(StringPatriciaMap::new()));
         let subscribed_keys_weak = Arc::downgrade(&subscribed_keys);
@@ -1058,10 +1057,13 @@ impl RedisSubscriptionManager {
             subscribed_keys,
             tx_for_test,
             _subscription_spawn: spawn!("redis_subscribe_spawn", async move {
-                connection_manager
-                    .psubscribe(&pub_sub_channel)
+                if let Err(e) = connection_manager
+                    .subscribe_to_pattern(&pub_sub_channel)
                     .await
-                    .expect("psubscribe");
+                {
+                    error!(?e, "Failed to subscribe to Redis pattern");
+                    return;
+                }
                 loop {
                     loop {
                         let key = select! {
@@ -1072,27 +1074,24 @@ impl RedisSubscriptionManager {
                                 value
                             },
                             msg = subscription_channel.recv() => {
-                                match msg {
-                                    Some(msg) => {
-                                        if msg.data.len() != 1 {
-                                            error!(?msg.data, "Received several messages!");
-                                        }
-                                        if let Value::SimpleString(s) = msg.data.first().expect("Expected data") {
-                                            s.clone()
-                                        } else {
-                                            error!("Received non-string message in RedisSubscriptionManager");
-                                            continue;
-                                        }
-                                    },
-                                    None => {
-                                        // Check to see if our parent has been dropped and if so kill spawn.
-                                        if subscribed_keys_weak.upgrade().is_none() {
-                                            warn!("It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
-                                            return;
-                                        }
-                                        error!("Error receiving message in RedisSubscriptionManager reconnecting and flagging everything changed");
-                                        break;
+                                if let Some(msg) = msg {
+                                    if msg.data.len() != 1 {
+                                        error!(?msg.data, "Received several messages!");
                                     }
+                                    if let Value::SimpleString(s) = msg.data.first().expect("Expected data") {
+                                        s.clone()
+                                    } else {
+                                        error!("Received non-string message in RedisSubscriptionManager");
+                                        continue;
+                                    }
+                                } else {
+                                    // Check to see if our parent has been dropped and if so kill spawn.
+                                    if subscribed_keys_weak.upgrade().is_none() {
+                                        warn!("It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
+                                        return;
+                                    }
+                                    error!("Error receiving message in RedisSubscriptionManager reconnecting and flagging everything changed");
+                                    break;
                                 }
                             },
                         };
@@ -1170,7 +1169,7 @@ impl SchedulerSubscriptionManager for RedisSubscriptionManager {
     }
 }
 
-impl<C: Psubscribe + Clone + ConnectionLike + Sync> SchedulerStore for RedisStore<C> {
+impl<C: RedisPatternSubscriber + Clone + ConnectionLike + Sync> SchedulerStore for RedisStore<C> {
     type SubscriptionManager = RedisSubscriptionManager;
 
     fn subscription_manager(&self) -> Result<Arc<RedisSubscriptionManager>, Error> {
@@ -1184,11 +1183,13 @@ impl<C: Psubscribe + Clone + ConnectionLike + Sync> SchedulerStore for RedisStor
                     "RedisStore must have a pubsub channel for a Redis Scheduler if using subscriptions"
                 ));
             };
-            let Some(subscriber_channel) = self.subscriber_channel.lock().take() else {
-                return Err(make_input_err!(
-                    "RedisStore is missing the subscriber channel"
-                ));
-            };
+            // Use pre-created channel if available (cluster mode), otherwise create on demand.
+            // TODO: For standard mode, the sender should be connected to Redis push notifications.
+            let subscriber_channel = self
+                .subscriber_channel
+                .lock()
+                .take()
+                .unwrap_or_else(|| unbounded_channel().1);
             let sub = Arc::new(RedisSubscriptionManager::new(
                 self.connection_manager.clone(),
                 subscriber_channel,
@@ -1382,11 +1383,8 @@ impl<C: Psubscribe + Clone + ConnectionLike + Sync> SchedulerStore for RedisStor
             let mut bytes_data: Option<Bytes> = None;
             let mut version: Option<i64> = None;
             loop {
-                let key = match redis_map_iter.next() {
-                    Some(k) => k,
-                    None => {
-                        break;
-                    }
+                let Some(key) = redis_map_iter.next() else {
+                    break;
                 };
                 let value = redis_map_iter.next().unwrap();
                 let Value::BulkString(k) = key else {
@@ -1418,7 +1416,7 @@ impl<C: Psubscribe + Clone + ConnectionLike + Sync> SchedulerStore for RedisStor
                                 format!("Non-utf8 version value from ft_aggregate: {v:?}"),
                             )));
                         };
-                        let Ok(raw_version) = i64::from_str_radix(str_v, 10) else {
+                        let Ok(raw_version) = str_v.parse::<i64>() else {
                             return Some(Err(Error::new(
                                 Code::Internal,
                                 format!("Non-integer version value from ft_aggregate: {str_v:?}"),

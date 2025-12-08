@@ -81,7 +81,7 @@ async fn make_mock_store_with_prefix(
         DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
         DEFAULT_SCAN_COUNT,
         DEFAULT_MAX_PERMITS,
-        subscriber_channel,
+        Some(subscriber_channel),
     )
     .await
     .unwrap()

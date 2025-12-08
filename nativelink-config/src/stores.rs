@@ -15,7 +15,6 @@
 use core::time::Duration;
 use std::sync::Arc;
 
-use clap::ValueEnum;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
@@ -1226,7 +1225,6 @@ pub struct RedisSpec {
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[derive(ValueEnum)]
 pub enum RedisMode {
     Cluster,
     Sentinel,

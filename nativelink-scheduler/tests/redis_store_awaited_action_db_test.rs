@@ -93,7 +93,7 @@ async fn make_redis_store(
             MAX_CHUNK_UPLOADS_PER_UPDATE,
             SCAN_COUNT,
             MAX_PERMITS,
-            subscriber_channel,
+            Some(subscriber_channel),
         )
         .await
         .unwrap(),

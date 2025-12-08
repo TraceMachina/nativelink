@@ -20,6 +20,7 @@ pub(crate) struct SearchSchema {
     pub sortable: bool,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct FtCreateOptions {
     pub prefixes: Vec<String>,
     pub nohl: bool,

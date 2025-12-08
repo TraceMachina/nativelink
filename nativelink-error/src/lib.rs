@@ -267,9 +267,7 @@ impl From<redis::RedisError> for Error {
         let code = match error.kind() {
             AuthenticationFailed => Code::PermissionDenied,
             ResponseError => Code::Internal,
-            ParseError => Code::InvalidArgument,
-            TypeError => Code::InvalidArgument,
-            InvalidClientConfig => Code::InvalidArgument,
+            ParseError | TypeError | InvalidClientConfig => Code::InvalidArgument,
             IoError => {
                 if error.is_timeout() {
                     Code::DeadlineExceeded
@@ -280,7 +278,8 @@ impl From<redis::RedisError> for Error {
             _ => Code::Unknown,
         };
 
-        make_err!(code, "{:?}: {error}", error.kind())
+        let kind = error.kind();
+        make_err!(code, "{kind:?}: {error}")
     }
 }
 

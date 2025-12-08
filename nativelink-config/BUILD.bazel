@@ -24,7 +24,6 @@ rust_library(
     deps = [
         "//nativelink-error",
         "@crates//:byte-unit",
-        "@crates//:clap",
         "@crates//:humantime",
         "@crates//:rand",
         "@crates//:serde",
