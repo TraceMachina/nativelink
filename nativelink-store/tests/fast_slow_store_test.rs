@@ -570,3 +570,138 @@ async fn fast_readonly_only_not_updated_on_get() -> Result<(), Error> {
     );
     Ok(())
 }
+
+fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
+    #[derive(MetricsComponent)]
+    struct LazyStore {
+        inner: Arc<MemoryStore>,
+    }
+
+    #[async_trait]
+    impl StoreDriver for LazyStore {
+        async fn has_with_results(
+            self: Pin<&Self>,
+            digests: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            Pin::new(self.inner.as_ref())
+                .has_with_results(digests, results)
+                .await
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            digest: StoreKey<'_>,
+            reader: nativelink_util::buf_channel::DropCloserReadHalf,
+            size_info: nativelink_util::store_trait::UploadSizeInfo,
+        ) -> Result<(), Error> {
+            Pin::new(self.inner.as_ref())
+                .update(digest, reader, size_info)
+                .await
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            Pin::new(self.inner.as_ref())
+                .get_part(key, writer, offset, length)
+                .await
+        }
+
+        fn optimized_for(
+            &self,
+            optimization: nativelink_util::store_trait::StoreOptimizations,
+        ) -> bool {
+            matches!(
+                optimization,
+                nativelink_util::store_trait::StoreOptimizations::LazyExistenceOnSync
+            )
+        }
+
+        fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
+            self
+        }
+
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(LazyStore);
+
+    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let slow_store = Store::new(Arc::new(LazyStore {
+        inner: MemoryStore::new(&MemorySpec::default()),
+    }));
+    let fast_slow_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+        },
+        fast_store.clone(),
+        slow_store.clone(),
+    ));
+    (fast_slow_store, fast_store, slow_store)
+}
+
+#[nativelink_test]
+async fn lazy_not_found_returns_error_when_missing() -> Result<(), Error> {
+    let (fast_slow_store, _fast_store, _slow_store) = make_stores_with_lazy_slow();
+    let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
+
+    let result = fast_slow_store.get_part_unchunked(digest, 0, None).await;
+
+    assert!(result.is_err(), "Expected error when key doesn't exist");
+    assert_eq!(
+        result.unwrap_err().code,
+        Code::NotFound,
+        "Expected NotFound error code"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn lazy_not_found_syncs_to_fast_store() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) = make_stores_with_lazy_slow();
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+
+    slow_store
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    assert!(
+        fast_store.has(digest).await?.is_none(),
+        "Expected data to not be in fast store initially"
+    );
+
+    let retrieved_data = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+
+    assert_eq!(
+        retrieved_data.as_ref(),
+        original_data.as_slice(),
+        "Retrieved data should match"
+    );
+    assert!(
+        fast_store.has(digest).await?.is_some(),
+        "Expected data to be synced to fast store"
+    );
+    Ok(())
+}
