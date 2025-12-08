@@ -1,0 +1,141 @@
+name: Build Custom Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Image to build'
+        required: false
+        default: 'image'
+        type: choice
+        options:
+          - image
+          - nativelink-worker-init
+          - nativelink-worker-lre-cc
+      skip_signing:
+        description: 'Skip cosign signing'
+        required: false
+        default: true
+        type: boolean
+
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  check-trigger:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      pr_sha: ${{ steps.check.outputs.pr_sha }}
+      image: ${{ steps.check.outputs.image }}
+    steps:
+      - name: Check trigger
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.eventName === 'workflow_dispatch') {
+              core.setOutput('should_build', 'true');
+              core.setOutput('pr_sha', context.sha);
+              core.setOutput('image', '${{ inputs.image }}');
+              return;
+            }
+
+            if (context.eventName === 'issue_comment') {
+              const body = context.payload.comment.body.trim();
+              const isPR = !!context.payload.issue.pull_request;
+
+              // Match /build-image or /build-image <image-name>
+              const match = body.match(/^\/build-image(?:\s+(\S+))?/i);
+
+              if (isPR && match) {
+                const { data: pr } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.payload.issue.number
+                });
+
+                const image = match[1] || 'image';
+                const validImages = ['image', 'nativelink-worker-init', 'nativelink-worker-lre-cc'];
+
+                if (!validImages.includes(image)) {
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.payload.issue.number,
+                    body: `Unknown image: \`${image}\`\n\nValid options: ${validImages.map(i => `\`${i}\``).join(', ')}`
+                  });
+                  core.setOutput('should_build', 'false');
+                  return;
+                }
+
+                core.setOutput('should_build', 'true');
+                core.setOutput('pr_sha', pr.head.sha);
+                core.setOutput('image', image);
+
+                await github.rest.reactions.createForIssueComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: context.payload.comment.id,
+                  content: 'rocket'
+                });
+                return;
+              }
+            }
+
+            core.setOutput('should_build', 'false');
+
+  build-image:
+    name: Build and Push Image
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-trigger.outputs.pr_sha }}
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+
+      - name: Upload image
+        id: upload
+        run: |
+          GIT_HASH=$(git rev-parse --short HEAD)
+          nix run .#publish-ghcr ${{ needs.check-trigger.outputs.image }} "$GIT_HASH"
+
+          IMAGE_NAME=$(nix eval .#${{ needs.check-trigger.outputs.image }}.imageName --raw)
+          echo "image_tag=ghcr.io/${{ github.repository_owner }}/${IMAGE_NAME}:${GIT_HASH}" >> $GITHUB_OUTPUT
+        env:
+          GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          SKIP_SIGNING: "true"
+          SKIP_TRIVY: "true"
+
+      - name: Output image info
+        run: |
+          echo "### Published Image" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.upload.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Comment on PR
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `Image built and pushed!\n\n\`\`\`\n${{ steps.upload.outputs.image_tag }}\n\`\`\``
+            });
