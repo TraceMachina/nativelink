@@ -25,6 +25,7 @@ rust_library(
         "src/simple_scheduler_state_manager.rs",
         "src/store_awaited_action_db.rs",
         "src/worker.rs",
+        "src/worker_registry.rs",
         "src/worker_scheduler.rs",
     ],
     proc_macro_deps = [

@@ -1251,18 +1251,31 @@ impl SchedulerStore for RedisStore {
                 argv.push(Bytes::from_static(name.as_bytes()));
                 argv.push(value);
             }
+            let start = std::time::Instant::now();
+
             let (success, new_version): (bool, i64) = self
                 .update_if_version_matches_script
                 .evalsha_with_reload(&client.client, vec![redis_key.as_ref()], argv)
                 .await
                 .err_tip(|| format!("In RedisStore::update_data::versioned for {key:?}"))?;
+
+            let elapsed = start.elapsed();
+
+            if elapsed > Duration::from_millis(100) {
+                warn!(
+                    %redis_key,
+                    ?elapsed,
+                    "Slow Redis version-set operation"
+                );
+            }
             if !success {
                 warn!(
                     %redis_key,
                     %key,
                     %current_version,
                     %new_version,
-                    "Error updating Redis key"
+                    caller = core::any::type_name::<T>(),
+                    "Redis version conflict - optimistic lock failed"
                 );
                 return Ok(None);
             }
