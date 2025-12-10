@@ -13,14 +13,12 @@
 // limitations under the License.
 
 use core::ops::Bound;
-use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 use std::string::ToString;
 use std::sync::{Arc, Weak};
 
 use async_lock::Mutex;
 use async_trait::async_trait;
-use dashmap::DashMap;
 use futures::{StreamExt, TryStreamExt, stream};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
@@ -313,9 +311,6 @@ where
     /// Function to get the current time.
     now_fn: NowFn,
 
-    /// Concurrent Updates
-    concurrent_updates: Arc<DashMap<OperationId, AtomicU32>>,
-
     /// Worker registry for checking worker liveness.
     worker_registry: Option<SharedWorkerRegistry>,
 }
@@ -342,7 +337,6 @@ where
             timeout_operation_mux: Mutex::new(()),
             weak_self: weak_self.clone(),
             now_fn,
-            concurrent_updates: Arc::new(Default::default()),
             worker_registry,
         })
     }
@@ -642,27 +636,6 @@ where
             "inner_update_operation START"
         );
 
-        let counter = self
-            .concurrent_updates
-            .entry(operation_id.clone())
-            .or_insert_with(|| AtomicU32::new(0));
-        let concurrent = counter.fetch_add(1, Ordering::Relaxed);
-
-        debug!(
-            %operation_id,
-            concurrent_updaters = concurrent + 1,
-            update_type = %update_type_str,
-            "Concurrent updaters count"
-        );
-
-        if concurrent > 2 {
-            warn!(
-                %operation_id,
-                concurrent_updaters = concurrent + 1,
-                update_type = %update_type_str,
-                "High contention on operation"
-            );
-        }
         let mut last_err = None;
         let mut retry_count = 0;
         for _ in 0..MAX_UPDATE_RETRIES {
@@ -848,7 +821,6 @@ where
                     ?err,
                     "inner_update_operation FAILED (non-retryable)"
                 );
-                counter.fetch_sub(1, Ordering::Relaxed);
                 return Err(err);
             }
 
@@ -902,10 +874,8 @@ where
                 update_type = %update_type_str,
                 "inner_update_operation SUCCESS"
             );
-            counter.fetch_sub(1, Ordering::Relaxed);
             return Ok(());
         }
-        counter.fetch_sub(1, Ordering::Relaxed);
 
         warn!(
             %operation_id,
