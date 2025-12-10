@@ -1,0 +1,419 @@
+---
+title: Metrics and Observability
+description: 'Configure OpenTelemetry metrics collection for NativeLink'
+---
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+NativeLink provides comprehensive metrics through OpenTelemetry (OTEL), enabling deep insights into cache performance, remote execution pipelines, and system health.
+
+## Overview
+
+NativeLink automatically exports metrics when configured with OTEL environment variables. The metrics cover:
+
+- **Cache Operations**: Hit rates, latencies, evictions
+- **Execution Pipeline**: Queue depths, stage durations, success rates
+- **System Health**: Worker utilization, throughput, error rates
+
+## Quick Start
+
+<Tabs>
+<TabItem label="Docker Compose">
+
+```bash
+# Clone the repository
+git clone https://github.com/TraceMachina/nativelink
+cd nativelink/deployment-examples/metrics
+
+# Start the metrics stack
+docker-compose up -d
+
+# Configure NativeLink
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+export OTEL_SERVICE_NAME=nativelink
+export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=dev"
+
+# Run NativeLink
+nativelink /path/to/config.json
+```
+
+Access the services:
+- Prometheus: http://localhost:9091
+- Grafana: http://localhost:3000 (admin/admin)
+- OTEL Collector: http://localhost:8888/metrics
+
+</TabItem>
+<TabItem label="Kubernetes">
+
+```bash
+# Create namespace
+kubectl create namespace nativelink
+
+# Deploy OTEL Collector
+kubectl apply -f deployment-examples/metrics/kubernetes/otel-collector.yaml
+
+# Deploy Prometheus
+kubectl apply -f deployment-examples/metrics/kubernetes/prometheus.yaml
+
+# Configure NativeLink pods
+kubectl set env deployment/nativelink \
+  OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 \
+  OTEL_EXPORTER_OTLP_PROTOCOL=grpc \
+  OTEL_RESOURCE_ATTRIBUTES="k8s.cluster.name=main"
+```
+
+</TabItem>
+<TabItem label="Direct to Prometheus">
+
+```bash
+# Start Prometheus with OTLP receiver
+prometheus \
+  --web.enable-otlp-receiver \
+  --storage.tsdb.out-of-order-time-window=30m \
+  --config.file=prometheus.yml
+
+# Configure NativeLink
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:9090/api/v1/otlp/v1/metrics
+export OTEL_SERVICE_NAME=nativelink
+export OTEL_RESOURCE_ATTRIBUTES="service.instance.id=$(uuidgen)"
+
+# Disable traces and logs
+export OTEL_TRACES_EXPORTER=none
+export OTEL_LOGS_EXPORTER=none
+```
+
+</TabItem>
+</Tabs>
+
+## Configuration
+
+### Environment Variables
+
+NativeLink uses standard OpenTelemetry environment variables:
+
+```bash
+# Core OTLP Configuration
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc  # or http/protobuf
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer token"
+OTEL_EXPORTER_OTLP_COMPRESSION=gzip
+
+# Resource Attributes (customize for your deployment)
+OTEL_SERVICE_NAME=nativelink  # Fixed value
+OTEL_RESOURCE_ATTRIBUTES="deployment.environment=prod,region=us-east-1"
+
+# Metric Export Intervals
+OTEL_METRIC_EXPORT_INTERVAL=60000  # 60 seconds
+OTEL_METRIC_EXPORT_TIMEOUT=30000   # 30 seconds
+```
+
+### Collector Configuration
+
+The OTEL Collector adds resource attributes and batches metrics:
+
+```yaml
+processors:
+  resource:
+    attributes:
+      - key: service.namespace
+        value: nativelink
+        action: upsert
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+```
+
+## Metrics Reference
+
+### Cache Metrics
+
+Monitor cache performance and efficiency:
+
+| Metric | Description | Key Labels |
+|--------|-------------|------------|
+| `nativelink_cache_operations` | Operations count by type and result | `cache_type`, `operation`, `result` |
+| `nativelink_cache_operation_duration` | Operation latency histogram | `cache_type`, `operation` |
+| `nativelink_cache_hit_rate` | Calculated hit rate (recording rule) | `cache_type` |
+| `nativelink_cache_size` | Current cache size in bytes | `cache_type` |
+| `nativelink_cache_eviction_rate` | Evictions per second | `cache_type` |
+
+### Execution Metrics
+
+Track remote execution pipeline performance:
+
+| Metric | Description | Key Labels |
+|--------|-------------|------------|
+| `nativelink_execution_active_count` | Actions in each stage | `execution_stage` |
+| `nativelink_execution_completed_count` | Completed actions | `execution_result` |
+| `nativelink_execution_queue_time` | Queue wait time histogram | `priority` |
+| `nativelink_execution_stage_duration` | Time per stage | `execution_stage` |
+| `nativelink_execution_success_rate` | Success percentage (recording rule) | `instance` |
+
+### Execution Stages
+
+Actions progress through these stages:
+1. `unknown` - Initial state
+2. `cache_check` - Checking for cached results
+3. `queued` - Waiting for worker
+4. `executing` - Running on worker
+5. `completed` - Finished (success/failure/cache_hit)
+
+## Example Queries
+
+### Cache Performance
+
+```promql
+# Cache hit rate by type
+sum(rate(nativelink_cache_operations{result="hit"}[5m])) by (cache_type) /
+sum(rate(nativelink_cache_operations{operation="read"}[5m])) by (cache_type)
+
+# P95 cache operation latency
+histogram_quantile(0.95,
+  sum(rate(nativelink_cache_operation_duration_bucket[5m])) by (le, cache_type)
+)
+
+# Cache eviction rate
+sum(rate(nativelink_cache_operations{operation="evict"}[5m])) by (cache_type)
+```
+
+### Execution Pipeline
+
+```promql
+# Execution success rate
+sum(rate(nativelink_execution_completed_count{result="success"}[5m])) /
+sum(rate(nativelink_execution_completed_count[5m]))
+
+# Queue depth by priority
+sum(nativelink_execution_active_count{stage="queued"}) by (priority)
+
+# Average queue time
+histogram_quantile(0.5,
+  sum(rate(nativelink_execution_queue_time_bucket[5m])) by (le)
+)
+
+# Worker utilization
+count(nativelink_execution_active_count{stage="executing"} > 0) /
+count(count by (worker_id) (nativelink_execution_active_count))
+```
+
+### System Health
+
+```promql
+# Overall throughput (actions/sec)
+sum(rate(nativelink_execution_completed_count[5m]))
+
+# Error rate
+sum(rate(nativelink_execution_completed_count{result="failure"}[5m])) /
+sum(rate(nativelink_execution_completed_count[5m]))
+
+# Stage transition rate
+sum(rate(nativelink_execution_stage_transitions[5m])) by (instance)
+```
+
+## Dashboards
+
+### Grafana Dashboard
+
+Import the pre-built dashboard for comprehensive monitoring:
+
+```json
+{
+  "title": "NativeLink Metrics",
+  "panels": [
+    {
+      "title": "Execution Success Rate",
+      "targets": [{
+        "expr": "nativelink:execution_success_rate"
+      }]
+    },
+    {
+      "title": "Cache Hit Rate",
+      "targets": [{
+        "expr": "nativelink:cache_hit_rate"
+      }]
+    },
+    {
+      "title": "Queue Depth",
+      "targets": [{
+        "expr": "sum(nativelink_execution_active_count{stage=\"queued\"})"
+      }]
+    }
+  ]
+}
+```
+
+### Key Metrics to Monitor
+
+1. **SLI/SLO Metrics**:
+   - Execution success rate > 99%
+   - Cache hit rate > 80%
+   - P95 queue time < 30s
+   - P95 cache latency < 100ms
+
+2. **Capacity Planning**:
+   - Queue depth trends
+   - Worker utilization
+   - Cache size growth
+   - Eviction rates
+
+3. **Performance Optimization**:
+   - Stage duration breakdowns
+   - Cache operation latencies
+   - Output size distributions
+   - Retry rates
+
+## Server Options
+
+### Prometheus (Recommended)
+
+Best for most deployments with excellent query capabilities:
+
+```yaml
+# Enable OTLP receiver
+prometheus --web.enable-otlp-receiver
+
+# Configure out-of-order handling
+storage:
+  tsdb:
+    out_of_order_time_window: 30m
+```
+
+### Grafana Cloud
+
+Managed solution with built-in dashboards:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp-gateway.grafana.net/otlp
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ${GRAFANA_TOKEN}"
+```
+
+### ClickHouse
+
+For high-volume metrics with SQL queries:
+
+```yaml
+exporters:
+  clickhouse:
+    endpoint: tcp://clickhouse:9000
+    database: nativelink_metrics
+    ttl_days: 90
+```
+
+### Quickwit
+
+Unified logs and metrics search:
+
+```yaml
+exporters:
+  otlp:
+    endpoint: quickwit:7281
+    headers:
+      x-quickwit-index: nativelink-metrics
+```
+
+## Alerting
+
+### Critical Alerts
+
+```yaml
+- alert: HighErrorRate
+  expr: |
+    (1 - nativelink:execution_success_rate) > 0.05
+  for: 5m
+  annotations:
+    summary: "Execution error rate above 5%"
+
+- alert: QueueBacklog
+  expr: |
+    sum(nativelink_execution_active_count{stage="queued"}) > 100
+  for: 15m
+  annotations:
+    summary: "Queue backlog exceeds 100 actions"
+
+- alert: CacheEvictionHigh
+  expr: |
+    rate(nativelink_cache_operations{operation="evict"}[5m]) > 10
+  for: 10m
+  annotations:
+    summary: "Cache eviction rate exceeds threshold"
+```
+
+## Troubleshooting
+
+### No Metrics Appearing
+
+1. Verify OTEL environment variables:
+   ```bash
+   env | grep OTEL_
+   ```
+
+2. Check collector health:
+   ```bash
+   curl http://localhost:13133/health
+   ```
+
+3. Verify metrics are being received:
+   ```bash
+   curl http://localhost:8888/metrics | grep otelcol_receiver
+   ```
+
+### High Cardinality
+
+Reduce label dimensions:
+```yaml
+processors:
+  attributes:
+    actions:
+      - key: high_cardinality_label
+        action: delete
+```
+
+### Out-of-Order Samples
+
+Increase Prometheus window:
+```yaml
+storage:
+  tsdb:
+    out_of_order_time_window: 1h
+```
+
+## Performance Tuning
+
+### Metric Export Optimization
+
+```bash
+# Increase export interval for lower overhead
+export OTEL_METRIC_EXPORT_INTERVAL=120000  # 2 minutes
+
+# Batch metrics at collector
+processors:
+  batch:
+    send_batch_size: 2048
+    timeout: 30s
+```
+
+### Recording Rules
+
+Use Prometheus recording rules for expensive queries:
+```yaml
+- record: nativelink:hourly_success_rate
+  expr: |
+    avg_over_time(nativelink:execution_success_rate[1h])
+```
+
+### Sampling
+
+For high-volume deployments, sample metrics:
+```yaml
+processors:
+  probabilistic_sampler:
+    sampling_percentage: 10  # Sample 10% of metrics
+```
+
+## Additional Resources
+
+- [OpenTelemetry Documentation](https://opentelemetry.io/docs/)
+- [Prometheus Best Practices](https://prometheus.io/docs/practices/)
+- [Grafana Dashboard Gallery](https://grafana.com/grafana/dashboards/)
+- [NativeLink GitHub](https://github.com/TraceMachina/nativelink)

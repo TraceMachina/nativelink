@@ -19,6 +19,8 @@ FFIs
 GPUs
 Goma
 [Hh]ardlinks
+gzip
+[Hh]eatmap
 [Hh]ermeticity
 Istio
 JDK
@@ -114,7 +116,10 @@ Trendshift
 Norwest
 Databricks
 Datadog
+Downsampling
 Brex
 Citrix
 Menlo
 benchmarked
+Thanos
+Quickwit
