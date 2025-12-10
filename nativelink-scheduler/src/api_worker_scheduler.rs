@@ -131,7 +131,6 @@ impl core::fmt::Debug for ApiWorkerSchedulerImpl {
             .field("workers", &self.workers)
             .field("allocation_strategy", &self.allocation_strategy)
             .field("worker_change_notify", &self.worker_change_notify)
-            .field("operation_keep_alive_tx", &self.operation_keep_alive_tx)
             .field(
                 "capability_index_size",
                 &self.capability_index.worker_count(),
@@ -501,6 +500,7 @@ impl ApiWorkerScheduler {
             platform_property_manager,
             worker_timeout_s,
             worker_registry,
+            metrics: Arc::new(SchedulerMetrics::default()),
         })
     }
 
