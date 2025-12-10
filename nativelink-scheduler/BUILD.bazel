@@ -25,6 +25,7 @@ rust_library(
         "src/simple_scheduler_state_manager.rs",
         "src/store_awaited_action_db.rs",
         "src/worker.rs",
+        "src/worker_registry.rs",
         "src/worker_scheduler.rs",
     ],
     proc_macro_deps = [
@@ -40,6 +41,7 @@ rust_library(
         "//nativelink-util",
         "@crates//:async-lock",
         "@crates//:bytes",
+        "@crates//:dashmap",
         "@crates//:futures",
         "@crates//:lru",
         "@crates//:opentelemetry",
@@ -84,6 +86,7 @@ rust_test_suite(
         "//nativelink-util",
         "@crates//:async-lock",
         "@crates//:bytes",
+        "@crates//:dashmap",
         "@crates//:fred",
         "@crates//:futures",
         "@crates//:mock_instant",

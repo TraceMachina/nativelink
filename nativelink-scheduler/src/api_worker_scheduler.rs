@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use core::ops::{Deref, DerefMut};
+use core::time::Duration;
 use std::sync::Arc;
+use std::time::UNIX_EPOCH;
 
 use async_lock::Mutex;
 use lru::LruCache;
@@ -27,15 +29,13 @@ use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::shutdown_guard::ShutdownGuard;
-use nativelink_util::spawn;
-use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::Notify;
-use tokio::sync::mpsc::{self, UnboundedSender};
 use tonic::async_trait;
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
+use crate::worker_registry::SharedWorkerRegistry;
 use crate::worker_scheduler::WorkerScheduler;
 
 #[derive(Debug)]
@@ -86,8 +86,8 @@ struct ApiWorkerSchedulerImpl {
     allocation_strategy: WorkerAllocationStrategy,
     /// A channel to notify the matching engine that the worker pool has changed.
     worker_change_notify: Arc<Notify>,
-    /// A channel to notify that an operation is still alive.
-    operation_keep_alive_tx: UnboundedSender<(OperationId, WorkerId)>,
+    /// Worker registry for tracking worker liveness.
+    worker_registry: SharedWorkerRegistry,
 
     /// Whether the worker scheduler is shutting down.
     shutting_down: bool,
@@ -99,13 +99,20 @@ impl core::fmt::Debug for ApiWorkerSchedulerImpl {
             .field("workers", &self.workers)
             .field("allocation_strategy", &self.allocation_strategy)
             .field("worker_change_notify", &self.worker_change_notify)
-            .field("operation_keep_alive_tx", &self.operation_keep_alive_tx)
+            .field("worker_registry", &self.worker_registry)
             .finish_non_exhaustive()
     }
 }
 
 impl ApiWorkerSchedulerImpl {
     /// Refreshes the lifetime of the worker with the given timestamp.
+    ///
+    /// Instead of sending N keepalive messages (one per operation),
+    /// we now send a single worker heartbeat. The worker registry tracks worker liveness,
+    /// and timeout detection checks the worker's `last_seen` instead of per-operation timestamps.
+    ///
+    /// Note: This only updates the local worker state. The worker registry is updated
+    /// separately after releasing the inner lock to reduce contention.
     fn refresh_lifetime(
         &mut self,
         worker_id: &WorkerId,
@@ -124,19 +131,13 @@ impl ApiWorkerSchedulerImpl {
             timestamp
         );
         worker.last_update_timestamp = timestamp;
-        for operation_id in worker.running_action_infos.keys() {
-            if self
-                .operation_keep_alive_tx
-                .send((operation_id.clone(), worker_id.clone()))
-                .is_err()
-            {
-                error!(
-                    %operation_id,
-                    ?worker_id,
-                    "OperationKeepAliveTx stream closed"
-                );
-            }
-        }
+
+        trace!(
+            ?worker_id,
+            running_operations = worker.running_action_infos.len(),
+            "Worker keepalive received"
+        );
+
         Ok(())
     }
 
@@ -408,7 +409,8 @@ pub struct ApiWorkerScheduler {
         help = "Timeout of how long to evict workers if no response in this given amount of time in seconds."
     )]
     worker_timeout_s: u64,
-    _operation_keep_alive_spawn: JoinHandleDropGuard<()>,
+    /// Shared worker registry for checking worker liveness.
+    worker_registry: SharedWorkerRegistry,
 }
 
 impl ApiWorkerScheduler {
@@ -418,51 +420,26 @@ impl ApiWorkerScheduler {
         allocation_strategy: WorkerAllocationStrategy,
         worker_change_notify: Arc<Notify>,
         worker_timeout_s: u64,
+        worker_registry: SharedWorkerRegistry,
     ) -> Arc<Self> {
-        let (operation_keep_alive_tx, mut operation_keep_alive_rx) = mpsc::unbounded_channel();
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
                 worker_state_manager: worker_state_manager.clone(),
                 allocation_strategy,
                 worker_change_notify,
-                operation_keep_alive_tx,
+                worker_registry: worker_registry.clone(),
                 shutting_down: false,
             }),
             platform_property_manager,
             worker_timeout_s,
-            _operation_keep_alive_spawn: spawn!(
-                "simple_scheduler_operation_keep_alive",
-                async move {
-                    const RECV_MANY_LIMIT: usize = 256;
-                    let mut messages = Vec::with_capacity(RECV_MANY_LIMIT);
-                    loop {
-                        messages.clear();
-                        operation_keep_alive_rx
-                            .recv_many(&mut messages, RECV_MANY_LIMIT)
-                            .await;
-                        if messages.is_empty() {
-                            return; // Looks like our sender has been dropped.
-                        }
-                        for (operation_id, worker_id) in messages.drain(..) {
-                            let update_operation_res = worker_state_manager
-                                .update_operation(
-                                    &operation_id,
-                                    &worker_id,
-                                    UpdateOperationType::KeepAlive,
-                                )
-                                .await;
-                            if let Err(err) = update_operation_res {
-                                warn!(
-                                    ?err,
-                                    "Error while running worker_keep_alive_received, maybe job is done?"
-                                );
-                            }
-                        }
-                    }
-                }
-            ),
+            worker_registry,
         })
+    }
+
+    /// Returns a reference to the worker registry.
+    pub const fn worker_registry(&self) -> &SharedWorkerRegistry {
+        &self.worker_registry
     }
 
     pub async fn worker_notify_run_action(
@@ -518,6 +495,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
 
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id.clone();
+        let worker_timestamp = worker.last_update_timestamp;
         let mut inner = self.inner.lock().await;
         if inner.shutting_down {
             warn!("Rejected worker add during shutdown: {}", worker_id);
@@ -533,6 +511,10 @@ impl WorkerScheduler for ApiWorkerScheduler {
             return Result::<(), _>::Err(err.clone())
                 .merge(inner.immediate_evict_worker(&worker_id, err, false).await);
         }
+
+        let now = UNIX_EPOCH + Duration::from_secs(worker_timestamp);
+        self.worker_registry.register_worker(&worker_id, now).await;
+
         Ok(())
     }
 
@@ -551,13 +533,22 @@ impl WorkerScheduler for ApiWorkerScheduler {
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error> {
-        let mut inner = self.inner.lock().await;
-        inner
-            .refresh_lifetime(worker_id, timestamp)
-            .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
+        {
+            let mut inner = self.inner.lock().await;
+            inner
+                .refresh_lifetime(worker_id, timestamp)
+                .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")?;
+        }
+        let now = UNIX_EPOCH + Duration::from_secs(timestamp);
+        self.worker_registry
+            .update_worker_heartbeat(worker_id, now)
+            .await;
+        Ok(())
     }
 
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        self.worker_registry.remove_worker(worker_id).await;
+
         let mut inner = self.inner.lock().await;
         inner
             .immediate_evict_worker(
@@ -591,23 +582,54 @@ impl WorkerScheduler for ApiWorkerScheduler {
     }
 
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
-        let mut inner = self.inner.lock().await;
+        // Check worker liveness using both the local timestamp (from LRU)
+        // and the worker registry. A worker is alive if either source says it's alive.
+        let timeout = Duration::from_secs(self.worker_timeout_s);
+        let now = UNIX_EPOCH + Duration::from_secs(now_timestamp);
+        let timeout_threshold = now_timestamp.saturating_sub(self.worker_timeout_s);
 
+        let workers_to_check: Vec<(WorkerId, bool)> = {
+            let inner = self.inner.lock().await;
+            inner
+                .workers
+                .iter()
+                .map(|(worker_id, worker)| {
+                    let local_alive = worker.last_update_timestamp > timeout_threshold;
+                    (worker_id.clone(), local_alive)
+                })
+                .collect()
+        };
+
+        let mut worker_ids_to_remove = Vec::new();
+        for (worker_id, local_alive) in workers_to_check {
+            if local_alive {
+                continue;
+            }
+
+            let registry_alive = self
+                .worker_registry
+                .is_worker_alive(&worker_id, timeout, now)
+                .await;
+
+            if !registry_alive {
+                trace!(
+                    ?worker_id,
+                    local_alive,
+                    registry_alive,
+                    timeout_threshold,
+                    "Worker timed out - neither local nor registry shows alive"
+                );
+                worker_ids_to_remove.push(worker_id);
+            }
+        }
+
+        if worker_ids_to_remove.is_empty() {
+            return Ok(());
+        }
+
+        let mut inner = self.inner.lock().await;
         let mut result = Ok(());
-        // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
-        // map most of the time.
-        let worker_ids_to_remove: Vec<WorkerId> = inner
-            .workers
-            .iter()
-            .rev()
-            .map_while(|(worker_id, worker)| {
-                if worker.last_update_timestamp <= now_timestamp - self.worker_timeout_s {
-                    Some(worker_id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
+
         for worker_id in &worker_ids_to_remove {
             warn!(?worker_id, "Worker timed out, removing from pool");
             result = result.merge(

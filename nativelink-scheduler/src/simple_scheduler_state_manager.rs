@@ -13,12 +13,14 @@
 // limitations under the License.
 
 use core::ops::Bound;
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 use std::string::ToString;
 use std::sync::{Arc, Weak};
 
 use async_lock::Mutex;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use futures::{StreamExt, TryStreamExt, stream};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
@@ -37,15 +39,22 @@ use nativelink_util::operation_state_manager::{
 };
 use nativelink_util::origin_event::OriginMetadata;
 use opentelemetry::KeyValue;
-use tracing::{info, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
 };
+use crate::worker_registry::SharedWorkerRegistry;
 
 /// Maximum number of times an update to the database
 /// can fail before giving up.
 const MAX_UPDATE_RETRIES: usize = 5;
+
+/// Base delay for exponential backoff on version conflicts (in ms).
+const BASE_RETRY_DELAY_MS: u64 = 10;
+
+/// Maximum jitter to add to retry delay (in ms).
+const MAX_RETRY_JITTER_MS: u64 = 20;
 
 /// Simple struct that implements the `ActionStateResult` trait and always returns an error.
 struct ErrorActionStateResult(Error);
@@ -205,6 +214,20 @@ where
                 .upgrade()
                 .err_tip(|| format!("Failed to upgrade weak reference to SimpleSchedulerStateManager in MatchingEngineActionStateResult::changed at attempt: {timeout_attempts}"))?;
 
+            // Check if worker is alive via registry before timing out.
+            let should_timeout = simple_scheduler_state_manager
+                .should_timeout_operation(&awaited_action)
+                .await;
+
+            if !should_timeout {
+                // Worker is alive, continue waiting for updates
+                trace!(
+                    operation_id = %awaited_action.operation_id(),
+                    "Operation timeout check passed, worker is alive"
+                );
+                continue;
+            }
+
             warn!(
                 ?awaited_action,
                 "OperationId {} / {} timed out after {} seconds issuing a retry",
@@ -289,6 +312,12 @@ where
 
     /// Function to get the current time.
     now_fn: NowFn,
+
+    /// Concurrent Updates
+    concurrent_updates: Arc<DashMap<OperationId, AtomicU32>>,
+
+    /// Worker registry for checking worker liveness.
+    worker_registry: Option<SharedWorkerRegistry>,
 }
 
 impl<T, I, NowFn> SimpleSchedulerStateManager<T, I, NowFn>
@@ -303,6 +332,7 @@ where
         client_action_timeout: Duration,
         action_db: T,
         now_fn: NowFn,
+        worker_registry: Option<SharedWorkerRegistry>,
     ) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| Self {
             action_db,
@@ -312,7 +342,44 @@ where
             timeout_operation_mux: Mutex::new(()),
             weak_self: weak_self.clone(),
             now_fn,
+            concurrent_updates: Arc::new(Default::default()),
+            worker_registry,
         })
+    }
+
+    pub async fn should_timeout_operation(&self, awaited_action: &AwaitedAction) -> bool {
+        if !matches!(awaited_action.state().stage, ActionStage::Executing) {
+            return false;
+        }
+
+        let now = (self.now_fn)().now();
+
+        let registry_alive = if let Some(ref worker_registry) = self.worker_registry {
+            if let Some(worker_id) = awaited_action.worker_id() {
+                worker_registry
+                    .is_worker_alive(worker_id, self.no_event_action_timeout, now)
+                    .await
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if registry_alive {
+            return false;
+        }
+
+        let worker_should_update_before = awaited_action
+            .last_worker_updated_timestamp()
+            .checked_add(self.no_event_action_timeout)
+            .unwrap_or(now);
+
+        if worker_should_update_before >= now {
+            return false;
+        }
+
+        true
     }
 
     async fn apply_filter_predicate(
@@ -325,6 +392,8 @@ where
 
         let mut maybe_reloaded_awaited_action: Option<AwaitedAction> = None;
         let now = (self.now_fn)().now();
+
+        // Check if client has timed out
         if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout < now {
             // This may change if the version is out of date.
             let mut timed_out = true;
@@ -492,21 +561,47 @@ where
             return Ok(());
         }
 
-        let worker_should_update_before = awaited_action
-            .last_worker_updated_timestamp()
-            .checked_add(self.no_event_action_timeout)
-            .ok_or_else(|| {
-                make_err!(
-                    Code::Internal,
-                    "Timestamp overflow for operation {operation_id} in SimpleSchedulerStateManager::timeout_operation_id"
-                )
-            })?;
-        if worker_should_update_before >= (self.now_fn)().now() {
-            // The action was updated recently, we should not timeout the action.
-            // This is to prevent timing out actions that have recently been updated
-            // (like multiple clients timeout the same action at the same time).
+        let now = (self.now_fn)().now();
+
+        // Check worker liveness via registry if available.
+        let registry_alive = if let Some(ref worker_registry) = self.worker_registry {
+            if let Some(worker_id) = awaited_action.worker_id() {
+                worker_registry
+                    .is_worker_alive(worker_id, self.no_event_action_timeout, now)
+                    .await
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        let timestamp_alive = {
+            let worker_should_update_before = awaited_action
+                .last_worker_updated_timestamp()
+                .checked_add(self.no_event_action_timeout)
+                .unwrap_or(now);
+            worker_should_update_before >= now
+        };
+
+        if registry_alive || timestamp_alive {
+            trace!(
+                %operation_id,
+                worker_id = ?awaited_action.worker_id(),
+                registry_alive,
+                timestamp_alive,
+                "Worker is alive, operation not timed out"
+            );
             return Ok(());
         }
+
+        debug!(
+            %operation_id,
+            worker_id = ?awaited_action.worker_id(),
+            registry_alive,
+            timestamp_alive,
+            "Worker not alive via registry or timestamp, timing out operation"
+        );
 
         self.assign_operation(
             operation_id,
@@ -525,8 +620,72 @@ where
         maybe_worker_id: Option<&WorkerId>,
         update: UpdateOperationType,
     ) -> Result<(), Error> {
+        let update_type_str = match &update {
+            UpdateOperationType::KeepAlive => "KeepAlive",
+            UpdateOperationType::UpdateWithActionStage(stage) => match stage {
+                ActionStage::Queued => "Stage:Queued",
+                ActionStage::Executing => "Stage:Executing",
+                ActionStage::Completed(_) => "Stage:Completed",
+                ActionStage::CompletedFromCache(_) => "Stage:CompletedFromCache",
+                ActionStage::CacheCheck => "Stage:CacheCheck",
+                ActionStage::Unknown => "Stage:Unknown",
+            },
+            UpdateOperationType::UpdateWithError(_) => "Error",
+            UpdateOperationType::UpdateWithDisconnect => "Disconnect",
+            UpdateOperationType::ExecutionComplete => "ExecutionComplete",
+        };
+
+        debug!(
+            %operation_id,
+            ?maybe_worker_id,
+            update_type = %update_type_str,
+            "inner_update_operation START"
+        );
+
+        let counter = self
+            .concurrent_updates
+            .entry(operation_id.clone())
+            .or_insert_with(|| AtomicU32::new(0));
+        let concurrent = counter.fetch_add(1, Ordering::Relaxed);
+
+        debug!(
+            %operation_id,
+            concurrent_updaters = concurrent + 1,
+            update_type = %update_type_str,
+            "Concurrent updaters count"
+        );
+
+        if concurrent > 2 {
+            warn!(
+                %operation_id,
+                concurrent_updaters = concurrent + 1,
+                update_type = %update_type_str,
+                "High contention on operation"
+            );
+        }
         let mut last_err = None;
+        let mut retry_count = 0;
         for _ in 0..MAX_UPDATE_RETRIES {
+            retry_count += 1;
+            if retry_count > 1 {
+                let base_delay = BASE_RETRY_DELAY_MS * (1 << (retry_count - 2).min(4));
+                let jitter = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| u64::try_from(d.as_nanos()).expect("u64 error") % MAX_RETRY_JITTER_MS)
+                    .unwrap_or(0);
+                let delay = Duration::from_millis(base_delay + jitter);
+
+                warn!(
+                    %operation_id,
+                    ?maybe_worker_id,
+                    retry_count,
+                    delay_ms = delay.as_millis(),
+                    update_type = %update_type_str,
+                    "Retrying operation update due to version conflict (with backoff)"
+                );
+
+                tokio::time::sleep(delay).await;
+            }
             let maybe_awaited_action_subscriber = self
                 .action_db
                 .get_by_operation_id(operation_id)
@@ -674,9 +833,22 @@ where
                 // updated due to the data being set was not the latest
                 // but can be retried.
                 if err.code == Code::Aborted {
+                    debug!(
+                        %operation_id,
+                        retry_count,
+                        update_type = %update_type_str,
+                        "Version conflict (Aborted), will retry"
+                    );
                     last_err = Some(err);
                     continue;
                 }
+                warn!(
+                    %operation_id,
+                    update_type = %update_type_str,
+                    ?err,
+                    "inner_update_operation FAILED (non-retryable)"
+                );
+                counter.fetch_sub(1, Ordering::Relaxed);
                 return Err(err);
             }
 
@@ -724,8 +896,23 @@ where
                 _ => {}
             }
 
+            debug!(
+                %operation_id,
+                retry_count,
+                update_type = %update_type_str,
+                "inner_update_operation SUCCESS"
+            );
+            counter.fetch_sub(1, Ordering::Relaxed);
             return Ok(());
         }
+        counter.fetch_sub(1, Ordering::Relaxed);
+
+        warn!(
+            %operation_id,
+            update_type = %update_type_str,
+            retry_count = MAX_UPDATE_RETRIES,
+            "inner_update_operation EXHAUSTED all retries"
+        );
         Err(last_err.unwrap_or_else(|| {
             make_err!(
                 Code::Internal,
