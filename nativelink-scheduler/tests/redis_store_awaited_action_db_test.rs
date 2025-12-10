@@ -702,9 +702,9 @@ async fn test_outdated_version() -> Result<(), Error> {
 /// Test that orphaned client operation ID mappings return None.
 ///
 /// This tests the scenario where:
-/// 1. A client operation ID mapping exists (cid_* → operation_id)
+/// 1. A client operation ID mapping exists (cid_* → `operation_id`)
 /// 2. The actual operation (aa_*) has been deleted (completed/timed out)
-/// 3. get_awaited_action_by_id should return None instead of a subscriber to a non-existent operation
+/// 3. `get_awaited_action_by_id` should return None instead of a subscriber to a non-existent operation
 #[nativelink_test]
 async fn test_orphaned_client_operation_id_returns_none() -> Result<(), Error> {
     const CLIENT_OPERATION_ID: &str = "orphaned_client_id";
