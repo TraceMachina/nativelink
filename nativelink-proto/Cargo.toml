@@ -2,7 +2,7 @@
 [package]
 edition = "2024"
 name = "nativelink-proto"
-version = "0.7.8"
+version = "0.7.9"
 
 [lib]
 name = "nativelink_proto"

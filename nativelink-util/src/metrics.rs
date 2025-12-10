@@ -119,13 +119,11 @@ impl From<ExecutionStage> for Value {
 impl From<ActionStage> for ExecutionStage {
     fn from(stage: ActionStage) -> Self {
         match stage {
-            ActionStage::Unknown => ExecutionStage::Unknown,
-            ActionStage::CacheCheck => ExecutionStage::CacheCheck,
-            ActionStage::Queued => ExecutionStage::Queued,
-            ActionStage::Executing => ExecutionStage::Executing,
-            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => {
-                ExecutionStage::Completed
-            }
+            ActionStage::Unknown => Self::Unknown,
+            ActionStage::CacheCheck => Self::CacheCheck,
+            ActionStage::Queued => Self::Queued,
+            ActionStage::Executing => Self::Executing,
+            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => Self::Completed,
         }
     }
 }
@@ -133,13 +131,11 @@ impl From<ActionStage> for ExecutionStage {
 impl From<&ActionStage> for ExecutionStage {
     fn from(stage: &ActionStage) -> Self {
         match stage {
-            ActionStage::Unknown => ExecutionStage::Unknown,
-            ActionStage::CacheCheck => ExecutionStage::CacheCheck,
-            ActionStage::Queued => ExecutionStage::Queued,
-            ActionStage::Executing => ExecutionStage::Executing,
-            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => {
-                ExecutionStage::Completed
-            }
+            ActionStage::Unknown => Self::Unknown,
+            ActionStage::CacheCheck => Self::CacheCheck,
+            ActionStage::Queued => Self::Queued,
+            ActionStage::Executing => Self::Executing,
+            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => Self::Completed,
         }
     }
 }
