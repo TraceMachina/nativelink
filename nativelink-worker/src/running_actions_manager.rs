@@ -1257,10 +1257,11 @@ impl RunningActionImpl {
                     match fs::metadata(&full_path).await {
                         Ok(metadata) => {
                             if metadata.is_dir() {
-                                return Ok(OutputType::DirectorySymlink(output_symlink));
+                                Ok(OutputType::DirectorySymlink(output_symlink))
+                            } else {
+                                // Note: If it's anything but directory we put it as a file symlink.
+                                Ok(OutputType::FileSymlink(output_symlink))
                             }
-                            // Note: If it's anything but directory we put it as a file symlink.
-                            return Ok(OutputType::FileSymlink(output_symlink));
                         }
                         Err(e) => {
                             if e.code != Code::NotFound {
@@ -1273,7 +1274,7 @@ impl RunningActionImpl {
                             }
                             // If the file doesn't exist, we consider it a file. Even though the
                             // file doesn't exist we still need to populate an entry.
-                            return Ok(OutputType::FileSymlink(output_symlink));
+                            Ok(OutputType::FileSymlink(output_symlink))
                         }
                     }
                 } else {

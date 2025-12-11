@@ -3,6 +3,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.9](https://github.com/TraceMachina/nativelink/compare/v0.7.8..v0.7.9) - 2025-12-10
+
+### ⛰️  Features
+
+- Add LazyNotFound Store Optimization, Support for fast_slow_store (S3, GCS slow_store targets) ([#2072](https://github.com/TraceMachina/nativelink/issues/2072)) - ([8c62bb3](https://github.com/TraceMachina/nativelink/commit/8c62bb318d849c7122659bd1c583fee627fa4f74))
+
+### 🐛 Bug Fixes
+
+- Fix the scheduler timeouts and errors ([#2083](https://github.com/TraceMachina/nativelink/issues/2083)) - ([93f4ead](https://github.com/TraceMachina/nativelink/commit/93f4eaddad157842549d1cd9cc1da676194997bd))
+
+### ⚙️ Miscellaneous
+
+- Perf spike ([#2081](https://github.com/TraceMachina/nativelink/issues/2081)) - ([422bfa1](https://github.com/TraceMachina/nativelink/commit/422bfa176891bae17eacb78f1b64e95bd68916d9))
+- Implement remote execution metrics rebased ([#2080](https://github.com/TraceMachina/nativelink/issues/2080)) - ([e38af3d](https://github.com/TraceMachina/nativelink/commit/e38af3d6ce897084832fbd66757de25d532acae6))
+- Build Custom Docker Image for each PR ([#2084](https://github.com/TraceMachina/nativelink/issues/2084)) - ([0926bff](https://github.com/TraceMachina/nativelink/commit/0926bffdf8918c9fd15b07673cb0cddab9c382ff))
+
+## [0.7.8](https://github.com/TraceMachina/nativelink/compare/v0.7.7..v0.7.8) - 2025-11-27
+
+### 🐛 Bug Fixes
+
+- Use wildcard query when Redis index value is empty ([#2069](https://github.com/TraceMachina/nativelink/issues/2069))
+- Fix assertion message for fastcdc ([#2056](https://github.com/TraceMachina/nativelink/issues/2056))
+- Fix the changelog post 0.7.7 ([#2057](https://github.com/TraceMachina/nativelink/issues/2057))
+
+### 🧪 Testing & CI
+
+- Redis store tester and permits ([#1878](https://github.com/TraceMachina/nativelink/issues/1878))
+
+### ⚙️ Miscellaneous
+
+- *(deps)* Update dependency astro to v5.15.9 [security] ([#2061](https://github.com/TraceMachina/nativelink/issues/2061))
+- Recoverable connection pool ([#2067](https://github.com/TraceMachina/nativelink/issues/2067))
+- Revert "bugfix: prefix Redis index name and sort key ([#2066])" ([#2068](https://github.com/TraceMachina/nativelink/issues/2068))
+- Prefix Redis index name and sort key ([#2066](https://github.com/TraceMachina/nativelink/issues/2066))
+- Disable digest updates for renovate and Nix magic cache ([#2059](https://github.com/TraceMachina/nativelink/issues/2059))
+- Do not need to store zero-length filesystem files ([#2033](https://github.com/TraceMachina/nativelink/issues/2033))
+- Don't complain about worker stream error if we're shutting down ([#2055](https://github.com/TraceMachina/nativelink/issues/2055))
+
+### ⬆️ Bumps & Version Updates
+
+- Update the default max permits for redis ([#2063](https://github.com/TraceMachina/nativelink/issues/2063))
+
 ## [0.7.7](https://github.com/TraceMachina/nativelink/compare/v0.7.6..v0.7.7) - 2025-11-17
 
 

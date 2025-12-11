@@ -44,20 +44,23 @@ use tokio::fs;
 pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(), Error> {
     error_if!(
         !src_dir.exists(),
-        "Source directory does not exist: {:?}",
-        src_dir
+        "Source directory does not exist: {}",
+        src_dir.display()
     );
 
     error_if!(
         dst_dir.exists(),
-        "Destination directory already exists: {:?}",
-        dst_dir
+        "Destination directory already exists: {}",
+        dst_dir.display()
     );
 
     // Create the root destination directory
-    fs::create_dir_all(dst_dir)
-        .await
-        .err_tip(|| format!("Failed to create destination directory: {dst_dir:?}"))?;
+    fs::create_dir_all(dst_dir).await.err_tip(|| {
+        format!(
+            "Failed to create destination directory: {}",
+            dst_dir.display()
+        )
+    })?;
 
     // Recursively hardlink the directory tree
     hardlink_directory_tree_recursive(src_dir, dst_dir).await
@@ -71,12 +74,12 @@ fn hardlink_directory_tree_recursive<'a>(
     Box::pin(async move {
         let mut entries = fs::read_dir(src)
             .await
-            .err_tip(|| format!("Failed to read directory: {src:?}"))?;
+            .err_tip(|| format!("Failed to read directory: {}", src.display()))?;
 
         while let Some(entry) = entries
             .next_entry()
             .await
-            .err_tip(|| format!("Failed to get next entry in: {src:?}"))?
+            .err_tip(|| format!("Failed to get next entry in: {}", src.display()))?
         {
             let entry_path = entry.path();
             let file_name = entry.file_name().into_string().map_err(|os_str| {
@@ -91,13 +94,13 @@ fn hardlink_directory_tree_recursive<'a>(
             let metadata = entry
                 .metadata()
                 .await
-                .err_tip(|| format!("Failed to get metadata for: {entry_path:?}"))?;
+                .err_tip(|| format!("Failed to get metadata for: {}", entry_path.display()))?;
 
             if metadata.is_dir() {
                 // Create subdirectory and recurse
                 fs::create_dir(&dst_path)
                     .await
-                    .err_tip(|| format!("Failed to create directory: {dst_path:?}"))?;
+                    .err_tip(|| format!("Failed to create directory: {}", dst_path.display()))?;
 
                 hardlink_directory_tree_recursive(&entry_path, &dst_path).await?;
             } else if metadata.is_file() {
@@ -106,30 +109,32 @@ fn hardlink_directory_tree_recursive<'a>(
                     .await
                     .err_tip(|| {
                         format!(
-                            "Failed to hardlink {entry_path:?} to {dst_path:?}. This may occur if the source and destination are on different filesystems"
+                            "Failed to hardlink {} to {}. This may occur if the source and destination are on different filesystems",
+                            entry_path.display(),
+                            dst_path.display()
                         )
                     })?;
             } else if metadata.is_symlink() {
                 // Read the symlink target and create a new symlink
                 let target = fs::read_link(&entry_path)
                     .await
-                    .err_tip(|| format!("Failed to read symlink: {entry_path:?}"))?;
+                    .err_tip(|| format!("Failed to read symlink: {}", entry_path.display()))?;
 
                 #[cfg(unix)]
                 fs::symlink(&target, &dst_path)
                     .await
-                    .err_tip(|| format!("Failed to create symlink: {dst_path:?}"))?;
+                    .err_tip(|| format!("Failed to create symlink: {}", dst_path.display()))?;
 
                 #[cfg(windows)]
                 {
                     if target.is_dir() {
                         fs::symlink_dir(&target, &dst_path).await.err_tip(|| {
-                            format!("Failed to create directory symlink: {:?}", dst_path)
+                            format!("Failed to create directory symlink: {}", dst_path.display())
                         })?;
                     } else {
-                        fs::symlink_file(&target, &dst_path)
-                            .await
-                            .err_tip(|| format!("Failed to create file symlink: {:?}", dst_path))?;
+                        fs::symlink_file(&target, &dst_path).await.err_tip(|| {
+                            format!("Failed to create file symlink: {}", dst_path.display())
+                        })?;
                     }
                 }
             }
@@ -149,7 +154,7 @@ fn hardlink_directory_tree_recursive<'a>(
 /// - Unix: Sets permissions to 0o555 (r-xr-xr-x)
 /// - Windows: Sets `FILE_ATTRIBUTE_READONLY`
 pub async fn set_readonly_recursive(dir: &Path) -> Result<(), Error> {
-    error_if!(!dir.exists(), "Directory does not exist: {:?}", dir);
+    error_if!(!dir.exists(), "Directory does not exist: {}", dir.display());
 
     set_readonly_recursive_impl(dir).await
 }
@@ -160,17 +165,17 @@ fn set_readonly_recursive_impl<'a>(
     Box::pin(async move {
         let metadata = fs::metadata(path)
             .await
-            .err_tip(|| format!("Failed to get metadata for: {path:?}"))?;
+            .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
 
         if metadata.is_dir() {
             let mut entries = fs::read_dir(path)
                 .await
-                .err_tip(|| format!("Failed to read directory: {path:?}"))?;
+                .err_tip(|| format!("Failed to read directory: {}", path.display()))?;
 
             while let Some(entry) = entries
                 .next_entry()
                 .await
-                .err_tip(|| format!("Failed to get next entry in: {path:?}"))?
+                .err_tip(|| format!("Failed to get next entry in: {}", path.display()))?
             {
                 set_readonly_recursive_impl(&entry.path()).await?;
             }
@@ -189,7 +194,7 @@ fn set_readonly_recursive_impl<'a>(
 
             fs::set_permissions(path, perms)
                 .await
-                .err_tip(|| format!("Failed to set permissions for: {path:?}"))?;
+                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
         }
 
         #[cfg(windows)]
@@ -199,7 +204,7 @@ fn set_readonly_recursive_impl<'a>(
 
             fs::set_permissions(path, perms)
                 .await
-                .err_tip(|| format!("Failed to set permissions for: {path:?}"))?;
+                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
         }
 
         Ok(())
@@ -215,7 +220,7 @@ fn set_readonly_recursive_impl<'a>(
 /// # Returns
 /// Total size in bytes, or Error if directory cannot be read
 pub async fn calculate_directory_size(dir: &Path) -> Result<u64, Error> {
-    error_if!(!dir.exists(), "Directory does not exist: {:?}", dir);
+    error_if!(!dir.exists(), "Directory does not exist: {}", dir.display());
 
     calculate_directory_size_impl(dir).await
 }
@@ -226,7 +231,7 @@ fn calculate_directory_size_impl<'a>(
     Box::pin(async move {
         let metadata = fs::metadata(path)
             .await
-            .err_tip(|| format!("Failed to get metadata for: {path:?}"))?;
+            .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
 
         if metadata.is_file() {
             return Ok(metadata.len());
@@ -239,12 +244,12 @@ fn calculate_directory_size_impl<'a>(
         let mut total_size = 0u64;
         let mut entries = fs::read_dir(path)
             .await
-            .err_tip(|| format!("Failed to read directory: {path:?}"))?;
+            .err_tip(|| format!("Failed to read directory: {}", path.display()))?;
 
         while let Some(entry) = entries
             .next_entry()
             .await
-            .err_tip(|| format!("Failed to get next entry in: {path:?}"))?
+            .err_tip(|| format!("Failed to get next entry in: {}", path.display()))?
         {
             total_size += calculate_directory_size_impl(&entry.path()).await?;
         }
@@ -290,8 +295,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_hardlink_directory_tree() -> Result<(), Error> {
-        let (_temp_dir, src_dir) = create_test_directory().await?;
-        let dst_dir = _temp_dir.path().join("test_dst");
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        let dst_dir = temp_dir.path().join("test_dst");
 
         // Hardlink the directory
         hardlink_directory_tree(&src_dir, &dst_dir).await?;

@@ -1202,21 +1202,22 @@ dependencies = [
 
 [[package]]
 name = "derive_more"
-version = "2.0.1"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "093242cf7570c207c83073cf82f79706fe7b8317e98620a47d5be7c3d8497678"
+checksum = "10b768e943bed7bf2cab53df09f4bc34bfd217cdb57d971e769874c9a6710618"
 dependencies = [
  "derive_more-impl",
 ]
 
 [[package]]
 name = "derive_more-impl"
-version = "2.0.1"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bda628edc44c4bb645fbe0f758797143e4e07926f7ebf4e9bdfbd3d2ce621df3"
+checksum = "6d286bfdaf75e988b4a78e013ecd79c581e06399ab53fbacd2d916c2f904f30b"
 dependencies = [
  "proc-macro2",
  "quote",
+ "rustc_version",
  "syn",
  "unicode-xid",
 ]
@@ -2490,7 +2491,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nativelink"
-version = "0.7.7"
+version = "0.7.9"
 dependencies = [
  "async-lock",
  "axum",
@@ -2518,7 +2519,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "0.7.7"
+version = "0.7.9"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -2557,7 +2558,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "0.7.7"
+version = "0.7.9"
 dependencies = [
  "fred",
  "nativelink-metric",
@@ -2574,7 +2575,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "0.7.7"
+version = "0.7.9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2583,7 +2584,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "0.7.7"
+version = "0.7.9"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -2594,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "0.7.7"
+version = "0.7.9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2603,9 +2604,9 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "0.7.7"
+version = "0.7.9"
 dependencies = [
- "derive_more 2.0.1",
+ "derive_more 2.1.0",
  "prost",
  "prost-build",
  "prost-types",
@@ -2615,7 +2616,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "0.7.7"
+version = "0.7.9"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2651,7 +2652,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "0.7.7"
+version = "0.7.9"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2691,7 +2692,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "0.7.7"
+version = "0.7.9"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2755,7 +2756,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "0.7.7"
+version = "0.7.9"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2808,7 +2809,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "0.7.7"
+version = "0.7.9"
 dependencies = [
  "async-lock",
  "bytes",

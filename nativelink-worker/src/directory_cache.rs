@@ -26,7 +26,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fs_util::{hardlink_directory_tree, set_readonly_recursive};
-use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, trace, warn};
@@ -88,12 +88,15 @@ pub struct DirectoryCache {
 }
 
 impl DirectoryCache {
-    /// Creates a new DirectoryCache
+    /// Creates a new `DirectoryCache`
     pub async fn new(config: DirectoryCacheConfig, cas_store: Store) -> Result<Self, Error> {
         // Ensure cache root exists
-        fs::create_dir_all(&config.cache_root)
-            .await
-            .err_tip(|| format!("Failed to create cache root: {:?}", config.cache_root))?;
+        fs::create_dir_all(&config.cache_root).await.err_tip(|| {
+            format!(
+                "Failed to create cache root: {}",
+                config.cache_root.display()
+            )
+        })?;
 
         Ok(Self {
             config,
@@ -233,12 +236,12 @@ impl DirectoryCache {
             // Fetch the Directory proto
             let directory: ProtoDirectory = get_and_decode_digest(&self.cas_store, digest.into())
                 .await
-                .err_tip(|| format!("Failed to fetch directory digest: {:?}", digest))?;
+                .err_tip(|| format!("Failed to fetch directory digest: {digest:?}"))?;
 
             // Create the destination directory
             fs::create_dir_all(dest_path)
                 .await
-                .err_tip(|| format!("Failed to create directory: {:?}", dest_path))?;
+                .err_tip(|| format!("Failed to create directory: {}", dest_path.display()))?;
 
             // Process files
             for file in &directory.files {
@@ -259,7 +262,7 @@ impl DirectoryCache {
         })
     }
 
-    /// Creates a file from a FileNode
+    /// Creates a file from a `FileNode`
     async fn create_file(&self, parent: &Path, file_node: &FileNode) -> Result<(), Error> {
         let file_path = parent.join(&file_node.name);
         let digest = DigestInfo::try_from(
@@ -273,17 +276,16 @@ impl DirectoryCache {
         trace!(?file_path, ?digest, "Creating file");
 
         // Fetch file content from CAS
-        use nativelink_util::store_trait::StoreKey;
         let data = self
             .cas_store
             .get_part_unchunked(StoreKey::Digest(digest), 0, None)
             .await
-            .err_tip(|| format!("Failed to fetch file: {:?}", file_path))?;
+            .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
 
         // Write to disk
         fs::write(&file_path, data.as_ref())
             .await
-            .err_tip(|| format!("Failed to write file: {:?}", file_path))?;
+            .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
 
         // Set permissions
         #[cfg(unix)]
@@ -302,7 +304,7 @@ impl DirectoryCache {
         Ok(())
     }
 
-    /// Creates a subdirectory from a DirectoryNode
+    /// Creates a subdirectory from a `DirectoryNode`
     async fn create_subdirectory(
         &self,
         parent: &Path,
@@ -321,7 +323,7 @@ impl DirectoryCache {
         self.construct_directory(digest, &dir_path).await
     }
 
-    /// Creates a symlink from a SymlinkNode
+    /// Creates a symlink from a `SymlinkNode`
     async fn create_symlink(&self, parent: &Path, symlink: &SymlinkNode) -> Result<(), Error> {
         let link_path = parent.join(&symlink.name);
         let target = Path::new(&symlink.target);
@@ -331,7 +333,7 @@ impl DirectoryCache {
         #[cfg(unix)]
         fs::symlink(&target, &link_path)
             .await
-            .err_tip(|| format!("Failed to create symlink: {:?}", link_path))?;
+            .err_tip(|| format!("Failed to create symlink: {}", link_path.display()))?;
 
         #[cfg(windows)]
         {
@@ -339,7 +341,7 @@ impl DirectoryCache {
             // For now, assume files (can be improved later)
             fs::symlink_file(&target, &link_path)
                 .await
-                .err_tip(|| format!("Failed to create symlink: {:?}", link_path))?;
+                .err_tip(|| format!("Failed to create symlink: {}", link_path.display()))?;
         }
 
         Ok(())
@@ -405,7 +407,7 @@ impl DirectoryCache {
 
     /// Gets the cache path for a digest
     fn get_cache_path(&self, digest: &DigestInfo) -> PathBuf {
-        self.config.cache_root.join(format!("{}", digest))
+        self.config.cache_root.join(format!("{digest}"))
     }
 
     /// Returns cache statistics

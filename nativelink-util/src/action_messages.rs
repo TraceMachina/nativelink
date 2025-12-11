@@ -1116,10 +1116,10 @@ impl Display for ActionState {
             f,
             "stage={} last_transition={} client_operation_id={} action_digest={}",
             self.stage.name(),
-            self.last_transition_timestamp
-                .elapsed()
-                .map(|d| format_duration(d).to_string())
-                .unwrap_or_else(|_| "<unknown duration>".to_string()),
+            self.last_transition_timestamp.elapsed().map_or_else(
+                |_| "<unknown duration>".to_string(),
+                |d| { format_duration(d).to_string() }
+            ),
             self.client_operation_id,
             self.action_digest
         )

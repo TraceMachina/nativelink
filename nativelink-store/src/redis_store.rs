@@ -22,7 +22,7 @@ use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use bytes::Bytes;
 use const_format::formatcp;
-use fred::clients::{Pool as RedisPool, SubscriberClient};
+use fred::clients::SubscriberClient;
 use fred::interfaces::{ClientLike, KeysInterface, PubsubInterface};
 use fred::prelude::{Client, EventInterface, HashesInterface, RediSearchInterface};
 use fred::types::config::{
@@ -36,7 +36,7 @@ use fred::types::scan::Scanner;
 use fred::types::scripts::Script;
 use fred::types::{Builder, Key as RedisKey, Map as RedisMap, SortOrder, Value as RedisValue};
 use futures::stream::FuturesUnordered;
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
+use futures::{FutureExt, Stream, StreamExt, TryStreamExt, future};
 use itertools::izip;
 use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
@@ -96,13 +96,92 @@ const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_SCAN_COUNT: u32 = 10_000;
 
-const DEFAULT_CLIENT_PERMITS: usize = 100;
+const DEFAULT_CLIENT_PERMITS: usize = 500;
+
+#[derive(Clone, Debug)]
+pub struct RecoverablePool {
+    clients: Arc<RwLock<Vec<Client>>>,
+    builder: Builder,
+    counter: Arc<core::sync::atomic::AtomicUsize>,
+}
+
+impl RecoverablePool {
+    pub fn new(builder: Builder, size: usize) -> Result<Self, Error> {
+        let mut clients = Vec::with_capacity(size);
+        for _ in 0..size {
+            let client = builder
+                .build()
+                .err_tip(|| "Failed to build client in RecoverablePool::new")?;
+            clients.push(client);
+        }
+        Ok(Self {
+            clients: Arc::new(RwLock::new(clients)),
+            builder,
+            counter: Arc::new(core::sync::atomic::AtomicUsize::new(0)),
+        })
+    }
+
+    fn connect(&self) {
+        let clients = self.clients.read();
+        for client in clients.iter() {
+            client.connect();
+        }
+    }
+
+    fn next(&self) -> Client {
+        let clients = self.clients.read();
+        let index = self
+            .counter
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        clients[index % clients.len()].clone()
+    }
+
+    async fn replace_client(&self, old_client: &Client) -> Result<Client, Error> {
+        {
+            let clients = self.clients.read();
+            if !clients.iter().any(|c| c.id() == old_client.id()) {
+                // Someone else swapped this client already; just hand out the next pooled one.
+                return Ok(self.next());
+            }
+        }
+
+        let new_client = self
+            .builder
+            .build()
+            .err_tip(|| "Failed to build new client in RecoverablePool::replace_client")?;
+        new_client.connect();
+        new_client.wait_for_connect().await.err_tip(|| {
+            format!(
+                "Failed to connect new client while replacing Redis client {}",
+                old_client.id()
+            )
+        })?;
+
+        let replaced_client = {
+            let mut clients = self.clients.write();
+            clients
+                .iter()
+                .position(|c| c.id() == old_client.id())
+                .map(|index| core::mem::replace(&mut clients[index], new_client.clone()))
+        };
+
+        if let Some(old_client) = replaced_client {
+            let _unused = old_client.quit().await;
+            info!("Replaced Redis client {}", old_client.id());
+            Ok(new_client)
+        } else {
+            // Second race: pool entry changed after we connected the new client.
+            let _unused = new_client.quit().await;
+            Ok(self.next())
+        }
+    }
+}
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 #[derive(Debug, MetricsComponent)]
 pub struct RedisStore {
     /// The client pool connecting to the backing Redis instance(s).
-    client_pool: RedisPool,
+    client_pool: RecoverablePool,
 
     /// A channel to publish updates to when a key is added, removed, or modified.
     #[metric(
@@ -151,15 +230,15 @@ pub struct RedisStore {
     client_permits: Arc<Semaphore>,
 }
 
-struct ClientWithPermit<'a> {
-    client: &'a Client,
+struct ClientWithPermit {
+    client: Client,
 
     // here so it sticks around with the client and doesn't get dropped until that does
     #[allow(dead_code)]
     semaphore_permit: OwnedSemaphorePermit,
 }
 
-impl Drop for ClientWithPermit<'_> {
+impl Drop for ClientWithPermit {
     fn drop(&mut self) {
         trace!(
             remaining = self.semaphore_permit.semaphore().available_permits(),
@@ -273,8 +352,7 @@ impl RedisStore {
             })
             .set_policy(reconnect_policy);
 
-        let client_pool = builder
-            .build_pool(spec.connection_pool_size)
+        let client_pool = RecoverablePool::new(builder.clone(), spec.connection_pool_size)
             .err_tip(|| "while creating redis connection pool")?;
 
         let subscriber_client = builder
@@ -298,7 +376,7 @@ impl RedisStore {
     /// Used for testing when determinism is required.
     #[expect(clippy::too_many_arguments)]
     pub fn new_from_builder_and_parts(
-        client_pool: RedisPool,
+        client_pool: RecoverablePool,
         subscriber_client: SubscriberClient,
         pub_sub_channel: Option<String>,
         temp_name_generator_fn: fn() -> String,
@@ -329,18 +407,38 @@ impl RedisStore {
         })
     }
 
-    async fn get_client(&'_ self) -> Result<ClientWithPermit<'_>, Error> {
-        let client = self.client_pool.next();
-        let config = client.client_config();
-        if config.mocks.is_none() {
-            client.wait_for_connect().await.err_tip(||
-                format!(
-                    "Connection issue connecting to redis server with hosts: {:?}, username: {}, database: {}",
-                    config.server.hosts().iter().map(|s| format!("{}:{}", s.host, s.port)).collect::<Vec<String>>(),
-                    config.username.unwrap_or_else(|| "None".to_string()),
-                    config.database.unwrap_or_default()
-                )
-            )?;
+    async fn get_client(&self) -> Result<ClientWithPermit, Error> {
+        let mut client = self.client_pool.next();
+        loop {
+            let config = client.client_config();
+            if config.mocks.is_some() {
+                break;
+            }
+            let connection_info = format!(
+                "Connection issue connecting to redis server with hosts: {:?}, username: {}, database: {}",
+                config
+                    .server
+                    .hosts()
+                    .iter()
+                    .map(|s| format!("{}:{}", s.host, s.port))
+                    .collect::<Vec<String>>(),
+                config
+                    .username
+                    .clone()
+                    .unwrap_or_else(|| "None".to_string()),
+                config.database.unwrap_or_default()
+            );
+            match client.wait_for_connect().await {
+                Ok(()) => break,
+                Err(e) => {
+                    warn!("{connection_info}: {e:?}. Replacing client.");
+                    client = self
+                        .client_pool
+                        .replace_client(&client)
+                        .await
+                        .err_tip(|| connection_info.clone())?;
+                }
+            }
         }
         let local_client_permits = self.client_permits.clone();
         let remaining = local_client_permits.available_permits();
@@ -396,9 +494,10 @@ impl StoreDriver for RedisStore {
         izip!(
             keys.iter(),
             results.iter_mut(),
-            iter::repeat(&max_in_one_go)
+            iter::repeat(&max_in_one_go),
+            iter::repeat(&client)
         )
-        .map(|(key, result, local_semaphore)| async move {
+        .map(|(key, result, local_semaphore, client)| async move {
             // We need to do a special pass to ensure our zero key exist.
             if is_zero_digest(key.borrow()) {
                 *result = Some(0);
@@ -549,8 +648,9 @@ impl StoreDriver for RedisStore {
             .map(|res| {
                 let (offset, end_pos, chunk) = res?;
                 let temp_key_ref = &temp_key;
+                let client = client.client.clone();
                 Ok(async move {
-                    client.client
+                    client
                         .setrange::<(), _, _>(temp_key_ref, offset, chunk)
                         .await
                         .err_tip(
@@ -1151,18 +1251,31 @@ impl SchedulerStore for RedisStore {
                 argv.push(Bytes::from_static(name.as_bytes()));
                 argv.push(value);
             }
+            let start = std::time::Instant::now();
+
             let (success, new_version): (bool, i64) = self
                 .update_if_version_matches_script
-                .evalsha_with_reload(client.client, vec![redis_key.as_ref()], argv)
+                .evalsha_with_reload(&client.client, vec![redis_key.as_ref()], argv)
                 .await
                 .err_tip(|| format!("In RedisStore::update_data::versioned for {key:?}"))?;
+
+            let elapsed = start.elapsed();
+
+            if elapsed > Duration::from_millis(100) {
+                warn!(
+                    %redis_key,
+                    ?elapsed,
+                    "Slow Redis version-set operation"
+                );
+            }
             if !success {
                 warn!(
                     %redis_key,
                     %key,
                     %current_version,
                     %new_version,
-                    "Error updating Redis key"
+                    caller = core::any::type_name::<T>(),
+                    "Redis version conflict - optimistic lock failed"
                 );
                 return Ok(None);
             }
@@ -1218,82 +1331,93 @@ impl SchedulerStore for RedisStore {
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
     {
         let index_value = index.index_value();
-        let run_ft_aggregate = || {
-            let client = self.client_pool.next().clone();
-            let sanitized_field = try_sanitize(index_value.as_ref()).err_tip(|| {
+        let sanitized_field = try_sanitize(index_value.as_ref())
+            .err_tip(|| {
                 format!("In RedisStore::search_by_index_prefix::try_sanitize - {index_value:?}")
-            })?;
-            Ok::<_, Error>(async move {
-                ft_aggregate(
-                    client,
-                    format!(
-                        "{}",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
-                    ),
-                    format!("@{}:{{ {} }}", K::INDEX_NAME, sanitized_field),
-                    FtAggregateOptions {
-                        load: Some(Load::Some(vec![
-                            SearchField {
-                                identifier: DATA_FIELD_NAME.into(),
-                                property: None,
-                            },
-                            SearchField {
-                                identifier: VERSION_FIELD_NAME.into(),
-                                property: None,
-                            },
-                        ])),
-                        cursor: Some(WithCursor {
-                            count: Some(MAX_COUNT_PER_CURSOR),
-                            max_idle: Some(CURSOR_IDLE_MS),
+            })?
+            .to_string();
+        let index_name = format!(
+            "{}",
+            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+        );
+
+        let run_ft_aggregate = |client: Arc<ClientWithPermit>,
+                                index_name: String,
+                                sanitized_field: String| async move {
+            ft_aggregate(
+                client.client.clone(),
+                index_name,
+                if sanitized_field.is_empty() {
+                    "*".to_string()
+                } else {
+                    format!("@{}:{{ {} }}", K::INDEX_NAME, sanitized_field)
+                },
+                FtAggregateOptions {
+                    load: Some(Load::Some(vec![
+                        SearchField {
+                            identifier: DATA_FIELD_NAME.into(),
+                            property: None,
+                        },
+                        SearchField {
+                            identifier: VERSION_FIELD_NAME.into(),
+                            property: None,
+                        },
+                    ])),
+                    cursor: Some(WithCursor {
+                        count: Some(MAX_COUNT_PER_CURSOR),
+                        max_idle: Some(CURSOR_IDLE_MS),
+                    }),
+                    pipeline: vec![AggregateOperation::SortBy {
+                        properties: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| {
+                            vec![(format!("@{v}").into(), SortOrder::Asc)]
                         }),
-                        pipeline: vec![AggregateOperation::SortBy {
-                            properties: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| {
-                                vec![(format!("@{v}").into(), SortOrder::Asc)]
-                            }),
-                            max: None,
-                        }],
-                        ..Default::default()
-                    },
-                )
-                .await
-            })
+                        max: None,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|stream| (stream, client))
         };
-        let stream = run_ft_aggregate()?
-            .or_else(|_| async move {
-                let mut schema = vec![SearchSchema {
-                    field_name: K::INDEX_NAME.into(),
+
+        let client = Arc::new(self.get_client().await?);
+        let (stream, client_guard) = if let Ok(result) =
+            run_ft_aggregate(client.clone(), index_name.clone(), sanitized_field.clone()).await
+        {
+            result
+        } else {
+            let mut schema = vec![SearchSchema {
+                field_name: K::INDEX_NAME.into(),
+                alias: None,
+                kind: SearchSchemaKind::Tag {
+                    sortable: false,
+                    unf: false,
+                    separator: None,
+                    casesensitive: false,
+                    withsuffixtrie: false,
+                    noindex: false,
+                },
+            }];
+            if let Some(sort_key) = K::MAYBE_SORT_KEY {
+                schema.push(SearchSchema {
+                    field_name: sort_key.into(),
                     alias: None,
                     kind: SearchSchemaKind::Tag {
-                        sortable: false,
+                        sortable: true,
                         unf: false,
                         separator: None,
                         casesensitive: false,
                         withsuffixtrie: false,
                         noindex: false,
                     },
-                }];
-                if let Some(sort_key) = K::MAYBE_SORT_KEY {
-                    schema.push(SearchSchema {
-                        field_name: sort_key.into(),
-                        alias: None,
-                        kind: SearchSchemaKind::Tag {
-                            sortable: true,
-                            unf: false,
-                            separator: None,
-                            casesensitive: false,
-                            withsuffixtrie: false,
-                            noindex: false,
-                        },
-                    });
-                }
-                let create_result = self
-                    .client_pool
-                    .next()
+                });
+            }
+            let create_result: Result<(), Error> = {
+                let create_client = self.get_client().await?;
+                create_client
+                    .client
                     .ft_create::<(), _>(
-                        format!(
-                            "{}",
-                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
-                        ),
+                        index_name.clone(),
                         FtCreateOptions {
                             on: Some(IndexKind::Hash),
                             prefixes: vec![K::KEY_PREFIX.into()],
@@ -1312,19 +1436,30 @@ impl SchedulerStore for RedisStore {
                             "Error with ft_create in RedisStore::search_by_index_prefix({})",
                             get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
                         )
-                    });
-                let run_result = run_ft_aggregate()?.await.err_tip(|| {
-                    format!(
-                        "Error with second ft_aggregate in RedisStore::search_by_index_prefix({})",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
-                    )
-                });
-                // Creating the index will race which is ok. If it fails to create, we only
-                // error if the second ft_aggregate call fails and fails to create.
-                run_result.or_else(move |e| create_result.merge(Err(e)))
-            })
-            .await?;
-        Ok(stream.map(|result| {
+                    })?;
+                Ok(())
+            };
+            let retry_client = Arc::new(self.get_client().await?);
+            let retry_result =
+                run_ft_aggregate(retry_client, index_name.clone(), sanitized_field.clone()).await;
+            if let Ok(result) = retry_result {
+                result
+            } else {
+                let e: Error = retry_result
+                    .err()
+                    .expect("Checked for Ok result above")
+                    .into();
+                let err = match create_result {
+                    Ok(()) => e,
+                    Err(create_err) => create_err.merge(e),
+                };
+                return Err(err);
+            }
+        };
+
+        Ok(stream.map(move |result| {
+            let keep_alive = client_guard.clone();
+            let _ = &keep_alive;
             let mut redis_map =
                 result.err_tip(|| "Error in stream of in RedisStore::search_by_index_prefix")?;
             let bytes_data = redis_map

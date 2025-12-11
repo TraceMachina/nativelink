@@ -116,6 +116,8 @@ export const starlightConfig = {
         {
           label: "Warm Worker Pools",
           link: `${docsRoot}/deployment-examples/warm-worker-pools`,
+          label: "Metrics and Observability",
+          link: `${docsRoot}/deployment-examples/metrics`,
         },
       ],
     },

@@ -17,6 +17,8 @@ FFI
 FFIs
 GPUs
 Goma
+gzip
+[Hh]eatmap
 [Hh]ermeticity
 Istio
 JDK
@@ -111,6 +113,7 @@ Trendshift
 Norwest
 Databricks
 Datadog
+Downsampling
 Brex
 Citrix
 Menlo
@@ -127,3 +130,5 @@ crypto
 devs
 sudo
 fs
+Thanos
+Quickwit

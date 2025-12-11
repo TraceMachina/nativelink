@@ -52,7 +52,9 @@ impl StoreDriver for NoopStore {
         _keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        results.iter_mut().for_each(|r| *r = None);
+        for result in results.iter_mut() {
+            *result = None;
+        }
         Ok(())
     }
 
