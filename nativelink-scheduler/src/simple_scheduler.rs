@@ -19,6 +19,11 @@ use std::time::{Instant, SystemTime};
 use async_trait::async_trait;
 use futures::{Future, StreamExt, future};
 use nativelink_config::schedulers::SimpleSpec;
+// Import warm worker pool manager when feature is enabled
+#[cfg(feature = "warm-worker-pools")]
+use nativelink_config::warm_worker_pools::WarmWorkerPoolsConfig;
+#[cfg(feature = "warm-worker-pools")]
+use nativelink_crio_worker_pool::WarmWorkerPoolManager;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
@@ -146,6 +151,21 @@ pub struct SimpleScheduler {
     /// e.g. "worker busy", "can't find any worker"
     /// Set to None to disable. This is quite noisy, so we limit it
     worker_match_logging_interval: Option<Duration>,
+
+    /// Optional warm worker pool manager.
+    /// Initialized asynchronously at startup if warm_worker_pools are defined in config.
+    /// Note: Cannot be exposed as metric directly because tokio::sync::RwLock is not supported.
+    /// Metrics are instead accessed via get_warm_pool_metrics() method.
+    #[cfg(feature = "warm-worker-pools")]
+    warm_pool_manager: Arc<tokio::sync::RwLock<Option<Arc<WarmWorkerPoolManager>>>>,
+
+    /// Warm worker pool configuration used for routing decisions.
+    #[cfg(feature = "warm-worker-pools")]
+    warm_pools_config: Option<WarmWorkerPoolsConfig>,
+
+    /// Background task for initializing warm worker pools.
+    #[cfg(feature = "warm-worker-pools")]
+    _warm_pool_init_task: Option<JoinHandleDropGuard<()>>,
 }
 
 impl core::fmt::Debug for SimpleScheduler {
@@ -163,6 +183,95 @@ impl core::fmt::Debug for SimpleScheduler {
 }
 
 impl SimpleScheduler {
+    /// Determines if an action should use a warm worker pool and returns the pool name.
+    /// This uses heuristics based on platform properties to detect the language/runtime
+    /// and route to the appropriate warm pool.
+    ///
+    /// Note: This is public for testing purposes but should be considered internal API.
+    #[cfg(feature = "warm-worker-pools")]
+    pub async fn should_use_warm_pool(&self, action_info: &ActionInfo) -> Option<String> {
+        // If no warm pools configured, return None
+        if self.warm_pool_manager.read().await.is_none() {
+            return None;
+        }
+
+        // First, try explicit matcher-based routing from config.
+        if let Some(pools_config) = self.warm_pools_config.as_ref() {
+            for pool in &pools_config.pools {
+                if pool.match_platform_properties.is_empty() {
+                    continue;
+                }
+                let mut all_match = true;
+                for (matcher_key, matcher) in &pool.match_platform_properties {
+                    match action_info.platform_properties.get(matcher_key) {
+                        Some(action_value) if matcher.matches(action_value) => {}
+                        _ => {
+                            all_match = false;
+                            break;
+                        }
+                    }
+                }
+                if all_match {
+                    return Some(pool.name.clone());
+                }
+            }
+        }
+
+        // Check platform properties for language hints
+        for (name, value) in &action_info.platform_properties {
+            // Check for explicit language property
+            if name == "lang" || name == "language" {
+                match value.as_str() {
+                    "java" | "jvm" | "kotlin" | "scala" => return Some("java-pool".to_string()),
+                    "typescript" | "ts" | "javascript" | "js" | "node" | "nodejs" => {
+                        return Some("typescript-pool".to_string());
+                    }
+                    _ => {}
+                }
+            }
+
+            // Check for toolchain hints
+            if name == "toolchain" {
+                if value.contains("java") || value.contains("jvm") {
+                    return Some("java-pool".to_string());
+                }
+                if value.contains("node") || value.contains("typescript") {
+                    return Some("typescript-pool".to_string());
+                }
+            }
+
+            // Check for executor hints (Bazel sets this)
+            if name == "Pool" {
+                if value.contains("java") || value.contains("Java") {
+                    return Some("java-pool".to_string());
+                }
+                if value.contains("node") || value.contains("typescript") {
+                    return Some("typescript-pool".to_string());
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Publishes warm pool metrics if the pool manager is initialized.
+    /// This method is provided because tokio::sync::RwLock cannot be directly
+    /// exposed as a MetricsComponent field.
+    #[cfg(feature = "warm-worker-pools")]
+    pub async fn publish_warm_pool_metrics(
+        &self,
+        kind: nativelink_metric::MetricKind,
+        field_metadata: nativelink_metric::MetricFieldData<'_>,
+    ) -> Result<nativelink_metric::MetricPublishKnownKindData, nativelink_metric::Error> {
+        use nativelink_metric::MetricsComponent;
+
+        if let Some(manager) = self.warm_pool_manager.read().await.as_ref() {
+            manager.publish(kind, field_metadata)
+        } else {
+            Ok(nativelink_metric::MetricPublishKnownKindData::Component)
+        }
+    }
+
     /// Attempts to find a worker to execute an action and begins executing it.
     /// If an action is already running that is cacheable it may merge this
     /// action with the results and state changes of the already running
@@ -222,6 +331,10 @@ impl SimpleScheduler {
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             platform_property_manager: &PlatformPropertyManager,
             full_worker_logging: bool,
+            #[cfg(feature = "warm-worker-pools")] warm_pool_manager: &Arc<
+                tokio::sync::RwLock<Option<Arc<WarmWorkerPoolManager>>>,
+            >,
+            #[cfg(feature = "warm-worker-pools")] scheduler: &SimpleScheduler,
         ) -> Result<(), Error> {
             let (action_info, maybe_origin_metadata) =
                 action_state_result
@@ -241,6 +354,127 @@ impl SimpleScheduler {
                 inner: action_info,
                 platform_properties,
             };
+
+            // Check if this action should use a warm worker pool
+            #[cfg(feature = "warm-worker-pools")]
+            if let Some(pool_name) = scheduler.should_use_warm_pool(&action_info.inner).await {
+                // Try to get initialized pool manager
+                if let Some(manager) = warm_pool_manager.read().await.as_ref() {
+                    // Extract the operation_id early so we can use it for isolated worker acquisition
+                    let operation_id = {
+                        let (action_state, _origin_metadata) = action_state_result
+                            .as_state()
+                            .await
+                            .err_tip(|| "Failed to get action_info from as_state_result stream")?;
+                        action_state.client_operation_id.clone()
+                    };
+
+                    // Try to acquire an isolated warm worker from the pool
+                    match manager
+                        .acquire_isolated(&pool_name, &operation_id.to_string())
+                        .await
+                    {
+                        Ok(worker_lease) => {
+                            // Check if we have a valid worker ID from the lease
+                            if let Some(worker_id) = worker_lease.worker_id() {
+                                tracing::info!(
+                                    pool_name,
+                                    worker_id = ?worker_id,
+                                    is_isolated = worker_lease.is_isolated(),
+                                    "Acquired warm worker from pool, executing action"
+                                );
+
+                                // Execute action on the warm worker using standard execution path
+                                let worker_id_clone = worker_id.clone();
+                                let operation_id_clone = operation_id.clone();
+                                let attach_operation_fut = async move {
+                                    // Use the operation_id we extracted earlier
+                                    let operation_id = operation_id_clone;
+
+                                    // Tell the matching engine that the operation is being assigned to a worker.
+                                    let assign_result = matching_engine_state_manager
+                                        .assign_operation(&operation_id, Ok(&worker_id_clone))
+                                        .await
+                                        .err_tip(|| "Failed to assign operation to warm worker");
+                                    if let Err(err) = assign_result {
+                                        if err.code == Code::Aborted {
+                                            // Operation was aborted/cancelled
+                                            return Ok(());
+                                        }
+                                        // Release worker lease and return error
+                                        if let Err(release_err) = worker_lease
+                                            .release(
+                                                nativelink_crio_worker_pool::WorkerOutcome::Failed,
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                ?release_err,
+                                                "Failed to release worker lease after assignment failure"
+                                            );
+                                        }
+                                        return Err(err);
+                                    }
+
+                                    // Notify the worker to run the action
+                                    let run_result = workers
+                                        .worker_notify_run_action(worker_id_clone.clone(), operation_id.clone(), action_info.clone())
+                                        .await
+                                        .err_tip(|| {
+                                            "Failed to run worker_notify_run_action on warm worker"
+                                        });
+
+                                    // Release the worker lease back to the pool
+                                    let outcome = if run_result.is_ok() {
+                                        nativelink_crio_worker_pool::WorkerOutcome::Completed
+                                    } else {
+                                        nativelink_crio_worker_pool::WorkerOutcome::Failed
+                                    };
+
+                                    if let Err(err) = worker_lease.release(outcome).await {
+                                        tracing::warn!(?err, "Failed to release warm worker lease");
+                                    }
+
+                                    run_result
+                                };
+                                tokio::pin!(attach_operation_fut);
+
+                                let origin_metadata = maybe_origin_metadata.unwrap_or_default();
+
+                                let ctx = Context::current_with_baggage(vec![KeyValue::new(
+                                    ENDUSER_ID,
+                                    origin_metadata.identity,
+                                )]);
+
+                                return info_span!("warm_worker_execution")
+                                    .in_scope(|| attach_operation_fut)
+                                    .with_context(ctx)
+                                    .await
+                                    .err_tip(|| "Failed to execute action on warm worker");
+                            } else {
+                                tracing::warn!(
+                                    pool_name,
+                                    "Acquired warm worker but no worker_id available, falling back to standard workers"
+                                );
+                                // Fall through to standard worker allocation below
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                ?err,
+                                pool_name,
+                                "Failed to acquire warm worker, falling back to standard workers"
+                            );
+                            // Fall through to standard worker allocation below
+                        }
+                    }
+                } else {
+                    tracing::debug!(
+                        pool_name,
+                        "Warm pool manager not yet initialized, falling back to standard workers"
+                    );
+                }
+            }
 
             // Try to find a worker for the action.
             let worker_id = {
@@ -327,6 +561,10 @@ impl SimpleScheduler {
                     self.matching_engine_state_manager.as_ref(),
                     self.platform_property_manager.as_ref(),
                     full_worker_logging,
+                    #[cfg(feature = "warm-worker-pools")]
+                    &self.warm_pool_manager,
+                    #[cfg(feature = "warm-worker-pools")]
+                    self,
                 )
                 .await,
             );
@@ -441,6 +679,9 @@ impl SimpleScheduler {
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
+
+        #[cfg(feature = "warm-worker-pools")]
+        let warm_pools_config = spec.warm_worker_pools.clone();
 
         let action_scheduler = Arc::new_cyclic(move |weak_self| -> Self {
             let weak_inner = weak_self.clone();
@@ -576,6 +817,42 @@ impl SimpleScheduler {
                     }
                 }
             };
+
+            #[cfg(feature = "warm-worker-pools")]
+            let warm_pool_manager = Arc::new(tokio::sync::RwLock::new(None));
+
+            // If warm worker pools are configured, initialize them asynchronously at startup
+            #[cfg(feature = "warm-worker-pools")]
+            let _warm_pool_init_task = if let Some(pool_config) = &warm_pools_config {
+                let pool_config = pool_config.clone();
+                let manager_clone = warm_pool_manager.clone();
+
+                // Spawn initialization task
+                Some(spawn!("warm_pool_initialization", async move {
+                    tracing::info!(
+                        pools = pool_config.pools.len(),
+                        "Initializing warm worker pools (defined in config)"
+                    );
+
+                    match WarmWorkerPoolManager::new(
+                        nativelink_crio_worker_pool::PoolCreateOptions::new(pool_config),
+                    )
+                    .await
+                    {
+                        Ok(manager) => {
+                            let mut guard = manager_clone.write().await;
+                            *guard = Some(Arc::new(manager));
+                            tracing::info!("Warm worker pools initialized successfully");
+                        }
+                        Err(err) => {
+                            tracing::error!(?err, "Failed to initialize warm worker pool manager");
+                        }
+                    }
+                }))
+            } else {
+                None
+            };
+
             Self {
                 matching_engine_state_manager: state_manager.clone(),
                 client_state_manager: state_manager.clone(),
@@ -584,6 +861,12 @@ impl SimpleScheduler {
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
                 worker_match_logging_interval,
+                #[cfg(feature = "warm-worker-pools")]
+                warm_pool_manager,
+                #[cfg(feature = "warm-worker-pools")]
+                warm_pools_config,
+                #[cfg(feature = "warm-worker-pools")]
+                _warm_pool_init_task,
             }
         });
         (action_scheduler, worker_scheduler_clone)

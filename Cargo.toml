@@ -4,6 +4,7 @@ exclude = [
   "nativelink-config/generate-stores-config",
   "tools/generate-bazel-rc",
 ]
+members = ["nativelink-crio-worker-pool"]
 resolver = "2"
 
 [package]
@@ -28,6 +29,7 @@ name = "nativelink"
 
 [features]
 nix = ["nativelink-worker/nix"]
+warm-worker-pools = ["nativelink-scheduler/warm-worker-pools"]
 
 [dependencies]
 nativelink-config = { path = "nativelink-config" }

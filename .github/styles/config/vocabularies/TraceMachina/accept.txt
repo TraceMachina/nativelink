@@ -118,5 +118,17 @@ Brex
 Citrix
 Menlo
 benchmarked
+[Rr]epos
+[Dd]ockerfile
+Dev
+max_workers
+min_warm_workers
+crictl
+runtimes
+enum
+crypto
+devs
+sudo
+fs
 Thanos
 Quickwit

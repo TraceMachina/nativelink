@@ -8,6 +8,7 @@ version = "0.7.9"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
+nativelink-crio-worker-pool = { path = "../nativelink-crio-worker-pool", optional = true }
 nativelink-error = { path = "../nativelink-error" }
 nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
@@ -49,6 +50,13 @@ uuid = { version = "1.16.0", default-features = false, features = [
   "serde",
   "v4",
 ] }
+
+[features]
+# Enable warm worker pools (requires CRI-O)
+warm-worker-pools = [
+  "nativelink-config/warm-worker-pools",
+  "nativelink-crio-worker-pool",
+]
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

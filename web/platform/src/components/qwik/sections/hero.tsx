@@ -1,5 +1,5 @@
 import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
-import { Background, Cloud } from "../../media/icons/icons.tsx";
+import { Background } from "../../media/icons/icons.tsx";
 import { BackgroundVideo } from "../components/video.tsx";
 
 const _MockUp =

@@ -1,0 +1,105 @@
+load("@bazel_skylib//lib:selects.bzl", "selects")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Platform configurations for protoc
+PLATFORM_OS_ARCH = [
+    ("linux", "aarch64"),
+    ("linux", "x86_64"),
+    ("macos", "aarch64"),
+    ("macos", "x86_64"),
+    ("windows", "aarch64"),
+    ("windows", "x86_64"),
+]
+
+[
+    selects.config_setting_group(
+        name = "{}_{}".format(
+            os.replace("macos", "osx"),
+            arch.replace("aarch64", "aarch_64"),
+        ),
+        match_all = [
+            "@platforms//cpu:{}".format(arch),
+            "@platforms//os:{}".format(os),
+        ],
+    )
+    for (os, arch) in PLATFORM_OS_ARCH
+]
+
+PLATFORM_NAMES = [
+    "{}_{}".format(
+        os.replace("macos", "osx"),
+        arch.replace("aarch64", "aarch_64"),
+    )
+    for (os, arch) in PLATFORM_OS_ARCH
+]
+
+# Generate Rust code from CRI proto files
+genrule(
+    name = "gen_cri_protos",
+    srcs = ["proto/cri/api.proto"],
+    outs = ["runtime.v1.pb.rs"],
+    cmd = select({
+        platform: '''
+        set -e
+        export PROTOC=$(execpath @@toolchains_protoc++protoc+toolchains_protoc_hub.{}//:bin/protoc)
+
+        $(execpath //nativelink-proto:gen_protos_tool) $(SRCS) -o $(RULEDIR)
+
+        for file in $(RULEDIR)/*.rs; do
+            mv -- "$$file" "$${{file%.rs}}.pb.rs"
+        done
+        '''.format(platform)
+        for platform in PLATFORM_NAMES
+    }),
+    tools = [
+        "//nativelink-proto:gen_protos_tool",
+    ] + select({
+        platform: ["@@toolchains_protoc++protoc+toolchains_protoc_hub.{}//:bin/protoc".format(platform)]
+        for platform in PLATFORM_NAMES
+    }),
+)
+
+rust_library(
+    name = "nativelink-crio-worker-pool",
+    srcs = [
+        "src/cache.rs",
+        "src/config.rs",
+        "src/cri_client.rs",
+        "src/cri_client_grpc.rs",
+        "src/isolation.rs",
+        "src/lib.rs",
+        "src/lifecycle.rs",
+        "src/pool_manager.rs",
+        "src/warmup.rs",
+        "src/worker.rs",
+        ":gen_cri_protos",
+    ],
+    compile_data = [
+        ":gen_cri_protos",
+    ],
+    tags = ["no-clippy"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-metric",
+        "//nativelink-util",
+        "@crates//:hyper-util",
+        "@crates//:prost",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:serde_with",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tower",
+        "@crates//:tracing",
+        "@crates//:uuid",
+    ],
+)
+
+rust_test(
+    name = "unit_tests",
+    crate = ":nativelink-crio-worker-pool",
+    tags = ["no-clippy"],
+)

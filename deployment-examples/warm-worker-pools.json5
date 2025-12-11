@@ -1,0 +1,190 @@
+// Example NativeLink configuration with warm worker pools
+// This demonstrates how to configure CRI-O based warm worker pools
+// for faster build times with Java and TypeScript projects.
+//
+// ISOLATION FEATURE:
+// Warm worker pools support Copy-on-Write (COW) isolation to prevent
+// state leakage between jobs. When enabled via isolation.strategy="overlayfs",
+// each job gets an isolated filesystem using OverlayFS:
+//   - Template (lower layer): Read-only base from warmed-up worker
+//   - Job workspace (upper layer): Ephemeral read-write layer per job
+//   - Automatic cleanup: Job workspace deleted after completion
+//
+// Benefits:
+//   - Security: No cross-tenant contamination
+//   - Performance: Fast cloning vs cold starts (30-45s warmup → <500ms clone)
+//   - Resource efficiency: One template serves many isolated jobs
+//
+// Recommended for production deployments with multi-tenant workloads.
+{
+  schedulers: {
+    // Main scheduler with warm worker pools enabled
+    main: {
+      simple: {
+        // Standard scheduler configuration
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          cpu_arch: "exact",
+          lang: "exact",
+        },
+
+        // Warm worker pool configuration
+        // This requires the "warm-worker-pools" feature to be enabled
+        warm_worker_pools: {
+          pools: [
+            // Java/JVM worker pool
+            {
+              name: "java-pool",
+              language: "jvm",
+
+              // CRI-O socket path (Unix domain socket)
+              cri_socket: "unix:///var/run/crio/crio.sock",
+
+              // Container image with pre-installed JVM and build tools
+              container_image: "ghcr.io/tracemachina/nativelink-worker-java:latest",
+
+              // Pool sizing
+              min_warm_workers: 5, // Keep at least 5 workers warmed up
+              max_workers: 50, // Maximum 50 workers total
+
+              // Warmup configuration
+              warmup: {
+                // Commands to run when container starts (warms up JVM)
+                commands: [
+                  {
+                    argv: [
+                      "/opt/warmup/jvm-warmup.sh",
+                    ],
+                    timeout_s: 60,
+                  },
+                ],
+
+                // Commands to run after each job completes
+                post_job_cleanup: [
+                  {
+                    // Force garbage collection between jobs
+                    argv: [
+                      "jcmd",
+                      "1",
+                      "GC.run",
+                    ],
+                    timeout_s: 30,
+                  },
+                ],
+              },
+
+              // Worker lifecycle management
+              lifecycle: {
+                // Recycle workers after 1 hour
+                worker_ttl_seconds: 3600,
+
+                // Recycle workers after 200 jobs
+                max_jobs_per_worker: 200,
+
+                // Run GC every 20 jobs
+                gc_job_frequency: 20,
+              },
+
+              // Isolation configuration (RECOMMENDED for production)
+              // Provides Copy-on-Write filesystem isolation between jobs
+              isolation: {
+                // Strategy: "overlayfs" for COW isolation, "none" for shared state (backward compatible)
+                strategy: "overlayfs",
+
+                // Path where warm templates are stored (read-only base layer)
+                template_cache_path: "/var/lib/nativelink/warm-templates",
+
+                // Path where job-specific workspaces are created (ephemeral write layers)
+                job_workspace_path: "/var/lib/nativelink/warm-jobs",
+              },
+            },
+
+            // TypeScript/Node.js worker pool
+            {
+              name: "typescript-pool",
+              language: "node",
+              cri_socket: "unix:///var/run/crio/crio.sock",
+              container_image: "ghcr.io/tracemachina/nativelink-worker-node:latest",
+              min_warm_workers: 3,
+              max_workers: 30,
+              warmup: {
+                commands: [
+                  {
+                    argv: [
+                      "/opt/warmup/v8-warmup.sh",
+                    ],
+                    timeout_s: 45,
+                  },
+                ],
+                post_job_cleanup: [
+                  {
+                    // Clear V8 heap between jobs
+                    argv: [
+                      "node",
+                      "--expose-gc",
+                      "-e",
+                      "global.gc()",
+                    ],
+                    timeout_s: 20,
+                  },
+                ],
+              },
+              lifecycle: {
+                worker_ttl_seconds: 1800, // 30 minutes
+                max_jobs_per_worker: 100,
+                gc_job_frequency: 10,
+              },
+
+              // Isolation configuration
+              isolation: {
+                strategy: "overlayfs",
+                template_cache_path: "/var/lib/nativelink/warm-templates",
+                job_workspace_path: "/var/lib/nativelink/warm-jobs",
+              },
+            },
+          ],
+        },
+      },
+    },
+  },
+
+  // Store configuration (same as standard NativeLink)
+  stores: {
+    // ... your store configuration here
+  },
+
+  // Server configuration
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        ac: {
+          main: {
+            ac_store: "ac_store",
+          },
+        },
+        cas: {
+          main: {
+            cas_store: "cas_store",
+          },
+        },
+        execution: {
+          main: {
+            scheduler: "main",
+          },
+        },
+        capabilities: {
+          main: {
+            remote_execution: {
+              scheduler: "main",
+            },
+          },
+        },
+      },
+    },
+  ],
+}

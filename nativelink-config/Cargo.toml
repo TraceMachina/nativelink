@@ -24,6 +24,10 @@ shellexpand = { version = "3.1.0", default-features = false, features = [
 ] }
 tracing = { version = "0.1.41", default-features = false }
 
+[features]
+# Enable warm worker pools (requires CRI-O)
+warm-worker-pools = []
+
 [dev-dependencies]
 pretty_assertions = { version = "1.4.1", features = [
   "std",
