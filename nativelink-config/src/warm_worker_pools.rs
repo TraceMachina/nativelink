@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,32 @@ pub enum Language {
     Jvm,
     NodeJs,
     Custom(String),
+}
+
+/// Matcher used to select a warm worker pool based on action platform properties.
+///
+/// This is consumed by the scheduler for routing decisions only; the warm pool
+/// manager itself does not interpret these values.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum PropertyMatcher {
+    /// Exact string match.
+    Exact(String),
+    /// Match if the property starts with `prefix`.
+    Prefix { prefix: String },
+    /// Match if the property contains `contains` as a substring.
+    Contains { contains: String },
+}
+
+impl PropertyMatcher {
+    #[must_use]
+    pub fn matches(&self, value: &str) -> bool {
+        match self {
+            Self::Exact(expected) => value == expected,
+            Self::Prefix { prefix } => value.starts_with(prefix),
+            Self::Contains { contains } => value.contains(contains),
+        }
+    }
 }
 
 const fn default_min_warm_workers() -> usize {
@@ -62,6 +89,12 @@ pub struct WorkerPoolConfig {
     pub name: String,
     /// Logical language runtime for the workers.
     pub language: Language,
+    /// Optional matchers used by the scheduler to route actions into this pool.
+    ///
+    /// If all matchers are satisfied by an action's platform properties, the
+    /// scheduler will select this pool before falling back to heuristic routing.
+    #[serde(default)]
+    pub match_platform_properties: HashMap<String, PropertyMatcher>,
     /// Path to the CRI-O unix socket.
     pub cri_socket: String,
     /// Container image to boot.

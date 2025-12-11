@@ -74,6 +74,7 @@ mod warm_pools_tests {
                         nativelink_config::warm_worker_pools::WorkerPoolConfig {
                             name: "java-pool".to_string(),
                             language: nativelink_config::warm_worker_pools::Language::Jvm,
+                            match_platform_properties: HashMap::new(),
                             cri_socket: "unix:///var/run/crio/crio.sock".to_string(),
                             container_image: "test-java-worker:latest".to_string(),
                             min_warm_workers: 2,
@@ -96,6 +97,7 @@ mod warm_pools_tests {
                         nativelink_config::warm_worker_pools::WorkerPoolConfig {
                             name: "typescript-pool".to_string(),
                             language: nativelink_config::warm_worker_pools::Language::NodeJs,
+                            match_platform_properties: HashMap::new(),
                             cri_socket: "unix:///var/run/crio/crio.sock".to_string(),
                             container_image: "test-node-worker:latest".to_string(),
                             min_warm_workers: 1,
@@ -120,6 +122,19 @@ mod warm_pools_tests {
             ),
             ..Default::default()
         }
+    }
+
+    fn make_simple_spec_with_warm_pools_with_matchers() -> SimpleSpec {
+        let mut spec = make_simple_spec_with_warm_pools();
+        if let Some(warm_cfg) = &mut spec.warm_worker_pools {
+            warm_cfg.pools[0].match_platform_properties = HashMap::from([(
+                "container-image".to_string(),
+                nativelink_config::warm_worker_pools::PropertyMatcher::Contains {
+                    contains: "remotejdk_11".to_string(),
+                },
+            )]);
+        }
+        spec
     }
 
     /// Test that Java actions are correctly identified for warm pool routing
@@ -147,6 +162,37 @@ mod warm_pools_tests {
         let action_info = make_action_info_with_platform_props(HashMap::from([(
             "lang".to_string(),
             "java".to_string(),
+        )]));
+
+        let pool_name = scheduler.should_use_warm_pool(&action_info).await;
+        assert_eq!(pool_name, Some("java-pool".to_string()));
+
+        Ok(())
+    }
+
+    /// Test that explicit matchers route actions to the configured pool.
+    #[nativelink_test]
+    async fn test_should_use_warm_pool_match_platform_properties() -> Result<(), Error> {
+        let spec = make_simple_spec_with_warm_pools_with_matchers();
+        let task_change_notify = Arc::new(Notify::new());
+        let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+            &spec,
+            memory_awaited_action_db_factory(
+                0,
+                &task_change_notify.clone(),
+                MockInstantWrapped::default,
+            ),
+            || async move {},
+            task_change_notify,
+            MockInstantWrapped::default,
+            None,
+        );
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let action_info = make_action_info_with_platform_props(HashMap::from([(
+            "container-image".to_string(),
+            "docker://test-java-worker:remotejdk_11".to_string(),
         )]));
 
         let pool_name = scheduler.should_use_warm_pool(&action_info).await;

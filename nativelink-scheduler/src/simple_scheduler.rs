@@ -21,6 +21,8 @@ use futures::{Future, StreamExt, future};
 use nativelink_config::schedulers::SimpleSpec;
 // Import warm worker pool manager when feature is enabled
 #[cfg(feature = "warm-worker-pools")]
+use nativelink_config::warm_worker_pools::WarmWorkerPoolsConfig;
+#[cfg(feature = "warm-worker-pools")]
 use nativelink_crio_worker_pool::WarmWorkerPoolManager;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
@@ -156,6 +158,10 @@ pub struct SimpleScheduler {
     #[cfg(feature = "warm-worker-pools")]
     warm_pool_manager: Arc<tokio::sync::RwLock<Option<Arc<WarmWorkerPoolManager>>>>,
 
+    /// Warm worker pool configuration used for routing decisions.
+    #[cfg(feature = "warm-worker-pools")]
+    warm_pools_config: Option<WarmWorkerPoolsConfig>,
+
     /// Background task for initializing warm worker pools.
     #[cfg(feature = "warm-worker-pools")]
     _warm_pool_init_task: Option<JoinHandleDropGuard<()>>,
@@ -186,6 +192,28 @@ impl SimpleScheduler {
         // If no warm pools configured, return None
         if self.warm_pool_manager.read().await.is_none() {
             return None;
+        }
+
+        // First, try explicit matcher-based routing from config.
+        if let Some(pools_config) = self.warm_pools_config.as_ref() {
+            for pool in &pools_config.pools {
+                if pool.match_platform_properties.is_empty() {
+                    continue;
+                }
+                let mut all_match = true;
+                for (matcher_key, matcher) in &pool.match_platform_properties {
+                    match action_info.platform_properties.get(matcher_key) {
+                        Some(action_value) if matcher.matches(action_value) => {}
+                        _ => {
+                            all_match = false;
+                            break;
+                        }
+                    }
+                }
+                if all_match {
+                    return Some(pool.name.clone());
+                }
+            }
         }
 
         // Check platform properties for language hints
@@ -626,6 +654,9 @@ impl SimpleScheduler {
 
         let worker_scheduler_clone = worker_scheduler.clone();
 
+        #[cfg(feature = "warm-worker-pools")]
+        let warm_pools_config = spec.warm_worker_pools.clone();
+
         let action_scheduler = Arc::new_cyclic(move |weak_self| -> Self {
             let weak_inner = weak_self.clone();
             let task_worker_matching_spawn =
@@ -767,7 +798,7 @@ impl SimpleScheduler {
 
             // If warm worker pools are configured, initialize them asynchronously at startup
             #[cfg(feature = "warm-worker-pools")]
-            let _warm_pool_init_task = if let Some(pool_config) = &spec.warm_worker_pools {
+            let _warm_pool_init_task = if let Some(pool_config) = &warm_pools_config {
                 let pool_config = pool_config.clone();
                 let manager_clone = warm_pool_manager.clone();
 
@@ -807,6 +838,8 @@ impl SimpleScheduler {
                 worker_match_logging_interval,
                 #[cfg(feature = "warm-worker-pools")]
                 warm_pool_manager,
+                #[cfg(feature = "warm-worker-pools")]
+                warm_pools_config,
                 #[cfg(feature = "warm-worker-pools")]
                 _warm_pool_init_task,
             }
