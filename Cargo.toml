@@ -57,7 +57,7 @@ mimalloc = { version = "0.1.44", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
-redis = { version = "0.32.7", default-features = false, features = ["aio"] }
+redis = { version = "1.0.0", default-features = false, features = ["aio"] }
 rustls-pemfile = { version = "2.2.0", features = [
   "std",
 ], default-features = false }

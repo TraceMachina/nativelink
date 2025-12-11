@@ -386,8 +386,8 @@ impl RedisStore<ConnectionManager> {
         let connection_manager_config = {
             ConnectionManagerConfig::new()
                 .set_number_of_retries(spec.retry.max_retries)
-                .set_connection_timeout(connection_timeout)
-                .set_response_timeout(command_timeout)
+                .set_connection_timeout(Some(connection_timeout))
+                .set_response_timeout(Some(command_timeout))
         };
 
         let connection_manager: ConnectionManager =

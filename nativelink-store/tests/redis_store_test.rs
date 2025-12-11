@@ -613,7 +613,7 @@ fn test_connection_errors() {
         .await
         .expect_err("Shouldn't have connected");
     assert_eq!(err.messages.len(), 2);
-    assert_eq!(err.messages[0], "IoError: timed out", "{:?}", err.messages);
+    assert_eq!(err.messages[0], "Io: timed out", "{:?}", err.messages);
     assert_eq!(
         err.messages[1], "While connecting to redis://nativelink.com:6379/",
         "{:?}",
@@ -682,12 +682,12 @@ async fn test_health() {
                 "nativelink_store::redis_store::RedisStore<redis::aio::connection_manager::ConnectionManager>"
             );
             assert!(
-                message.starts_with("Store.update_oneshot() failed: Error { code: DeadlineExceeded, messages: [\"IoError: timed out\", \"While appending to temp key ("),
+                message.starts_with("Store.update_oneshot() failed: Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"While appending to temp key ("),
                 "message: '{message}'"
             );
             logs_assert(|logs| {
                 for log in logs {
-                    if log.contains("check_health Store.update_oneshot() failed e=Error { code: DeadlineExceeded, messages: [\"IoError: timed out\", \"While appending to temp key (") {
+                    if log.contains("check_health Store.update_oneshot() failed e=Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"While appending to temp key (") {
                         return Ok(())
                     }
                 }
