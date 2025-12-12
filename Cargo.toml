@@ -57,7 +57,7 @@ mimalloc = { version = "0.1.44", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
-rustls-pemfile = { version = "2.2.0", features = [
+rustls-pki-types = { version = "1.13.1", features = [
   "std",
 ], default-features = false }
 tokio = { version = "1.44.1", features = [
