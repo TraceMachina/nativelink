@@ -369,15 +369,37 @@ async fn upload_file(
             // https://github.com/rust-lang/rust/issues/92096
             // or a smiliar issue if we try to use the non-store driver function, so we
             // are using the store driver function here.
-            cas_store
+            let store_key_for_upload = store_key.clone();
+            let upload_result = cas_store
                 .update_with_whole_file(
-                    store_key,
+                    store_key_for_upload,
                     full_path.as_ref().into(),
                     file,
                     UploadSizeInfo::ExactSize(digest.size_bytes()),
                 )
                 .await
-                .map(|_slot| ())
+                .map(|_slot| ());
+
+            match upload_result {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    // Output uploads run concurrently and may overlap (e.g. a file is listed
+                    // both as an output file and inside an output directory). When another
+                    // upload has already moved the file into CAS, this update can fail with
+                    // NotFound even though the digest is now present. Per the RE spec, missing
+                    // outputs should be ignored, so treat this as success if the digest exists.
+                    if err.code == Code::NotFound
+                        && cas_store
+                            .has(store_key.borrow())
+                            .await
+                            .is_ok_and(|result| result.is_some())
+                    {
+                        Ok(())
+                    } else {
+                        Err(err)
+                    }
+                }
+            }
         })
         .await
         .err_tip(|| format!("for {full_path:?}"))?;
