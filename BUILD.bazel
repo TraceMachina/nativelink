@@ -30,7 +30,7 @@ rust_binary(
         "@crates//:hyper-util",
         "@crates//:mimalloc",
         "@crates//:parking_lot",
-        "@crates//:rustls-pemfile",
+        "@crates//:rustls-pki-types",
         "@crates//:tokio",
         "@crates//:tokio-rustls",
         "@crates//:tonic",
