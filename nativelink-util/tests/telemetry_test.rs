@@ -8,8 +8,10 @@ use hyper::{Request, Response, StatusCode, Uri};
 use nativelink_macro::nativelink_test;
 use nativelink_util::telemetry::ClientHeaders;
 use opentelemetry::baggage::BaggageExt;
+use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::{Context, KeyValue, global};
 use opentelemetry_http::HeaderExtractor as OTELHeaderExtractor;
+use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
 use tonic::body::Body;
 use tower::{Service, ServiceBuilder, ServiceExt};
 use tracing::{debug, error, warn};
@@ -151,5 +153,45 @@ async fn oltp_logs_with_headers() -> Result<(), Box<dyn core::error::Error>> {
     let client_header = client_headers.first().unwrap();
     assert_eq!(client_header.0.get("foo"), Some(&"bar".to_string()));
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn metrics_are_tracked() -> Result<(), Box<dyn core::error::Error>> {
+    let exporter = InMemoryMetricExporter::default();
+    let meter_provider = SdkMeterProvider::builder()
+        .with_reader(PeriodicReader::builder(exporter.clone()).build())
+        .build();
+
+    let meter = meter_provider.meter("nativelink_test");
+    let counter = meter
+        .u64_counter("test.operations")
+        .with_description("Total test operations")
+        .build();
+
+    counter.add(3, &[KeyValue::new("operation", "cache_read")]);
+    counter.add(7, &[KeyValue::new("operation", "cache_write")]);
+
+    meter_provider.force_flush()?;
+
+    let finished = exporter.get_finished_metrics()?;
+    assert!(
+        !finished.is_empty(),
+        "Expected at least one ResourceMetrics batch after force_flush"
+    );
+
+    let recorded_names: Vec<&str> = finished
+        .iter()
+        .flat_map(opentelemetry_sdk::metrics::data::ResourceMetrics::scope_metrics)
+        .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
+        .map(opentelemetry_sdk::metrics::data::Metric::name)
+        .collect();
+
+    assert!(
+        recorded_names.contains(&"test.operations"),
+        "Counter 'test.operations' should appear in exported metrics, got: {recorded_names:?}"
+    );
+
+    meter_provider.shutdown()?;
     Ok(())
 }

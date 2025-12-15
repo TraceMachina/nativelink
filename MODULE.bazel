@@ -9,6 +9,7 @@ bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "rules_python", version = "2.0.0")
 bazel_dep(name = "rules_shell", version = "0.6.1")
+bazel_dep(name = "zstd", version = "1.5.7.bcr.1")
 
 # hermetic-llvm: zero-sysroot, fully hermetic LLVM cross-compilation toolchain.
 # Inside Nix, lre.bazelrc registers @local-remote-execution//generated-cc/...
@@ -107,6 +108,14 @@ crate.from_cargo(
     # selects against legacy @rules_rust//rust/platform:* labels.
     use_legacy_rules_rust_platforms = True,
 )
+crate.annotation(
+    crate = "zstd-sys",
+    gen_build_script = "off",
+    deps = ["@zstd"],
+)
+
+inject_repo(crate, "zstd")
+
 use_repo(crate, "crates")
 
 # NativeLink uses Local Remote Execution for Rust by default which automatically

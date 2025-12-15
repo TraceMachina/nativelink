@@ -19,6 +19,7 @@ use std::sync::{Arc, OnceLock};
 
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD_NO_PAD;
+use ginepro::LoadBalancedChannel;
 use hyper::http::Response;
 use nativelink_error::{Code, ResultExt, make_err};
 use nativelink_proto::build::bazel::remote::execution::v2::RequestMetadata;
@@ -27,7 +28,9 @@ use opentelemetry::trace::{TraceContextExt, Tracer, TracerProvider};
 use opentelemetry::{KeyValue, global};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_http::HeaderExtractor;
-use opentelemetry_otlp::{LogExporter, MetricExporter, Protocol, SpanExporter, WithExportConfig};
+use opentelemetry_otlp::{
+    LogExporter, MetricExporter, Protocol, SpanExporter, WithExportConfig, WithTonicConfig,
+};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
@@ -104,7 +107,7 @@ fn tracing_stdout_layer() -> impl Layer<Registry> {
 ///
 /// Returns `Err` if logging was already initialized or if the exporters can't
 /// be initialized.
-pub fn init_tracing() -> Result<(), nativelink_error::Error> {
+pub async fn init_tracing() -> Result<(), nativelink_error::Error> {
     static INITIALIZED: OnceLock<()> = OnceLock::new();
 
     if INITIALIZED.get().is_some() {
@@ -129,13 +132,18 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
     ]);
     global::set_text_map_propagator(propagator);
 
+    let maybe_channel = maybe_load_balanced_channel().await;
+
     // Logs
+    let mut log_exporter_builder = LogExporter::builder().with_tonic();
+    if let Some(channel) = maybe_channel.clone() {
+        log_exporter_builder = log_exporter_builder.with_channel(channel.into());
+    }
     let otlp_log_layer = OpenTelemetryTracingBridge::new(
         &SdkLoggerProvider::builder()
             .with_resource(resource.clone())
             .with_batch_exporter(
-                LogExporter::builder()
-                    .with_tonic()
+                log_exporter_builder
                     .with_protocol(Protocol::Grpc)
                     .build()
                     .map_err(|e| make_err!(Code::Internal, "{e}"))
@@ -146,13 +154,16 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
     .with_filter(otlp_filter());
 
     // Traces
+    let mut span_exporter_builder = SpanExporter::builder().with_tonic();
+    if let Some(channel) = maybe_channel.clone() {
+        span_exporter_builder = span_exporter_builder.with_channel(channel.into());
+    }
     let otlp_trace_layer = layer()
         .with_tracer(
             SdkTracerProvider::builder()
                 .with_resource(resource.clone())
                 .with_batch_exporter(
-                    SpanExporter::builder()
-                        .with_tonic()
+                    span_exporter_builder
                         .with_protocol(Protocol::Grpc)
                         .build()
                         .map_err(|e| make_err!(Code::Internal, "{e}"))
@@ -164,11 +175,14 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
         .with_filter(otlp_filter());
 
     // Metrics
+    let mut metric_exporter_builder = MetricExporter::builder().with_tonic();
+    if let Some(channel) = maybe_channel {
+        metric_exporter_builder = metric_exporter_builder.with_channel(channel.into());
+    }
     let meter_provider = SdkMeterProvider::builder()
         .with_resource(resource)
         .with_periodic_exporter(
-            MetricExporter::builder()
-                .with_tonic()
+            metric_exporter_builder
                 .with_protocol(Protocol::Grpc)
                 .build()
                 .map_err(|e| make_err!(Code::Internal, "{e}"))
@@ -192,6 +206,38 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
     Ok(())
 }
 
+const NL_OTEL_ENDPOINT: &str = "NL_OTEL_ENDPOINT";
+
+async fn maybe_load_balanced_channel() -> Option<LoadBalancedChannel> {
+    match env::var(NL_OTEL_ENDPOINT) {
+        Ok(endpoint) => {
+            let url = Url::parse(endpoint.as_str())
+                .map_err(|e| {
+                    make_err!(Code::Internal, "Unable to parse endpoint {endpoint}: {e:?}")
+                })
+                .unwrap();
+
+            let host = url
+                .host()
+                .err_tip(|| format!("Unable to get host from endpoint {endpoint}"))
+                .unwrap();
+            let port = url
+                .port()
+                .err_tip(|| format!("Unable to get port from endpoint {endpoint}"))
+                .unwrap();
+
+            Some(
+                LoadBalancedChannel::builder((host.to_string(), port))
+                    .channel()
+                    .await
+                    .map_err(|e| make_err!(Code::Internal, "Invalid hostname '{endpoint}': {e}"))
+                    .unwrap(),
+            )
+        }
+        Err(_) => None,
+    }
+}
+
 /// Custom metadata key field for Bazel metadata.
 const BAZEL_METADATA_KEY: &str = "bazel.metadata";
 
@@ -202,6 +248,7 @@ const BAZEL_REQUESTMETADATA_HEADER: &str = "build.bazel.remote.execution.v2.requ
 
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::FutureExt;
+use url::Url;
 
 /// ASCII headers from an inbound client request, stored in the task context
 /// so that outgoing upstream calls can forward them (e.g. JWT auth tokens).
@@ -334,5 +381,233 @@ impl<S> tower::Layer<S> for OtlpLayer {
 
     fn layer(&self, service: S) -> Self::Service {
         OtlpMiddleware::new(service, self.identity_required)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::convert::Infallible;
+    use core::future::Future;
+    use core::net::SocketAddr;
+    use core::pin::Pin;
+    use core::task::{Context, Poll};
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    use ginepro::{LoadBalancedChannel, LookupService, ServiceDefinition};
+    use nativelink_macro::nativelink_test;
+    use opentelemetry::metrics::MeterProvider as _;
+    use opentelemetry_proto::tonic::collector::metrics::v1::{
+        ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+    };
+    use opentelemetry_sdk::metrics::SdkMeterProvider;
+    use parking_lot::Mutex;
+
+    use super::*;
+
+    // Resolves a host:port pair by parsing the host as a literal IP address,
+    // bypassing hickory-dns and /etc/resolv.conf.  Used by tests that run in
+    // sandboxed environments (e.g. Nix builds) where DNS is unavailable.
+    struct DirectIpResolver;
+
+    #[async_trait::async_trait]
+    impl LookupService for DirectIpResolver {
+        async fn resolve_service_endpoints(
+            &self,
+            definition: &ServiceDefinition,
+        ) -> Result<HashSet<SocketAddr>, anyhow::Error> {
+            let addr: SocketAddr =
+                format!("{}:{}", definition.hostname(), definition.port()).parse()?;
+            Ok(HashSet::from([addr]))
+        }
+    }
+
+    // Serialize env-var mutations across tests: env vars are process-global,
+    // so concurrent writes would be a data race on Unix.
+    //
+    // Serialize env-var mutations across tests: env vars are process-global,
+    // so concurrent writes would be a data race on Unix.  The guard is always
+    // scoped so it drops before any `.await`, which satisfies
+    // `clippy::await_holding_lock`.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[nativelink_test("crate")]
+    async fn channel_absent_when_env_not_set() {
+        {
+            let _guard = ENV_LOCK.lock();
+            // SAFETY: ENV_LOCK serializes all env-var writes in this test module.
+            unsafe { env::remove_var(NL_OTEL_ENDPOINT) };
+        }
+        assert!(
+            maybe_load_balanced_channel().await.is_none(),
+            "Expected None when {NL_OTEL_ENDPOINT} is unset"
+        );
+    }
+
+    #[ignore = "requires DNS resolution (/etc/resolv.conf); not available in sandboxed builds"]
+    #[nativelink_test("crate")]
+    async fn channel_present_when_valid_endpoint_set() {
+        {
+            let _guard = ENV_LOCK.lock();
+            // SAFETY: ENV_LOCK serializes all env-var writes in this test module.
+            unsafe { env::set_var(NL_OTEL_ENDPOINT, "http://localhost:4317") };
+        }
+        let result = maybe_load_balanced_channel().await;
+        {
+            let _guard = ENV_LOCK.lock();
+            // SAFETY: ENV_LOCK serializes all env-var writes in this test module.
+            unsafe { env::remove_var(NL_OTEL_ENDPOINT) };
+        }
+        assert!(
+            result.is_some(),
+            "Expected Some(channel) when {NL_OTEL_ENDPOINT} points to a valid URL"
+        );
+    }
+
+    // A minimal in-process OTLP metrics collector backed by tonic 0.13.
+    //
+    // We implement the gRPC service manually rather than using the generated
+    // `MetricsServiceServer` from `opentelemetry-proto` so the test stays
+    // self-contained and does not pull in an additional server dependency.
+    #[derive(Clone)]
+    struct TestMetricsService {
+        received: Arc<Mutex<Vec<ExportMetricsServiceRequest>>>,
+    }
+
+    const METRICS_EXPORT_PATH: &str =
+        "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export";
+
+    impl tower::Service<hyper::http::Request<tonic::body::Body>> for TestMetricsService {
+        type Response = Response<tonic::body::Body>;
+        type Error = Infallible;
+        type Future =
+            Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
+
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, req: hyper::http::Request<tonic::body::Body>) -> Self::Future {
+            let received = self.received.clone();
+            Box::pin(async move {
+                if req.uri().path() == METRICS_EXPORT_PATH {
+                    let export_svc = tower::service_fn(
+                        move |request: tonic::Request<ExportMetricsServiceRequest>| {
+                            let received = received.clone();
+                            async move {
+                                received.lock().push(request.into_inner());
+                                Ok::<tonic::Response<ExportMetricsServiceResponse>, tonic::Status>(
+                                    tonic::Response::new(ExportMetricsServiceResponse::default()),
+                                )
+                            }
+                        },
+                    );
+                    // ProstCodec<T, U>: Encode = T (sent to client),
+                    //                   Decode = U (received from client).
+                    let mut grpc = tonic::server::Grpc::new(tonic::codec::ProstCodec::<
+                        ExportMetricsServiceResponse,
+                        ExportMetricsServiceRequest,
+                    >::default());
+                    Ok(grpc.unary(export_svc, req).await)
+                } else {
+                    let mut resp = Response::new(tonic::body::Body::empty());
+                    resp.headers_mut().insert(
+                        tonic::Status::GRPC_STATUS,
+                        // `Code` in the outer scope is nativelink_error::Code,
+                        // so the `tonic::` prefix is necessary here.
+                        #[expect(
+                            unused_qualifications,
+                            reason = "tonic::Code differs from the nativelink_error::Code in outer scope"
+                        )]
+                        (tonic::Code::Unimplemented as i32).into(),
+                    );
+                    Ok(resp)
+                }
+            })
+        }
+    }
+
+    impl tonic::server::NamedService for TestMetricsService {
+        const NAME: &'static str = "opentelemetry.proto.collector.metrics.v1.MetricsService";
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "`tokio::test` uses `tokio::runtime::Builder::new_multi_thread` and \
+                  `tokio::runtime::Runtime::block_on` internally"
+    )]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metrics_pushed_via_load_balanced_channel() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let port = listener.local_addr().expect("local_addr").port();
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+        let received: Arc<Mutex<Vec<ExportMetricsServiceRequest>>> = Arc::new(Mutex::new(vec![]));
+        let svc = TestMetricsService {
+            received: received.clone(),
+        };
+
+        crate::background_spawn!("otlp_test_server", async move {
+            tonic::transport::Server::builder()
+                .add_service(svc)
+                .serve_with_incoming(incoming)
+                .await
+                .ok();
+        });
+
+        // Use DirectIpResolver to bypass hickory-dns / /etc/resolv.conf so the
+        // test runs in sandboxed builds (e.g. Nix) that have no DNS available.
+        let channel = LoadBalancedChannel::builder(("127.0.0.1", port))
+            .lookup_service(DirectIpResolver)
+            .channel()
+            .await
+            .expect("LoadBalancedChannel with DirectIpResolver should succeed");
+
+        let exporter = MetricExporter::builder()
+            .with_tonic()
+            .with_channel(channel.into())
+            .with_protocol(Protocol::Grpc)
+            .build()
+            .expect("MetricExporter");
+
+        let meter_provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter)
+            .build();
+
+        let meter = meter_provider.meter("nativelink_test");
+        let counter = meter
+            .u64_counter("test.pushes")
+            .with_description("Counter pushed through the load-balanced channel")
+            .build();
+        counter.add(42, &[KeyValue::new("operation", "cache_read")]);
+
+        meter_provider
+            .force_flush()
+            .expect("force_flush should succeed");
+
+        {
+            let batches = received.lock();
+            assert!(
+                !batches.is_empty(),
+                "Expected at least one OTLP ExportMetricsServiceRequest at the test server"
+            );
+
+            let metric_names: Vec<&str> = batches
+                .iter()
+                .flat_map(|req| &req.resource_metrics)
+                .flat_map(|rm| &rm.scope_metrics)
+                .flat_map(|sm| &sm.metrics)
+                .map(|m| m.name.as_str())
+                .collect();
+
+            assert!(
+                metric_names.contains(&"test.pushes"),
+                "Counter 'test.pushes' should have been delivered via gRPC, got: {metric_names:?}"
+            );
+        }
+
+        meter_provider.shutdown().expect("shutdown");
     }
 }
