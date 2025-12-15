@@ -296,6 +296,12 @@ impl From<uuid::Error> for Error {
     }
 }
 
+impl From<rustls_pki_types::pem::Error> for Error {
+    fn from(value: rustls_pki_types::pem::Error) -> Self {
+        Self::new(Code::Internal, value.to_string())
+    }
+}
+
 pub trait ResultExt<T> {
     /// # Errors
     ///
