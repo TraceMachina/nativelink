@@ -87,6 +87,8 @@ tracing-subscriber = { version = "0.3.19", features = [
 ], default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [] }
 
+ginepro = { version = "0.8.2", default-features = false }
+url = { version = "2.5.7", default-features = false }
 uuid = { version = "1.16.0", default-features = false, features = [
   "serde",
   "v4",

@@ -19,6 +19,7 @@ use std::sync::{Arc, OnceLock};
 
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD_NO_PAD;
+use ginepro::LoadBalancedChannel;
 use hyper::http::Response;
 use nativelink_error::{Code, ResultExt, make_err};
 use nativelink_proto::build::bazel::remote::execution::v2::RequestMetadata;
@@ -27,7 +28,9 @@ use opentelemetry::trace::{TraceContextExt, Tracer, TracerProvider};
 use opentelemetry::{KeyValue, global};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_http::HeaderExtractor;
-use opentelemetry_otlp::{LogExporter, MetricExporter, Protocol, SpanExporter, WithExportConfig};
+use opentelemetry_otlp::{
+    LogExporter, MetricExporter, Protocol, SpanExporter, WithExportConfig, WithTonicConfig,
+};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
@@ -104,7 +107,7 @@ fn tracing_stdout_layer() -> impl Layer<Registry> {
 ///
 /// Returns `Err` if logging was already initialized or if the exporters can't
 /// be initialized.
-pub fn init_tracing() -> Result<(), nativelink_error::Error> {
+pub async fn init_tracing() -> Result<(), nativelink_error::Error> {
     static INITIALIZED: OnceLock<()> = OnceLock::new();
 
     if INITIALIZED.get().is_some() {
@@ -129,13 +132,18 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
     ]);
     global::set_text_map_propagator(propagator);
 
+    let maybe_channel = maybe_load_balanced_channel().await;
+
     // Logs
+    let mut log_exporter_builder = LogExporter::builder().with_tonic();
+    if let Some(channel) = maybe_channel.clone() {
+        log_exporter_builder = log_exporter_builder.with_channel(channel.into());
+    }
     let otlp_log_layer = OpenTelemetryTracingBridge::new(
         &SdkLoggerProvider::builder()
             .with_resource(resource.clone())
             .with_batch_exporter(
-                LogExporter::builder()
-                    .with_tonic()
+                log_exporter_builder
                     .with_protocol(Protocol::Grpc)
                     .build()
                     .map_err(|e| make_err!(Code::Internal, "{e}"))
@@ -146,13 +154,16 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
     .with_filter(otlp_filter());
 
     // Traces
+    let mut span_exporter_builder = SpanExporter::builder().with_tonic();
+    if let Some(channel) = maybe_channel.clone() {
+        span_exporter_builder = span_exporter_builder.with_channel(channel.into());
+    }
     let otlp_trace_layer = layer()
         .with_tracer(
             SdkTracerProvider::builder()
                 .with_resource(resource.clone())
                 .with_batch_exporter(
-                    SpanExporter::builder()
-                        .with_tonic()
+                    span_exporter_builder
                         .with_protocol(Protocol::Grpc)
                         .build()
                         .map_err(|e| make_err!(Code::Internal, "{e}"))
@@ -164,11 +175,14 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
         .with_filter(otlp_filter());
 
     // Metrics
+    let mut metric_exporter_builder = MetricExporter::builder().with_tonic();
+    if let Some(channel) = maybe_channel {
+        metric_exporter_builder = metric_exporter_builder.with_channel(channel.into());
+    }
     let meter_provider = SdkMeterProvider::builder()
         .with_resource(resource)
         .with_periodic_exporter(
-            MetricExporter::builder()
-                .with_tonic()
+            metric_exporter_builder
                 .with_protocol(Protocol::Grpc)
                 .build()
                 .map_err(|e| make_err!(Code::Internal, "{e}"))
@@ -192,6 +206,38 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
     Ok(())
 }
 
+const NL_OTEL_ENDPOINT: &str = "NL_OTEL_ENDPOINT";
+
+async fn maybe_load_balanced_channel() -> Option<LoadBalancedChannel> {
+    match env::var(NL_OTEL_ENDPOINT) {
+        Ok(endpoint) => {
+            let url = Url::parse(endpoint.as_str())
+                .map_err(|e| {
+                    make_err!(Code::Internal, "Unable to parse endpoint {endpoint}: {e:?}")
+                })
+                .unwrap();
+
+            let host = url
+                .host()
+                .err_tip(|| format!("Unable to get host from endpoint {endpoint}"))
+                .unwrap();
+            let port = url
+                .port()
+                .err_tip(|| format!("Unable to get port from endpoint {endpoint}"))
+                .unwrap();
+
+            Some(
+                LoadBalancedChannel::builder((host.to_string(), port))
+                    .channel()
+                    .await
+                    .map_err(|e| make_err!(Code::Internal, "Invalid hostname '{endpoint}': {e}"))
+                    .unwrap(),
+            )
+        }
+        Err(_) => None,
+    }
+}
+
 /// Custom metadata key field for Bazel metadata.
 const BAZEL_METADATA_KEY: &str = "bazel.metadata";
 
@@ -202,6 +248,7 @@ const BAZEL_REQUESTMETADATA_HEADER: &str = "build.bazel.remote.execution.v2.requ
 
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::FutureExt;
+use url::Url;
 
 /// ASCII headers from an inbound client request, stored in the task context
 /// so that outgoing upstream calls can forward them (e.g. JWT auth tokens).
