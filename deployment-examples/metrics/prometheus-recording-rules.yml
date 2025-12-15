@@ -1,14 +1,9 @@
 # Recording Rules for NativeLink Metrics
 # These rules pre-calculate common queries for better dashboard performance
 #
-# NOTE: Prometheus v3 with OTLP ingestion adds a `_total` suffix to counter metrics.
-# If you are using Prometheus v3 with OTLP, you may need to add `_total` to counter
-# metric names below (e.g., `nativelink_execution_completed_count` becomes
-# `nativelink_execution_completed_count_total`). See prometheus-config.yaml for
-# the translation_strategy setting.
-#
-# Alternatively, use `translation_strategy: NoUTF8EscapingWithSuffixes` in your
-# Prometheus OTLP configuration to preserve original metric names.
+# NOTE: When exporting OpenTelemetry counters to Prometheus/OpenMetrics, counters are exposed with
+# a `_total` suffix (for example, `nativelink_execution_completed_count_total`). These rules are
+# written for that naming scheme (used by the Docker Compose quickstart).
 
 groups:
   - name: nativelink_execution
@@ -18,20 +13,20 @@ groups:
       - record: nativelink:execution_success_rate
         expr: |
           sum by (instance_name, execution_instance) (
-            rate(nativelink_execution_completed_count{execution_result="success"}[5m])
+            rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])
           ) /
           sum by (instance_name, execution_instance) (
-            rate(nativelink_execution_completed_count[5m])
+            rate(nativelink_execution_completed_count_total[5m])
           )
 
       # Cache hit rate from executions
       - record: nativelink:execution_cache_hit_rate
         expr: |
           sum by (instance_name) (
-            rate(nativelink_execution_completed_count{execution_result="cache_hit"}[5m])
+            rate(nativelink_execution_completed_count_total{execution_result="cache_hit"}[5m])
           ) /
           sum by (instance_name) (
-            rate(nativelink_execution_completed_count[5m])
+            rate(nativelink_execution_completed_count_total[5m])
           )
 
       # Average queue time (median)
@@ -63,7 +58,7 @@ groups:
       - record: nativelink:stage_transition_rate
         expr: |
           sum by (instance_name, execution_instance, execution_priority) (
-            rate(nativelink_execution_stage_transitions[5m])
+            rate(nativelink_execution_stage_transitions_total[5m])
           )
 
       # Execution duration by stage (p50, p95, p99)
@@ -132,10 +127,10 @@ groups:
       - record: nativelink:cache_hit_rate
         expr: |
           sum by (cache_type, instance_name) (
-            rate(nativelink_cache_operations{cache_operation_result="hit"}[5m])
+            rate(nativelink_cache_operations_total{cache_operation_result="hit"}[5m])
           ) /
           sum by (cache_type, instance_name) (
-            rate(nativelink_cache_operations{cache_operation_name="read"}[5m])
+            rate(nativelink_cache_operations_total{cache_operation_name="read"}[5m])
           )
 
       # Cache operation latency percentiles
@@ -176,27 +171,27 @@ groups:
       - record: nativelink:cache_eviction_rate
         expr: |
           sum by (cache_type, instance_name) (
-            rate(nativelink_cache_operations{cache_operation_name="evict"}[5m])
+            rate(nativelink_cache_operations_total{cache_operation_name="evict"}[5m])
           )
 
       # Cache throughput (bytes/sec)
       - record: nativelink:cache_read_throughput_bytes
         expr: |
           sum by (cache_type, instance_name) (
-            rate(nativelink_cache_io{cache_operation_name="read"}[5m])
+            rate(nativelink_cache_io_total{cache_operation_name="read"}[5m])
           )
 
       - record: nativelink:cache_write_throughput_bytes
         expr: |
           sum by (cache_type, instance_name) (
-            rate(nativelink_cache_io{cache_operation_name="write"}[5m])
+            rate(nativelink_cache_io_total{cache_operation_name="write"}[5m])
           )
 
       # Cache error rate
       - record: nativelink:cache_error_rate
         expr: |
           sum by (cache_type, cache_operation_name, instance_name) (
-            rate(nativelink_cache_operations{cache_operation_result="error"}[5m])
+            rate(nativelink_cache_operations_total{cache_operation_result="error"}[5m])
           )
 
   - name: nativelink_performance
@@ -205,13 +200,13 @@ groups:
       # Overall system throughput (actions/sec)
       - record: nativelink:system_throughput
         expr: |
-          sum(rate(nativelink_execution_completed_count[5m]))
+          sum(rate(nativelink_execution_completed_count_total[5m]))
 
       # System success rate
       - record: nativelink:system_success_rate
         expr: |
-          sum(rate(nativelink_execution_completed_count{execution_result="success"}[5m])) /
-          sum(rate(nativelink_execution_completed_count[5m]))
+          sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
+          sum(rate(nativelink_execution_completed_count_total[5m]))
 
       # Worker utilization (percentage of workers executing)
       - record: nativelink:worker_utilization
@@ -248,7 +243,7 @@ groups:
       - record: nativelink:execution_retry_rate
         expr: |
           sum by (instance_name) (
-            rate(nativelink_execution_retry_count[5m])
+            rate(nativelink_execution_retry_count_total[5m])
           )
 
   - name: nativelink_slo
@@ -257,8 +252,8 @@ groups:
       # SLO: 99% of executions should complete successfully
       - record: nativelink:slo_execution_success_rate
         expr: |
-          sum(rate(nativelink_execution_completed_count{execution_result="success"}[1h])) /
-          sum(rate(nativelink_execution_completed_count[1h]))
+          sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[1h])) /
+          sum(rate(nativelink_execution_completed_count_total[1h]))
 
       # SLO: 95% of cache reads should be under 100ms
       - record: nativelink:slo_cache_read_latency
@@ -280,7 +275,7 @@ groups:
           1 - (
             (1 - 0.99) -
             (1 - (
-              sum(rate(nativelink_execution_completed_count{execution_result="success"}[30d])) /
-              sum(rate(nativelink_execution_completed_count[30d]))
+              sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[30d])) /
+              sum(rate(nativelink_execution_completed_count_total[30d]))
             ))
           ) / (1 - 0.99)
