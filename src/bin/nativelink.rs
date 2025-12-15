@@ -719,7 +719,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     // The OTLP exporters need to run in a Tokio context
     // Do this first so all the other logging works
     #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
-    runtime.block_on(async { tokio::spawn(async { init_tracing() }).await? })?;
+    runtime.block_on(async { tokio::spawn(async { init_tracing().await }).await? })?;
 
     let mut cfg = get_config()?;
 
