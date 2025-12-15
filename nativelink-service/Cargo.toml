@@ -20,8 +20,8 @@ bytes = { version = "1.10.1", default-features = false }
 futures = { version = "0.3.31", default-features = false }
 http-body-util = { version = "0.1.3", default-features = false }
 hyper = { version = "1.6.0", default-features = false }
-opentelemetry = { version = "0.29.1", default-features = false }
-opentelemetry-semantic-conventions = { version = "0.29.0", default-features = false, features = [
+opentelemetry = { version = "0.30.0", default-features = false }
+opentelemetry-semantic-conventions = { version = "0.30.0", default-features = false, features = [
   "default",
   "semconv_experimental",
 ] }
