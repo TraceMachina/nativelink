@@ -14,19 +14,10 @@
 
 use core::time::Duration;
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
-use std::fmt;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use bytes::Bytes;
-use fred::bytes_utils::string::Str;
-use fred::clients::SubscriberClient;
-use fred::error::Error as RedisError;
-use fred::mocks::{MockCommand, Mocks};
-use fred::prelude::Builder;
-use fred::types::Value as RedisValue;
-use fred::types::config::Config as RedisConfig;
 use futures::StreamExt;
 use mock_instant::global::SystemTime as MockSystemTime;
 use nativelink_config::schedulers::SimpleSpec;
@@ -73,6 +64,8 @@ const VERSION_SCRIPT_HASH: &str = "b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5";
 const MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 const SCAN_COUNT: usize = 10_000;
 const MAX_PERMITS: usize = 100;
+// TODO: This should come from a shared constant when tests are migrated to redis-rs
+const SCRIPT_VERSION: &str = "1";
 
 fn mock_uuid_generator() -> String {
     uuid::Uuid::parse_str(TEMP_UUID).unwrap().to_string()

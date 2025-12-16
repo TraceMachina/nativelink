@@ -19,6 +19,7 @@ use core::pin::Pin;
 use core::time::Duration;
 use std::borrow::Cow;
 use std::sync::{Arc, Weak};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -1225,6 +1226,7 @@ impl<C: RedisPatternSubscriber + Clone + ConnectionLike + Sync> SchedulerStore f
             for (name, value) in maybe_index {
                 script_invocation = script_invocation.arg(name).arg(value.to_vec());
             }
+            let start = Instant::now();
             let (success, new_version): (bool, i64) = script_invocation
                 .invoke_async(&mut client.connection_manager)
                 .await
