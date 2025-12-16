@@ -1229,13 +1229,24 @@ impl<C: RedisPatternSubscriber + Clone + ConnectionLike + Sync> SchedulerStore f
                 .invoke_async(&mut client.connection_manager)
                 .await
                 .err_tip(|| format!("In RedisStore::update_data::versioned for {key:?}"))?;
+
+            let elapsed = start.elapsed();
+
+            if elapsed > Duration::from_millis(100) {
+                warn!(
+                    %redis_key,
+                    ?elapsed,
+                    "Slow Redis version-set operation"
+                );
+            }
             if !success {
                 warn!(
                     %redis_key,
                     %key,
                     %current_version,
                     %new_version,
-                    "Error updating Redis key"
+                    caller = core::any::type_name::<T>(),
+                    "Redis version conflict - optimistic lock failed"
                 );
                 return Ok(None);
             }

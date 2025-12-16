@@ -18,6 +18,7 @@ rust_library(
         "@crates//:prost",
         "@crates//:prost-types",
         "@crates//:redis",
+        "@crates//:rustls-pki-types",
         "@crates//:serde",
         "@crates//:serde_json5",
         "@crates//:tokio",

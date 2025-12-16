@@ -83,6 +83,12 @@ where
     pub const fn is_first_msg(&self) -> bool {
         self.first_msg.is_some()
     }
+
+    /// Returns whether the first message has `finish_write` set to true.
+    /// This indicates a single-shot upload where all data is in one message.
+    pub fn is_first_msg_complete(&self) -> bool {
+        self.first_msg.as_ref().is_some_and(|msg| msg.finish_write)
+    }
 }
 
 impl<T, E> Stream for WriteRequestStreamWrapper<T>

@@ -14,10 +14,19 @@
 
 use core::time::Duration;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::fmt;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use bytes::Bytes;
+use fred::bytes_utils::string::Str;
+use fred::clients::SubscriberClient;
+use fred::error::Error as RedisError;
+use fred::mocks::{MockCommand, Mocks};
+use fred::prelude::Builder;
+use fred::types::Value as RedisValue;
+use fred::types::config::Config as RedisConfig;
 use futures::StreamExt;
 use mock_instant::global::SystemTime as MockSystemTime;
 use nativelink_config::schedulers::SimpleSpec;
@@ -60,7 +69,6 @@ mod utils {
 
 const INSTANCE_NAME: &str = "instance_name";
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
-const SCRIPT_VERSION: &str = "3e762c15";
 const VERSION_SCRIPT_HASH: &str = "b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5";
 const MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 const SCAN_COUNT: usize = 10_000;
@@ -155,6 +163,8 @@ fn make_awaited_action(operation_id: &str) -> AwaitedAction {
     )
 }
 
+// TODO: This test needs to be rewritten to use FakeRedisBackend properly with
+// SimpleScheduler and workers (like test_multiple_clients_subscribe_to_same_action).
 #[nativelink_test]
 #[ignore] // FIXME(palfrey): make work with redis-rs
 async fn add_action_smoke_test() -> Result<(), Error> {
@@ -419,7 +429,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
 
         let get_res = get_subscription.borrow().await;
 
-        assert_eq!(get_res.unwrap().state().stage, ActionStage::Executing);
+        assert_eq!(get_res.unwrap().state().stage, ActionStage::Queued);
     }
 
     {
@@ -434,6 +444,18 @@ async fn add_action_smoke_test() -> Result<(), Error> {
             changed_awaited_action_res.unwrap().state().stage,
             ActionStage::Executing
         );
+    }
+
+    {
+        let get_subscription = awaited_action_db
+            .get_awaited_action_by_id(&OperationId::from(CLIENT_OPERATION_ID))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let get_res = get_subscription.borrow().await;
+
+        assert_eq!(get_res.unwrap().state().stage, ActionStage::Executing);
     }
 
     Ok(())
@@ -729,9 +751,9 @@ async fn test_outdated_version() -> Result<(), Error> {
 /// Test that orphaned client operation ID mappings return None.
 ///
 /// This tests the scenario where:
-/// 1. A client operation ID mapping exists (cid_* → operation_id)
+/// 1. A client operation ID mapping exists (cid_* → `operation_id`)
 /// 2. The actual operation (aa_*) has been deleted (completed/timed out)
-/// 3. get_awaited_action_by_id should return None instead of a subscriber to a non-existent operation
+/// 3. `get_awaited_action_by_id` should return None instead of a subscriber to a non-existent operation
 #[nativelink_test]
 #[ignore] // FIXME(palfrey): make work with redis-rs
 async fn test_orphaned_client_operation_id_returns_none() -> Result<(), Error> {

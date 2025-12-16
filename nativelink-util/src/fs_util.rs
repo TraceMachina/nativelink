@@ -295,8 +295,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_hardlink_directory_tree() -> Result<(), Error> {
-        let (_temp_dir, src_dir) = create_test_directory().await?;
-        let dst_dir = _temp_dir.path().join("test_dst");
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        let dst_dir = temp_dir.path().join("test_dst");
 
         // Hardlink the directory
         hardlink_directory_tree(&src_dir, &dst_dir).await?;

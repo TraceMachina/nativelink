@@ -39,13 +39,14 @@ use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
-use tracing::{error, info, info_span};
+use tracing::{error, info, info_span, warn};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
+use crate::worker_registry::WorkerRegistry;
 use crate::worker_scheduler::WorkerScheduler;
 
 /// Default timeout for workers in seconds.
@@ -303,10 +304,20 @@ impl SimpleScheduler {
 
         let mut result = Ok(());
 
+        let start = Instant::now();
+
         let mut stream = self
             .get_queued_operations()
             .await
             .err_tip(|| "Failed to get queued operations in do_try_match")?;
+
+        let query_elapsed = start.elapsed();
+        if query_elapsed > Duration::from_secs(1) {
+            warn!(
+                elapsed_ms = query_elapsed.as_millis(),
+                "Slow get_queued_operations query"
+            );
+        }
 
         while let Some(action_state_result) = stream.next().await {
             result = result.merge(
@@ -318,6 +329,15 @@ impl SimpleScheduler {
                     full_worker_logging,
                 )
                 .await,
+            );
+        }
+
+        let total_elapsed = start.elapsed();
+        if total_elapsed > Duration::from_secs(5) {
+            warn!(
+                total_ms = total_elapsed.as_millis(),
+                query_ms = query_elapsed.as_millis(),
+                "Slow do_try_match cycle"
             );
         }
 
@@ -398,12 +418,17 @@ impl SimpleScheduler {
         }
 
         let worker_change_notify = Arc::new(Notify::new());
+
+        // Create shared worker registry for single heartbeat per worker.
+        let worker_registry = Arc::new(WorkerRegistry::new());
+
         let state_manager = SimpleSchedulerStateManager::new(
             max_job_retries,
             Duration::from_secs(worker_timeout_s),
             Duration::from_secs(client_action_timeout_s),
             awaited_action_db,
             now_fn,
+            Some(worker_registry.clone()),
         );
 
         let worker_scheduler = ApiWorkerScheduler::new(
@@ -412,6 +437,7 @@ impl SimpleScheduler {
             spec.allocation_strategy,
             worker_change_notify.clone(),
             worker_timeout_s,
+            worker_registry,
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
@@ -536,14 +562,15 @@ impl SimpleScheduler {
                 });
 
             let worker_match_logging_interval = match spec.worker_match_logging_interval_s {
-                -1 => None,
+                // -1 or 0 means disabled (0 used to cause expensive logging on every call)
+                -1 | 0 => None,
                 signed_secs => {
                     if let Ok(secs) = TryInto::<u64>::try_into(signed_secs) {
                         Some(Duration::from_secs(secs))
                     } else {
                         error!(
                             worker_match_logging_interval_s = spec.worker_match_logging_interval_s,
-                            "Valid values for worker_match_logging_interval_s are -1 or a positive integer, setting to -1 (disabled)",
+                            "Valid values for worker_match_logging_interval_s are -1, 0, or a positive integer, setting to disabled",
                         );
                         None
                     }

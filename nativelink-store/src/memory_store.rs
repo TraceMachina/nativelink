@@ -31,7 +31,7 @@ use nativelink_util::health_utils::{
     HealthRegistryBuilder, HealthStatusIndicator, default_health_status_indicator,
 };
 use nativelink_util::store_trait::{
-    RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, UploadSizeInfo,
+    RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
 
 use crate::callback_utils::RemoveItemCallbackHolder;
@@ -145,6 +145,27 @@ impl StoreDriver for MemoryStore {
                 .err_tip(|| "Failed to collect all bytes from reader in memory_store::update")?;
             let mut new_buffer = BytesMut::with_capacity(buffer.len());
             new_buffer.extend_from_slice(&buffer[..]);
+            new_buffer.freeze()
+        };
+
+        self.evicting_map
+            .insert(key.into_owned().into(), BytesWrapper(final_buffer))
+            .await;
+        Ok(())
+    }
+
+    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+        optimization == StoreOptimizations::SubscribesToUpdateOneshot
+    }
+
+    async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
+        // Fast path: Direct insertion without channel overhead.
+        // We still need to copy the data to prevent holding references to larger buffers.
+        let final_buffer = if data.is_empty() {
+            data
+        } else {
+            let mut new_buffer = BytesMut::with_capacity(data.len());
+            new_buffer.extend_from_slice(&data[..]);
             new_buffer.freeze()
         };
 

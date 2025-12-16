@@ -22,7 +22,7 @@ use std::time::SystemTime;
 
 use async_lock::RwLock;
 use async_trait::async_trait;
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
@@ -907,7 +907,47 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     }
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
-        optimization == StoreOptimizations::FileUpdates
+        matches!(
+            optimization,
+            StoreOptimizations::FileUpdates | StoreOptimizations::SubscribesToUpdateOneshot
+        )
+    }
+
+    async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
+        if is_zero_digest(key.borrow()) {
+            return Ok(());
+        }
+
+        let temp_key = make_temp_key(&key);
+        let (mut entry, mut temp_file, temp_full_path) = Fe::make_and_open_file(
+            self.block_size,
+            EncodedFilePath {
+                shared_context: self.shared_context.clone(),
+                path_type: PathType::Temp,
+                key: temp_key,
+            },
+        )
+        .await
+        .err_tip(|| "Failed to create temp file in filesystem store update_oneshot")?;
+
+        // Write directly without channel overhead
+        if !data.is_empty() {
+            temp_file
+                .write_all(&data)
+                .await
+                .err_tip(|| format!("Failed to write data to {}", temp_full_path.display()))?;
+        }
+
+        temp_file
+            .as_ref()
+            .sync_all()
+            .await
+            .err_tip(|| "Failed to sync_data in filesystem store update_oneshot")?;
+
+        drop(temp_file);
+
+        *entry.data_size_mut() = data.len() as u64;
+        self.emplace_file(key.into_owned(), Arc::new(entry)).await
     }
 
     async fn update_with_whole_file(
