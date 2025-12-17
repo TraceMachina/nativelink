@@ -132,11 +132,11 @@ Monitor cache performance and efficiency:
 
 | Metric | Description | Key Labels |
 |--------|-------------|------------|
-| `nativelink_cache_operations` | Operations count by type and result | `cache_type`, `operation`, `result` |
-| `nativelink_cache_operation_duration` | Operation latency histogram | `cache_type`, `operation` |
-| `nativelink_cache_hit_rate` | Calculated hit rate (recording rule) | `cache_type` |
+| `nativelink_cache_operations_total` | Operations count by type and result | `cache_type`, `cache_operation_name`, `cache_operation_result` |
+| `nativelink_cache_operation_duration` | Operation latency histogram | `cache_type`, `cache_operation_name` |
+| `nativelink:cache_hit_rate` | Calculated hit rate (recording rule) | `cache_type`, `instance_name` |
 | `nativelink_cache_size` | Current cache size in bytes | `cache_type` |
-| `nativelink_cache_eviction_rate` | Evictions per second | `cache_type` |
+| `nativelink:cache_eviction_rate` | Evictions per second (recording rule) | `cache_type`, `instance_name` |
 
 ### Execution Metrics
 
@@ -145,10 +145,10 @@ Track remote execution pipeline performance:
 | Metric | Description | Key Labels |
 |--------|-------------|------------|
 | `nativelink_execution_active_count` | Actions in each stage | `execution_stage` |
-| `nativelink_execution_completed_count` | Completed actions | `execution_result` |
-| `nativelink_execution_queue_time` | Queue wait time histogram | `priority` |
+| `nativelink_execution_completed_count_total` | Completed actions | `execution_result` |
+| `nativelink_execution_queue_time` | Queue wait time histogram | `execution_priority` |
 | `nativelink_execution_stage_duration` | Time per stage | `execution_stage` |
-| `nativelink_execution_success_rate` | Success percentage (recording rule) | `instance` |
+| `nativelink:execution_success_rate` | Success percentage (recording rule) | `instance_name`, `execution_instance` |
 
 ### Execution Stages
 
@@ -165,8 +165,8 @@ Actions progress through these stages:
 
 ```promql
 # Cache hit rate by type
-sum(rate(nativelink_cache_operations{result="hit"}[5m])) by (cache_type) /
-sum(rate(nativelink_cache_operations{operation="read"}[5m])) by (cache_type)
+sum(rate(nativelink_cache_operations_total{cache_operation_result="hit"}[5m])) by (cache_type) /
+sum(rate(nativelink_cache_operations_total{cache_operation_name="read"}[5m])) by (cache_type)
 
 # P95 cache operation latency
 histogram_quantile(0.95,
@@ -174,18 +174,18 @@ histogram_quantile(0.95,
 )
 
 # Cache eviction rate
-sum(rate(nativelink_cache_operations{operation="evict"}[5m])) by (cache_type)
+sum(rate(nativelink_cache_operations_total{cache_operation_name="evict"}[5m])) by (cache_type)
 ```
 
 ### Execution Pipeline
 
 ```promql
 # Execution success rate
-sum(rate(nativelink_execution_completed_count{result="success"}[5m])) /
-sum(rate(nativelink_execution_completed_count[5m]))
+sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
+sum(rate(nativelink_execution_completed_count_total[5m]))
 
-# Queue depth by priority
-sum(nativelink_execution_active_count{stage="queued"}) by (priority)
+# Queue depth
+sum(nativelink_execution_active_count{execution_stage="queued"})
 
 # Average queue time
 histogram_quantile(0.5,
@@ -193,22 +193,21 @@ histogram_quantile(0.5,
 )
 
 # Worker utilization
-count(nativelink_execution_active_count{stage="executing"} > 0) /
-count(count by (worker_id) (nativelink_execution_active_count))
+nativelink:worker_utilization
 ```
 
 ### System Health
 
 ```promql
 # Overall throughput (actions/sec)
-sum(rate(nativelink_execution_completed_count[5m]))
+sum(rate(nativelink_execution_completed_count_total[5m]))
 
 # Error rate
-sum(rate(nativelink_execution_completed_count{result="failure"}[5m])) /
-sum(rate(nativelink_execution_completed_count[5m]))
+sum(rate(nativelink_execution_completed_count_total{execution_result="failure"}[5m])) /
+sum(rate(nativelink_execution_completed_count_total[5m]))
 
 # Stage transition rate
-sum(rate(nativelink_execution_stage_transitions[5m])) by (instance)
+sum(rate(nativelink_execution_stage_transitions_total[5m])) by (instance_name)
 ```
 
 ## Dashboards
@@ -236,7 +235,7 @@ Import the pre-built dashboard for comprehensive monitoring:
     {
       "title": "Queue Depth",
       "targets": [{
-        "expr": "sum(nativelink_execution_active_count{stage=\"queued\"})"
+        "expr": "sum(nativelink_execution_active_count{execution_stage=\"queued\"})"
       }]
     }
   ]
@@ -326,14 +325,14 @@ exporters:
 
 - alert: QueueBacklog
   expr: |
-    sum(nativelink_execution_active_count{stage="queued"}) > 100
+    sum(nativelink_execution_active_count{execution_stage="queued"}) > 100
   for: 15m
   annotations:
     summary: "Queue backlog exceeds 100 actions"
 
 - alert: CacheEvictionHigh
   expr: |
-    rate(nativelink_cache_operations{operation="evict"}[5m]) > 10
+    rate(nativelink_cache_operations_total{cache_operation_name="evict"}[5m]) > 10
   for: 10m
   annotations:
     summary: "Cache eviction rate exceeds threshold"
@@ -357,6 +356,10 @@ exporters:
    ```bash
    curl http://localhost:8888/metrics | grep otelcol_receiver
    ```
+
+### Cache Metrics Missing
+
+If you see `nativelink_execution_*` metrics but no `nativelink_cache_*` metrics, your NativeLink build may not be emitting store-level cache operation metrics yet. In that case, cache recording rules like `nativelink:cache_hit_rate` won't produce any series.
 
 ### High Cardinality
 
