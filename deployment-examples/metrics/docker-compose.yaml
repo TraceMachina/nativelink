@@ -47,7 +47,7 @@ services:
 
   # Grafana for visualization
   grafana:
-    image: grafana/grafana:10.3.0
+    image: grafana/grafana:12.3.1
     container_name: grafana
     restart: unless-stopped
     ports:
