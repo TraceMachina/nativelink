@@ -61,6 +61,15 @@ To start, you can deploy NativeLink as a Docker image (as shown below). The setu
 
 You can find a few example deployments in the [Docs](https://nativelink.com/docs/deployment-examples/kubernetes).
 
+> **🚀 Multi-Worker Deployments with JuiceFS**
+>
+> For production-grade multi-worker setups with distributed shared storage, check out our [JuiceFS Integration Guide](deployment-examples/docker-compose/README-JUICEFS.md). Get started in minutes with our automated setup:
+> ```bash
+> cd deployment-examples/docker-compose
+> ./setup-juicefs.sh
+> ```
+> Includes Redis, MinIO, and production-ready configurations for both Docker Compose and Kubernetes.
+
 ### 📦 Prebuilt images
 
 Fast to spin up, but currently limited to `x86_64` systems. See the [container
