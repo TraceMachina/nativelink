@@ -3,6 +3,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.10](https://github.com/TraceMachina/nativelink/compare/v0.7.9..v0.7.10) - 2025-12-29
+
+### 🐛 Bug Fixes
+
+- *(deps)* update module golang.org/x/crypto to v0.45.0 [security] ([#2062](https://github.com/TraceMachina/nativelink/issues/2062)) - ([7a4cdb6](https://github.com/TraceMachina/nativelink/commit/7a4cdb681fe23b90f68f1bcc897b5b9ce43c1e37))
+
+### 🧪 Testing & CI
+
+- New filesystem test for eviction breaking ([#2024](https://github.com/TraceMachina/nativelink/issues/2024)) - ([47ebd44](https://github.com/TraceMachina/nativelink/commit/47ebd44809657889f185d0cb36c4217012211c48))
+
+### ⚙️ Miscellaneous
+
+- *(deps)* update dependency abseil-cpp to v20250512 ([#2099](https://github.com/TraceMachina/nativelink/issues/2099)) - ([2bdb869](https://github.com/TraceMachina/nativelink/commit/2bdb869b7cb42ad1c2411f282d454fe2cb81cc65))
+- *(deps)* update actions/checkout action to v6 ([#2085](https://github.com/TraceMachina/nativelink/issues/2085)) - ([fbda7bb](https://github.com/TraceMachina/nativelink/commit/fbda7bbfd1910bda6abace60feef3645f6f92ab4))
+- *(deps)* update actions/github-script action to v8 ([#2098](https://github.com/TraceMachina/nativelink/issues/2098)) - ([f9f3b60](https://github.com/TraceMachina/nativelink/commit/f9f3b6031f400cb3ef327b2c956ea6c6d0d4ff54))
+- reduce worker disconnect cascades ([#2093](https://github.com/TraceMachina/nativelink/issues/2093)) - ([44ada84](https://github.com/TraceMachina/nativelink/commit/44ada84405f17696c04f363b98773692a1c122f6))
+- Replace rustls-pemfile to fix RUSTSEC-2025-0134 ([#2094](https://github.com/TraceMachina/nativelink/issues/2094)) - ([1b85f71](https://github.com/TraceMachina/nativelink/commit/1b85f71d977f61ff79391934e434af9c10d057e8))
+
 ## [0.7.9](https://github.com/TraceMachina/nativelink/compare/v0.7.8..v0.7.9) - 2025-12-10
 
 ### ⛰️  Features
