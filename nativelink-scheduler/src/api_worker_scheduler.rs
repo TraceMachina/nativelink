@@ -479,6 +479,7 @@ pub struct ApiWorkerScheduler {
 }
 
 impl ApiWorkerScheduler {
+    #[allow(clippy::needless_pass_by_value)] // Arc clone is cheap, and needed for trait object coercion
     pub fn new(
         worker_state_manager: Arc<dyn WorkerStateManager>,
         platform_property_manager: Arc<PlatformPropertyManager>,

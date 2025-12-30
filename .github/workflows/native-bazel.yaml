@@ -60,42 +60,45 @@ jobs:
           fi
         shell: bash
 
-  # FIXME(palfrey): Can't make this reliably run in CI
-  # redis-store-tester:
-  #   name: Redis store tester
-  #   runs-on: ubuntu-24.04
-  #   timeout-minutes: 30
-  #   services:
-  #     redis:
-  #       image: redis:8.0.5-alpine3.21
-  #       options: >-
-  #         --health-cmd "redis-cli ping"
-  #         --health-interval 10s
-  #         --health-timeout 5s
-  #         --health-retries 5
-  #       ports:
-  #         - 6379:6379
-  #   steps:
-  #     - name: Checkout
-  #       uses: >- # v4.2.2
-  #         actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+  redis-store-tester:
+    name: Redis store tester
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-  #     - name: Setup Bazel
-  #       uses: >- # v0.13.0
-  #         bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
-  #       with:
-  #         bazelisk-cache: true
-  #         repository-cache: true
-  #         disk-cache: ${{ github.workflow }}-ubuntu-24.04
+      - uses: hoverkraft-tech/compose-action@3846bcd61da338e9eaaf83e7ed0234a12b099b72 # v2.4.1
+        with:
+          compose-file: src/bin/docker-compose.store-tester.yaml
 
-  #     - name: Run Bazel tests
-  #       run: |
-  #         bazel run //:redis_store_tester \
-  #           --extra_toolchains=@rust_toolchains//:all \
-  #           --verbose_failures
-  #       env:
-  #         RUST_LOG: trace
-  #         REDIS_HOST: localhost
-  #         MAX_REDIS_PERMITS: 50 # because CI times out sometimes
-  #         MAX_LOOPS: 10000 # Not reliably running above this sort of level (possible low memory?)
-  #       shell: bash
+      - name: Setup Bazel
+        uses: >- # v0.13.0
+          bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: ${{ github.workflow }}-ubuntu-24.04
+
+      - name: Run Store tester with sentinel
+        run: |
+          bazel run //:redis_store_tester \
+            --extra_toolchains=@rust_toolchains//:all \
+            --verbose_failures -- --redis-mode sentinel --mode sequential
+        env:
+          RUST_LOG: trace
+          REDIS_HOST: localhost
+          MAX_LOOPS: 10 # running sequentially just to test all the actions work
+        shell: bash
+
+      - name: Run Store tester
+        run: |
+          bazel run //:redis_store_tester \
+            --extra_toolchains=@rust_toolchains//:all \
+            --verbose_failures -- --redis-mode standard --mode sequential
+        env:
+          RUST_LOG: trace
+          REDIS_HOST: localhost
+          MAX_LOOPS: 10 # running sequentially just to test all the actions work
+        shell: bash
