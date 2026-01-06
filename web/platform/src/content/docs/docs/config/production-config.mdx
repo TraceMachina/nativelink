@@ -453,3 +453,57 @@ Here is the final CAS Config JSON without the 99 extra shards for writing to S3.
   ]
 }
 ```
+
+
+## Speed Up NativeLink by Turning Off a Hidden Redis Query
+
+If you're running NativeLink at scale and noticing Redis performance bottlenecks, there's a configuration option that can significantly reduce load on your Redis scheduler: disabling the worker match logging interval.
+
+### What's Happening
+
+NativeLink has a feature that logs worker matching info every 10 seconds by default. It tells you things like "worker busy" or "can't find any worker" - useful for debugging, but there's a cost.
+
+Every time this runs, it fires off a wildcard query to Redis. These queries aren't cheap. When you've got hundreds of builds running at once, they stack up and start slowing things down.
+
+### The Fix
+
+Add one line to your scheduler config:
+
+```json
+worker_match_logging_interval_s: -1
+```
+
+```json
+schedulers: [
+  {
+    name: "MAIN_SCHEDULER",
+    simple: {
+      worker_match_logging_interval_s: -1,
+      supported_platform_properties: {
+        cpu_count: "minimum",
+        memory_kb: "minimum",
+        // ... your other properties
+      },
+    },
+  },
+],
+```
+
+Setting it to `-1` turns off the logging entirely.
+
+### Should You Do This?
+
+**Yes, if you're seeing:**
+- Redis connections getting maxed out
+- Builds stalling under heavy load
+- Scheduler feeling sluggish during busy periods
+
+**Maybe not, if you're:**
+- Running a smaller setup
+- Actively debugging worker assignment issues
+- Still tuning your deployment
+
+### What You Lose
+
+You won't see those worker matching logs anymore. If you need to debug why actions aren't getting assigned to workers, you'll have to turn this back on temporarily or look at other metrics.
+For most production setups at scale, that's a fair trade-off for better Redis performance.
