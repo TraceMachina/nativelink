@@ -18,7 +18,7 @@ use std::time::SystemTime;
 
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
-use nativelink_config::stores::{ExperimentalCloudObjectSpec, StoreSpec};
+use nativelink_config::stores::{ExperimentalCloudObjectSpec, RedisMode, StoreSpec};
 use nativelink_error::Error;
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::store_trait::{Store, StoreDriver};
@@ -65,7 +65,13 @@ pub fn store_factory<'a>(
                     GcsStore::new(gcs_config, SystemTime::now).await?
                 }
             },
-            StoreSpec::RedisStore(spec) => RedisStore::new(spec.clone())?,
+            StoreSpec::RedisStore(spec) => {
+                if spec.mode == RedisMode::Cluster {
+                    RedisStore::new_cluster(spec.clone()).await?
+                } else {
+                    RedisStore::new_standard(spec.clone()).await?
+                }
+            }
             StoreSpec::Verify(spec) => VerifyStore::new(
                 spec,
                 store_factory(&spec.backend, store_manager, None).await?,

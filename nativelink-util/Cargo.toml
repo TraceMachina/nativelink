@@ -17,7 +17,9 @@ base64 = { version = "0.22.1", default-features = false, features = ["std"] }
 bitflags = { version = "2.9.0", default-features = false }
 blake3 = { version = "1.8.0", features = ["mmap"], default-features = false }
 bytes = { version = "1.10.1", default-features = false }
-futures = { version = "0.3.31", default-features = false }
+futures = { version = "0.3.31", features = [
+  "async-await",
+], default-features = false }
 hex = { version = "0.4.3", default-features = false, features = ["std"] }
 humantime = { version = "2.3.0", default-features = false }
 hyper = { version = "1.6.0", default-features = false }

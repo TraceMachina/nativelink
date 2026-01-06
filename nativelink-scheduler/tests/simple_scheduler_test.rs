@@ -204,6 +204,7 @@ async fn bad_worker_match_logging_interval() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+#[allow(clippy::items_after_statements)]
 async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
     MockClock::set_time(Duration::from_secs(NOW_TIME));
 

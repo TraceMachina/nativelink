@@ -14,11 +14,9 @@ version = "0.7.10"
 nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
 
-fred = { version = "10.1.0", default-features = false, features = [
-  "enable-rustls-ring",
-] }
 prost = { version = "0.13.5", default-features = false }
 prost-types = { version = "0.13.5", default-features = false }
+redis = { version = "1.0.0", default-features = false }
 rustls-pki-types = { version = "1.13.1", default-features = false }
 serde = { version = "1.0.219", default-features = false }
 serde_json5 = { version = "0.2.1", default-features = false }

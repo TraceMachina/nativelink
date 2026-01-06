@@ -98,6 +98,7 @@ pub type SharedWorkerRegistry = Arc<WorkerRegistry>;
 mod tests {
     use super::*;
 
+    #[allow(clippy::disallowed_methods)] // tokio::test uses block_on internally
     #[tokio::test]
     async fn test_worker_heartbeat() {
         let registry = WorkerRegistry::new();
@@ -136,6 +137,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::disallowed_methods)] // tokio::test uses block_on internally
     #[tokio::test]
     async fn test_remove_worker() {
         let registry = WorkerRegistry::new();

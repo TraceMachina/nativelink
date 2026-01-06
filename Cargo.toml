@@ -57,7 +57,10 @@ mimalloc = { version = "0.1.44", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
+
+redis = { version = "1.0.0", default-features = false, features = ["aio"] }
 rustls-pki-types = { version = "1.13.1", features = [
+
   "std",
 ], default-features = false }
 tokio = { version = "1.44.1", features = [
@@ -147,6 +150,7 @@ as-underscore = "deny"
 await-holding-lock = "deny"
 elidable-lifetime-names = "deny"
 explicit-into-iter-loop = "deny"
+future-not-send = "deny"
 redundant-closure-for-method-calls = "deny"
 semicolon-if-nothing-returned = "deny"
 std-instead-of-core = "deny"

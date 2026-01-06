@@ -1,0 +1,24 @@
+services:
+  redis:
+    image: redis:8.4-alpine3.22
+    ports:
+      - 6379:6379
+    command: redis-server --loglevel debug
+
+  # Based on https://gregornovak.eu/setting-up-redis-sentinel-with-docker-compose
+  sentinel:
+    image: redis:8.4-alpine3.22
+    depends_on:
+      - redis
+    ports:
+      - 26379:26379
+    # Sentinel configuration is created dynamically and mounted by volume because Sentinel itself will modify the configuration
+    # once it is running. If master changes this will be reflected in all configurations and some additional things are added which are
+    # meant only for runtime use and not something that should be committed as base configuration.
+    command: >
+      sh -c 'echo "sentinel resolve-hostnames yes" > /etc/sentinel.conf &&
+            echo "sentinel monitor master redis 6379 2" >> /etc/sentinel.conf &&
+            echo "sentinel down-after-milliseconds master 1000" >> /etc/sentinel.conf &&
+            echo "sentinel failover-timeout master 5000" >> /etc/sentinel.conf &&
+            echo "sentinel parallel-syncs master 1" >> /etc/sentinel.conf &&
+            redis-server /etc/sentinel.conf --sentinel'
