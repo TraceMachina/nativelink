@@ -842,7 +842,8 @@ impl HealthStatusIndicator for RedisStore {
 // -------------------------------------------------------------------
 
 /// The maximum number of results to return per cursor.
-const MAX_COUNT_PER_CURSOR: u64 = 256;
+/// Increased from 256 to reduce round-trips for large task queues.
+const MAX_COUNT_PER_CURSOR: u64 = 1500;
 /// The time in milliseconds that a redis cursor can be idle before it is closed.
 const CURSOR_IDLE_MS: u64 = 2_000;
 /// The name of the field in the Redis hash that stores the data.
