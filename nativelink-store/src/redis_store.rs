@@ -842,9 +842,9 @@ impl HealthStatusIndicator for RedisStore {
 // -------------------------------------------------------------------
 
 /// The maximum number of results to return per cursor.
-const MAX_COUNT_PER_CURSOR: u64 = 256;
+const MAX_COUNT_PER_CURSOR: u64 = 1500;
 /// The time in milliseconds that a redis cursor can be idle before it is closed.
-const CURSOR_IDLE_MS: u64 = 2_000;
+const CURSOR_IDLE_MS: u64 = 30_000;
 /// The name of the field in the Redis hash that stores the data.
 const DATA_FIELD_NAME: &str = "data";
 /// The name of the field in the Redis hash that stores the version.
@@ -1386,6 +1386,8 @@ impl SchedulerStore for RedisStore {
         {
             result
         } else {
+            drop(client);
+
             let mut schema = vec![SearchSchema {
                 field_name: K::INDEX_NAME.into(),
                 alias: None,
@@ -1458,8 +1460,7 @@ impl SchedulerStore for RedisStore {
         };
 
         Ok(stream.map(move |result| {
-            let keep_alive = client_guard.clone();
-            let _ = &keep_alive;
+            let _keep_alive = &client_guard;
             let mut redis_map =
                 result.err_tip(|| "Error in stream of in RedisStore::search_by_index_prefix")?;
             let bytes_data = redis_map
