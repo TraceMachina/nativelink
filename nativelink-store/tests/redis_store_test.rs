@@ -30,7 +30,9 @@ use nativelink_config::stores::RedisSpec;
 use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
-use nativelink_store::redis_store::{RecoverablePool, RedisStore};
+use nativelink_store::redis_store::{
+    DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE, DEFAULT_MAX_COUNT_PER_CURSOR, RecoverablePool, RedisStore,
+};
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::HealthStatus;
@@ -42,7 +44,6 @@ const VALID_HASH1: &str = "30313233343536373839616263646566303030303030303030303
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
 const DEFAULT_READ_CHUNK_SIZE: usize = 1024;
-const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 const DEFAULT_SCAN_COUNT: u32 = 10_000;
 const DEFAULT_MAX_PERMITS: usize = 100;
 
@@ -200,6 +201,7 @@ fn make_mock_store_with_prefix(mocks: &Arc<MockRedisBackend>, key_prefix: String
         DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
         DEFAULT_SCAN_COUNT,
         DEFAULT_MAX_PERMITS,
+        DEFAULT_MAX_COUNT_PER_CURSOR,
     )
     .unwrap()
 }
