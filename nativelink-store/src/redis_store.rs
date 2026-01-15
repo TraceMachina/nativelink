@@ -1426,7 +1426,10 @@ impl SchedulerStore for RedisStore {
                     },
                 });
             }
-            let create_result: Result<(), Error> = {
+            // Try to create the index. If it already exists, that's OK - we'll
+            // proceed to retry the aggregate query. Using async block to capture
+            // the error in create_result rather than propagating immediately.
+            let create_result: Result<(), Error> = async {
                 let create_client = self.get_client().await?;
                 create_client
                     .client
@@ -1452,7 +1455,8 @@ impl SchedulerStore for RedisStore {
                         )
                     })?;
                 Ok(())
-            };
+            }
+            .await;
             let retry_client = Arc::new(self.get_client().await?);
             let retry_result =
                 run_ft_aggregate(retry_client, index_name.clone(), sanitized_field.clone()).await;
