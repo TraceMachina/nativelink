@@ -44,7 +44,7 @@ use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::proto_stream_utils::{
     FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
 };
-use nativelink_util::resource_info::ResourceInfo;
+use nativelink_util::resource_info::{ResourceInfo, is_supported_digest_function};
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::{default_health_status_indicator, tls_utils};
@@ -264,12 +264,22 @@ impl GrpcStore {
     where
         R: IntoRequest<ReadRequest>,
     {
+        const IS_UPLOAD_FALSE: bool = false;
+
+        let request = self.get_read_request(grpc_request.into_request().into_inner())?;
+        let resource_name = &request.resource_name;
+        let resource_info = ResourceInfo::new(resource_name, IS_UPLOAD_FALSE)
+            .err_tip(|| "Failed to parse resource_name in GrpcStore::read")?;
+
+        let digest_function = resource_info.digest_function.as_deref().unwrap_or("sha256");
+
+        Self::validate_digest_function(digest_function, Some(resource_name))?;
+
         error_if!(
             matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
-        let request = self.get_read_request(grpc_request.into_request().into_inner())?;
         self.perform_request(request, |request| async move {
             self.read_internal(request).await
         })
@@ -491,6 +501,23 @@ impl GrpcStore {
             .await
             .map(|_| ())
     }
+
+    pub fn validate_digest_function(
+        digest_function: &str,
+        resource_name: Option<&str>,
+    ) -> Result<(), Error> {
+        if !is_supported_digest_function(digest_function) {
+            return Err(make_input_err!(
+                "Unsupported digest_function: {}{}",
+                digest_function,
+                match resource_name {
+                    Some(name) => format!(" in resource_name '{name}'"),
+                    None => String::new(),
+                }
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -502,6 +529,12 @@ impl StoreDriver for GrpcStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        let digest_function = Context::current()
+            .get::<DigestHasherFunc>()
+            .map_or_else(default_digest_hasher_func, |v| *v)
+            .to_string();
+        GrpcStore::validate_digest_function(&digest_function, None)?;
+
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             keys.iter()
                 .zip(results.iter_mut())

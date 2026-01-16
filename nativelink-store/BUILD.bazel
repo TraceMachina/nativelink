@@ -114,6 +114,7 @@ rust_test_suite(
         "tests/filesystem_store_test.rs",
         "tests/gcs_client_test.rs",
         "tests/gcs_store_test.rs",
+        "tests/grpc_store_test.rs",
         "tests/memory_store_test.rs",
         "tests/mongo_store_test.rs",
         "tests/ontap_s3_existence_cache_store_test.rs",
