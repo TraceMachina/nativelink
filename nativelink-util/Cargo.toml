@@ -22,7 +22,7 @@ hex = { version = "0.4.3", default-features = false, features = ["std"] }
 humantime = { version = "2.3.0", default-features = false }
 hyper = { version = "1.6.0", default-features = false }
 hyper-util = { version = "0.1.11", default-features = false }
-lru = { version = "0.13.0", default-features = false }
+lru = { version = "0.16.0", default-features = false }
 mock_instant = { version = "0.5.3", default-features = false }
 opentelemetry = { version = "0.29.0", default-features = false }
 opentelemetry-appender-tracing = { version = "0.29.1", default-features = false }
