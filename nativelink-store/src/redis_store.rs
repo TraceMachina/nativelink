@@ -90,11 +90,15 @@ const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 10_000;
 
 /// The default maximum number of chunk uploads per update.
 /// Note: If this changes it should be updated in the config documentation.
-const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
+pub const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 
 /// The default COUNT value passed when scanning keys in Redis.
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_SCAN_COUNT: u32 = 10_000;
+
+/// The default COUNT value passed when scanning search indexes
+/// Note: If this changes it should be updated in the config documentation.
+pub const DEFAULT_MAX_COUNT_PER_CURSOR: u64 = 1_500;
 
 const DEFAULT_CLIENT_PERMITS: usize = 500;
 
@@ -216,6 +220,10 @@ pub struct RedisStore {
     #[metric(help = "The COUNT value passed when scanning keys in Redis")]
     scan_count: u32,
 
+    /// The COUNT value used with search indexes
+    #[metric(help = "The maximum number of results to return per cursor")]
+    max_count_per_cursor: u64,
+
     /// Redis script used to update a value in redis if the version matches.
     /// This is done by incrementing the version number and then setting the new data
     /// only if the version number matches the existing version number.
@@ -327,6 +335,9 @@ impl RedisStore {
             if spec.max_client_permits == 0 {
                 spec.max_client_permits = DEFAULT_CLIENT_PERMITS;
             }
+            if spec.max_count_per_cursor == 0 {
+                spec.max_count_per_cursor = DEFAULT_MAX_COUNT_PER_CURSOR;
+            }
         }
         let connection_timeout = Duration::from_millis(spec.connection_timeout_ms);
         let command_timeout = Duration::from_millis(spec.command_timeout_ms);
@@ -369,6 +380,7 @@ impl RedisStore {
             spec.max_chunk_uploads_per_update,
             spec.scan_count,
             spec.max_client_permits,
+            spec.max_count_per_cursor,
         )
         .map(Arc::new)
     }
@@ -385,6 +397,7 @@ impl RedisStore {
         max_chunk_uploads_per_update: usize,
         scan_count: u32,
         max_client_permits: usize,
+        max_count_per_cursor: u64,
     ) -> Result<Self, Error> {
         // Start connection pool (this will retry forever by default).
         client_pool.connect();
@@ -404,6 +417,7 @@ impl RedisStore {
             update_if_version_matches_script: Script::from_lua(LUA_VERSION_SET_SCRIPT),
             subscription_manager: Mutex::new(None),
             client_permits: Arc::new(Semaphore::new(max_client_permits)),
+            max_count_per_cursor,
         })
     }
 
@@ -841,8 +855,6 @@ impl HealthStatusIndicator for RedisStore {
 // Below this line are specific to the redis scheduler implementation.
 // -------------------------------------------------------------------
 
-/// The maximum number of results to return per cursor.
-const MAX_COUNT_PER_CURSOR: u64 = 1500;
 /// The time in milliseconds that a redis cursor can be idle before it is closed.
 const CURSOR_IDLE_MS: u64 = 30_000;
 /// The name of the field in the Redis hash that stores the data.
@@ -1364,7 +1376,7 @@ impl SchedulerStore for RedisStore {
                         },
                     ])),
                     cursor: Some(WithCursor {
-                        count: Some(MAX_COUNT_PER_CURSOR),
+                        count: Some(self.max_count_per_cursor),
                         max_idle: Some(CURSOR_IDLE_MS),
                     }),
                     pipeline: vec![AggregateOperation::SortBy {

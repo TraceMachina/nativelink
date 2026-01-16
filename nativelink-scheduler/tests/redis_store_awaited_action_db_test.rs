@@ -45,7 +45,9 @@ use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::store_awaited_action_db::StoreAwaitedActionDb;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
-use nativelink_store::redis_store::{RecoverablePool, RedisStore, RedisSubscriptionManager};
+use nativelink_store::redis_store::{
+    DEFAULT_MAX_COUNT_PER_CURSOR, RecoverablePool, RedisStore, RedisSubscriptionManager,
+};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
 };
@@ -329,6 +331,7 @@ fn make_redis_store(sub_channel: &str, mocks: Arc<impl Mocks>) -> Arc<RedisStore
             MAX_CHUNK_UPLOADS_PER_UPDATE,
             SCAN_COUNT,
             MAX_PERMITS,
+            DEFAULT_MAX_COUNT_PER_CURSOR,
         )
         .unwrap(),
     )
