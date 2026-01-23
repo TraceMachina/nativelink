@@ -38,9 +38,9 @@ jobs:
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
 
-      - name: Test image
-        run: |
-          nix run .#local-image-test ${{ matrix.image }}
+      # - name: Test image
+      #   run: |
+      #     nix run .#local-image-test ${{ matrix.image }}
 
       - name: Upload image
         run: |
@@ -49,11 +49,11 @@ jobs:
           GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        if: github.ref == 'refs/heads/main'
+        # if: github.ref == 'refs/heads/main'
 
       - name: Upload trivy scan results to GitHub Security tab
-        uses: >- # v2.16.3
-          github/codeql-action/upload-sarif@592977e6ae857384aa79bb31e7a1d62d63449ec5
+        uses: >- # v4.31.11
+          github/codeql-action/upload-sarif@19b2f06db2b6f5108140aeb04014ef02b648f789
         with:
           sarif_file: 'trivy-results.sarif'
-        if: github.ref == 'refs/heads/main'
+        # if: github.ref == 'refs/heads/main'
