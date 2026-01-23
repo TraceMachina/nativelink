@@ -643,8 +643,7 @@ impl ByteStreamServer {
                                         return Some((Err(err.into()), None));
                                     }
                                     response.data = bytes;
-                                    trace!(response = ?response);
-                                    debug!(response.data = format!("<redacted len({})>", response.data.len()));
+                                    trace!(response.data = format!("<redacted len({})>", response.data.len()));
                                     break;
                                 }
                                 Err(mut e) => {
