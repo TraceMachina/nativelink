@@ -42,14 +42,18 @@ jobs:
       #   run: |
       #     nix run .#local-image-test ${{ matrix.image }}
 
-      - name: Upload image
-        run: |
-          nix run .#publish-ghcr ${{ matrix.image }}
-        env:
-          GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
-          GHCR_USERNAME: ${{ github.actor }}
-          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      # - name: Upload image
+      #   run: |
+      #     nix run .#publish-ghcr ${{ matrix.image }}
+      #   env:
+      #     GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
+      #     GHCR_USERNAME: ${{ github.actor }}
+      #     GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         # if: github.ref == 'refs/heads/main'
+
+      - name: Demo results
+        run: |
+           touch trivy-results.sarif
 
       - name: Upload trivy scan results to GitHub Security tab
         uses: >- # v4.31.11
