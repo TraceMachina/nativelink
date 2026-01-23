@@ -40,7 +40,7 @@ use nativelink_util::store_trait::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::callback_utils::RemoveItemCallbackHolder;
 use crate::cas_utils::is_zero_digest;
@@ -755,7 +755,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .await
             .err_tip(|| "Failed to sync_data in filesystem store")?;
 
-        debug!(?temp_file, "Dropping file to update_file");
+        trace!(?temp_file, "Dropping file to update_file");
         drop(temp_file);
 
         *entry.data_size_mut() = data_size;
