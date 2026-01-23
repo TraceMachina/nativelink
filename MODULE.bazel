@@ -92,7 +92,7 @@ rust.toolchain(
         "clippy-1.89.0-x86_64-unknown-linux-gnu.tar.xz": "c6c362c6cd74567022e9ba0c16f6676f8c2b73d955adcf1f6f4c51cf15e57ce8",
         "llvm-tools-1.89.0-aarch64-apple-darwin.tar.xz": "cdd3d0d06fbfc100e13ffcfb14e33b2f3469f72564cced86f9c82ebe295b880a",
         "llvm-tools-1.89.0-x86_64-unknown-linux-gnu.tar.xz": "bb0ced899fd1ac628f26e375adabc970b415c516ec82fb7cf9ac3c63cb4d0fee",
-        "rust-std-1.89.0-aarch64-apple-darwin.tar.xz": "5547322b317f18b73695724ff60a7860457df1a646b4a79f89a70a13d0747375",
+        "rust-std-1.89.0-aarch64-apple-darwin.tar.xz": "1f729f8ba21725618ab894f14cc38f01470f1d15ea76a81fac2da63291bed75c",
         "rust-std-1.89.0-x86_64-unknown-linux-gnu.tar.xz": "2719470dcd78b3f97d78b978c8f85a1a58d84ff11b62558294621c01bca34d49",
         "rustc-1.89.0-aarch64-apple-darwin.tar.xz": "6d2cf6164bef00ff3d2c37ca0a0658ffb7c9c3178882a72d78e35abeba888860",
         "rustc-1.89.0-x86_64-unknown-linux-gnu.tar.xz": "b42c254e1349df86bd40bc28fdf386172a1a46f2eeabe3c7a08a75cf1fb60e27",
