@@ -107,6 +107,7 @@ impl AwaitedAction {
             // client_operation_id to all clients.
             client_operation_id: operation_id.clone(),
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: now,
         });
 
         let ctx = Context::current();

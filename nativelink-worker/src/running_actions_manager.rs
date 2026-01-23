@@ -54,6 +54,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_store::ac_utils::{
     ESTIMATED_DIGEST_SIZE, compute_buf_digest, get_and_decode_digest, serialize_and_upload_message,
 };
+use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
@@ -71,7 +72,7 @@ use prost::Message;
 use relative_path::RelativePath;
 use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process;
 use tokio::sync::{Notify, oneshot, watch};
 use tokio::time::Instant;
@@ -150,33 +151,40 @@ pub fn download_to_directory<'a>(
                 cas_store
                     .populate_fast_store(digest.into())
                     .and_then(move |()| async move {
-                        let file_entry = filesystem_store
-                            .get_file_entry_for_digest(&digest)
-                            .await
-                            .err_tip(|| "During hard link")?;
-                        file_entry
-                            .get_file_path_locked(|src| fs::hard_link(src, &dest))
-                            .await
-                            .map_err(|e| {
-                                if e.code == Code::NotFound {
-                                    make_err!(
-                                        Code::Internal,
-                                        "Could not make hardlink, file was likely evicted from cache. {e:?} : {dest}\n\
-                                        This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
-                                        To fix this issue:\n\
-                                        1. Increase the 'max_bytes' value in your filesystem store configuration\n\
-                                        2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
-                                        3. The setting is typically found in your nativelink.json config under:\n\
-                                           stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
-                                        4. Restart NativeLink after making the change\n\n\
-                                        If this error persists after increasing max_bytes several times, please report at:\n\
-                                        https://github.com/TraceMachina/nativelink/issues\n\
-                                        Include your config file and both server and client logs to help us assist you."
-                                    )
-                                } else {
-                                    make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}")
-                                }
-                            })?;
+                        if is_zero_digest(digest) {
+                            let mut file_slot = fs::create_file(&dest).await?;
+                            file_slot.write_all(&[]).await?;
+                        }
+                        else {
+                            let file_entry = filesystem_store
+                                .get_file_entry_for_digest(&digest)
+                                .await
+                                .err_tip(|| "During hard link")?;
+                            // TODO: add a test for #2051: deadlock with large number of files
+                            let src_path = file_entry.get_file_path_locked(|src| async move { Ok(PathBuf::from(src)) }).await?;
+                            fs::hard_link(&src_path, &dest)
+                                .await
+                                .map_err(|e| {
+                                    if e.code == Code::NotFound {
+                                        make_err!(
+                                            Code::Internal,
+                                            "Could not make hardlink, file was likely evicted from cache. {e:?} : {dest}\n\
+                                            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+                                            To fix this issue:\n\
+                                            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+                                            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+                                            3. The setting is typically found in your nativelink.json config under:\n\
+                                            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+                                            4. Restart NativeLink after making the change\n\n\
+                                            If this error persists after increasing max_bytes several times, please report at:\n\
+                                            https://github.com/TraceMachina/nativelink/issues\n\
+                                            Include your config file and both server and client logs to help us assist you."
+                                        )
+                                    } else {
+                                        make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}")
+                                    }
+                                })?;
+                            }
                         #[cfg(target_family = "unix")]
                         if let Some(unix_mode) = unix_mode {
                             fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
@@ -361,15 +369,37 @@ async fn upload_file(
             // https://github.com/rust-lang/rust/issues/92096
             // or a smiliar issue if we try to use the non-store driver function, so we
             // are using the store driver function here.
-            cas_store
+            let store_key_for_upload = store_key.clone();
+            let upload_result = cas_store
                 .update_with_whole_file(
-                    store_key,
+                    store_key_for_upload,
                     full_path.as_ref().into(),
                     file,
                     UploadSizeInfo::ExactSize(digest.size_bytes()),
                 )
                 .await
-                .map(|_slot| ())
+                .map(|_slot| ());
+
+            match upload_result {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    // Output uploads run concurrently and may overlap (e.g. a file is listed
+                    // both as an output file and inside an output directory). When another
+                    // upload has already moved the file into CAS, this update can fail with
+                    // NotFound even though the digest is now present. Per the RE spec, missing
+                    // outputs should be ignored, so treat this as success if the digest exists.
+                    if err.code == Code::NotFound
+                        && cas_store
+                            .has(store_key.borrow())
+                            .await
+                            .is_ok_and(|result| result.is_some())
+                    {
+                        Ok(())
+                    } else {
+                        Err(err)
+                    }
+                }
+            }
         })
         .await
         .err_tip(|| format!("for {full_path:?}"))?;
@@ -1249,10 +1279,11 @@ impl RunningActionImpl {
                     match fs::metadata(&full_path).await {
                         Ok(metadata) => {
                             if metadata.is_dir() {
-                                return Ok(OutputType::DirectorySymlink(output_symlink));
+                                Ok(OutputType::DirectorySymlink(output_symlink))
+                            } else {
+                                // Note: If it's anything but directory we put it as a file symlink.
+                                Ok(OutputType::FileSymlink(output_symlink))
                             }
-                            // Note: If it's anything but directory we put it as a file symlink.
-                            return Ok(OutputType::FileSymlink(output_symlink));
                         }
                         Err(e) => {
                             if e.code != Code::NotFound {
@@ -1265,7 +1296,7 @@ impl RunningActionImpl {
                             }
                             // If the file doesn't exist, we consider it a file. Even though the
                             // file doesn't exist we still need to populate an entry.
-                            return Ok(OutputType::FileSymlink(output_symlink));
+                            Ok(OutputType::FileSymlink(output_symlink))
                         }
                     }
                 } else {

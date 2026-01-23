@@ -22,9 +22,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
     gcc=4:13.2.0-7ubuntu1 \
     g++=4:13.2.0-7ubuntu1 \
-    python3=3.12.3-0ubuntu2 \
-    python3-minimal=3.12.3-0ubuntu2 \
-    libpython3-stdlib=3.12.3-0ubuntu2 \
+    python3=3.12.3-0ubuntu2.1 \
     curl=8.5.0-2ubuntu10.6 \
     ca-certificates=20240203 \
     && apt-get clean \

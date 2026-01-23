@@ -20,13 +20,17 @@ use core::time::Duration;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use futures::future::{BoxFuture, pending};
+use bytes::BytesMut;
+use futures::future::pending;
 use futures::stream::unfold;
 use futures::{Future, Stream, TryFutureExt, try_join};
 use nativelink_config::cas_server::{ByteStreamConfig, InstanceName, WithInstanceName};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_metric::{
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group, publish,
+};
 use nativelink_proto::google::bytestream::byte_stream_server::{
     ByteStream, ByteStreamServer as Server,
 };
@@ -46,7 +50,7 @@ use nativelink_util::digest_hasher::{
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
@@ -60,15 +64,196 @@ const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_se
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
 
+/// Metrics for `ByteStream` server operations.
+/// Tracks upload/download activity, throughput, and latency.
+#[derive(Debug, Default)]
+pub struct ByteStreamMetrics {
+    /// Number of currently active uploads (includes idle streams waiting for resume)
+    pub active_uploads: AtomicU64,
+    /// Total number of write requests received
+    pub write_requests_total: AtomicU64,
+    /// Total number of successful write requests
+    pub write_requests_success: AtomicU64,
+    /// Total number of failed write requests
+    pub write_requests_failure: AtomicU64,
+    /// Total number of read requests received
+    pub read_requests_total: AtomicU64,
+    /// Total number of successful read requests
+    pub read_requests_success: AtomicU64,
+    /// Total number of failed read requests
+    pub read_requests_failure: AtomicU64,
+    /// Total number of `query_write_status` requests
+    pub query_write_status_total: AtomicU64,
+    /// Total bytes written via `ByteStream`
+    pub bytes_written_total: AtomicU64,
+    /// Total bytes read via `ByteStream`
+    pub bytes_read_total: AtomicU64,
+    /// Sum of write durations in nanoseconds (for average latency calculation)
+    pub write_duration_ns: AtomicU64,
+    /// Sum of read durations in nanoseconds (for average latency calculation)
+    pub read_duration_ns: AtomicU64,
+    /// Number of UUID collisions detected
+    pub uuid_collisions: AtomicU64,
+    /// Number of resumed uploads (client reconnected to existing stream)
+    pub resumed_uploads: AtomicU64,
+    /// Number of idle streams that timed out
+    pub idle_stream_timeouts: AtomicU64,
+}
+
+impl MetricsComponent for ByteStreamMetrics {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        let _enter = group!(field_metadata.name).entered();
+
+        publish!(
+            "active_uploads",
+            &self.active_uploads,
+            MetricKind::Counter,
+            "Number of currently active uploads"
+        );
+        publish!(
+            "write_requests_total",
+            &self.write_requests_total,
+            MetricKind::Counter,
+            "Total write requests received"
+        );
+        publish!(
+            "write_requests_success",
+            &self.write_requests_success,
+            MetricKind::Counter,
+            "Total successful write requests"
+        );
+        publish!(
+            "write_requests_failure",
+            &self.write_requests_failure,
+            MetricKind::Counter,
+            "Total failed write requests"
+        );
+        publish!(
+            "read_requests_total",
+            &self.read_requests_total,
+            MetricKind::Counter,
+            "Total read requests received"
+        );
+        publish!(
+            "read_requests_success",
+            &self.read_requests_success,
+            MetricKind::Counter,
+            "Total successful read requests"
+        );
+        publish!(
+            "read_requests_failure",
+            &self.read_requests_failure,
+            MetricKind::Counter,
+            "Total failed read requests"
+        );
+        publish!(
+            "query_write_status_total",
+            &self.query_write_status_total,
+            MetricKind::Counter,
+            "Total query_write_status requests"
+        );
+        publish!(
+            "bytes_written_total",
+            &self.bytes_written_total,
+            MetricKind::Counter,
+            "Total bytes written via ByteStream"
+        );
+        publish!(
+            "bytes_read_total",
+            &self.bytes_read_total,
+            MetricKind::Counter,
+            "Total bytes read via ByteStream"
+        );
+        publish!(
+            "write_duration_ns",
+            &self.write_duration_ns,
+            MetricKind::Counter,
+            "Sum of write durations in nanoseconds"
+        );
+        publish!(
+            "read_duration_ns",
+            &self.read_duration_ns,
+            MetricKind::Counter,
+            "Sum of read durations in nanoseconds"
+        );
+        publish!(
+            "uuid_collisions",
+            &self.uuid_collisions,
+            MetricKind::Counter,
+            "Number of UUID collisions detected"
+        );
+        publish!(
+            "resumed_uploads",
+            &self.resumed_uploads,
+            MetricKind::Counter,
+            "Number of resumed uploads"
+        );
+        publish!(
+            "idle_stream_timeouts",
+            &self.idle_stream_timeouts,
+            MetricKind::Counter,
+            "Number of idle streams that timed out"
+        );
+
+        Ok(MetricPublishKnownKindData::Component)
+    }
+}
+
 type BytesWrittenAndIdleStream = (Arc<AtomicU64>, Option<IdleStream>);
-type SleepFn = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// Type alias for the UUID key used in `active_uploads` `HashMap`.
+/// Using u128 instead of String reduces memory allocations and improves
+/// cache locality for `HashMap` operations.
+type UuidKey = u128;
+
+/// Parse a UUID string to a u128 for use as a `HashMap` key.
+/// This avoids heap allocation for String keys and improves `HashMap` performance.
+/// Falls back to hashing the string if it's not a valid hex UUID.
+#[inline]
+fn parse_uuid_to_key(uuid_str: &str) -> UuidKey {
+    // UUIDs are typically 32 hex chars (128 bits) or 36 chars with dashes.
+    // We'll try to parse as hex first, then fall back to hashing.
+    let clean: String = uuid_str.chars().filter(char::is_ascii_hexdigit).collect();
+    if clean.len() >= 16 {
+        // Take up to 32 hex chars (128 bits)
+        let hex_str = if clean.len() > 32 {
+            &clean[..32]
+        } else {
+            &clean
+        };
+        u128::from_str_radix(hex_str, 16).unwrap_or_else(|_| {
+            // Hash fallback for non-hex strings
+            use core::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            uuid_str.hash(&mut hasher);
+            u128::from(hasher.finish())
+        })
+    } else {
+        // Short strings: use hash
+        use core::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        uuid_str.hash(&mut hasher);
+        u128::from(hasher.finish())
+    }
+}
 
 pub struct InstanceInfo {
     store: Store,
     // Max number of bytes to send on each grpc stream chunk.
     max_bytes_per_stream: usize,
-    active_uploads: Arc<Mutex<HashMap<String, BytesWrittenAndIdleStream>>>,
-    sleep_fn: SleepFn,
+    /// Active uploads keyed by UUID as u128 for better performance.
+    /// Using u128 keys instead of String reduces heap allocations
+    /// and improves `HashMap` lookup performance.
+    active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>>,
+    /// How long to keep idle streams before timing them out.
+    idle_stream_timeout: Duration,
+    metrics: Arc<ByteStreamMetrics>,
+    /// Handle to the global sweeper task. Kept alive for the lifetime of the instance.
+    _sweeper_handle: Arc<JoinHandleDropGuard<()>>,
 }
 
 impl Debug for InstanceInfo {
@@ -77,6 +262,8 @@ impl Debug for InstanceInfo {
             .field("store", &self.store)
             .field("max_bytes_per_stream", &self.max_bytes_per_stream)
             .field("active_uploads", &self.active_uploads)
+            .field("idle_stream_timeout", &self.idle_stream_timeout)
+            .field("metrics", &self.metrics)
             .finish()
     }
 }
@@ -85,7 +272,7 @@ type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send
 type StoreUpdateFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
 
 struct StreamState {
-    uuid: String,
+    uuid: UuidKey,
     tx: DropCloserWriteHalf,
     store_update_fut: StoreUpdateFuture,
 }
@@ -93,7 +280,7 @@ struct StreamState {
 impl Debug for StreamState {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("StreamState")
-            .field("uuid", &self.uuid)
+            .field("uuid", &format!("{:032x}", self.uuid))
             .finish()
     }
 }
@@ -104,8 +291,8 @@ impl Debug for StreamState {
 struct ActiveStreamGuard {
     stream_state: Option<StreamState>,
     bytes_received: Arc<AtomicU64>,
-    active_uploads: Arc<Mutex<HashMap<String, BytesWrittenAndIdleStream>>>,
-    sleep_fn: SleepFn,
+    active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>>,
+    metrics: Arc<ByteStreamMetrics>,
 }
 
 impl ActiveStreamGuard {
@@ -114,6 +301,8 @@ impl ActiveStreamGuard {
     fn graceful_finish(mut self) {
         let stream_state = self.stream_state.take().unwrap();
         self.active_uploads.lock().remove(&stream_state.uuid);
+        // Decrement active uploads counter on successful completion
+        self.metrics.active_uploads.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -122,38 +311,33 @@ impl Drop for ActiveStreamGuard {
         let Some(stream_state) = self.stream_state.take() else {
             return; // If None it means we don't want it put back into an IdleStream.
         };
-        let weak_active_uploads = Arc::downgrade(&self.active_uploads);
         let mut active_uploads = self.active_uploads.lock();
-        let uuid = stream_state.uuid.clone();
+        let uuid = stream_state.uuid; // u128 is Copy, no clone needed
         let Some(active_uploads_slot) = active_uploads.get_mut(&uuid) else {
             error!(
                 err = "Failed to find active upload. This should never happen.",
-                uuid = ?uuid,
+                uuid = format!("{:032x}", uuid),
             );
             return;
         };
-        let sleep_fn = self.sleep_fn.clone();
+        // Mark stream as idle with current timestamp.
+        // The global sweeper will clean it up after idle_stream_timeout.
+        // This avoids spawning a task per stream, reducing overhead from O(n) to O(1).
         active_uploads_slot.1 = Some(IdleStream {
             stream_state,
-            _timeout_streaam_drop_guard: spawn!("bytestream_idle_stream_timeout", async move {
-                (*sleep_fn)().await;
-                if let Some(active_uploads) = weak_active_uploads.upgrade() {
-                    let mut active_uploads = active_uploads.lock();
-                    info!(msg = "Removing idle stream", uuid = ?uuid);
-                    active_uploads.remove(&uuid);
-                }
-            }),
+            idle_since: Instant::now(),
         });
     }
 }
 
 /// Represents a stream that is in the "idle" state. this means it is not currently being used
 /// by a client. If it is not used within a certain amount of time it will be removed from the
-/// `active_uploads` map automatically.
+/// `active_uploads` map automatically by the global sweeper task.
 #[derive(Debug)]
 struct IdleStream {
     stream_state: StreamState,
-    _timeout_streaam_drop_guard: JoinHandleDropGuard<()>,
+    /// When this stream became idle. Used by the global sweeper to determine expiration.
+    idle_since: Instant,
 }
 
 impl IdleStream {
@@ -166,7 +350,7 @@ impl IdleStream {
             stream_state: Some(self.stream_state),
             bytes_received,
             active_uploads: instance_info.active_uploads.clone(),
-            sleep_fn: instance_info.sleep_fn.clone(),
+            metrics: instance_info.metrics.clone(),
         }
     }
 }
@@ -177,13 +361,15 @@ pub struct ByteStreamServer {
 }
 
 impl ByteStreamServer {
-    /// Generate a unique UUID by appending a nanosecond timestamp to avoid collisions.
-    fn generate_unique_uuid(base_uuid: &str) -> String {
+    /// Generate a unique UUID key by `XOR`ing the base key with a nanosecond timestamp.
+    /// This ensures virtually zero collision probability while being O(1).
+    fn generate_unique_uuid_key(base_key: UuidKey) -> UuidKey {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        format!("{base_uuid}-{timestamp:x}")
+        // XOR with timestamp to create unique key
+        base_key ^ timestamp
     }
 
     pub fn new(
@@ -192,28 +378,23 @@ impl ByteStreamServer {
     ) -> Result<Self, Error> {
         let mut instance_infos: HashMap<String, InstanceInfo> = HashMap::new();
         for config in configs {
-            let persist_stream_on_disconnect_timeout =
-                if config.persist_stream_on_disconnect_timeout == 0 {
-                    DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT
-                } else {
-                    Duration::from_secs(config.persist_stream_on_disconnect_timeout as u64)
-                };
+            let idle_stream_timeout = if config.persist_stream_on_disconnect_timeout == 0 {
+                DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT
+            } else {
+                Duration::from_secs(config.persist_stream_on_disconnect_timeout as u64)
+            };
             let _old_value = instance_infos.insert(
                 config.instance_name.clone(),
-                Self::new_with_sleep_fn(
-                    config,
-                    store_manager,
-                    Arc::new(move || Box::pin(sleep(persist_stream_on_disconnect_timeout))),
-                )?,
+                Self::new_with_timeout(config, store_manager, idle_stream_timeout)?,
             );
         }
         Ok(Self { instance_infos })
     }
 
-    pub fn new_with_sleep_fn(
+    pub fn new_with_timeout(
         config: &WithInstanceName<ByteStreamConfig>,
         store_manager: &StoreManager,
-        sleep_fn: SleepFn,
+        idle_stream_timeout: Duration,
     ) -> Result<InstanceInfo, Error> {
         let store = store_manager
             .get_store(&config.cas_store)
@@ -223,11 +404,69 @@ impl ByteStreamServer {
         } else {
             config.max_bytes_per_stream
         };
+
+        let active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let metrics = Arc::new(ByteStreamMetrics::default());
+
+        // Spawn a single global sweeper task that periodically cleans up expired idle streams.
+        // This replaces per-stream timeout tasks, reducing task spawn overhead from O(n) to O(1).
+        let sweeper_active_uploads = Arc::downgrade(&active_uploads);
+        let sweeper_metrics = Arc::downgrade(&metrics);
+        let sweep_interval = idle_stream_timeout / 2; // Check every half-timeout period
+        let sweeper_handle = spawn!("bytestream_idle_stream_sweeper", async move {
+            loop {
+                sleep(sweep_interval).await;
+
+                let Some(active_uploads) = sweeper_active_uploads.upgrade() else {
+                    // InstanceInfo has been dropped, exit the sweeper
+                    break;
+                };
+                let metrics = sweeper_metrics.upgrade();
+
+                let now = Instant::now();
+                let mut expired_count = 0u64;
+
+                // Lock and sweep expired entries
+                {
+                    let mut uploads = active_uploads.lock();
+                    uploads.retain(|uuid, (_, maybe_idle)| {
+                        if let Some(idle_stream) = maybe_idle {
+                            if now.duration_since(idle_stream.idle_since) >= idle_stream_timeout {
+                                info!(
+                                    msg = "Sweeping expired idle stream",
+                                    uuid = format!("{:032x}", uuid)
+                                );
+                                expired_count += 1;
+                                return false; // Remove this entry
+                            }
+                        }
+                        true // Keep this entry
+                    });
+                }
+
+                // Update metrics outside the lock
+                if expired_count > 0 {
+                    if let Some(m) = &metrics {
+                        m.idle_stream_timeouts
+                            .fetch_add(expired_count, Ordering::Relaxed);
+                        m.active_uploads.fetch_sub(expired_count, Ordering::Relaxed);
+                    }
+                    trace!(
+                        msg = "Sweeper cleaned up expired streams",
+                        count = expired_count
+                    );
+                }
+            }
+        });
+
         Ok(InstanceInfo {
             store,
             max_bytes_per_stream,
-            active_uploads: Arc::new(Mutex::new(HashMap::new())),
-            sleep_fn,
+            active_uploads,
+            idle_stream_timeout,
+            metrics,
+            _sweeper_handle: Arc::new(sweeper_handle),
         })
     }
 
@@ -248,45 +487,69 @@ impl ByteStreamServer {
     /// generate the unique UUID in the exact same nanosecond.
     fn create_or_join_upload_stream(
         &self,
-        uuid: &str,
+        uuid_str: &str,
         instance: &InstanceInfo,
         digest: DigestInfo,
     ) -> ActiveStreamGuard {
-        let (uuid, bytes_received) = match instance.active_uploads.lock().entry(uuid.to_string()) {
-            Entry::Occupied(mut entry) => {
-                let maybe_idle_stream = entry.get_mut();
-                if let Some(idle_stream) = maybe_idle_stream.1.take() {
-                    // Case 2: Stream exists but is idle, we can resume it
-                    let bytes_received = maybe_idle_stream.0.clone();
-                    info!(msg = "Joining existing stream", entry = ?entry.key());
-                    return idle_stream.into_active_stream(bytes_received, instance);
-                }
-                // Case 3: Stream is active - generate a unique UUID to avoid collision
-                // Using nanosecond timestamp makes collision probability essentially zero
-                let original_uuid = entry.key().clone();
-                let unique_uuid = Self::generate_unique_uuid(&original_uuid);
-                warn!(
-                    msg = "UUID collision detected, generating unique UUID to prevent conflict",
-                    original_uuid = ?original_uuid,
-                    unique_uuid = ?unique_uuid
-                );
-                // Entry goes out of scope here, releasing the lock
+        // Parse UUID string to u128 key for efficient HashMap operations
+        let uuid_key = parse_uuid_to_key(uuid_str);
 
-                let bytes_received = Arc::new(AtomicU64::new(0));
-                let mut active_uploads = instance.active_uploads.lock();
-                // Insert with the unique UUID - this should never collide due to nanosecond precision
-                active_uploads.insert(unique_uuid.clone(), (bytes_received.clone(), None));
-                (unique_uuid, bytes_received)
-            }
-            Entry::Vacant(entry) => {
-                // Case 1: UUID doesn't exist, create new stream
-                let bytes_received = Arc::new(AtomicU64::new(0));
-                let uuid = entry.key().clone();
-                // Our stream is "in use" if the key is in the map, but the value is None.
-                entry.insert((bytes_received.clone(), None));
-                (uuid, bytes_received)
-            }
-        };
+        let (uuid, bytes_received, is_collision) =
+            match instance.active_uploads.lock().entry(uuid_key) {
+                Entry::Occupied(mut entry) => {
+                    let maybe_idle_stream = entry.get_mut();
+                    if let Some(idle_stream) = maybe_idle_stream.1.take() {
+                        // Case 2: Stream exists but is idle, we can resume it
+                        let bytes_received = maybe_idle_stream.0.clone();
+                        info!(
+                            msg = "Joining existing stream",
+                            uuid = format!("{:032x}", entry.key())
+                        );
+                        // Track resumed upload
+                        instance
+                            .metrics
+                            .resumed_uploads
+                            .fetch_add(1, Ordering::Relaxed);
+                        return idle_stream.into_active_stream(bytes_received, instance);
+                    }
+                    // Case 3: Stream is active - generate a unique UUID to avoid collision
+                    // Using nanosecond timestamp makes collision probability essentially zero
+                    let original_key = *entry.key();
+                    let unique_key = Self::generate_unique_uuid_key(original_key);
+                    warn!(
+                        msg = "UUID collision detected, generating unique UUID to prevent conflict",
+                        original_uuid = format!("{:032x}", original_key),
+                        unique_uuid = format!("{:032x}", unique_key)
+                    );
+                    // Entry goes out of scope here, releasing the lock
+
+                    let bytes_received = Arc::new(AtomicU64::new(0));
+                    let mut active_uploads = instance.active_uploads.lock();
+                    // Insert with the unique UUID - this should never collide due to nanosecond precision
+                    active_uploads.insert(unique_key, (bytes_received.clone(), None));
+                    (unique_key, bytes_received, true)
+                }
+                Entry::Vacant(entry) => {
+                    // Case 1: UUID doesn't exist, create new stream
+                    let bytes_received = Arc::new(AtomicU64::new(0));
+                    let uuid = *entry.key();
+                    // Our stream is "in use" if the key is in the map, but the value is None.
+                    entry.insert((bytes_received.clone(), None));
+                    (uuid, bytes_received, false)
+                }
+            };
+
+        // Track metrics for new upload
+        instance
+            .metrics
+            .active_uploads
+            .fetch_add(1, Ordering::Relaxed);
+        if is_collision {
+            instance
+                .metrics
+                .uuid_collisions
+                .fetch_add(1, Ordering::Relaxed);
+        }
 
         // Important: Do not return an error from this point onwards without
         // removing the entry from the map, otherwise that UUID becomes
@@ -310,7 +573,7 @@ impl ByteStreamServer {
             }),
             bytes_received,
             active_uploads: instance.active_uploads.clone(),
-            sleep_fn: instance.sleep_fn.clone(),
+            metrics: instance.metrics.clone(),
         }
     }
 
@@ -380,8 +643,7 @@ impl ByteStreamServer {
                                         return Some((Err(err.into()), None));
                                     }
                                     response.data = bytes;
-                                    trace!(response = ?response);
-                                    debug!(response.data = format!("<redacted len({})>", response.data.len()));
+                                    trace!(response.data = format!("<redacted len({})>", response.data.len()));
                                     break;
                                 }
                                 Err(mut e) => {
@@ -562,6 +824,98 @@ impl ByteStreamServer {
         }))
     }
 
+    /// Fast-path write that bypasses channel overhead for stores that support direct Bytes updates.
+    /// This buffers all data in memory and calls `update_oneshot` directly.
+    async fn inner_write_oneshot(
+        &self,
+        instance_info: &InstanceInfo,
+        digest: DigestInfo,
+        mut stream: WriteRequestStreamWrapper<
+            impl Stream<Item = Result<WriteRequest, Status>> + Unpin,
+        >,
+    ) -> Result<Response<WriteResponse>, Error> {
+        let expected_size = stream.resource_info.expected_size as u64;
+
+        // Pre-allocate buffer for expected size (capped at reasonable limit to prevent DoS)
+        let capacity =
+            usize::try_from(expected_size.min(64 * 1024 * 1024)).unwrap_or(64 * 1024 * 1024);
+        let mut buffer = BytesMut::with_capacity(capacity);
+        let mut bytes_received: u64 = 0;
+
+        // Collect all data from client stream
+        loop {
+            let write_request = match stream.next().await {
+                None => {
+                    return Err(make_input_err!(
+                        "Client closed stream before sending all data"
+                    ));
+                }
+                Some(Err(err)) => return Err(err),
+                Some(Ok(write_request)) => write_request,
+            };
+
+            if write_request.write_offset < 0 {
+                return Err(make_input_err!(
+                    "Invalid negative write offset in write request: {}",
+                    write_request.write_offset
+                ));
+            }
+            let write_offset = write_request.write_offset as u64;
+
+            // Handle duplicate/resumed data
+            let data = if write_offset < bytes_received {
+                if (write_offset + write_request.data.len() as u64) < bytes_received {
+                    if write_request.finish_write {
+                        return Err(make_input_err!(
+                            "Resumed stream finished at {} bytes when we already received {} bytes.",
+                            write_offset + write_request.data.len() as u64,
+                            bytes_received
+                        ));
+                    }
+                    continue;
+                }
+                write_request
+                    .data
+                    .slice(usize::try_from(bytes_received - write_offset).unwrap_or(usize::MAX)..)
+            } else {
+                if write_offset != bytes_received {
+                    return Err(make_input_err!(
+                        "Received out of order data. Got {}, expected {}",
+                        write_offset,
+                        bytes_received
+                    ));
+                }
+                write_request.data
+            };
+
+            if !data.is_empty() {
+                buffer.extend_from_slice(&data);
+                bytes_received += data.len() as u64;
+            }
+
+            if expected_size < bytes_received {
+                return Err(make_input_err!("Received more bytes than expected"));
+            }
+
+            if write_request.finish_write {
+                break;
+            }
+        }
+
+        // Direct update without channel overhead
+        let store = instance_info.store.clone();
+        store
+            .update_oneshot(digest, buffer.freeze())
+            .await
+            .err_tip(|| "Error in update_oneshot")?;
+
+        // Note: bytes_written_total is updated in the caller (bytestream_write) based on result
+
+        Ok(Response::new(WriteResponse {
+            committed_size: expected_size as i64,
+        }))
+    }
+
     async fn inner_query_write_status(
         &self,
         query_request: &QueryWriteStatusRequest,
@@ -588,14 +942,15 @@ impl ByteStreamServer {
                 .await;
         }
 
-        let uuid = resource_info
+        let uuid_str = resource_info
             .uuid
             .take()
             .ok_or_else(|| make_input_err!("UUID must be set if querying write status"))?;
+        let uuid_key = parse_uuid_to_key(&uuid_str);
 
         {
             let active_uploads = instance.active_uploads.lock();
-            if let Some((received_bytes, _maybe_idle_stream)) = active_uploads.get(uuid.as_ref()) {
+            if let Some((received_bytes, _maybe_idle_stream)) = active_uploads.get(&uuid_key) {
                 return Ok(Response::new(QueryWriteStatusResponse {
                     committed_size: received_bytes.load(Ordering::Acquire) as i64,
                     // If we are in the active_uploads map, but the value is None,
@@ -637,13 +992,23 @@ impl ByteStream for ByteStreamServer {
         &self,
         grpc_request: Request<ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
+        let start_time = Instant::now();
+
         let read_request = grpc_request.into_inner();
         let resource_info = ResourceInfo::new(&read_request.resource_name, false)?;
         let instance_name = resource_info.instance_name.as_ref();
+        let expected_size = resource_info.expected_size as u64;
         let instance = self
             .instance_infos
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+
+        // Track read request
+        instance
+            .metrics
+            .read_requests_total
+            .fetch_add(1, Ordering::Relaxed);
+
         let store = instance.store.clone();
 
         let digest = DigestInfo::try_new(resource_info.hash.as_ref(), resource_info.expected_size)?;
@@ -667,14 +1032,37 @@ impl ByteStream for ByteStreamServer {
             )
             .await
             .err_tip(|| "In ByteStreamServer::read")
-            .map(|stream| -> Response<Self::ReadStream> { Response::new(Box::pin(stream)) })
-            .map_err(Into::into);
+            .map(|stream| -> Response<Self::ReadStream> { Response::new(Box::pin(stream)) });
 
-        if resp.is_ok() {
-            debug!(return = "Ok(<stream>)");
+        // Track metrics based on result
+        #[allow(clippy::cast_possible_truncation)]
+        let elapsed_ns = start_time.elapsed().as_nanos() as u64;
+        instance
+            .metrics
+            .read_duration_ns
+            .fetch_add(elapsed_ns, Ordering::Relaxed);
+
+        match &resp {
+            Ok(_) => {
+                instance
+                    .metrics
+                    .read_requests_success
+                    .fetch_add(1, Ordering::Relaxed);
+                instance
+                    .metrics
+                    .bytes_read_total
+                    .fetch_add(expected_size, Ordering::Relaxed);
+                debug!(return = "Ok(<stream>)");
+            }
+            Err(_) => {
+                instance
+                    .metrics
+                    .read_requests_failure
+                    .fetch_add(1, Ordering::Relaxed);
+            }
         }
 
-        resp
+        resp.map_err(Into::into)
     }
 
     #[instrument(
@@ -687,6 +1075,8 @@ impl ByteStream for ByteStreamServer {
         &self,
         grpc_request: Request<Streaming<WriteRequest>>,
     ) -> Result<Response<WriteResponse>, Status> {
+        let start_time = Instant::now();
+
         let request = grpc_request.into_inner();
         let stream = WriteRequestStreamWrapper::from(request)
             .await
@@ -694,10 +1084,18 @@ impl ByteStream for ByteStreamServer {
             .map_err(Into::<Status>::into)?;
 
         let instance_name = stream.resource_info.instance_name.as_ref();
+        let expected_size = stream.resource_info.expected_size as u64;
         let instance = self
             .instance_infos
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+
+        // Track write request
+        instance
+            .metrics
+            .write_requests_total
+            .fetch_add(1, Ordering::Relaxed);
+
         let store = instance.store.clone();
 
         let digest = DigestInfo::try_new(
@@ -721,14 +1119,84 @@ impl ByteStream for ByteStreamServer {
                 DigestHasherFunc::try_from,
             )?;
 
-        self.inner_write(instance, digest, stream)
-            .instrument(error_span!("bytestream_write"))
-            .with_context(
-                make_ctx_for_hash_func(digest_function).err_tip(|| "In BytestreamServer::write")?,
-            )
-            .await
-            .err_tip(|| "In ByteStreamServer::write")
-            .map_err(Into::into)
+        // Check if store supports direct oneshot updates (bypasses channel overhead).
+        // Use fast-path only when:
+        // 1. Store supports oneshot optimization
+        // 2. UUID is provided
+        // 3. Size is under 64MB (memory safety)
+        // 4. This is a NEW upload (UUID not already in active_uploads)
+        // 5. The first message has finish_write=true (single-shot upload)
+        //
+        // The oneshot path cannot be used for multi-message streams because:
+        // - QueryWriteStatus won't work (no progress tracking)
+        // - Resumed streams won't work (no partial progress)
+        let use_oneshot = if store.optimized_for(StoreOptimizations::SubscribesToUpdateOneshot)
+            && expected_size <= 64 * 1024 * 1024
+            && stream.resource_info.uuid.is_some()
+        {
+            // Check if first message completes the upload (single-shot)
+            let is_single_shot = stream.is_first_msg_complete();
+
+            if is_single_shot {
+                let uuid_str = stream.resource_info.uuid.as_ref().unwrap();
+                let uuid_key = parse_uuid_to_key(uuid_str);
+                // Only use oneshot if this UUID is not already being tracked
+                !instance.active_uploads.lock().contains_key(&uuid_key)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        let result = if use_oneshot {
+            self.inner_write_oneshot(instance, digest, stream)
+                .instrument(error_span!("bytestream_write_oneshot"))
+                .with_context(
+                    make_ctx_for_hash_func(digest_function)
+                        .err_tip(|| "In BytestreamServer::write")?,
+                )
+                .await
+                .err_tip(|| "In ByteStreamServer::write (oneshot)")
+        } else {
+            self.inner_write(instance, digest, stream)
+                .instrument(error_span!("bytestream_write"))
+                .with_context(
+                    make_ctx_for_hash_func(digest_function)
+                        .err_tip(|| "In BytestreamServer::write")?,
+                )
+                .await
+                .err_tip(|| "In ByteStreamServer::write")
+        };
+
+        // Track metrics based on result
+        #[allow(clippy::cast_possible_truncation)]
+        let elapsed_ns = start_time.elapsed().as_nanos() as u64;
+        instance
+            .metrics
+            .write_duration_ns
+            .fetch_add(elapsed_ns, Ordering::Relaxed);
+
+        match &result {
+            Ok(_) => {
+                instance
+                    .metrics
+                    .write_requests_success
+                    .fetch_add(1, Ordering::Relaxed);
+                instance
+                    .metrics
+                    .bytes_written_total
+                    .fetch_add(expected_size, Ordering::Relaxed);
+            }
+            Err(_) => {
+                instance
+                    .metrics
+                    .write_requests_failure
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        result.map_err(Into::into)
     }
 
     #[instrument(
@@ -743,6 +1211,20 @@ impl ByteStream for ByteStreamServer {
         grpc_request: Request<QueryWriteStatusRequest>,
     ) -> Result<Response<QueryWriteStatusResponse>, Status> {
         let request = grpc_request.into_inner();
+
+        // Track query_write_status request - we need to parse the resource name to get the instance
+        if let Ok(resource_info) = ResourceInfo::new(&request.resource_name, true) {
+            if let Some(instance) = self
+                .instance_infos
+                .get(resource_info.instance_name.as_ref())
+            {
+                instance
+                    .metrics
+                    .query_write_status_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
         self.inner_query_write_status(&request)
             .await
             .err_tip(|| "Failed on query_write_status() command")

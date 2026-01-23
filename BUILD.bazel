@@ -30,11 +30,28 @@ rust_binary(
         "@crates//:hyper-util",
         "@crates//:mimalloc",
         "@crates//:parking_lot",
-        "@crates//:rustls-pemfile",
+        "@crates//:rustls-pki-types",
         "@crates//:tokio",
         "@crates//:tokio-rustls",
         "@crates//:tonic",
         "@crates//:tower",
+        "@crates//:tracing",
+    ],
+)
+
+rust_binary(
+    name = "redis_store_tester",
+    srcs = [
+        "src/bin/redis_store_tester.rs",
+    ],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:bytes",
+        "@crates//:rand",
+        "@crates//:tokio",
         "@crates//:tracing",
     ],
 )

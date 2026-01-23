@@ -489,7 +489,8 @@ pub enum StoreSpec {
     /// "redis_store": {
     ///   "addresses": [
     ///     "redis://127.0.0.1:6379/",
-    ///   ]
+    ///   ],
+    ///   "max_client_permits": 1000,
     /// }
     /// ```
     ///
@@ -639,7 +640,7 @@ pub struct OntapS3ExistenceCacheSpec {
     pub backend: Box<ExperimentalOntapS3Spec>,
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, Copy, PartialEq)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StoreDirection {
     /// The store operates normally and all get and put operations are
@@ -1217,6 +1218,18 @@ pub struct RedisSpec {
     /// ```
     #[serde(default)]
     pub retry: Retry,
+
+    /// Maximum number of permitted actions to the Redis store at any one time
+    /// This stops problems with timeouts due to many, many inflight actions
+    /// Default: 500
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_client_permits: usize,
+
+    /// Maximum number of items returned per cursor for the search indexes
+    /// May reduce thundering herd issues with worker provisioner at higher node counts,
+    /// Default: 1500
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_count_per_cursor: u64,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]

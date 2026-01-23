@@ -32,7 +32,7 @@ RUN apt-get update \
         git=1:2.43.0-1ubuntu7.3 \
         gcc=4:13.2.0-7ubuntu1 \
         g++=4:13.2.0-7ubuntu1 \
-        python3=3.12.3-0ubuntu2 \
+        python3=3.12.3-0ubuntu2.1 \
         ca-certificates=20240203 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \

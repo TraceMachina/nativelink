@@ -1201,21 +1201,22 @@ dependencies = [
 
 [[package]]
 name = "derive_more"
-version = "2.0.1"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "093242cf7570c207c83073cf82f79706fe7b8317e98620a47d5be7c3d8497678"
+checksum = "10b768e943bed7bf2cab53df09f4bc34bfd217cdb57d971e769874c9a6710618"
 dependencies = [
  "derive_more-impl",
 ]
 
 [[package]]
 name = "derive_more-impl"
-version = "2.0.1"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bda628edc44c4bb645fbe0f758797143e4e07926f7ebf4e9bdfbd3d2ce621df3"
+checksum = "6d286bfdaf75e988b4a78e013ecd79c581e06399ab53fbacd2d916c2f904f30b"
 dependencies = [
  "proc-macro2",
  "quote",
+ "rustc_version",
  "syn",
  "unicode-xid",
 ]
@@ -2236,9 +2237,9 @@ dependencies = [
 
 [[package]]
 name = "lru"
-version = "0.13.0"
+version = "0.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "227748d55f2f0ab4735d87fd623798cb6b664512fe979705f829c9f81c934465"
+checksum = "a1dc47f592c06f33f8e3aea9591776ec7c9f9e4124778ff8a3c3b87159f7e593"
 
 [[package]]
 name = "lru-slab"
@@ -2494,10 +2495,11 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nativelink"
-version = "0.7.5"
+version = "0.7.10"
 dependencies = [
  "async-lock",
  "axum",
+ "bytes",
  "clap",
  "futures",
  "hyper 1.7.0",
@@ -2510,7 +2512,8 @@ dependencies = [
  "nativelink-store",
  "nativelink-util",
  "nativelink-worker",
- "rustls-pemfile",
+ "rand 0.9.2",
+ "rustls-pki-types",
  "tokio",
  "tokio-rustls",
  "tonic 0.13.1",
@@ -2520,7 +2523,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "0.7.5"
+version = "0.7.10"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -2537,13 +2540,14 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "0.7.5"
+version = "0.7.10"
 dependencies = [
  "fred",
  "nativelink-metric",
  "nativelink-proto",
  "prost",
  "prost-types",
+ "rustls-pki-types",
  "serde",
  "serde_json5",
  "tokio",
@@ -2554,7 +2558,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "0.7.5"
+version = "0.7.10"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2563,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "0.7.5"
+version = "0.7.10"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -2574,7 +2578,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "0.7.5"
+version = "0.7.10"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2583,9 +2587,9 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "0.7.5"
+version = "0.7.10"
 dependencies = [
- "derive_more 2.0.1",
+ "derive_more 2.1.0",
  "prost",
  "prost-build",
  "prost-types",
@@ -2595,14 +2599,14 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "0.7.5"
+version = "0.7.10"
 dependencies = [
  "async-lock",
  "async-trait",
  "bytes",
  "fred",
  "futures",
- "lru 0.13.0",
+ "lru 0.16.3",
  "mock_instant",
  "nativelink-config",
  "nativelink-error",
@@ -2630,7 +2634,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "0.7.5"
+version = "0.7.10"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2670,7 +2674,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "0.7.5"
+version = "0.7.10"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2697,6 +2701,7 @@ dependencies = [
  "hyper 1.7.0",
  "hyper-rustls",
  "hyper-util",
+ "itertools",
  "lz4_flex",
  "memory-stats",
  "mock_instant",
@@ -2717,7 +2722,7 @@ dependencies = [
  "reqwest",
  "reqwest-middleware",
  "rustls",
- "rustls-pemfile",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2",
@@ -2733,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "0.7.5"
+version = "0.7.10"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2743,9 +2748,10 @@ dependencies = [
  "futures",
  "hex",
  "http-body-util",
+ "humantime",
  "hyper 1.7.0",
  "hyper-util",
- "lru 0.13.0",
+ "lru 0.16.3",
  "mock_instant",
  "nativelink-config",
  "nativelink-error",
@@ -2785,7 +2791,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "0.7.5"
+version = "0.7.10"
 dependencies = [
  "async-lock",
  "bytes",
@@ -3666,19 +3672,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
-]
-
-[[package]]
 name = "rustls-pki-types"
-version = "1.12.0"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "229a4a4c221013e7e1f1a043678c5cc39fe5171437c88fb47151a21e6f5b5c79"
+checksum = "708c0f9d5f54ba0272468c1d306a52c495b31fa155e91bc25371e6df7996908c"
 dependencies = [
  "web-time",
  "zeroize",

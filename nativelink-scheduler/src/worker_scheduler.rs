@@ -22,7 +22,7 @@ use nativelink_util::shutdown_guard::ShutdownGuard;
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{Worker, WorkerTimestamp};
 
-/// WorkerScheduler interface is responsible for interactions between the scheduler
+/// `WorkerScheduler` interface is responsible for interactions between the scheduler
 /// and worker related operations.
 #[async_trait]
 pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static {

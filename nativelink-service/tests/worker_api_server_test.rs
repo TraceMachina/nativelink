@@ -49,6 +49,7 @@ use pretty_assertions::assert_eq;
 use tokio::join;
 use tokio::sync::{Notify, mpsc};
 use tokio_stream::StreamExt;
+use nativelink_scheduler::worker_registry::WorkerRegistry;
 
 const BASE_NOW_S: u64 = 10;
 const BASE_WORKER_TIMEOUT_S: u64 = 100;
@@ -149,12 +150,14 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
     let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
     let tasks_or_worker_change_notify = Arc::new(Notify::new());
     let state_manager = Arc::new(MockWorkerStateManager::new());
+    let worker_registry = Arc::new(WorkerRegistry::new());
     let scheduler = ApiWorkerScheduler::new(
         state_manager.clone(),
         platform_property_manager,
         WorkerAllocationStrategy::default(),
         tasks_or_worker_change_notify,
         worker_timeout,
+        worker_registry,
     );
 
     let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();

@@ -59,3 +59,43 @@ jobs:
             exit 1
           fi
         shell: bash
+
+  # FIXME(palfrey): Can't make this reliably run in CI
+  # redis-store-tester:
+  #   name: Redis store tester
+  #   runs-on: ubuntu-24.04
+  #   timeout-minutes: 30
+  #   services:
+  #     redis:
+  #       image: redis:8.0.5-alpine3.21
+  #       options: >-
+  #         --health-cmd "redis-cli ping"
+  #         --health-interval 10s
+  #         --health-timeout 5s
+  #         --health-retries 5
+  #       ports:
+  #         - 6379:6379
+  #   steps:
+  #     - name: Checkout
+  #       uses: >- # v4.2.2
+  #         actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+  #     - name: Setup Bazel
+  #       uses: >- # v0.13.0
+  #         bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
+  #       with:
+  #         bazelisk-cache: true
+  #         repository-cache: true
+  #         disk-cache: ${{ github.workflow }}-ubuntu-24.04
+
+  #     - name: Run Bazel tests
+  #       run: |
+  #         bazel run //:redis_store_tester \
+  #           --extra_toolchains=@rust_toolchains//:all \
+  #           --verbose_failures
+  #       env:
+  #         RUST_LOG: trace
+  #         REDIS_HOST: localhost
+  #         MAX_REDIS_PERMITS: 50 # because CI times out sometimes
+  #         MAX_LOOPS: 10000 # Not reliably running above this sort of level (possible low memory?)
+  #       shell: bash

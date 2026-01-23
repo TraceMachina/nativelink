@@ -127,6 +127,15 @@ pub enum StoreOptimizations {
 
     /// If the store will never serve downloads.
     NoopDownloads,
+
+    /// If the store will determine whether a key has associated data once a read has been
+    /// attempted instead of calling `.has()` first.
+    LazyExistenceOnSync,
+
+    /// The store provides an optimized `update_oneshot` implementation that bypasses
+    /// channel overhead for direct Bytes writes. Stores with this optimization can
+    /// accept complete data directly without going through the MPSC channel.
+    SubscribesToUpdateOneshot,
 }
 
 /// A wrapper struct for [`StoreKey`] to work around

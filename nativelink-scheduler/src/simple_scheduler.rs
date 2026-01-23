@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
-use futures::Future;
+use futures::{Future, StreamExt, future};
 use nativelink_config::schedulers::SimpleSpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
@@ -38,14 +39,14 @@ use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
-use tokio_stream::StreamExt;
-use tracing::{error, info_span};
+use tracing::{error, info, info_span, warn};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
+use crate::worker_registry::WorkerRegistry;
 use crate::worker_scheduler::WorkerScheduler;
 
 /// Default timeout for workers in seconds.
@@ -303,10 +304,20 @@ impl SimpleScheduler {
 
         let mut result = Ok(());
 
+        let start = Instant::now();
+
         let mut stream = self
             .get_queued_operations()
             .await
             .err_tip(|| "Failed to get queued operations in do_try_match")?;
+
+        let query_elapsed = start.elapsed();
+        if query_elapsed > Duration::from_secs(1) {
+            warn!(
+                elapsed_ms = query_elapsed.as_millis(),
+                "Slow get_queued_operations query"
+            );
+        }
 
         while let Some(action_state_result) = stream.next().await {
             result = result.merge(
@@ -318,6 +329,15 @@ impl SimpleScheduler {
                     full_worker_logging,
                 )
                 .await,
+            );
+        }
+
+        let total_elapsed = start.elapsed();
+        if total_elapsed > Duration::from_secs(5) {
+            warn!(
+                total_ms = total_elapsed.as_millis(),
+                query_ms = query_elapsed.as_millis(),
+                "Slow do_try_match cycle"
             );
         }
 
@@ -398,12 +418,17 @@ impl SimpleScheduler {
         }
 
         let worker_change_notify = Arc::new(Notify::new());
+
+        // Create shared worker registry for single heartbeat per worker.
+        let worker_registry = Arc::new(WorkerRegistry::new());
+
         let state_manager = SimpleSchedulerStateManager::new(
             max_job_retries,
             Duration::from_secs(worker_timeout_s),
             Duration::from_secs(client_action_timeout_s),
             awaited_action_db,
             now_fn,
+            Some(worker_registry.clone()),
         );
 
         let worker_scheduler = ApiWorkerScheduler::new(
@@ -412,6 +437,7 @@ impl SimpleScheduler {
             spec.allocation_strategy,
             worker_change_notify.clone(),
             worker_timeout_s,
+            worker_registry,
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
@@ -429,8 +455,7 @@ impl SimpleScheduler {
                         tokio::pin!(task_change_fut);
                         tokio::pin!(worker_change_fut);
                         // Wait for either of these futures to be ready.
-                        let state_changed =
-                            futures::future::select(task_change_fut, worker_change_fut);
+                        let state_changed = future::select(task_change_fut, worker_change_fut);
                         if last_match_successful {
                             let _ = state_changed.await;
                         } else {
@@ -440,7 +465,7 @@ impl SimpleScheduler {
                             // hard loop if there's something wrong inside do_try_match.
                             let sleep_fut = tokio::time::sleep(Duration::from_millis(100));
                             tokio::pin!(sleep_fut);
-                            let _ = futures::future::select(state_changed, sleep_fut).await;
+                            let _ = future::select(state_changed, sleep_fut).await;
                         }
 
                         let result = match weak_inner.upgrade() {
@@ -458,6 +483,66 @@ impl SimpleScheduler {
 
                                 let res = scheduler.do_try_match(full_worker_logging).await;
                                 if full_worker_logging {
+                                    let operations_stream = scheduler
+                                        .matching_engine_state_manager
+                                        .filter_operations(OperationFilter::default())
+                                        .await
+                                        .err_tip(|| "In action_scheduler getting filter result");
+
+                                    let mut oldest_actions_in_state: HashMap<
+                                        String,
+                                        BTreeSet<Arc<ActionState>>,
+                                    > = HashMap::new();
+                                    let max_items = 5;
+
+                                    match operations_stream {
+                                        Ok(stream) => {
+                                            let actions = stream
+                                                .filter_map(|item| async move {
+                                                    match item.as_ref().as_state().await {
+                                                        Ok((action_state, _origin_metadata)) => {
+                                                            Some(action_state)
+                                                        }
+                                                        Err(e) => {
+                                                            error!(
+                                                                ?e,
+                                                                "Failed to get action state!"
+                                                            );
+                                                            None
+                                                        }
+                                                    }
+                                                })
+                                                .collect::<Vec<_>>()
+                                                .await;
+                                            for action_state in &actions {
+                                                let name = action_state.stage.name();
+                                                if let Some(values) =
+                                                    oldest_actions_in_state.get_mut(&name)
+                                                {
+                                                    values.insert(action_state.clone());
+                                                    if values.len() > max_items {
+                                                        values.pop_first();
+                                                    }
+                                                } else {
+                                                    let mut values = BTreeSet::new();
+                                                    values.insert(action_state.clone());
+                                                    oldest_actions_in_state.insert(name, values);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(?e, "Failed to get operations list!");
+                                        }
+                                    }
+
+                                    for value in oldest_actions_in_state.values() {
+                                        let mut items = vec![];
+                                        for item in value {
+                                            items.push(item.to_string());
+                                        }
+                                        info!(?items, "Oldest actions in state");
+                                    }
+
                                     worker_match_logging_last.replace(now);
                                 }
                                 res
@@ -477,14 +562,15 @@ impl SimpleScheduler {
                 });
 
             let worker_match_logging_interval = match spec.worker_match_logging_interval_s {
-                -1 => None,
+                // -1 or 0 means disabled (0 used to cause expensive logging on every call)
+                -1 | 0 => None,
                 signed_secs => {
                     if let Ok(secs) = TryInto::<u64>::try_into(signed_secs) {
                         Some(Duration::from_secs(secs))
                     } else {
                         error!(
                             worker_match_logging_interval_s = spec.worker_match_logging_interval_s,
-                            "Valid values for worker_match_logging_interval_s are -1 or a positive integer, setting to -1 (disabled)",
+                            "Valid values for worker_match_logging_interval_s are -1, 0, or a positive integer, setting to disabled",
                         );
                         None
                     }

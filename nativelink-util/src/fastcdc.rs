@@ -120,7 +120,7 @@ impl Decoder for FastCDC {
             self.state.reset();
             debug_assert!(
                 split_point <= self.max_size,
-                "Expected {} < {}",
+                "Expected {} <= {}",
                 split_point,
                 self.max_size
             );

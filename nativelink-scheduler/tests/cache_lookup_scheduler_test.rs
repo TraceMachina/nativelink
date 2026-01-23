@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 mod utils {
     pub(crate) mod scheduler_utils;
@@ -71,6 +71,7 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
             client_operation_id: OperationId::default(),
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
         }));
     let ActionUniqueQualifier::Cacheable(action_key) = action_info.unique_qualifier.clone() else {
         panic!("This test should be testing when item was cached first");

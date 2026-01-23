@@ -196,7 +196,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
         loop {
             select! {
-                maybe_update = update_for_worker_stream.next() => {
+                maybe_update = update_for_worker_stream.next() => if !shutting_down || maybe_update.is_some() {
                     match maybe_update
                         .err_tip(|| "UpdateForWorker stream closed early")?
                         .err_tip(|| "Got error in UpdateForWorker stream")?

@@ -261,7 +261,8 @@
       "redis_store": {
        "addresses": [
          "redis://127.0.0.1:6379/",
-       ]
+       ],
+       "max_client_permits": 1000,
      }
     },
     {

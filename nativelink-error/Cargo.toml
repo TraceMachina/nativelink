@@ -8,7 +8,7 @@ autoexamples = false
 autotests = false
 edition = "2024"
 name = "nativelink-error"
-version = "0.7.5"
+version = "0.7.10"
 
 [dependencies]
 nativelink-metric = { path = "../nativelink-metric" }
@@ -19,6 +19,7 @@ fred = { version = "10.1.0", default-features = false, features = [
 ] }
 prost = { version = "0.13.5", default-features = false }
 prost-types = { version = "0.13.5", default-features = false }
+rustls-pki-types = { version = "1.13.1", default-features = false }
 serde = { version = "1.0.219", default-features = false }
 serde_json5 = { version = "0.2.1", default-features = false }
 tokio = { version = "1.44.1", features = [

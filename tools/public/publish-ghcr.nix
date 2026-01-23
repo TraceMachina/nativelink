@@ -27,25 +27,37 @@ writeShellScriptBin "publish-ghcr" ''
 
   nix run .#$1.copyTo docker://''${TAGGED_IMAGE}
 
-  echo $GHCR_PASSWORD | ${cosign}/bin/cosign \
-    login \
-    --username=$GHCR_USERNAME \
-    --password-stdin \
-    ghcr.io
+  # Skip signing if SKIP_SIGNING is set (useful for PR builds)
+  if [[ "''${SKIP_SIGNING:-false}" != "true" ]]; then
+    echo $GHCR_PASSWORD | ${cosign}/bin/cosign \
+      login \
+      --username=$GHCR_USERNAME \
+      --password-stdin \
+      ghcr.io
 
-  ${cosign}/bin/cosign \
-    sign \
-    --yes \
-    ''${GHCR_REGISTRY,,}/''${IMAGE_NAME}@$( \
-      ${skopeo}/bin/skopeo \
-        inspect \
-        --format "{{ .Digest }}" \
-        docker://''${TAGGED_IMAGE} \
-  )
+    ${cosign}/bin/cosign \
+      sign \
+      --yes \
+      ''${GHCR_REGISTRY,,}/''${IMAGE_NAME}@$( \
+        ${skopeo}/bin/skopeo \
+          inspect \
+          --format "{{ .Digest }}" \
+          docker://''${TAGGED_IMAGE} \
+    )
+  else
+    echo "Skipping cosign signing (SKIP_SIGNING=true)"
+  fi
 
-  ${trivy}/bin/trivy \
-    image \
-    --format sarif \
-    ''${TAGGED_IMAGE} \
-  > trivy-results.sarif
+  # Skip trivy scan if SKIP_TRIVY is set
+  if [[ "''${SKIP_TRIVY:-false}" != "true" ]]; then
+    ${trivy}/bin/trivy \
+      image \
+      --format sarif \
+      ''${TAGGED_IMAGE} \
+    > trivy-results.sarif
+  else
+    echo "Skipping trivy scan (SKIP_TRIVY=true)"
+  fi
+
+  echo "Published: ''${TAGGED_IMAGE}"
 ''

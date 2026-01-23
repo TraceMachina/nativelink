@@ -37,6 +37,7 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
+use tracing::trace;
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -168,26 +169,37 @@ impl FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        let sz = self
+        let reader_stream_size = if self
             .slow_store
-            .has(key.borrow())
-            .await
-            .err_tip(|| "Failed to run has() on slow store")?
-            .ok_or_else(|| {
-                make_err!(
-                    Code::NotFound,
-                    "Object {} not found in either fast or slow store. \
-                    If using multiple workers, ensure all workers share the same CAS storage path.",
-                    key.as_str()
-                )
-            })?;
-
-        self.metrics
-            .slow_store_hit_count
-            .fetch_add(1, Ordering::Acquire);
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::LazyExistenceOnSync)
+        {
+            trace!(
+                %key,
+                store_name = %self.slow_store.inner_store(Some(key.borrow())).get_name(),
+                "Skipping .has() check due to LazyExistenceOnSync optimization"
+            );
+            UploadSizeInfo::MaxSize(u64::MAX)
+        } else {
+            UploadSizeInfo::ExactSize(self
+                    .slow_store
+                    .has(key.borrow())
+                    .await
+                    .err_tip(|| "Failed to run has() on slow store")?
+                    .ok_or_else(|| {
+                        make_err!(
+                            Code::NotFound,
+                            "Object {} not found in either fast or slow store. \
+                                If using multiple workers, ensure all workers share the same CAS storage path.",
+                            key.as_str()
+                        )
+                    })?
+            )
+        };
 
         let send_range = offset..length.map_or(u64::MAX, |length| length + offset);
         let mut bytes_received: u64 = 0;
+        let mut counted_hit = false;
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (slow_tx, mut slow_rx) = make_buf_channel_pair();
@@ -205,6 +217,14 @@ impl FastSlowStore {
                     let fast_res = fast_tx.send_eof();
                     return Ok::<_, Error>((fast_res, maybe_writer_pin));
                 }
+
+                if !counted_hit {
+                    self.metrics
+                        .slow_store_hit_count
+                        .fetch_add(1, Ordering::Acquire);
+                    counted_hit = true;
+                }
+
                 let output_buf_len = u64::try_from(output_buf.len())
                     .err_tip(|| "Could not output_buf.len() to u64")?;
                 self.metrics
@@ -230,9 +250,9 @@ impl FastSlowStore {
         };
 
         let slow_store_fut = self.slow_store.get(key.borrow(), slow_tx);
-        let fast_store_fut =
-            self.fast_store
-                .update(key.borrow(), fast_rx, UploadSizeInfo::ExactSize(sz));
+        let fast_store_fut = self
+            .fast_store
+            .update(key.borrow(), fast_rx, reader_stream_size);
 
         let (data_stream_res, slow_res, fast_res) =
             join!(data_stream_fut, slow_store_fut, fast_store_fut);
@@ -249,7 +269,10 @@ impl FastSlowStore {
                     },
                 )
             }
-            Err(err) => fast_res.merge(slow_res).merge(Err(err)),
+            Err(err) => match slow_res {
+                Err(slow_err) if slow_err.code == Code::NotFound => Err(slow_err),
+                _ => fast_res.merge(slow_res).merge(Err(err)),
+            },
         }
     }
 
@@ -422,7 +445,7 @@ impl StoreDriver for FastSlowStore {
         Ok(())
     }
 
-    /// FastSlowStore has optimizations for dealing with files.
+    /// `FastSlowStore` has optimizations for dealing with files.
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
         optimization == StoreOptimizations::FileUpdates
     }
