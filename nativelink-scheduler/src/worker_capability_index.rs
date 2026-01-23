@@ -137,6 +137,13 @@ impl WorkerCapabilityIndex {
             return self.all_workers.clone();
         }
 
+        if self.all_workers.is_empty() {
+            if full_worker_logging {
+                info!("No workers available to match!");
+            }
+            return HashSet::new();
+        }
+
         let mut candidates: Option<HashSet<WorkerId>> = None;
 
         for (name, value) in &action_properties.properties {
