@@ -243,7 +243,7 @@ impl ApiWorkerSchedulerImpl {
         // This reduces complexity from O(W × P) to O(P × log(W)) for exact properties.
         let candidates = self
             .capability_index
-            .find_matching_workers(platform_properties);
+            .find_matching_workers(platform_properties, full_worker_logging);
 
         if candidates.is_empty() {
             if full_worker_logging {

@@ -31,6 +31,7 @@ use std::collections::{HashMap, HashSet};
 
 use nativelink_util::action_messages::WorkerId;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
+use tracing::info;
 
 /// A property key-value pair used for indexing.
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
@@ -129,10 +130,18 @@ impl WorkerCapabilityIndex {
     pub fn find_matching_workers(
         &self,
         action_properties: &PlatformProperties,
+        full_worker_logging: bool,
     ) -> HashSet<WorkerId> {
         if action_properties.properties.is_empty() {
             // No properties required, all workers match
             return self.all_workers.clone();
+        }
+
+        if self.all_workers.is_empty() {
+            if full_worker_logging {
+                info!("No workers available to match!");
+            }
+            return HashSet::new();
         }
 
         let mut candidates: Option<HashSet<WorkerId>> = None;
@@ -148,15 +157,21 @@ impl WorkerCapabilityIndex {
 
                     let matching = self.exact_index.get(&key).cloned().unwrap_or_default();
 
-                    candidates = Some(match candidates {
+                    let internal_candidates = match candidates {
                         Some(existing) => existing.intersection(&matching).cloned().collect(),
                         None => matching,
-                    });
+                    };
 
                     // Early exit if no candidates
-                    if candidates.as_ref().is_some_and(HashSet::is_empty) {
+                    if internal_candidates.is_empty() {
+                        if full_worker_logging {
+                            info!(
+                                "No candidate workers due to a lack of matching {name} = {value:?}"
+                            );
+                        }
                         return HashSet::new();
                     }
+                    candidates = Some(internal_candidates);
                 }
                 PlatformPropertyValue::Priority(_) | PlatformPropertyValue::Minimum(_) => {
                     // Priority: just requires the key to exist
@@ -169,17 +184,21 @@ impl WorkerCapabilityIndex {
                         .cloned()
                         .unwrap_or_default();
 
-                    candidates = Some(match candidates {
+                    let internal_candidates = match candidates {
                         Some(existing) => existing
                             .intersection(&workers_with_property)
                             .cloned()
                             .collect(),
                         None => workers_with_property,
-                    });
+                    };
 
-                    if candidates.as_ref().is_some_and(HashSet::is_empty) {
+                    if internal_candidates.is_empty() {
+                        if full_worker_logging {
+                            info!("No candidate workers due to a lack of key {name}");
+                        }
                         return HashSet::new();
                     }
+                    candidates = Some(internal_candidates);
                 }
             }
         }
