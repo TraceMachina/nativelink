@@ -36,7 +36,7 @@ fn make_properties(props: &[(&str, PlatformPropertyValue)]) -> PlatformPropertie
 fn test_empty_index() {
     let index = WorkerCapabilityIndex::new();
     let props = make_properties(&[]);
-    let result = index.find_matching_workers(&props);
+    let result = index.find_matching_workers(&props, true);
     assert!(result.is_empty());
 }
 
@@ -58,14 +58,14 @@ fn test_exact_property_match() {
 
     // Match linux
     let linux_props = make_properties(&[("os", PlatformPropertyValue::Exact("linux".to_string()))]);
-    let result = index.find_matching_workers(&linux_props);
+    let result = index.find_matching_workers(&linux_props, true);
     assert_eq!(result.len(), 1);
     assert!(result.contains(&worker1));
 
     // Match windows
     let windows_props =
         make_properties(&[("os", PlatformPropertyValue::Exact("windows".to_string()))]);
-    let result = index.find_matching_workers(&windows_props);
+    let result = index.find_matching_workers(&windows_props, true);
     assert_eq!(result.len(), 1);
     assert!(result.contains(&worker2));
 }
@@ -97,7 +97,7 @@ fn test_minimum_property_presence_only() {
 
     // Any request for cpu_count returns workers that HAVE the property (regardless of value)
     let props = make_properties(&[("cpu_count", PlatformPropertyValue::Minimum(2))]);
-    let result = index.find_matching_workers(&props);
+    let result = index.find_matching_workers(&props, true);
     assert_eq!(result.len(), 2);
     assert!(result.contains(&worker1));
     assert!(result.contains(&worker2));
@@ -105,7 +105,7 @@ fn test_minimum_property_presence_only() {
 
     // Even a high value returns the same workers - actual value check is done at runtime
     let props = make_properties(&[("cpu_count", PlatformPropertyValue::Minimum(100))]);
-    let result = index.find_matching_workers(&props);
+    let result = index.find_matching_workers(&props, true);
     assert_eq!(result.len(), 2);
 }
 
@@ -145,7 +145,7 @@ fn test_mixed_properties() {
         ("os", PlatformPropertyValue::Exact("linux".to_string())),
         ("cpu_count", PlatformPropertyValue::Minimum(6)),
     ]);
-    let result = index.find_matching_workers(&props);
+    let result = index.find_matching_workers(&props, true);
     // Both worker1 and worker2 have linux OS and cpu_count property
     assert_eq!(result.len(), 2);
     assert!(result.contains(&worker1));
@@ -170,7 +170,7 @@ fn test_remove_worker() {
     assert_eq!(index.worker_count(), 0);
 
     let props = make_properties(&[("os", PlatformPropertyValue::Exact("linux".to_string()))]);
-    let result = index.find_matching_workers(&props);
+    let result = index.find_matching_workers(&props, true);
     assert!(result.is_empty());
 }
 
@@ -189,7 +189,7 @@ fn test_no_properties_matches_all() {
 
     // No properties required - all workers match
     let props = make_properties(&[]);
-    let result = index.find_matching_workers(&props);
+    let result = index.find_matching_workers(&props, true);
     assert_eq!(result.len(), 2);
 }
 
@@ -211,6 +211,6 @@ fn test_priority_property() {
 
     // Priority just checks presence, so any pool value matches workers with pool
     let props = make_properties(&[("pool", PlatformPropertyValue::Priority("any".to_string()))]);
-    let result = index.find_matching_workers(&props);
+    let result = index.find_matching_workers(&props, true);
     assert_eq!(result.len(), 2);
 }
