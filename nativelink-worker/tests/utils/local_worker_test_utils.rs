@@ -247,6 +247,42 @@ pub(crate) async fn setup_local_worker(
     setup_local_worker_with_config(local_worker_config).await
 }
 
+/// Setup local worker with real sleep for testing warmup delays.
+/// Unlike `setup_local_worker_with_config`, this uses actual tokio::time::sleep
+/// so tests can verify timing behavior of warmup features.
+pub(crate) async fn setup_local_worker_with_real_sleep(
+    local_worker_config: LocalWorkerConfig,
+) -> TestContext {
+    let mock_worker_api_client = MockWorkerApiClient::new();
+    let mock_worker_api_client_clone = mock_worker_api_client.clone();
+    let actions_manager = Arc::new(MockRunningActionsManager::new());
+    let worker = LocalWorker::new_with_connection_factory_and_actions_manager(
+        Arc::new(local_worker_config),
+        actions_manager.clone(),
+        Box::new(move || {
+            let mock_worker_api_client = mock_worker_api_client_clone.clone();
+            Box::pin(async move { Ok(mock_worker_api_client) })
+        }),
+        Box::new(move |duration| Box::pin(tokio::time::sleep(duration))),
+    );
+    let (shutdown_tx_test, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
+
+    let drop_guard = spawn!("local_worker_spawn", async move {
+        worker.run(shutdown_tx_test.subscribe()).await
+    });
+
+    let (tx_stream, streaming_response) = setup_grpc_stream();
+    TestContext {
+        client: mock_worker_api_client,
+        actions_manager,
+
+        maybe_streaming_response: Some(streaming_response),
+        maybe_tx_stream: Some(tx_stream),
+
+        _drop_guard: drop_guard,
+    }
+}
+
 pub(crate) struct TestContext {
     pub client: MockWorkerApiClient,
     pub actions_manager: Arc<MockRunningActionsManager>,

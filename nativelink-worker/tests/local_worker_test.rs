@@ -59,6 +59,7 @@ use rand::Rng;
 use tokio::io::AsyncWriteExt;
 use utils::local_worker_test_utils::{
     setup_grpc_stream, setup_local_worker, setup_local_worker_with_config,
+    setup_local_worker_with_real_sleep,
 };
 use utils::mock_running_actions_manager::MockRunningAction;
 
@@ -745,6 +746,161 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
 
     // Make sure that the killed action is the one we intended
     assert_eq!(killed_operation_id, operation_id);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn warmup_delay_is_applied_before_registration() -> Result<(), Error> {
+    // Test that when warmup_delay_secs is set, there is a delay before registration.
+    // We use a short delay (1 second) to keep the test fast.
+    let local_worker_config = LocalWorkerConfig {
+        warmup_delay_secs: 1,
+        ..Default::default()
+    };
+
+    let start_time = std::time::Instant::now();
+    // Use setup with real sleep to test actual timing behavior
+    let mut test_context = setup_local_worker_with_real_sleep(local_worker_config).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    // Wait for the worker to connect (which happens after warmup delay)
+    let props = test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    assert_eq!(props, ConnectWorkerRequest::default());
+
+    // Verify at least 1 second has passed (the warmup delay)
+    let elapsed = start_time.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(1),
+        "Expected at least 1 second delay for warmup, but only {:?} elapsed",
+        elapsed
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn readiness_check_script_success() -> Result<(), Error> {
+    // Test that a successful readiness check script allows registration to proceed.
+    let temp_path = make_temp_path("scripts");
+    fs::create_dir_all(temp_path.clone()).await?;
+
+    #[cfg(target_family = "unix")]
+    let readiness_script = {
+        let readiness_script = format!("{temp_path}/readiness.sh");
+        let readiness_script_tmp = format!("{readiness_script}.tmp");
+
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .mode(0o777)
+                .open(OsString::from(&readiness_script_tmp))
+                .unwrap();
+            file.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+            file.sync_all().unwrap();
+            std::process::Command::new("sync").output().unwrap();
+        }
+        std::fs::rename(&readiness_script_tmp, &readiness_script).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        readiness_script
+    };
+
+    #[cfg(target_family = "windows")]
+    let readiness_script = {
+        let readiness_script = format!("{}/readiness.bat", temp_path);
+        let mut file = std::fs::File::create(OsString::from(&readiness_script))?;
+        file.write_all(b"@echo off\r\nexit 0")?;
+        file.sync_all().unwrap();
+        readiness_script
+    };
+
+    let local_worker_config = LocalWorkerConfig {
+        readiness_check_script: Some(readiness_script),
+        readiness_timeout_secs: 10,
+        ..Default::default()
+    };
+
+    let mut test_context = setup_local_worker_with_config(local_worker_config).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    // Worker should connect successfully after the readiness check passes
+    let props = test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    assert_eq!(props, ConnectWorkerRequest::default());
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn readiness_check_script_with_warmup_delay() -> Result<(), Error> {
+    // Test that both readiness check and warmup delay work together.
+    let temp_path = make_temp_path("scripts");
+    fs::create_dir_all(temp_path.clone()).await?;
+
+    #[cfg(target_family = "unix")]
+    let readiness_script = {
+        let readiness_script = format!("{temp_path}/readiness.sh");
+        let readiness_script_tmp = format!("{readiness_script}.tmp");
+
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .mode(0o777)
+                .open(OsString::from(&readiness_script_tmp))
+                .unwrap();
+            file.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+            file.sync_all().unwrap();
+            std::process::Command::new("sync").output().unwrap();
+        }
+        std::fs::rename(&readiness_script_tmp, &readiness_script).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        readiness_script
+    };
+
+    #[cfg(target_family = "windows")]
+    let readiness_script = {
+        let readiness_script = format!("{}/readiness.bat", temp_path);
+        let mut file = std::fs::File::create(OsString::from(&readiness_script))?;
+        file.write_all(b"@echo off\r\nexit 0")?;
+        file.sync_all().unwrap();
+        readiness_script
+    };
+
+    let local_worker_config = LocalWorkerConfig {
+        readiness_check_script: Some(readiness_script),
+        readiness_timeout_secs: 10,
+        warmup_delay_secs: 1,
+        ..Default::default()
+    };
+
+    let start_time = std::time::Instant::now();
+    // Use setup with real sleep to test actual timing behavior
+    let mut test_context = setup_local_worker_with_real_sleep(local_worker_config).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    // Worker should connect successfully after readiness check + warmup delay
+    let props = test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    assert_eq!(props, ConnectWorkerRequest::default());
+
+    // Verify at least 1 second has passed (warmup delay after readiness check)
+    let elapsed = start_time.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(1),
+        "Expected at least 1 second delay for warmup, but only {:?} elapsed",
+        elapsed
+    );
 
     Ok(())
 }
