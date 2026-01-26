@@ -44,7 +44,7 @@ done
 # Set-up the environment
 
 # Call the C++ compiler
-/nix/store/ldaam6d8vp6m7mb571nc7aw2n3472w38-customClang/bin/customClang "$@"
+/nix/store/lsja0h5h9y3x0b8p9d080zn4bq5hg871-customClang/bin/customClang "$@"
 
 # Generate an empty file if header processing succeeded.
 if [[ ${OUTPUT} == *.h.processed ]]; then
