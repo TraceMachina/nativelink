@@ -116,6 +116,33 @@ async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Er
     }
 }
 
+/// Default readiness timeout in seconds (10 minutes).
+const DEFAULT_READINESS_TIMEOUT_S: usize = 600;
+
+/// Runs a readiness check script and returns Ok if the script exits with 0.
+/// This is used to verify the worker is ready to accept tasks before registering.
+async fn run_readiness_script(script: &str) -> Result<(), Error> {
+    let process = process::Command::new(script)
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .err_tip(|| format!("Could not execute readiness check script {script:?}"))?;
+    let output = process.wait_with_output().await?;
+    if output.status.code() == Some(0) {
+        Ok(())
+    } else {
+        Err(make_err!(
+            Code::Unavailable,
+            "Readiness check script returned status {} - stdout: {} stderr: {}",
+            output.status,
+            str::from_utf8(&output.stdout).unwrap_or(""),
+            str::from_utf8(&output.stderr).unwrap_or("")
+        ))
+    }
+}
+
 impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorkerImpl<'a, T, U> {
     fn new(
         config: &'a LocalWorkerConfig,
@@ -659,6 +686,77 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     continue; // Try to connect again.
                 }
             };
+
+            // Warmup phase: Perform initialization checks before registering.
+            // This prevents the scheduler from assigning tasks to workers that
+            // aren't actually ready to execute them (e.g., cold pods that need
+            // time to warm up CAS connections, download container images, etc.)
+            let warmup_passed = 'warmup: {
+                let warmup_delay = self.config.warmup_delay_secs;
+                let readiness_timeout = if self.config.readiness_timeout_secs == 0 {
+                    DEFAULT_READINESS_TIMEOUT_S
+                } else {
+                    self.config.readiness_timeout_secs
+                };
+
+                // Phase 1: Run readiness check script if configured
+                if let Some(ref script) = self.config.readiness_check_script {
+                    info!(
+                        script = %script,
+                        timeout_secs = readiness_timeout,
+                        "Worker running readiness check script before registering..."
+                    );
+
+                    let start_time = std::time::Instant::now();
+                    let timeout = Duration::from_secs(readiness_timeout as u64);
+
+                    loop {
+                        match run_readiness_script(script).await {
+                            Ok(()) => {
+                                info!(
+                                    elapsed_secs = start_time.elapsed().as_secs(),
+                                    "Readiness check script passed"
+                                );
+                                break;
+                            }
+                            Err(e) => {
+                                if start_time.elapsed() > timeout {
+                                    error!(
+                                        ?e,
+                                        timeout_secs = readiness_timeout,
+                                        "Readiness check script failed after timeout"
+                                    );
+                                    (error_handler)(e).await;
+                                    break 'warmup false; // Restart the whole connection loop
+                                }
+                                warn!(
+                                    ?e,
+                                    elapsed_secs = start_time.elapsed().as_secs(),
+                                    "Readiness check failed, retrying in 5 seconds..."
+                                );
+                                (sleep_fn_pin)(Duration::from_secs(5)).await;
+                            }
+                        }
+                    }
+                }
+
+                // Phase 2: Apply warmup delay if configured
+                if warmup_delay > 0 {
+                    info!(
+                        warmup_delay_secs = warmup_delay,
+                        "Worker applying warmup delay before registering..."
+                    );
+                    (sleep_fn_pin)(Duration::from_secs(warmup_delay as u64)).await;
+                    info!("Warmup delay complete");
+                }
+
+                info!("Worker initialization complete, proceeding to register with scheduler");
+                true
+            };
+
+            if !warmup_passed {
+                continue; // Restart the connection loop
+            }
 
             // Next register our worker with the scheduler.
             let (inner, update_for_worker_stream) = match self.register_worker(&mut client).await {

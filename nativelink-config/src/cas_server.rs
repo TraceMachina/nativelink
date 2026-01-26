@@ -803,6 +803,50 @@ pub struct LocalWorkerConfig {
     /// them from CAS for every action.
     /// Default: None (directory cache disabled)
     pub directory_cache: Option<DirectoryCacheConfig>,
+
+    /// Optional delay in seconds before registering with the scheduler.
+    /// This allows the worker to complete initialization (warming CAS connections,
+    /// verifying disk space, etc.) before accepting tasks. This is particularly
+    /// useful for cold pod startup where initialization can take several minutes.
+    ///
+    /// When set, the worker will:
+    /// 1. Connect to the scheduler endpoint
+    /// 2. Verify CAS connection is healthy
+    /// 3. Wait for the specified delay
+    /// 4. Only then register with the scheduler to accept tasks
+    ///
+    /// Default: 0 (no delay, register immediately after connecting)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub warmup_delay_secs: usize,
+
+    /// If true, the worker will verify the CAS connection is healthy before
+    /// registering with the scheduler. This helps prevent workers from accepting
+    /// tasks before they can actually download artifacts from CAS.
+    ///
+    /// The verification is done by checking the CAS store is accessible.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub verify_cas_before_register: bool,
+
+    /// Optional script to run as a readiness check before registering with the
+    /// scheduler. If the script returns a non-zero exit code, the worker will
+    /// retry until it succeeds or times out.
+    ///
+    /// This is useful for custom readiness checks like verifying GPU drivers,
+    /// container runtime availability, or other environment-specific requirements.
+    ///
+    /// Default: None (no readiness script)
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub readiness_check_script: Option<String>,
+
+    /// Maximum time in seconds to wait for readiness checks to pass before
+    /// giving up. If readiness checks do not pass within this time, the worker
+    /// will fail to start.
+    ///
+    /// Default: 600 (10 minutes)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub readiness_timeout_secs: usize,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
