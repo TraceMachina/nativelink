@@ -10,159 +10,179 @@
 // The warmup phase executes AFTER connecting to the scheduler endpoint
 // but BEFORE registering to accept tasks. This prevents the scheduler
 // from assigning tasks to workers that aren't actually ready.
-
 {
-  "stores": [
+  stores: [
     {
-      "name": "AC_MAIN_STORE",
-      "filesystem": {
-        "content_path": "/tmp/nativelink/data/content_path-ac",
-        "temp_path": "/tmp/nativelink/data/tmp_path-ac",
-        "eviction_policy": {
-          "max_bytes": 1000000000  // 1GB
-        }
-      }
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data/content_path-ac",
+        temp_path: "/tmp/nativelink/data/tmp_path-ac",
+        eviction_policy: {
+          max_bytes: 1000000000, // 1GB
+        },
+      },
     },
     {
-      "name": "WORKER_FAST_SLOW_STORE",
-      "fast_slow": {
-        "fast": {
-          "filesystem": {
-            "content_path": "/tmp/nativelink/data/content_path-cas",
-            "temp_path": "/tmp/nativelink/data/tmp_path-cas",
-            "eviction_policy": {
-              "max_bytes": 10000000000  // 10GB
-            }
-          }
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink/data/content_path-cas",
+            temp_path: "/tmp/nativelink/data/tmp_path-cas",
+            eviction_policy: {
+              max_bytes: 10000000000, // 10GB
+            },
+          },
         },
-        "slow": {
-          "noop": {}
-        }
-      }
-    }
+        slow: {
+          noop: {},
+        },
+      },
+    },
   ],
-
-  "schedulers": [
+  schedulers: [
     {
-      "name": "MAIN_SCHEDULER",
-      "simple": {
-        "supported_platform_properties": {
-          "cpu_count": "minimum",
-          "memory_kb": "minimum",
-          "cpu_arch": "exact",
-          "OSFamily": "priority",
-          "container-image": "priority"
-        }
-      }
-    }
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          memory_kb: "minimum",
+          cpu_arch: "exact",
+          OSFamily: "priority",
+          "container-image": "priority",
+        },
+      },
+    },
   ],
+  workers: [
+    {
+      local: {
+        // Basic worker configuration
+        name: "worker-with-warmup",
+        worker_api_endpoint: {
+          uri: "grpc://scheduler.nativelink.svc.cluster.local:50061",
+        },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: {
+          ac_store: "AC_MAIN_STORE",
+        },
+        work_directory: "/tmp/nativelink/work",
 
-  "workers": [{
-    "local": {
-      // Basic worker configuration
-      "name": "worker-with-warmup",
-      "worker_api_endpoint": {
-        "uri": "grpc://scheduler.nativelink.svc.cluster.local:50061"
+        // =============================================================
+        // WARMUP CONFIGURATION
+        // =============================================================
+
+        // Delay in seconds before registering with scheduler.
+        // Use this for cold pod startups that need time to initialize.
+        // For Kubernetes pods with ~630s cold start, consider 60-120s.
+        // Default: 0 (no delay)
+        warmup_delay_secs: 60,
+
+        // Custom readiness check script. The worker will run this script
+        // and retry until it returns exit code 0 or times out.
+        // See: examples/worker_readiness_check.sh
+        // Default: None (no script)
+        readiness_check_script: "/opt/nativelink/worker_readiness_check.sh",
+
+        // Maximum time to wait for readiness checks to pass.
+        // If checks don't pass within this time, the worker fails to start.
+        // Default: 600 (10 minutes)
+        readiness_timeout_secs: 300,
+
+        // Platform properties
+        platform_properties: {
+          cpu_count: {
+            values: [
+              "8",
+            ],
+          },
+          memory_kb: {
+            values: [
+              "16000000",
+            ], // 16GB
+          },
+          cpu_arch: {
+            values: [
+              "x86_64",
+            ],
+          },
+          OSFamily: {
+            values: [
+              "Linux",
+            ],
+          },
+          "container-image": {
+            values: [
+              "",
+            ],
+          },
+        },
       },
-      "cas_fast_slow_store": "WORKER_FAST_SLOW_STORE",
-      "upload_action_result": {
-        "ac_store": "AC_MAIN_STORE"
-      },
-      "work_directory": "/tmp/nativelink/work",
-
-      // =============================================================
-      // WARMUP CONFIGURATION
-      // =============================================================
-
-      // Delay in seconds before registering with scheduler.
-      // Use this for cold pod startups that need time to initialize.
-      // For Kubernetes pods with ~630s cold start, consider 60-120s.
-      // Default: 0 (no delay)
-      "warmup_delay_secs": 60,
-
-      // Custom readiness check script. The worker will run this script
-      // and retry until it returns exit code 0 or times out.
-      // See: examples/worker_readiness_check.sh
-      // Default: None (no script)
-      "readiness_check_script": "/opt/nativelink/worker_readiness_check.sh",
-
-      // Maximum time to wait for readiness checks to pass.
-      // If checks don't pass within this time, the worker fails to start.
-      // Default: 600 (10 minutes)
-      "readiness_timeout_secs": 300,
-
-      // Platform properties
-      "platform_properties": {
-        "cpu_count": {
-          "values": ["8"]
-        },
-        "memory_kb": {
-          "values": ["16000000"]  // 16GB
-        },
-        "cpu_arch": {
-          "values": ["x86_64"]
-        },
-        "OSFamily": {
-          "values": ["Linux"]
-        },
-        "container-image": {
-          "values": [""]
-        }
-      }
-    }
-  }],
-
-  "servers": [{
-    "name": "public",
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50051"
-      }
     },
-    "services": {
-      "cas": [{
-        "instance_name": "main",
-        "cas_store": "WORKER_FAST_SLOW_STORE"
-      }],
-      "ac": [{
-        "instance_name": "main",
-        "ac_store": "AC_MAIN_STORE"
-      }],
-      "execution": [{
-        "instance_name": "main",
-        "cas_store": "WORKER_FAST_SLOW_STORE",
-        "scheduler": "MAIN_SCHEDULER"
-      }],
-      "capabilities": [{
-        "instance_name": "main",
-        "remote_execution": {
-          "scheduler": "MAIN_SCHEDULER"
-        }
-      }],
-      "bytestream": [{
-        "instance_name": "main",
-        "cas_store": "WORKER_FAST_SLOW_STORE"
-      }]
-    }
-  }, {
-    "name": "private_workers_servers",
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50061"
-      }
-    },
-    "services": {
-      "worker_api": {
-        "scheduler": "MAIN_SCHEDULER"
+  ],
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
       },
-      "admin": {},
-      "health": {
-        "timeout_seconds": 2
-      }
-    }
-  }],
-
-  "global": {
-    "max_open_files": 24576
-  }
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        execution: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "main",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+      },
+    },
+    {
+      name: "private_workers_servers",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        admin: {},
+        health: {
+          timeout_seconds: 2,
+        },
+      },
+    },
+  ],
+  global: {
+    max_open_files: 24576,
+  },
 }

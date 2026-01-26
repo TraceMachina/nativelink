@@ -36,8 +36,8 @@ fi
 
 # Check 2: Disk space in work directory
 echo "Checking disk space..."
-if [ -d "$WORK_DIR" ] || mkdir -p "$WORK_DIR" 2>/dev/null; then
-    AVAILABLE_GB=$(df -BG "$WORK_DIR" 2>/dev/null | tail -1 | awk '{print $4}' | tr -d 'G')
+if [ -d "$WORK_DIR" ] || mkdir -p "$WORK_DIR" 2> /dev/null; then
+    AVAILABLE_GB=$(df -BG "$WORK_DIR" 2> /dev/null | tail -1 | awk '{print $4}' | tr -d 'G')
     if [ -n "$AVAILABLE_GB" ] && [ "$AVAILABLE_GB" -lt "$MIN_DISK_GB" ]; then
         echo "ERROR: Insufficient disk space: ${AVAILABLE_GB}GB < ${MIN_DISK_GB}GB required"
         exit 1
@@ -48,13 +48,13 @@ fi
 # Check 3: Network connectivity to CAS
 echo "Checking CAS connectivity..."
 if command -v nc &> /dev/null; then
-    if ! nc -z -w5 "$CAS_HOST" "$CAS_PORT" 2>/dev/null; then
+    if ! nc -z -w5 "$CAS_HOST" "$CAS_PORT" 2> /dev/null; then
         echo "ERROR: Cannot connect to CAS at ${CAS_HOST}:${CAS_PORT}"
         exit 1
     fi
     echo "  CAS connectivity: OK (${CAS_HOST}:${CAS_PORT})"
 elif command -v timeout &> /dev/null; then
-    if ! timeout 5 bash -c "echo > /dev/tcp/${CAS_HOST}/${CAS_PORT}" 2>/dev/null; then
+    if ! timeout 5 bash -c "echo > /dev/tcp/${CAS_HOST}/${CAS_PORT}" 2> /dev/null; then
         echo "ERROR: Cannot connect to CAS at ${CAS_HOST}:${CAS_PORT}"
         exit 1
     fi
@@ -71,7 +71,7 @@ if [ -n "$CHECK_GPU" ] && [ "$CHECK_GPU" = "true" ]; then
             echo "ERROR: nvidia-smi failed - GPU not ready"
             exit 1
         fi
-        GPU_COUNT=$(nvidia-smi -L 2>/dev/null | wc -l)
+        GPU_COUNT=$(nvidia-smi -L 2> /dev/null | wc -l)
         echo "  GPU: OK ($GPU_COUNT GPU(s) available)"
     else
         echo "ERROR: nvidia-smi not found but CHECK_GPU=true"
