@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use clap::{Arg, ArgAction, Command};
@@ -29,19 +30,21 @@ fn main() -> std::io::Result<()> {
     let mut config = Config::new();
     config.bytes(["."]);
 
-    let structs_with_data_to_ignore = [
-        "BatchReadBlobsResponse.Response",
-        "BatchUpdateBlobsRequest.Request",
-        "ReadResponse",
-        "WriteRequest",
-    ];
+    let mut structs_with_data_to_ignore = HashMap::new();
+    structs_with_data_to_ignore.insert("BatchReadBlobsResponse.Response", vec!["data"]);
+    structs_with_data_to_ignore.insert("BatchUpdateBlobsRequest.Request", vec!["data"]);
+    structs_with_data_to_ignore.insert("ReadResponse", vec!["data"]);
+    structs_with_data_to_ignore.insert("WriteRequest", vec!["data"]);
+    structs_with_data_to_ignore.insert("ActionResult", vec!["output_files"]);
 
-    for struct_name in structs_with_data_to_ignore {
+    for (struct_name, fields) in &structs_with_data_to_ignore {
         config.type_attribute(struct_name, "#[derive(::derive_more::Debug)]");
-        config.field_attribute(format!("{struct_name}.data"), "#[debug(ignore)]");
+        for field in fields {
+            config.field_attribute(format!("{struct_name}.{field}"), "#[debug(ignore)]");
+        }
     }
 
-    config.skip_debug(structs_with_data_to_ignore);
+    config.skip_debug(structs_with_data_to_ignore.keys());
 
     tonic_build::configure()
         .out_dir(output_dir)
