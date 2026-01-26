@@ -103,6 +103,7 @@ rust_test_suite(
         "tests/metrics_test.rs",
         "tests/operation_id_tests.rs",
         "tests/origin_event_test.rs",
+        "tests/platform_properties_tests.rs",
         "tests/proto_stream_utils_test.rs",
         "tests/resource_info_test.rs",
         "tests/retry_test.rs",
