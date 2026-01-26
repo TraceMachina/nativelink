@@ -132,16 +132,16 @@ impl WorkerCapabilityIndex {
         action_properties: &PlatformProperties,
         full_worker_logging: bool,
     ) -> HashSet<WorkerId> {
-        if action_properties.properties.is_empty() {
-            // No properties required, all workers match
-            return self.all_workers.clone();
-        }
-
         if self.all_workers.is_empty() {
             if full_worker_logging {
                 info!("No workers available to match!");
             }
             return HashSet::new();
+        }
+
+        if action_properties.properties.is_empty() {
+            // No properties required, all workers match
+            return self.all_workers.clone();
         }
 
         let mut candidates: Option<HashSet<WorkerId>> = None;
@@ -166,7 +166,7 @@ impl WorkerCapabilityIndex {
                     if internal_candidates.is_empty() {
                         if full_worker_logging {
                             info!(
-                                "No candidate workers due to a lack of matching {name} = {value:?}"
+                                "No candidate workers due to a lack of matching '{name}' = {value:?}"
                             );
                         }
                         return HashSet::new();
@@ -194,7 +194,9 @@ impl WorkerCapabilityIndex {
 
                     if internal_candidates.is_empty() {
                         if full_worker_logging {
-                            info!("No candidate workers due to a lack of key {name}");
+                            info!(
+                                "No candidate workers due to a lack of key '{name}'. Job asked for {value:?}"
+                            );
                         }
                         return HashSet::new();
                     }
