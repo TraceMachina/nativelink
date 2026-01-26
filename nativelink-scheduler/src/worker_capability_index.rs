@@ -90,9 +90,11 @@ impl WorkerCapabilityIndex {
                         .or_default()
                         .insert(worker_id.clone());
                 }
-                PlatformPropertyValue::Minimum(_) => {
+                PlatformPropertyValue::Minimum(_) | PlatformPropertyValue::Ignore(_) => {
                     // Minimum properties are tracked via property_presence only.
                     // Their actual values are checked at runtime since they're dynamic.
+
+                    // Ignore properties we just drop
                 }
             }
         }
@@ -200,6 +202,7 @@ impl WorkerCapabilityIndex {
                     }
                     candidates = Some(internal_candidates);
                 }
+                PlatformPropertyValue::Ignore(_) => {}
             }
         }
 

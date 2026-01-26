@@ -214,3 +214,25 @@ fn test_priority_property() {
     let result = index.find_matching_workers(&props, true);
     assert_eq!(result.len(), 2);
 }
+
+#[test]
+fn test_ignore_property() {
+    let mut index = WorkerCapabilityIndex::new();
+
+    let worker1 = make_worker_id("worker1");
+    let worker2 = make_worker_id("worker2");
+
+    index.add_worker(
+        &worker1,
+        &make_properties(&[("foo", PlatformPropertyValue::Priority("high".to_string()))]),
+    );
+    index.add_worker(
+        &worker2,
+        &make_properties(&[("bar", PlatformPropertyValue::Priority("low".to_string()))]),
+    );
+
+    // Ignore doesn't care if the worker has the property, so both workers with and without it should match
+    let props = make_properties(&[("foo", PlatformPropertyValue::Ignore("any".to_string()))]);
+    let result = index.find_matching_workers(&props, true);
+    assert_eq!(result.len(), 2);
+}
