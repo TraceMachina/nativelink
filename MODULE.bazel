@@ -82,7 +82,7 @@ rust.toolchain(
         "2025-11-11/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "766a5b2ab46caf804994ebe95771db9324c7beec89f019d668e348665cabe308",
         "2025-11-11/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "e6ce5f12ff6f185a45adbd23bfbd19d386dae8027ba034b2a2d2c7fa48b782ad",
         "2025-11-11/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "28ded1b939faac3a50c43ffa6962b384ea5949f4c609e4b565b66a2b14b43b18",
-        "2025-11-11/rustc-nightly-aarch64-apple-darwin.tar.xz": "d2c390199913eed60e2e0045afe96aa302e79977916deabc738dc39f2e16dc0d",
+        "2025-11-11/rustc-nightly-aarch64-apple-darwin.tar.xz": "0a203f90fbb5b29875dc157bf610633e84430b5440884eb18f5de0628607e8b1",
         "2025-11-11/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "79d7ebcb718592f4b1ab49ec649419c1746e71b182e1c7d673baca50c7f1bc03",
         "2025-11-11/rustfmt-nightly-aarch64-apple-darwin.tar.xz": "015e3a7d87be66c8189a69b6a4031f7d0f149e4ec1ee1cfc0c86f389b1da6c5c",
         "2025-11-11/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "23e83fa46e72480edc85bdb784d303b8eba22fa89409f441abb295052a64a219",
