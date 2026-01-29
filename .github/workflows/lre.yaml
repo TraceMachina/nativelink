@@ -1,53 +1,53 @@
 # ---
-# name: Local Remote Execution
+name: Local Remote Execution
 
-# on:
-#   push:
-#     branches: [main]
-#     paths-ignore:
-#       - '.github/styles/**'
-#       - 'web/**'
-#   pull_request:
-#     branches: [main]
-#     paths-ignore:
-#       - '.github/styles/**'
-#       - 'web/**'
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
 
-# permissions: read-all
+permissions: read-all
 
-# concurrency:
-#   group: ${{ github.workflow }}-${{ github.ref }}
-#   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# jobs:
-#   local:
-#     strategy:
-#       fail-fast: false
-#       matrix:
-#         os: [ubuntu-24.04, macos-15]
-#         toolchain: [lre-cc, lre-rs]
-#         exclude:
-#           - os: macos-15
-#             toolchain: lre-cc
-#     name: Local / ${{ matrix.toolchain }} / ${{ matrix.os }}
-#     runs-on: ${{ matrix.os }}
-#     timeout-minutes: 45
-#     steps:
-#       - name: Checkout
-#         uses: >- # v4.2.2
-#           actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+jobs:
+  local:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        toolchain: [lre-cc, lre-rs]
+        exclude:
+          - os: macos-15
+            toolchain: lre-cc
+    name: Local / ${{ matrix.toolchain }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-#       - name: Prepare Worker
-#         uses: ./.github/actions/prepare-nix
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
 
-#       - name: Build example with ${{ matrix.toolchain }} toolchain
-#         env:
-#           TOOLCHAIN: ${{ matrix.toolchain }}
-#         run: >
-#           nix develop --impure --command
-#           bash -c "bazel run \
-#            --verbose_failures \
-#            @local-remote-execution//examples:${TOOLCHAIN}"
+      - name: Build example with ${{ matrix.toolchain }} toolchain
+        env:
+          TOOLCHAIN: ${{ matrix.toolchain }}
+        run: >
+          nix develop --impure --command
+          bash -c "bazel run \
+           --verbose_failures \
+           @local-remote-execution//examples:${TOOLCHAIN}"
 
 #   remote:
 #     strategy:
