@@ -607,9 +607,12 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         &self,
         client: &mut T,
     ) -> Result<(String, Streaming<UpdateForWorker>), Error> {
-        let connect_worker_request =
-            make_connect_worker_request(self.config.name.clone(), &self.config.platform_properties)
-                .await?;
+        let connect_worker_request = make_connect_worker_request(
+            self.config.name.clone(),
+            &self.config.platform_properties,
+            self.config.max_inflight_tasks,
+        )
+        .await?;
         let mut update_for_worker_stream = client
             .connect_worker(connect_worker_request)
             .await

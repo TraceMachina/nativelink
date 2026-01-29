@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::hash::{Hash, Hasher};
+use core::u64;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -95,6 +96,10 @@ pub struct Worker {
     #[metric(help = "If the worker is draining.")]
     pub is_draining: bool,
 
+    /// Maximum inflight tasks for this worker (or 0 for unlimited)
+    #[metric(help = "Maximum inflight tasks for this worker (or 0 for unlimited)")]
+    pub max_inflight_tasks: u64,
+
     /// Stats about the worker.
     #[metric]
     metrics: Arc<Metrics>,
@@ -134,6 +139,7 @@ impl Worker {
         platform_properties: PlatformProperties,
         tx: UnboundedSender<UpdateForWorker>,
         timestamp: WorkerTimestamp,
+        max_inflight_tasks: u64,
     ) -> Self {
         Self {
             id,
@@ -144,6 +150,7 @@ impl Worker {
             last_update_timestamp: timestamp,
             is_paused: false,
             is_draining: false,
+            max_inflight_tasks,
             metrics: Arc::new(Metrics {
                 connected_timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -270,8 +277,12 @@ impl Worker {
         }
     }
 
-    pub const fn can_accept_work(&self) -> bool {
-        !self.is_paused && !self.is_draining
+    pub fn can_accept_work(&self) -> bool {
+        !self.is_paused
+            && !self.is_draining
+            && (self.max_inflight_tasks == 0
+                || u64::try_from(self.running_action_infos.len()).unwrap_or(u64::MAX)
+                    < self.max_inflight_tasks)
     }
 }
 
