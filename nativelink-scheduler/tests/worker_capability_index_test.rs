@@ -33,11 +33,14 @@ fn make_properties(props: &[(&str, PlatformPropertyValue)]) -> PlatformPropertie
 }
 
 #[test]
+#[tracing_test::traced_test]
 fn test_empty_index() {
     let index = WorkerCapabilityIndex::new();
     let props = make_properties(&[]);
     let result = index.find_matching_workers(&props, true);
     assert!(result.is_empty());
+
+    assert!(logs_contain("No workers available to match!"));
 }
 
 #[test]
@@ -235,4 +238,39 @@ fn test_ignore_property() {
     let props = make_properties(&[("foo", PlatformPropertyValue::Ignore("any".to_string()))]);
     let result = index.find_matching_workers(&props, true);
     assert_eq!(result.len(), 2);
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn test_no_exact_property_match() {
+    let mut index = WorkerCapabilityIndex::new();
+    let worker1 = make_worker_id("worker1");
+    index.add_worker(
+        &worker1,
+        &make_properties(&[("os", PlatformPropertyValue::Exact("windows".to_string()))]),
+    );
+
+    let props = make_properties(&[("os", PlatformPropertyValue::Exact("linux".to_string()))]);
+    let result = index.find_matching_workers(&props, true);
+    assert_eq!(result.len(), 0);
+
+    assert!(logs_contain(
+        "No candidate workers due to a lack of matching 'os' = Exact(\"linux\"). Workers have: [Exact(\"windows\")]"
+    ));
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn test_no_priority_property_match() {
+    let mut index = WorkerCapabilityIndex::new();
+    let worker1 = make_worker_id("worker1");
+    index.add_worker(&worker1, &make_properties(&[]));
+
+    let props = make_properties(&[("os", PlatformPropertyValue::Priority("linux".to_string()))]);
+    let result = index.find_matching_workers(&props, true);
+    assert_eq!(result.len(), 0);
+
+    assert!(logs_contain(
+        "No candidate workers due to a lack of key 'os'. Job asked for Priority(\"linux\")"
+    ));
 }
