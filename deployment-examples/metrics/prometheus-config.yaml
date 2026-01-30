@@ -93,8 +93,8 @@ groups:
       # Execution success rate
       - record: nativelink:execution_success_rate
         expr: |
-          sum(rate(nativelink_execution_completed_count{execution_result="success"}[5m])) /
-          sum(rate(nativelink_execution_completed_count[5m]))
+          sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
+          sum(rate(nativelink_execution_completed_count_total[5m]))
 
       # Average queue time
       - record: nativelink:execution_queue_time_avg
@@ -111,7 +111,7 @@ groups:
       # Stage transition rate
       - record: nativelink:stage_transition_rate
         expr: |
-          sum(rate(nativelink_execution_stage_transitions[5m])) by (instance_name)
+          sum(rate(nativelink_execution_stage_transitions_total[5m])) by (instance_name)
 
   - name: nativelink_cache
     interval: 30s
@@ -119,8 +119,8 @@ groups:
       # Cache hit rate
       - record: nativelink:cache_hit_rate
         expr: |
-          sum(rate(nativelink_cache_operations{cache_operation_result="hit"}[5m])) by (cache_type) /
-          sum(rate(nativelink_cache_operations{cache_operation_name="read"}[5m])) by (cache_type)
+          sum(rate(nativelink_cache_operations_total{cache_operation_result="hit"}[5m])) by (cache_type) /
+          sum(rate(nativelink_cache_operations_total{cache_operation_name="read"}[5m])) by (cache_type)
 
       # Cache operation latency p95
       - record: nativelink:cache_operation_latency_p95
@@ -137,7 +137,7 @@ groups:
       # Cache eviction rate
       - record: nativelink:cache_eviction_rate
         expr: |
-          sum(rate(nativelink_cache_operations{cache_operation_name="evict"}[5m])) by (cache_type)
+          sum(rate(nativelink_cache_operations_total{cache_operation_name="evict"}[5m])) by (cache_type)
 
   - name: nativelink_performance
     interval: 60s
@@ -145,7 +145,7 @@ groups:
       # Overall system throughput
       - record: nativelink:system_throughput
         expr: |
-          sum(rate(nativelink_execution_completed_count[5m]))
+          sum(rate(nativelink_execution_completed_count_total[5m]))
 
       # Worker utilization
       - record: nativelink:worker_utilization
