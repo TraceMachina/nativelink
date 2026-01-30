@@ -17,6 +17,12 @@ The recommended configuration of the basic CAS is actually based on a real
 production configuration, just arranged as the all-in-one Config and using
 memory and filesystem stores instead of S3 and Redis.
 
+:::tip
+For significantly faster builds (~100x speedup on directory preparation), consider
+enabling the [directory cache](/docs/deployment-examples/directory-cache) feature.
+The examples below include commented-out directory cache configurations you can enable.
+:::
+
 ## Basic CAS Configuration
 
 ```json5
@@ -94,6 +100,12 @@ memory and filesystem stores instead of S3 and Redis.
         "ac_store": "AC_MAIN_STORE",
       },
       "work_directory": "/tmp/nativelink/work",
+      // Optional: Enable directory caching for faster builds (~100x speedup)
+      // See: /docs/deployment-examples/directory-cache for details
+      // "directory_cache": {
+      //   "max_entries": 1000,
+      //   "max_size_bytes": "10GB",
+      // },
       "platform_properties": {
         "cpu_count": {
           "values": ["16"],
@@ -265,6 +277,12 @@ memory and filesystem stores instead of S3 and Redis.
         "ac_store": "AC_MAIN_STORE",
       },
       "work_directory": "/tmp/nativelink/work",
+      // Optional: Enable directory caching for faster builds (~100x speedup)
+      // See: /docs/deployment-examples/directory-cache for details
+      // "directory_cache": {
+      //   "max_entries": 1000,
+      //   "max_size_bytes": "10GB",
+      // },
       "platform_properties": {
         "cpu_count": {
           "values": ["16"],
