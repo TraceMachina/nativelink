@@ -46,6 +46,9 @@ impl PlatformProperties {
     #[must_use]
     pub fn is_satisfied_by(&self, worker_properties: &Self, full_worker_logging: bool) -> bool {
         for (property, check_value) in &self.properties {
+            if let PlatformPropertyValue::Ignore(_) = check_value {
+                continue; // always matches
+            }
             if let Some(worker_value) = worker_properties.properties.get(property) {
                 if !check_value.is_satisfied_by(worker_value) {
                     if full_worker_logging {

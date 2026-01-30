@@ -259,8 +259,11 @@ impl ApiWorkerSchedulerImpl {
             if !w.can_accept_work() {
                 if full_worker_logging {
                     info!(
-                        "Worker {worker_id} cannot accept work: is_paused={}, is_draining={}",
-                        w.is_paused, w.is_draining
+                        "Worker {worker_id} cannot accept work: is_paused={}, is_draining={}, inflight={}/{}",
+                        w.is_paused,
+                        w.is_draining,
+                        w.running_action_infos.len(),
+                        w.max_inflight_tasks
                     );
                 }
                 return false;

@@ -189,6 +189,7 @@ impl WorkerApiServer {
                 platform_properties,
                 tx,
                 (self.now_fn)()?.as_secs(),
+                connect_worker_request.max_inflight_tasks,
             );
             self.scheduler
                 .add_worker(worker)
