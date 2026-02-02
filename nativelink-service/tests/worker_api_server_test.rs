@@ -623,9 +623,7 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
         "Expected not to be able to give worker a second task"
     );
 
-    assert!(logs_contain(
-        "cannot accept work: is_paused=false, is_draining=false, inflight=1/1"
-    ));
+    assert!(logs_contain("All workers are fully allocated"));
 
     Ok(())
 }
