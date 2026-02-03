@@ -5,7 +5,7 @@ paths change, Bazel will make sure to rerun the action, even though none of
 declared action inputs or the action commandline changes.
 
 /nix/store/g32hzzymvryavs304fmfzj4ky5gfdh1s-clang-wrapper-21.1.2/resource-root/include
-/nix/store/0vqrw0y515015i3065r9s00jcp1cd4hy-glibc-2.40-66-dev/include
+/nix/store/rwalsamz4246k8f1zzxa54qx7w3fbzdg-glibc-2.42-47-dev/include
 /nix/store/g32hzzymvryavs304fmfzj4ky5gfdh1s-clang-wrapper-21.1.2/resource-root/share
 /nix/store/h00alnhgwacck7a7hyxk5b9c89388cz7-libcxx-20.1.8-dev/include/c++/v1
 /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
