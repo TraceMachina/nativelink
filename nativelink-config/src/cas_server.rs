@@ -727,6 +727,12 @@ pub struct LocalWorkerConfig {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_action_timeout: usize,
 
+    /// Maximum number of inflight tasks this worker can cope with.
+    ///
+    /// Default: 0 (infinite tasks)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_inflight_tasks: u64,
+
     /// If timeout is handled in `entrypoint` or another wrapper script.
     /// If set to true `NativeLink` will not honor the timeout the action requested
     /// and instead will always force kill the action after `max_action_timeout`

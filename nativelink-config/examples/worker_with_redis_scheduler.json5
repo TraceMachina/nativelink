@@ -78,6 +78,7 @@
         worker_api_endpoint: {
           uri: "grpc://127.0.0.1:50061",
         },
+        max_inflight_tasks: 5,
         cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
         upload_action_result: {
           ac_store: "AC_MAIN_STORE",

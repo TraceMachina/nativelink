@@ -369,7 +369,7 @@ async fn setup_new_worker(
     props: PlatformProperties,
 ) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let worker = Worker::new(worker_id.clone(), props, tx, NOW_TIME);
+    let worker = Worker::new(worker_id.clone(), props, tx, NOW_TIME, 0);
     scheduler
         .add_worker(worker)
         .await

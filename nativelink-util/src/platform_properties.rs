@@ -46,6 +46,9 @@ impl PlatformProperties {
     #[must_use]
     pub fn is_satisfied_by(&self, worker_properties: &Self, full_worker_logging: bool) -> bool {
         for (property, check_value) in &self.properties {
+            if let PlatformPropertyValue::Ignore(_) = check_value {
+                continue; // always matches
+            }
             if let Some(worker_value) = worker_properties.properties.get(property) {
                 if !check_value.is_satisfied_by(worker_value) {
                     if full_worker_logging {
@@ -106,11 +109,15 @@ impl From<&PlatformProperties> for ProtoPlatform {
 ///            TODO(palfrey) In the future this will be used by the scheduler and
 ///            worker to cause the scheduler to prefer certain workers over others,
 ///            but not restrict them based on these values.
+/// Ignore   - Jobs can request this key, but workers do not have to have it. This allows
+///            for example the `InputRootAbsolutePath` case for chromium builds, where we can safely
+///            ignore it without having to change the worker configs.
 #[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug, Serialize, Deserialize)]
 pub enum PlatformPropertyValue {
     Exact(String),
     Minimum(u64),
     Priority(String),
+    Ignore(String),
     Unknown(String),
 }
 
@@ -131,7 +138,7 @@ impl PlatformPropertyValue {
             // Priority is used to pass info to the worker and not restrict which
             // workers can be selected, but might be used to prefer certain workers
             // over others.
-            Self::Priority(_) => true,
+            Self::Priority(_) | Self::Ignore(_) => true,
             // Success exact case is handled above.
             Self::Exact(_) | Self::Unknown(_) => false,
         }
@@ -139,9 +146,10 @@ impl PlatformPropertyValue {
 
     pub fn as_str(&self) -> Cow<'_, str> {
         match self {
-            Self::Exact(value) | Self::Priority(value) | Self::Unknown(value) => {
-                Cow::Borrowed(value)
-            }
+            Self::Exact(value)
+            | Self::Priority(value)
+            | Self::Unknown(value)
+            | Self::Ignore(value) => Cow::Borrowed(value),
             Self::Minimum(value) => Cow::Owned(value.to_string()),
         }
     }
@@ -159,6 +167,7 @@ impl MetricsComponent for PlatformPropertyValue {
             Self::Exact(v) => publish!(name, v, kind, help, "exact"),
             Self::Minimum(v) => publish!(name, v, kind, help, "minimum"),
             Self::Priority(v) => publish!(name, v, kind, help, "priority"),
+            Self::Ignore(v) => publish!(name, v, kind, help, "ignore"),
             Self::Unknown(v) => publish!(name, v, kind, help, "unknown"),
         }
 

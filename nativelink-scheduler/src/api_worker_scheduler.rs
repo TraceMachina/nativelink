@@ -243,7 +243,7 @@ impl ApiWorkerSchedulerImpl {
         // This reduces complexity from O(W × P) to O(P × log(W)) for exact properties.
         let candidates = self
             .capability_index
-            .find_matching_workers(platform_properties);
+            .find_matching_workers(platform_properties, full_worker_logging);
 
         if candidates.is_empty() {
             if full_worker_logging {
@@ -259,8 +259,11 @@ impl ApiWorkerSchedulerImpl {
             if !w.can_accept_work() {
                 if full_worker_logging {
                     info!(
-                        "Worker {worker_id} cannot accept work: is_paused={}, is_draining={}",
-                        w.is_paused, w.is_draining
+                        "Worker {worker_id} cannot accept work: is_paused={}, is_draining={}, inflight={}/{}",
+                        w.is_paused,
+                        w.is_draining,
+                        w.running_action_infos.len(),
+                        w.max_inflight_tasks
                     );
                 }
                 return false;
