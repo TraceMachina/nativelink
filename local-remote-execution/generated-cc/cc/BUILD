@@ -138,6 +138,7 @@ cc_toolchain_config(
     link_flags = [
         "-fuse-ld=/nix/store/ck7fyp44vvsass6akvg633xv125a1kkb-llvm-binutils-wrapper-21.1.8/bin/ld.mold",
         "-B/nix/store/ddcvd6g65207r5iw7z20lk6whyfr642y-customClang/bin",
+        "-Wl,-no-as-needed",
         "-Wl,-z,relro,-z,now",
     ],
     link_libs = [
