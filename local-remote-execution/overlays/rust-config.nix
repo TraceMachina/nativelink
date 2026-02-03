@@ -1,6 +1,6 @@
 let
-  defaultStableVersion = "1.89.0";
-  defaultNightlyVersion = "2025-11-11";
+  defaultStableVersion = "1.93.0";
+  defaultNightlyVersion = "2026-02-03";
 in rec {
   # This map translates execution platforms to sensible targets that can
   # be built on such a platform. For instance, an x86_64-linux execution

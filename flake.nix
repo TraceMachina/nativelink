@@ -380,7 +380,12 @@
             buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
               inherit nativelink buck2;
             };
-
+            update-module-hashes = pkgs.callPackage tools/updaters/rewrite-module.nix {
+              python-with-requests = pkgs.python3.withPackages (ps:
+                with ps; [
+                  ps.requests
+                ]);
+            };
             generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
             generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
           }
@@ -458,21 +463,6 @@
               unset TMPDIR TMP
               exec ${pkgs.bazelisk}/bin/bazelisk "$@"
             '';
-
-            # FIXME(palfrey): workaround for https://github.com/NixOS/nixpkgs/issues/456842
-            go_1_25_3 = pkgs.go_1_25.overrideAttrs {
-              version = "1.25.3";
-              src = pkgs.fetchurl {
-                url = "https://go.dev/dl/go1.25.3.src.tar.gz";
-                hash = "sha256-qBpLpZPQAV4QxR4mfeP/B8eskU38oDfZUX0ClRcJd5U=";
-              };
-            };
-            buildGo1253Module = pkgs.buildGoModule.override {
-              go = go_1_25_3;
-            };
-            cosign = pkgs.cosign.override {
-              buildGoModule = buildGo1253Module;
-            };
           in
             [
               # Development tooling
@@ -492,7 +482,7 @@
               pkgs.google-cloud-sdk
               pkgs.skopeo
               pkgs.dive
-              cosign
+              pkgs.cosign
               pkgs.kubectl
               pkgs.kubernetes-helm
               pkgs.cilium-cli
