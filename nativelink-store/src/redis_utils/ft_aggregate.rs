@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
+
 use futures::Stream;
 use nativelink_error::Error;
 use redis::aio::ConnectionLike;
@@ -21,11 +23,13 @@ use tracing::error;
 use crate::redis_utils::aggregate_types::RedisCursorData;
 use crate::redis_utils::ft_cursor_read::ft_cursor_read;
 
+#[derive(Debug)]
 pub(crate) struct FtAggregateCursor {
     pub count: u64,
     pub max_idle: u64,
 }
 
+#[derive(Debug)]
 pub(crate) struct FtAggregateOptions {
     pub load: Vec<String>,
     pub cursor: FtAggregateCursor,
@@ -41,7 +45,7 @@ pub(crate) async fn ft_aggregate<C, Q>(
     options: FtAggregateOptions,
 ) -> Result<impl Stream<Item = Result<Value, RedisError>> + Send, Error>
 where
-    Q: ToRedisArgs,
+    Q: ToRedisArgs + Debug,
     C: ConnectionLike + Send,
 {
     struct State<C: ConnectionLike> {
@@ -53,10 +57,10 @@ where
     let mut cmd = redis::cmd("FT.AGGREGATE");
     let mut ft_aggregate_cmd = cmd
         .arg(&index)
-        .arg(query)
+        .arg(&query)
         .arg("LOAD")
         .arg(options.load.len())
-        .arg(options.load)
+        .arg(&options.load)
         .arg("WITHCURSOR")
         .arg("COUNT")
         .arg(options.cursor.count)
@@ -64,7 +68,7 @@ where
         .arg(options.cursor.max_idle)
         .arg("SORTBY")
         .arg(options.sort_by.len());
-    for key in options.sort_by {
+    for key in &options.sort_by {
         ft_aggregate_cmd = ft_aggregate_cmd.arg(key).arg("ASC");
     }
     let res = ft_aggregate_cmd
@@ -74,7 +78,7 @@ where
     let data = match res {
         Ok(d) => d,
         Err(e) => {
-            error!(?e, "Error calling ft.aggregate");
+            error!(?e, index, ?query, ?options, "Error calling ft.aggregate");
             return Err(e.into());
         }
     };
