@@ -291,6 +291,9 @@ impl<C: ConnectionLike + Clone + Sync> RedisStore<C> {
         if spec.read_chunk_size == 0 {
             spec.read_chunk_size = DEFAULT_READ_CHUNK_SIZE;
         }
+        if spec.max_count_per_cursor == 0 {
+            spec.max_count_per_cursor = DEFAULT_MAX_COUNT_PER_CURSOR;
+        }
         if spec.max_chunk_uploads_per_update == 0 {
             spec.max_chunk_uploads_per_update = DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE;
         }
