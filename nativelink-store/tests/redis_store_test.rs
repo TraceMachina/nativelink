@@ -21,7 +21,10 @@ use nativelink_config::stores::RedisSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
-use nativelink_store::redis_store::{LUA_VERSION_SET_SCRIPT, RedisStore};
+use nativelink_store::redis_store::{
+    DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE, DEFAULT_MAX_COUNT_PER_CURSOR, LUA_VERSION_SET_SCRIPT,
+    RedisStore,
+};
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
@@ -43,7 +46,6 @@ const VALID_HASH1: &str = "30313233343536373839616263646566303030303030303030303
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
 const DEFAULT_READ_CHUNK_SIZE: usize = 1024;
-const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 const DEFAULT_SCAN_COUNT: usize = 10_000;
 const DEFAULT_MAX_PERMITS: usize = 100;
 
@@ -81,6 +83,7 @@ async fn make_mock_store_with_prefix(
         DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE,
         DEFAULT_SCAN_COUNT,
         DEFAULT_MAX_PERMITS,
+        DEFAULT_MAX_COUNT_PER_CURSOR,
         Some(subscriber_channel),
     )
     .await
@@ -100,45 +103,43 @@ async fn upload_and_get_data() -> Result<(), Error> {
     let temp_key = make_temp_key(&packed_hash_hex);
     let real_key = packed_hash_hex;
 
-    let mut commands = vec![];
-
-    // The first set of commands are for setting the data.
-    commands
+    let commands = vec![
+        // The first set of commands are for setting the data.
         // Append the real value to the temp key.
-        .push(MockCmd::new(
+        MockCmd::new(
             redis::cmd("SETRANGE")
                 .arg(temp_key.clone())
                 .arg(0)
                 .arg(data.to_vec()),
             Ok(Value::Int(0)),
-        ));
-    commands.push(MockCmd::new(
-        redis::cmd("STRLEN").arg(temp_key.clone()),
-        Ok(Value::Int(data.len() as i64)),
-    ));
-    // Move the data from the fake key to the real key.
-    commands.push(MockCmd::new(
-        redis::cmd("RENAME")
-            .arg(temp_key.clone())
-            .arg(real_key.clone()),
-        Ok(Value::Nil),
-    ));
-
-    // The second set of commands are for retrieving the data from the key.
-    // Check that the key exists.
-    commands.push(MockCmd::with_values(
-        redis::pipe()
-            .cmd("STRLEN")
-            .arg(real_key.clone())
-            .cmd("EXISTS")
-            .arg(real_key.clone()),
-        Ok(vec![Value::Int(2), Value::Boolean(true)]),
-    ));
-    // Retrieve the data from the real key.
-    commands.push(MockCmd::new(
-        redis::cmd("GETRANGE").arg(real_key).arg(0).arg(1),
-        Ok(Value::BulkString("14".as_bytes().to_vec())),
-    ));
+        ),
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(temp_key.clone()),
+            Ok(Value::Int(data.len() as i64)),
+        ),
+        // Move the data from the fake key to the real key.
+        MockCmd::new(
+            redis::cmd("RENAME")
+                .arg(temp_key.clone())
+                .arg(real_key.clone()),
+            Ok(Value::Nil),
+        ),
+        // The second set of commands are for retrieving the data from the key.
+        // Check that the key exists.
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(real_key.clone())
+                .cmd("EXISTS")
+                .arg(real_key.clone()),
+            Ok(vec![Value::Int(2), Value::Boolean(true)]),
+        ),
+        // Retrieve the data from the real key.
+        MockCmd::new(
+            redis::cmd("GETRANGE").arg(real_key).arg(0).arg(1),
+            Ok(Value::BulkString(b"14".to_vec())),
+        ),
+    ];
 
     let store = make_mock_store(commands).await;
 
@@ -172,34 +173,35 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
     let temp_key = make_temp_key(&packed_hash_hex);
     let real_key = packed_hash_hex;
 
-    let mut commands = vec![];
-    commands.push(MockCmd::new(
-        redis::cmd("SETRANGE")
-            .arg(temp_key.clone())
-            .arg(0)
-            .arg(&data.clone().to_vec()),
-        Ok(Value::Int(0)),
-    ));
-    commands.push(MockCmd::new(
-        redis::cmd("STRLEN").arg(temp_key.clone()),
-        Ok(Value::Int(data.len() as i64)),
-    ));
-    commands.push(MockCmd::new(
-        redis::cmd("RENAME").arg(temp_key).arg(real_key.clone()),
-        Ok(Value::Nil),
-    ));
-    commands.push(MockCmd::with_values(
-        redis::pipe()
-            .cmd("STRLEN")
-            .arg(real_key.clone())
-            .cmd("EXISTS")
-            .arg(real_key.clone()),
-        Ok(vec![Value::Int(2), Value::Boolean(true)]),
-    ));
-    commands.push(MockCmd::new(
-        redis::cmd("GETRANGE").arg(real_key).arg(0).arg(1),
-        Ok(Value::BulkString("14".as_bytes().to_vec())),
-    ));
+    let commands = vec![
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(temp_key.clone())
+                .arg(0)
+                .arg(data.clone().to_vec()),
+            Ok(Value::Int(0)),
+        ),
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(temp_key.clone()),
+            Ok(Value::Int(data.len() as i64)),
+        ),
+        MockCmd::new(
+            redis::cmd("RENAME").arg(temp_key).arg(real_key.clone()),
+            Ok(Value::Nil),
+        ),
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(real_key.clone())
+                .cmd("EXISTS")
+                .arg(real_key.clone()),
+            Ok(vec![Value::Int(2), Value::Boolean(true)]),
+        ),
+        MockCmd::new(
+            redis::cmd("GETRANGE").arg(real_key).arg(0).arg(1),
+            Ok(Value::BulkString(b"14".to_vec())),
+        ),
+    ];
 
     let store = make_mock_store_with_prefix(commands, prefix.to_string()).await;
 
@@ -269,51 +271,51 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
     let temp_key = make_temp_key(&packed_hash_hex);
     let real_key = packed_hash_hex;
 
-    let mut commands = vec![];
-
-    commands.push(MockCmd::new(
-        redis::cmd("SETRANGE")
-            .arg(temp_key.clone())
-            .arg(0)
-            .arg(data.clone().to_vec()),
-        Ok(Value::Int(0)),
-    ));
-    commands.push(MockCmd::new(
-        redis::cmd("STRLEN").arg(temp_key.clone()),
-        Ok(Value::Int(data.len() as i64)),
-    ));
-    commands.push(MockCmd::new(
-        redis::cmd("RENAME").arg(temp_key).arg(real_key.clone()),
-        Ok(Value::Nil),
-    ));
-    commands.push(MockCmd::with_values(
-        redis::pipe()
-            .cmd("STRLEN")
-            .arg(real_key.clone())
-            .cmd("EXISTS")
-            .arg(real_key.clone()),
-        Ok(vec![
-            Value::Int(data.len().try_into().unwrap()),
-            Value::Int(1),
-        ]),
-    ));
-    commands.push(MockCmd::new(
-        // We expect to be asked for data from `0..READ_CHUNK_SIZE`, but since GETRANGE is inclusive
-        // the actual call should be from `0..=(READ_CHUNK_SIZE - 1)`.
-        redis::cmd("GETRANGE")
-            .arg(real_key.clone())
-            .arg(0)
-            .arg(READ_CHUNK_SIZE as i64 - 1),
-        Ok(Value::BulkString(data.slice(..READ_CHUNK_SIZE).into())),
-    ));
-    commands.push(MockCmd::new(
-        // Similar GETRANGE index shenanigans here.
-        redis::cmd("GETRANGE")
-            .arg(real_key)
-            .arg(READ_CHUNK_SIZE as i64)
-            .arg(data.len() as i64 - 1),
-        Ok(Value::BulkString(data.slice(READ_CHUNK_SIZE..).into())),
-    ));
+    let commands = vec![
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(temp_key.clone())
+                .arg(0)
+                .arg(data.clone().to_vec()),
+            Ok(Value::Int(0)),
+        ),
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(temp_key.clone()),
+            Ok(Value::Int(data.len() as i64)),
+        ),
+        MockCmd::new(
+            redis::cmd("RENAME").arg(temp_key).arg(real_key.clone()),
+            Ok(Value::Nil),
+        ),
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(real_key.clone())
+                .cmd("EXISTS")
+                .arg(real_key.clone()),
+            Ok(vec![
+                Value::Int(data.len().try_into().unwrap()),
+                Value::Int(1),
+            ]),
+        ),
+        MockCmd::new(
+            // We expect to be asked for data from `0..READ_CHUNK_SIZE`, but since GETRANGE is inclusive
+            // the actual call should be from `0..=(READ_CHUNK_SIZE - 1)`.
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(0)
+                .arg(READ_CHUNK_SIZE as i64 - 1),
+            Ok(Value::BulkString(data.slice(..READ_CHUNK_SIZE).into())),
+        ),
+        MockCmd::new(
+            // Similar GETRANGE index shenanigans here.
+            redis::cmd("GETRANGE")
+                .arg(real_key)
+                .arg(READ_CHUNK_SIZE as i64)
+                .arg(data.len() as i64 - 1),
+            Ok(Value::BulkString(data.slice(READ_CHUNK_SIZE..).into())),
+        ),
+    ];
 
     let store = make_mock_store(commands).await;
 
@@ -354,59 +356,60 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
     let temp_key = make_temp_key(&packed_hash_hex);
     let real_key = packed_hash_hex;
 
-    let mut commands = vec![];
-    // We expect multiple `"SETRANGE"`s as we send data in multiple chunks
-    commands.push(MockCmd::new(
-        redis::cmd("SETRANGE")
-            .arg(temp_key.clone())
-            .arg(0)
-            .arg(data_p1.clone().to_vec()),
-        Ok(Value::Int(0)),
-    ));
-    commands.push(MockCmd::new(
-        redis::cmd("SETRANGE")
-            .arg(temp_key.clone())
-            .arg(data_p1.len())
-            .arg(data_p2.clone().to_vec()),
-        Ok(Value::Int(0)),
-    ));
-    commands.push(MockCmd::new(
-        redis::cmd("STRLEN").arg(temp_key.clone()),
-        Ok(Value::Int(data.len() as i64)),
-    ));
-    commands.push(MockCmd::new(
-        redis::cmd("RENAME").arg(temp_key).arg(real_key.clone()),
-        Ok(Value::Nil),
-    ));
-    commands.push(MockCmd::with_values(
-        redis::pipe()
-            .cmd("STRLEN")
-            .arg(real_key.clone())
-            .cmd("EXISTS")
-            .arg(real_key.clone()),
-        Ok(vec![Value::Int(2), Value::Int(1)]),
-    ));
-    commands.push(MockCmd::new(
-        redis::cmd("GETRANGE")
-            .arg(real_key.clone())
-            .arg(0)
-            .arg((DEFAULT_READ_CHUNK_SIZE - 1) as i64),
-        Ok(Value::BulkString(data.clone().to_vec())),
-    ));
-    commands.push(MockCmd::new(
-        redis::cmd("GETRANGE")
-            .arg(real_key.clone())
-            .arg(DEFAULT_READ_CHUNK_SIZE as i64)
-            .arg((DEFAULT_READ_CHUNK_SIZE * 2 - 1) as i64),
-        Ok(Value::BulkString(data.clone().to_vec())),
-    ));
-    commands.push(MockCmd::new(
-        redis::cmd("GETRANGE")
-            .arg(real_key)
-            .arg((DEFAULT_READ_CHUNK_SIZE * 2) as i64)
-            .arg((data_p1.len() + data_p2.len() - 1) as i64),
-        Ok(Value::BulkString(data.clone().to_vec())),
-    ));
+    let commands = vec![
+        // We expect multiple `"SETRANGE"`s as we send data in multiple chunks
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(temp_key.clone())
+                .arg(0)
+                .arg(data_p1.clone().to_vec()),
+            Ok(Value::Int(0)),
+        ),
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(temp_key.clone())
+                .arg(data_p1.len())
+                .arg(data_p2.clone().to_vec()),
+            Ok(Value::Int(0)),
+        ),
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(temp_key.clone()),
+            Ok(Value::Int(data.len() as i64)),
+        ),
+        MockCmd::new(
+            redis::cmd("RENAME").arg(temp_key).arg(real_key.clone()),
+            Ok(Value::Nil),
+        ),
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(real_key.clone())
+                .cmd("EXISTS")
+                .arg(real_key.clone()),
+            Ok(vec![Value::Int(2), Value::Int(1)]),
+        ),
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(0)
+                .arg((DEFAULT_READ_CHUNK_SIZE - 1) as i64),
+            Ok(Value::BulkString(data.clone().to_vec())),
+        ),
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(DEFAULT_READ_CHUNK_SIZE as i64)
+                .arg((DEFAULT_READ_CHUNK_SIZE * 2 - 1) as i64),
+            Ok(Value::BulkString(data.clone().to_vec())),
+        ),
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key)
+                .arg((DEFAULT_READ_CHUNK_SIZE * 2) as i64)
+                .arg((data_p1.len() + data_p2.len() - 1) as i64),
+            Ok(Value::BulkString(data.clone().to_vec())),
+        ),
+    ];
 
     let store = make_mock_store(commands).await;
 
@@ -449,23 +452,20 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
 // Regression test for: https://github.com/TraceMachina/nativelink/issues/1286
 #[nativelink_test]
 async fn zero_len_items_exist_check() -> Result<(), Error> {
-    let mut commands = vec![];
-
     let digest = DigestInfo::try_new(VALID_HASH1, 0)?;
     let packed_hash_hex = format!("{digest}");
     let real_key = packed_hash_hex;
 
-    commands.push(MockCmd::new(
-        redis::cmd("GETRANGE")
-            .arg(real_key.clone())
-            .arg(0)
-            .arg(DEFAULT_READ_CHUNK_SIZE as i64 - 1),
-        Ok(Value::BulkString(vec![])),
-    ));
-    commands.push(MockCmd::new(
-        redis::cmd("EXISTS").arg(real_key),
-        Ok(Value::Int(0)),
-    ));
+    let commands = vec![
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(0)
+                .arg(DEFAULT_READ_CHUNK_SIZE as i64 - 1),
+            Ok(Value::BulkString(vec![])),
+        ),
+        MockCmd::new(redis::cmd("EXISTS").arg(real_key), Ok(Value::Int(0))),
+    ];
 
     let store = make_mock_store(commands).await;
 
@@ -500,6 +500,7 @@ async fn list_test() -> Result<(), Error> {
     const KEY2: StoreKey = StoreKey::new_str("key2");
     const KEY3: StoreKey = StoreKey::new_str("key3");
 
+    #[allow(clippy::unnecessary_wraps)] // because that's what MockCmd wants
     fn result() -> Result<Value, RedisError> {
         Ok(Value::Array(vec![
             Value::BulkString(b"key1".to_vec()),
@@ -791,9 +792,9 @@ fn test_search_by_index() -> Result<(), Error> {
                 .arg("version")
                 .arg("WITHCURSOR")
                 .arg("COUNT")
-                .arg(256)
+                .arg(1500)
                 .arg("MAXIDLE")
-                .arg(2000)
+                .arg(30000)
                 .arg("SORTBY")
                 .arg(0),
             Ok(Value::Array(vec![

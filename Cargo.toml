@@ -10,7 +10,7 @@ resolver = "2"
 edition = "2024"
 name = "nativelink"
 rust-version = "1.87.0"
-version = "0.7.8"
+version = "0.8.0"
 
 [profile.release]
 lto = true
@@ -58,7 +58,7 @@ rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
 redis = { version = "1.0.0", default-features = false, features = ["aio"] }
-rustls-pemfile = { version = "2.2.0", features = [
+rustls-pki-types = { version = "1.13.1", features = [
   "std",
 ], default-features = false }
 tokio = { version = "1.44.1", features = [
@@ -152,6 +152,7 @@ future-not-send = "deny"
 redundant-closure-for-method-calls = "deny"
 semicolon-if-nothing-returned = "deny"
 std-instead-of-core = "deny"
+string-lit-as-bytes = "deny"
 todo = "deny"
 
 # Restriction Warnings with default priority

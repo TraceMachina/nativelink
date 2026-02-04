@@ -115,6 +115,7 @@ build --@rules_rust//:clippy_flag=-Wclippy::print_stdout
 build --@rules_rust//:clippy_flag=-Dclippy::redundant_closure_for_method_calls
 build --@rules_rust//:clippy_flag=-Dclippy::semicolon_if_nothing_returned
 build --@rules_rust//:clippy_flag=-Dclippy::std_instead_of_core
+build --@rules_rust//:clippy_flag=-Dclippy::string_lit_as_bytes
 build --@rules_rust//:clippy_flag=-Dclippy::todo
 build --@rules_rust//:clippy_flag=-Aclippy::too_long_first_doc_paragraph
 build --@rules_rust//:clippy_flag=-Wclippy::unimplemented

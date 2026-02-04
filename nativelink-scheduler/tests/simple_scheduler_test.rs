@@ -92,7 +92,7 @@ async fn setup_new_worker(
     props: PlatformProperties,
 ) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let worker = Worker::new(worker_id.clone(), props, tx, NOW_TIME);
+    let worker = Worker::new(worker_id.clone(), props, tx, NOW_TIME, 0);
     scheduler
         .add_worker(worker)
         .await
@@ -198,13 +198,15 @@ async fn bad_worker_match_logging_interval() -> Result<(), Error> {
         None,
     );
     assert!(logs_contain(
-        "nativelink_scheduler::simple_scheduler: Valid values for worker_match_logging_interval_s are -1 or a positive integer, setting to -1 (disabled) worker_match_logging_interval_s=-2"
+        "nativelink_scheduler::simple_scheduler: Valid values for worker_match_logging_interval_s are -1, 0, or a positive integer, setting to disabled worker_match_logging_interval_s=-2"
     ));
     Ok(())
 }
 
 #[nativelink_test]
 async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+
     async fn advance_time<T>(duration: Duration, poll_fut: &mut Pin<&mut impl Future<Output = T>>) {
         const STEP_AMOUNT: Duration = Duration::from_millis(100);
         for _ in 0..(duration.as_millis() / STEP_AMOUNT.as_millis()) {
@@ -220,7 +222,7 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &SimpleSpec {
             worker_timeout_s: WORKER_TIMEOUT_S,
-            worker_match_logging_interval_s: 0,
+            worker_match_logging_interval_s: 1,
             ..Default::default()
         },
         memory_awaited_action_db_factory(
@@ -273,10 +275,6 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
         // put back in the queue.
         assert_eq!(changed_fut.await.unwrap().0.stage, ActionStage::Queued);
     }
-
-    assert!(logs_contain(
-        "Oldest actions in state items=[\"stage=Executing last_transition="
-    ));
 
     Ok(())
 }
@@ -1118,6 +1116,8 @@ async fn matching_engine_fails_sends_abort() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+
     let worker_id1 = WorkerId("worker1".to_string());
     let worker_id2 = WorkerId("worker2".to_string());
     let task_change_notify = Arc::new(Notify::new());
@@ -2163,7 +2163,7 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
     Ok(())
 }
 
-/// Regression test for: https://github.com/TraceMachina/nativelink/issues/257.
+/// Regression test for: <https://github.com/TraceMachina/nativelink/issues/257>.
 #[nativelink_test]
 async fn ensure_task_or_worker_change_notification_received_test() -> Result<(), Error> {
     let worker_id1 = WorkerId("worker1".to_string());

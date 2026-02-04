@@ -4,11 +4,12 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-service"
-version = "0.7.8"
+version = "0.8.0"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
 nativelink-error = { path = "../nativelink-error" }
+nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
 nativelink-scheduler = { path = "../nativelink-scheduler" }
 nativelink-store = { path = "../nativelink-store" }
@@ -57,7 +58,6 @@ uuid = { version = "1.16.0", default-features = false, features = [
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
-nativelink-metric = { path = "../nativelink-metric" }
 
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 async-trait = { version = "0.1.88", default-features = false }

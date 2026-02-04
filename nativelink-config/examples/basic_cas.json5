@@ -60,6 +60,7 @@
           "container-image": "priority",
           "lre-rs": "priority",
           ISA: "exact",
+          InputRootAbsolutePath: "ignore", // used by chromium builds, but we can drop it
         },
       },
     },

@@ -53,6 +53,10 @@ pub enum PropertyType {
     /// to cause the scheduler to prefer certain workers over others, but not
     /// restrict them based on these values.
     Priority,
+
+    //// Allows jobs to be requested with said key, but without requiring workers
+    //// to have that key
+    Ignore,
 }
 
 /// When a worker is being searched for to run a job, this will be used

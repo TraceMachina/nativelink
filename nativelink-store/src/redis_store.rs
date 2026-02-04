@@ -19,6 +19,7 @@ use core::pin::Pin;
 use core::time::Duration;
 use std::borrow::Cow;
 use std::sync::{Arc, Weak};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -82,11 +83,15 @@ const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 10_000;
 
 /// The default maximum number of chunk uploads per update.
 /// Note: If this changes it should be updated in the config documentation.
-const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
+pub const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
 
 /// The default COUNT value passed when scanning keys in Redis.
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_SCAN_COUNT: usize = 10_000;
+
+/// The default COUNT value passed when scanning search indexes
+/// Note: If this changes it should be updated in the config documentation.
+pub const DEFAULT_MAX_COUNT_PER_CURSOR: u64 = 1_500;
 
 const DEFAULT_CLIENT_PERMITS: usize = 500;
 
@@ -127,6 +132,10 @@ where
     /// This is used to hint the amount of work that should be done per response.
     #[metric(help = "The COUNT value passed when scanning keys in Redis")]
     scan_count: usize,
+
+    /// The COUNT value used with search indexes
+    #[metric(help = "The maximum number of results to return per cursor")]
+    max_count_per_cursor: u64,
 
     /// Redis script used to update a value in redis if the version matches.
     /// This is done by incrementing the version number and then setting the new data
@@ -199,6 +208,7 @@ impl<C: ConnectionLike + Clone + Sync> RedisStore<C> {
         max_chunk_uploads_per_update: usize,
         scan_count: usize,
         max_client_permits: usize,
+        max_count_per_cursor: u64,
         subscriber_channel: Option<UnboundedReceiver<PushInfo>>,
     ) -> Result<Self, Error> {
         info!("Redis index fingerprint: {FINGERPRINT_CREATE_INDEX_HEX}");
@@ -220,6 +230,7 @@ impl<C: ConnectionLike + Clone + Sync> RedisStore<C> {
             subscription_manager: Mutex::new(None),
             subscriber_channel: Mutex::new(subscriber_channel),
             client_permits: Arc::new(Semaphore::new(max_client_permits)),
+            max_count_per_cursor,
         })
     }
 
@@ -337,6 +348,7 @@ impl RedisStore<ClusterConnection> {
             spec.max_chunk_uploads_per_update,
             spec.scan_count,
             spec.max_client_permits,
+            spec.max_count_per_cursor,
             Some(subscriber_channel),
         )
         .await
@@ -404,6 +416,7 @@ impl RedisStore<ConnectionManager> {
             spec.max_chunk_uploads_per_update,
             spec.scan_count,
             spec.max_client_permits,
+            spec.max_count_per_cursor,
             None, // Standard mode creates subscription channel on demand
         )
         .await
@@ -781,10 +794,8 @@ impl<C: ConnectionLike + Clone + 'static + Send + Sync + Unpin> HealthStatusIndi
 // Below this line are specific to the redis scheduler implementation.
 // -------------------------------------------------------------------
 
-/// The maximum number of results to return per cursor.
-const MAX_COUNT_PER_CURSOR: u64 = 256;
 /// The time in milliseconds that a redis cursor can be idle before it is closed.
-const CURSOR_IDLE_MS: u64 = 2_000;
+const CURSOR_IDLE_MS: u64 = 30_000;
 /// The name of the field in the Redis hash that stores the data.
 const DATA_FIELD_NAME: &str = "data";
 /// The name of the field in the Redis hash that stores the version.
@@ -1225,17 +1236,29 @@ impl<C: RedisPatternSubscriber + Clone + ConnectionLike + Sync> SchedulerStore f
             for (name, value) in maybe_index {
                 script_invocation = script_invocation.arg(name).arg(value.to_vec());
             }
+            let start = Instant::now();
             let (success, new_version): (bool, i64) = script_invocation
                 .invoke_async(&mut client.connection_manager)
                 .await
                 .err_tip(|| format!("In RedisStore::update_data::versioned for {key:?}"))?;
+
+            let elapsed = start.elapsed();
+
+            if elapsed > Duration::from_millis(100) {
+                warn!(
+                    %redis_key,
+                    ?elapsed,
+                    "Slow Redis version-set operation"
+                );
+            }
             if !success {
                 warn!(
                     %redis_key,
                     %key,
                     %current_version,
                     %new_version,
-                    "Error updating Redis key"
+                    caller = core::any::type_name::<T>(),
+                    "Redis version conflict - optimistic lock failed"
                 );
                 return Ok(None);
             }
@@ -1306,7 +1329,7 @@ impl<C: RedisPatternSubscriber + Clone + ConnectionLike + Sync> SchedulerStore f
                     FtAggregateOptions {
                         load: vec![DATA_FIELD_NAME.into(), VERSION_FIELD_NAME.into()],
                         cursor: FtAggregateCursor {
-                            count: MAX_COUNT_PER_CURSOR,
+                            count: self.max_count_per_cursor,
                             max_idle: CURSOR_IDLE_MS,
                         },
                         sort_by: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| vec![format!("@{v}")]),
@@ -1315,6 +1338,7 @@ impl<C: RedisPatternSubscriber + Clone + ConnectionLike + Sync> SchedulerStore f
                 .await
             })
         };
+
         let stream = run_ft_aggregate()?
             .or_else(|_| async move {
                 let mut schema = vec![SearchSchema {

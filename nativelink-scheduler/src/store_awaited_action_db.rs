@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::sync::{Arc, Weak};
+use std::time::UNIX_EPOCH;
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
@@ -46,6 +47,9 @@ type ClientOperationId = OperationId;
 
 /// Maximum number of retries to update client keep alive.
 const MAX_RETRIES_FOR_CLIENT_KEEPALIVE: u32 = 8;
+
+/// Use separate non-versioned Redis key for client keepalives.
+const USE_SEPARATE_CLIENT_KEEPALIVE_KEY: bool = true;
 
 enum OperationSubscriberState<Sub> {
     Unsubscribed,
@@ -127,12 +131,35 @@ where
         if let Some(client_operation_id) = maybe_client_operation_id {
             awaited_action.set_client_operation_id(client_operation_id);
         }
-        last_known_keepalive_ts.store(
-            awaited_action
-                .last_client_keepalive_timestamp()
-                .unix_timestamp(),
-            Ordering::Release,
-        );
+
+        // Helper to convert SystemTime to unix timestamp
+        let to_unix_ts = |t: std::time::SystemTime| -> u64 {
+            t.duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        };
+
+        // Check the separate keepalive key for the most recent timestamp.
+        let keepalive_ts = if USE_SEPARATE_CLIENT_KEEPALIVE_KEY {
+            let operation_id = key.0.as_ref();
+            match store.get_and_decode(ClientKeepaliveKey(operation_id)).await {
+                Ok(Some(ts)) => {
+                    let awaited_ts = to_unix_ts(awaited_action.last_client_keepalive_timestamp());
+                    if ts > awaited_ts {
+                        let timestamp = UNIX_EPOCH + Duration::from_secs(ts);
+                        awaited_action.update_client_keep_alive(timestamp);
+                        ts
+                    } else {
+                        awaited_ts
+                    }
+                }
+                Ok(None) | Err(_) => to_unix_ts(awaited_action.last_client_keepalive_timestamp()),
+            }
+        } else {
+            to_unix_ts(awaited_action.last_client_keepalive_timestamp())
+        };
+
+        last_known_keepalive_ts.store(keepalive_ts, Ordering::Release);
         Ok(awaited_action)
     }
 
@@ -200,42 +227,93 @@ where
         loop {
             // This is set if the maybe_last_state doesn't match the state in the store.
             let mut maybe_changed_action = None;
-            for attempt in 1..=MAX_RETRIES_FOR_CLIENT_KEEPALIVE {
-                let last_known_keepalive_ts = self.last_known_keepalive_ts.load(Ordering::Acquire);
-                if I::from_secs(last_known_keepalive_ts).elapsed() <= CLIENT_KEEPALIVE_DURATION {
-                    break; // We are still within the keep alive duration.
-                }
-                if attempt > 1 {
-                    // Wait a tick before retrying.
-                    (self.now_fn)().sleep(Duration::from_millis(100)).await;
-                }
-                let mut awaited_action = Self::inner_get_awaited_action(
-                    store.as_ref(),
-                    self.subscription_key.borrow(),
-                    self.maybe_client_operation_id.clone(),
-                    &self.last_known_keepalive_ts,
-                )
-                .await
-                .err_tip(|| "In OperationSubscriber::changed")?;
-                awaited_action.update_client_keep_alive((self.now_fn)().now());
-                // If this is set to Some then the action changed without being published.
-                maybe_changed_action = self
-                    .maybe_last_stage
-                    .as_ref()
-                    .is_some_and(|last_stage| {
-                        *last_stage != core::mem::discriminant(&awaited_action.state().stage)
-                    })
-                    .then(|| awaited_action.clone());
-                match inner_update_awaited_action(store.as_ref(), awaited_action).await {
-                    Ok(()) => break,
-                    err if attempt == MAX_RETRIES_FOR_CLIENT_KEEPALIVE => {
-                        err.err_tip_with_code(|_| {
-                            (Code::Aborted, "Could not update client keep alive")
-                        })?;
+
+            let last_known_keepalive_ts = self.last_known_keepalive_ts.load(Ordering::Acquire);
+            if I::from_secs(last_known_keepalive_ts).elapsed() > CLIENT_KEEPALIVE_DURATION {
+                let now = (self.now_fn)().now();
+                let now_ts = now
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                if USE_SEPARATE_CLIENT_KEEPALIVE_KEY {
+                    let operation_id = self.subscription_key.0.as_ref();
+                    let update_result = store
+                        .update_data(UpdateClientKeepalive {
+                            operation_id,
+                            timestamp: now_ts,
+                        })
+                        .await;
+
+                    if let Err(e) = update_result {
+                        warn!(
+                            ?self.subscription_key,
+                            ?e,
+                            "Failed to update client keepalive (non-versioned)"
+                        );
                     }
-                    _ => (),
+
+                    // Update local timestamp
+                    self.last_known_keepalive_ts
+                        .store(now_ts, Ordering::Release);
+
+                    // Check if state changed (for unreliable subscription managers)
+                    if self.maybe_last_stage.is_some() {
+                        let awaited_action = Self::inner_get_awaited_action(
+                            store.as_ref(),
+                            self.subscription_key.borrow(),
+                            self.maybe_client_operation_id.clone(),
+                            &self.last_known_keepalive_ts,
+                        )
+                        .await
+                        .err_tip(|| "In OperationSubscriber::changed")?;
+
+                        if self.maybe_last_stage.as_ref().is_some_and(|last_stage| {
+                            *last_stage != core::mem::discriminant(&awaited_action.state().stage)
+                        }) {
+                            maybe_changed_action = Some(awaited_action);
+                        }
+                    }
+                } else {
+                    for attempt in 1..=MAX_RETRIES_FOR_CLIENT_KEEPALIVE {
+                        if attempt > 1 {
+                            (self.now_fn)().sleep(Duration::from_millis(100)).await;
+                            warn!(
+                                ?self.subscription_key,
+                                attempt,
+                                "Client keepalive retry due to version conflict"
+                            );
+                        }
+                        let mut awaited_action = Self::inner_get_awaited_action(
+                            store.as_ref(),
+                            self.subscription_key.borrow(),
+                            self.maybe_client_operation_id.clone(),
+                            &self.last_known_keepalive_ts,
+                        )
+                        .await
+                        .err_tip(|| "In OperationSubscriber::changed")?;
+                        awaited_action.update_client_keep_alive(now);
+                        maybe_changed_action = self
+                            .maybe_last_stage
+                            .as_ref()
+                            .is_some_and(|last_stage| {
+                                *last_stage
+                                    != core::mem::discriminant(&awaited_action.state().stage)
+                            })
+                            .then(|| awaited_action.clone());
+                        match inner_update_awaited_action(store.as_ref(), awaited_action).await {
+                            Ok(()) => break,
+                            err if attempt == MAX_RETRIES_FOR_CLIENT_KEEPALIVE => {
+                                err.err_tip_with_code(|_| {
+                                    (Code::Aborted, "Could not update client keep alive")
+                                })?;
+                            }
+                            _ => (),
+                        }
+                    }
                 }
             }
+
             // If the polling shows that it's changed state then publish now.
             if let Some(changed_action) = maybe_changed_action {
                 self.maybe_last_stage =
@@ -292,6 +370,8 @@ fn awaited_action_decode(version: i64, data: &Bytes) -> Result<AwaitedAction, Er
 
 const OPERATION_ID_TO_AWAITED_ACTION_KEY_PREFIX: &str = "aa_";
 const CLIENT_ID_TO_OPERATION_ID_KEY_PREFIX: &str = "cid_";
+/// Phase 2: Separate key prefix for client keepalives (non-versioned).
+const CLIENT_KEEPALIVE_KEY_PREFIX: &str = "ck_";
 
 #[derive(Debug)]
 struct OperationIdToAwaitedAction<'a>(Cow<'a, OperationId>);
@@ -335,6 +415,42 @@ impl SchedulerStoreDecodeTo for ClientIdToOperationId<'_> {
                 data
             )
         })
+    }
+}
+
+struct ClientKeepaliveKey<'a>(&'a OperationId);
+impl SchedulerStoreKeyProvider for ClientKeepaliveKey<'_> {
+    type Versioned = FalseValue;
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(Cow::Owned(format!(
+            "{CLIENT_KEEPALIVE_KEY_PREFIX}{}",
+            self.0
+        )))
+    }
+}
+impl SchedulerStoreDecodeTo for ClientKeepaliveKey<'_> {
+    type DecodeOutput = u64;
+    fn decode(_version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+        let s = core::str::from_utf8(&data)
+            .map_err(|e| make_input_err!("In ClientKeepaliveKey::decode utf8 - {e:?}"))?;
+        s.parse::<u64>()
+            .map_err(|e| make_input_err!("In ClientKeepaliveKey::decode parse - {e:?}"))
+    }
+}
+
+struct UpdateClientKeepalive<'a> {
+    operation_id: &'a OperationId,
+    timestamp: u64,
+}
+impl SchedulerStoreKeyProvider for UpdateClientKeepalive<'_> {
+    type Versioned = FalseValue;
+    fn get_key(&self) -> StoreKey<'static> {
+        ClientKeepaliveKey(self.operation_id).get_key()
+    }
+}
+impl SchedulerStoreDataProvider for UpdateClientKeepalive<'_> {
+    fn try_into_bytes(self) -> Result<Bytes, Error> {
+        Ok(Bytes::from(self.timestamp.to_string()))
     }
 }
 
@@ -452,14 +568,16 @@ async fn inner_update_awaited_action(
 ) -> Result<(), Error> {
     let operation_id = new_awaited_action.operation_id().clone();
     if new_awaited_action.state().client_operation_id != operation_id {
-        // Just in case the client_operation_id was set to something else
-        // we put it back to the underlying operation_id.
         new_awaited_action.set_client_operation_id(operation_id.clone());
     }
+
+    let _is_finished = new_awaited_action.state().stage.is_finished();
+
     let maybe_version = store
         .update_data(UpdateOperationIdToAwaitedAction(new_awaited_action))
         .await
         .err_tip(|| "In RedisAwaitedActionDb::update_awaited_action")?;
+
     if maybe_version.is_none() {
         warn!(
             %operation_id,
@@ -470,6 +588,7 @@ async fn inner_update_awaited_action(
             "Could not update AwaitedAction because the version did not match for {operation_id}",
         ));
     }
+
     Ok(())
 }
 

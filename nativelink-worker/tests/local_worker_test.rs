@@ -124,7 +124,8 @@ async fn platform_properties_smoke_test() -> Result<(), Error> {
                     name: "foo".to_string(),
                     value: "bar2".to_string(),
                 }
-            ]
+            ],
+            max_inflight_tasks: 0,
         }
     );
 

@@ -91,7 +91,7 @@ rust_library(
         "@crates//:reqwest",
         "@crates//:reqwest-middleware",
         "@crates//:rustls",
-        "@crates//:rustls-pemfile",
+        "@crates//:rustls-pki-types",
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:sha2",

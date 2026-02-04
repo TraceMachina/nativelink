@@ -3,6 +3,70 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0](https://github.com/TraceMachina/nativelink/compare/v0.7.10..0.8.0) - 2026-01-29
+
+### ⛰️  Features
+
+- Add additional logging around worker property matching ([#2118](https://github.com/TraceMachina/nativelink/issues/2118)) - ([24c637a](https://github.com/TraceMachina/nativelink/commit/24c637ab86b44864787bf7b789d6bf29b98df87f))
+
+### 🐛 Bug Fixes
+
+- Fix Redis index creation race ([#2111](https://github.com/TraceMachina/nativelink/issues/2111)) - ([c3a497d](https://github.com/TraceMachina/nativelink/commit/c3a497d36df49d3a1caadede02c4cc6d5af87492))
+
+### 📚 Documentation
+
+- Add docs for configuring Worker Match Logging Interval ([#2103](https://github.com/TraceMachina/nativelink/issues/2103)) - ([ae963be](https://github.com/TraceMachina/nativelink/commit/ae963be97178284a1aa53b526a3fa3292ca12e2a))
+
+### 🧪 Testing & CI
+
+- Every bytestream_read had a debug log, which we don't need ([#2117](https://github.com/TraceMachina/nativelink/issues/2117)) - ([18360ad](https://github.com/TraceMachina/nativelink/commit/18360ada6e5e3ecc04a7f6f96fbae09cf919111b))
+
+### ⚙️ Miscellaneous
+
+- output_files can be very noisy, drop from debug ([#2123](https://github.com/TraceMachina/nativelink/issues/2123)) - ([3ed406f](https://github.com/TraceMachina/nativelink/commit/3ed406faa9c116485218f1c5aa6340d5b9e312c4))
+- Support ignorable platform properties ([#2120](https://github.com/TraceMachina/nativelink/issues/2120)) - ([1b45027](https://github.com/TraceMachina/nativelink/commit/1b450275c8d826c8124be121b62e61c67a2cad38))
+- Reduce logging level for "Dropping file to update_file" ([#2116](https://github.com/TraceMachina/nativelink/issues/2116)) - ([95a8a34](https://github.com/TraceMachina/nativelink/commit/95a8a3438968ab082a38c343d708dd2a70ee74ed))
+- Pull MAX_COUNT_PER_CURSOR into redis config, not hardcoding ([#2112](https://github.com/TraceMachina/nativelink/issues/2112)) - ([5b043eb](https://github.com/TraceMachina/nativelink/commit/5b043eb08ec46518db7784c6cfd9c47ae7fcc93d))
+- Test redis improvements with client drop and higher max count per cursor ([#2110](https://github.com/TraceMachina/nativelink/issues/2110)) - ([bed6f9a](https://github.com/TraceMachina/nativelink/commit/bed6f9a8acf45da17fbd56d12202413360204218))
+
+### ⬆️ Bumps & Version Updates
+
+- *(deps)* update rust crate lru to 0.16.0 [security] ([#2106](https://github.com/TraceMachina/nativelink/issues/2106)) - ([c127bba](https://github.com/TraceMachina/nativelink/commit/c127bba823ca4e5df56da9eaa65df58787b74e3a))
+
+## [0.7.10](https://github.com/TraceMachina/nativelink/compare/v0.7.9..v0.7.10) - 2025-12-29
+
+### 🐛 Bug Fixes
+
+- *(deps)* update module golang.org/x/crypto to v0.45.0 [security] ([#2062](https://github.com/TraceMachina/nativelink/issues/2062)) - ([7a4cdb6](https://github.com/TraceMachina/nativelink/commit/7a4cdb681fe23b90f68f1bcc897b5b9ce43c1e37))
+
+### 🧪 Testing & CI
+
+- New filesystem test for eviction breaking ([#2024](https://github.com/TraceMachina/nativelink/issues/2024)) - ([47ebd44](https://github.com/TraceMachina/nativelink/commit/47ebd44809657889f185d0cb36c4217012211c48))
+
+### ⚙️ Miscellaneous
+
+- *(deps)* update dependency abseil-cpp to v20250512 ([#2099](https://github.com/TraceMachina/nativelink/issues/2099)) - ([2bdb869](https://github.com/TraceMachina/nativelink/commit/2bdb869b7cb42ad1c2411f282d454fe2cb81cc65))
+- *(deps)* update actions/checkout action to v6 ([#2085](https://github.com/TraceMachina/nativelink/issues/2085)) - ([fbda7bb](https://github.com/TraceMachina/nativelink/commit/fbda7bbfd1910bda6abace60feef3645f6f92ab4))
+- *(deps)* update actions/github-script action to v8 ([#2098](https://github.com/TraceMachina/nativelink/issues/2098)) - ([f9f3b60](https://github.com/TraceMachina/nativelink/commit/f9f3b6031f400cb3ef327b2c956ea6c6d0d4ff54))
+- reduce worker disconnect cascades ([#2093](https://github.com/TraceMachina/nativelink/issues/2093)) - ([44ada84](https://github.com/TraceMachina/nativelink/commit/44ada84405f17696c04f363b98773692a1c122f6))
+- Replace rustls-pemfile to fix RUSTSEC-2025-0134 ([#2094](https://github.com/TraceMachina/nativelink/issues/2094)) - ([1b85f71](https://github.com/TraceMachina/nativelink/commit/1b85f71d977f61ff79391934e434af9c10d057e8))
+
+## [0.7.9](https://github.com/TraceMachina/nativelink/compare/v0.7.8..v0.7.9) - 2025-12-10
+
+### ⛰️  Features
+
+- Add LazyNotFound Store Optimization, Support for fast_slow_store (S3, GCS slow_store targets) ([#2072](https://github.com/TraceMachina/nativelink/issues/2072)) - ([8c62bb3](https://github.com/TraceMachina/nativelink/commit/8c62bb318d849c7122659bd1c583fee627fa4f74))
+
+### 🐛 Bug Fixes
+
+- Fix the scheduler timeouts and errors ([#2083](https://github.com/TraceMachina/nativelink/issues/2083)) - ([93f4ead](https://github.com/TraceMachina/nativelink/commit/93f4eaddad157842549d1cd9cc1da676194997bd))
+
+### ⚙️ Miscellaneous
+
+- Perf spike ([#2081](https://github.com/TraceMachina/nativelink/issues/2081)) - ([422bfa1](https://github.com/TraceMachina/nativelink/commit/422bfa176891bae17eacb78f1b64e95bd68916d9))
+- Implement remote execution metrics rebased ([#2080](https://github.com/TraceMachina/nativelink/issues/2080)) - ([e38af3d](https://github.com/TraceMachina/nativelink/commit/e38af3d6ce897084832fbd66757de25d532acae6))
+- Build Custom Docker Image for each PR ([#2084](https://github.com/TraceMachina/nativelink/issues/2084)) - ([0926bff](https://github.com/TraceMachina/nativelink/commit/0926bffdf8918c9fd15b07673cb0cddab9c382ff))
+
 ## [0.7.8](https://github.com/TraceMachina/nativelink/compare/v0.7.7..v0.7.8) - 2025-11-27
 
 ### 🐛 Bug Fixes
