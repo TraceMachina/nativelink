@@ -5,7 +5,7 @@ use std::env;
 use std::sync::{Arc, RwLock};
 
 use bytes::Bytes;
-use clap::{Parser, ValueEnum, command};
+use clap::{Parser, ValueEnum};
 use futures::TryStreamExt;
 use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt};
