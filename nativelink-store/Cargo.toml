@@ -51,8 +51,10 @@ fred = { version = "10.1.0", default-features = false, features = [
   "subscriber-client",
 ] }
 futures = { version = "0.3.31", default-features = false }
-gcloud-auth = { version = "1.1.2", default-features = false }
-gcloud-storage = { version = "1.1.1", default-features = false, features = [
+gcloud-auth = { version = "1.2", default-features = false, features = [
+  "jwt-rust-crypto",
+] }
+gcloud-storage = { version = "1", default-features = false, features = [
   "auth",
   "rustls-tls",
 ] }
