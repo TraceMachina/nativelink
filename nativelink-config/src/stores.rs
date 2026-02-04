@@ -1224,6 +1224,12 @@ pub struct RedisSpec {
     /// Default: 500
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_client_permits: usize,
+
+    /// Maximum number of items returned per cursor for the search indexes
+    /// May reduce thundering herd issues with worker provisioner at higher node counts,
+    /// Default: 1500
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_count_per_cursor: u64,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]

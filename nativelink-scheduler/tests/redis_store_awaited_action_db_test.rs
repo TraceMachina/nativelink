@@ -45,7 +45,9 @@ use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::store_awaited_action_db::StoreAwaitedActionDb;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
-use nativelink_store::redis_store::{RecoverablePool, RedisStore, RedisSubscriptionManager};
+use nativelink_store::redis_store::{
+    DEFAULT_MAX_COUNT_PER_CURSOR, RecoverablePool, RedisStore, RedisSubscriptionManager,
+};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
 };
@@ -329,6 +331,7 @@ fn make_redis_store(sub_channel: &str, mocks: Arc<impl Mocks>) -> Arc<RedisStore
             MAX_CHUNK_UPLOADS_PER_UPDATE,
             SCAN_COUNT,
             MAX_PERMITS,
+            DEFAULT_MAX_COUNT_PER_CURSOR,
         )
         .unwrap(),
     )
@@ -366,7 +369,7 @@ async fn setup_new_worker(
     props: PlatformProperties,
 ) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let worker = Worker::new(worker_id.clone(), props, tx, NOW_TIME);
+    let worker = Worker::new(worker_id.clone(), props, tx, NOW_TIME, 0);
     scheduler
         .add_worker(worker)
         .await

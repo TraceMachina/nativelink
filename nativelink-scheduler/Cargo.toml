@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-scheduler"
-version = "0.7.9"
+version = "0.8.0"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -18,7 +18,7 @@ async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 async-trait = { version = "0.1.88", default-features = false }
 bytes = { version = "1.10.1", default-features = false }
 futures = { version = "0.3.31", default-features = false }
-lru = { version = "0.13.0", default-features = false }
+lru = { version = "0.16.0", default-features = false }
 mock_instant = { version = "0.5.3", default-features = false }
 opentelemetry = { version = "0.29.1", default-features = false }
 opentelemetry-semantic-conventions = { version = "0.29.0", default-features = false, features = [
