@@ -37,8 +37,10 @@ byteorder = { version = "1.5.0", default-features = false }
 bytes = { version = "1.10.1", default-features = false }
 const_format = { version = "0.2.34", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
-gcloud-auth = { version = "1.1.2", default-features = false }
-gcloud-storage = { version = "1.1.1", default-features = false, features = [
+gcloud-auth = { version = "1.2", default-features = false, features = [
+  "jwt-rust-crypto",
+] }
+gcloud-storage = { version = "1", default-features = false, features = [
   "auth",
   "rustls-tls",
 ] }
