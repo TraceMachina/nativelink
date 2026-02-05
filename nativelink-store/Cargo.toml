@@ -28,7 +28,7 @@ aws-smithy-types = { version = "1.3.0", default-features = false, features = [
   "http-body-1-x",
 ] }
 base64 = { version = "0.22.1", default-features = false, features = ["std"] }
-bincode = { version = "2.0.1", default-features = false, features = [
+bincode = { version = "3.0.0", default-features = false, features = [
   "alloc",
   "serde",
 ] }
