@@ -52,7 +52,7 @@ use redis_test::MockRedisConnection;
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
@@ -279,6 +279,16 @@ impl<C: ConnectionLike + Clone + Sync> RedisStore<C> {
         if spec.broadcast_channel_capacity != 0 {
             warn!("broadcast_channel_capacity in Redis spec is deprecated and ignored");
         }
+        if spec.connection_timeout_s != 0 {
+            if spec.connection_timeout_ms != 0 {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Both connection_timeout_s and connection_timeout_ms were set, can only have one!"
+                ));
+            }
+            warn!("connection_timeout_s in Redis spec is deprecated, use connection_timeout_ms");
+            spec.connection_timeout_ms = spec.connection_timeout_s * 1000;
+        }
         if spec.connection_timeout_ms == 0 {
             spec.connection_timeout_ms = DEFAULT_CONNECTION_TIMEOUT_MS;
         }
@@ -372,31 +382,44 @@ impl RedisStore<ConnectionManager> {
             ));
         }
 
-        let client = match spec.mode {
-            RedisMode::Standard => Client::open(addr.clone()),
-            RedisMode::Cluster => {
-                return Err(Error::new(
-                    Code::Internal,
-                    "Use RedisStore::new_cluster for cluster connections".to_owned(),
-                ));
-            }
-            RedisMode::Sentinel => SentinelClient::build(
-                vec![addr.clone()],
-                "master".to_string(),
-                None,
-                SentinelServerType::Master,
-            )
-            .and_then(|mut s| s.get_client()),
-        }
-        .err_tip_with_code(|_e| {
-            (
-                Code::InvalidArgument,
-                format!("while connecting to redis with url: {addr}"),
-            )
-        })?;
-
         let connection_timeout = Duration::from_millis(spec.connection_timeout_ms);
         let command_timeout = Duration::from_millis(spec.command_timeout_ms);
+
+        let local_addr = addr.clone();
+        let client = timeout(
+            connection_timeout,
+            spawn!("connect", async move {
+                match spec.mode {
+                    RedisMode::Standard => Client::open(local_addr.clone()),
+                    RedisMode::Cluster => {
+                        return Err(Error::new(
+                            Code::Internal,
+                            "Use RedisStore::new_cluster for cluster connections".to_owned(),
+                        ));
+                    }
+                    RedisMode::Sentinel => {
+                        async {
+                            SentinelClient::build(
+                                vec![local_addr.replace("redis+sentinel://", "redis://")],
+                                "master".to_string(),
+                                None,
+                                SentinelServerType::Master,
+                            )
+                        }
+                        .and_then(|mut s| async move { Ok(s.async_get_client().await) })
+                        .await?
+                    }
+                }
+                .err_tip_with_code(|_e| {
+                    (
+                        Code::InvalidArgument,
+                        format!("While connecting to redis with url: {local_addr}"),
+                    )
+                })
+            }),
+        )
+        .await
+        .err_tip(|| format!("Timeout while connecting to redis with url: {addr}"))???;
 
         let connection_manager_config = {
             ConnectionManagerConfig::new()
@@ -408,7 +431,7 @@ impl RedisStore<ConnectionManager> {
         let connection_manager: ConnectionManager =
             ConnectionManager::new_with_config(client, connection_manager_config)
                 .await
-                .err_tip(|| format!("While connecting to {addr}"))?;
+                .err_tip(|| format!("While connecting to redis with url: {addr}"))?;
 
         Self::new_from_builder_and_parts(
             connection_manager,

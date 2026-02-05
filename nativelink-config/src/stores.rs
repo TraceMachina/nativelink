@@ -1108,6 +1108,8 @@ pub struct RedisSpec {
     #[serde(default)]
     pub response_timeout_s: u64,
 
+    /// DEPRECATED: use connection_timeout_ms
+    ///
     /// The connection timeout for the Redis connection in seconds.
     ///
     /// Default: 10

@@ -312,6 +312,12 @@ impl From<rustls_pki_types::pem::Error> for Error {
     }
 }
 
+impl From<tokio::time::error::Elapsed> for Error {
+    fn from(value: tokio::time::error::Elapsed) -> Self {
+        Self::new(Code::DeadlineExceeded, value.to_string())
+    }
+}
+
 pub trait ResultExt<T> {
     /// # Errors
     ///

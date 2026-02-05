@@ -180,8 +180,12 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                 RedisMode::Sentinel => 26379,
                 RedisMode::Cluster => 36379,
             };
+            let addr = match redis_mode {
+                RedisMode::Sentinel => format!("redis+sentinel://{redis_host}:{redis_port}/"),
+                _ => format!("redis://{redis_host}:{redis_port}/"),
+            };
             let spec = RedisSpec {
-                addresses: vec![format!("redis://{redis_host}:{redis_port}/")],
+                addresses: vec![addr],
                 connection_timeout_ms: 1000,
                 max_client_permits,
                 mode: redis_mode,
