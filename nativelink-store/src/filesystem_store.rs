@@ -994,7 +994,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         );
         // We are done with the file, if we hold a reference to the file here, it could
         // result in a deadlock if `emplace_file()` also needs file descriptors.
-        debug!(?file, "Dropping file to to update_with_whole_file");
+        trace!(?file, "Dropping file to to update_with_whole_file");
         drop(file);
         self.emplace_file(key.into_owned(), Arc::new(entry))
             .await
