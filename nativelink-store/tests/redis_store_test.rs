@@ -712,9 +712,6 @@ async fn test_health() {
     let port = make_fake_redis().await;
     let spec = RedisSpec {
         addresses: vec![format!("redis://127.0.0.1:{port}/")],
-        response_timeout_s: 1,
-        connection_timeout_ms: 1,
-        command_timeout_ms: 100,
         ..Default::default()
     };
     let store = RedisStore::new_standard(spec).await.expect("Working spec");
@@ -773,7 +770,6 @@ async fn test_sentinel_connect() {
     let spec = RedisSpec {
         addresses: vec![format!("redis+sentinel://127.0.0.1:{port}/")],
         mode: RedisMode::Sentinel,
-        connection_timeout_ms: 1_000_000,
         ..Default::default()
     };
     RedisStore::new_standard(spec).await.expect("Working spec");
