@@ -35,6 +35,7 @@ Machina
 Makefile
 [Mm]etamaterials
 [Mm]onorepo
+Memory Store
 Nvidia
 NVMe
 hello@nativelink.com

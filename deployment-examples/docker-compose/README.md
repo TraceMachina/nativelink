@@ -2,6 +2,9 @@
 
 This guide explains how to run NativeLink with multiple workers using Docker Compose for distributed build execution.
 
+> **💡 Looking for production-grade distributed storage?**
+> Check out our **[JuiceFS Integration](./README-JUICEFS.md)** for multi-worker setups with shared CAS using JuiceFS distributed filesystem. Includes Redis, MinIO, and automated setup scripts.
+
 ## Prerequisites
 
 - **Architecture**: This setup currently only works on **x86_64/amd64** architectures. ARM64/Apple Silicon isn't supported for the test client container.
@@ -117,6 +120,12 @@ services:
 - [`cas-server-multi-worker.json5`](./cas-server-multi-worker.json5) - CAS server configuration for multi-worker deployment
 - [`scheduler-multi-worker.json5`](./scheduler-multi-worker.json5) - Scheduler configuration for multi-worker deployment
 - [`worker-shared-cas.json5`](./worker-shared-cas.json5) - Worker configuration template with shared CAS storage
+
+### JuiceFS Distributed Storage Setup (Recommended for Production)
+- [`docker-compose-juicefs.yml`](./docker-compose-juicefs.yml) - Complete stack with JuiceFS, Redis, MinIO, and 3 workers
+- [`worker-juicefs.json5`](./worker-juicefs.json5) - Worker configuration for JuiceFS-backed shared CAS
+- [`setup-juicefs.sh`](./setup-juicefs.sh) - Automated setup script
+- [`README-JUICEFS.md`](./README-JUICEFS.md) - Complete JuiceFS deployment guide
 
 ### Single Worker Setup
 - [`docker-compose.yml`](./docker-compose.yml) - Docker Compose file for single worker deployment
@@ -268,10 +277,11 @@ bazel build //... \
 ## Production Considerations
 
 For production deployments:
-1. Use persistent volumes backed by SSD
-2. Implement health checks in docker-compose.yml
-3. Use external storage (NFS, S3, etc.) for CAS
-4. Monitor worker metrics
-5. Set up log aggregation
+1. **Use distributed storage**: See our **[JuiceFS Integration Guide](./README-JUICEFS.md)** for production-grade shared CAS with Redis and S3-compatible storage
+2. Use persistent volumes backed by SSD
+3. Implement health checks in docker-compose.yml
+4. Use external storage (NFS, S3, etc.) for CAS if not using JuiceFS
+5. Monitor worker metrics
+6. Set up log aggregation
 
-See [Kubernetes deployment](../kubernetes/) for production-grade configurations.
+See [Kubernetes deployment](../kubernetes/) for production-grade configurations or [JuiceFS with Kubernetes](../kubernetes/juicefs-deployment.yaml) for distributed storage on K8s.
