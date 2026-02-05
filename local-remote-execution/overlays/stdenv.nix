@@ -9,8 +9,8 @@
 }: let
   # Adapted from clangUseLLVM.
   # See: https://github.com/NixOS/nixpkgs/blob/master/pkgs/development/compilers/llvm/common/default.nix
-  clangVersion = "20";
-  targetLlvmLibraries = targetPackages.llvmPackages_20.libraries;
+  clangVersion = "21";
+  targetLlvmLibraries = targetPackages.llvmPackages_21;
 
   mkExtraBuildCommands0 = cc: ''
     rsrc="$out/resource-root"

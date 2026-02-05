@@ -14,4 +14,4 @@ disallowed-methods = [
   { path = "tokio::task::spawn_blocking", reason = "use `nativelink-util::task::spawn_blocking` instead" },
   { path = "tokio::task::spawn_local", reason = "use one of the `nativelink-util::task` functions instead" },
 ]
-msrv = "1.87.0"
+msrv = "1.93.0"

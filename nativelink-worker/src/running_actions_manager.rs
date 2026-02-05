@@ -1802,7 +1802,7 @@ impl UploadActionResults {
         };
 
         // Note: Done in this order because we assume most results will succeed and most configs will
-        // either always upload upload historical results or only upload on filure. In which case
+        // either always upload upload historical results or only upload on failure. In which case
         // we can avoid an extra clone of the protos by doing this last with the above assumption.
         let ac_upload_results = if should_upload_ac_results {
             self.upload_ac_results(

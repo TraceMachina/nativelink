@@ -9,7 +9,7 @@ resolver = "2"
 [package]
 edition = "2024"
 name = "nativelink"
-rust-version = "1.87.0"
+rust-version = "1.93.0"
 version = "0.8.0"
 
 [profile.release]

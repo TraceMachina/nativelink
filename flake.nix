@@ -17,7 +17,7 @@
     };
     nix2container = {
       # TODO(SchahinRohani): Use a specific commit hash until nix2container is stable.
-      url = "github:nlewo/nix2container/cc96df7c3747c61c584d757cfc083922b4f4b33e";
+      url = "github:nlewo/nix2container/66f4b8a47e92aa744ec43acbb5e9185078983909";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -118,7 +118,7 @@
           linkerPath =
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
-            else "${pkgs.llvmPackages_20.lld}/bin/ld.lld";
+            else "${pkgs.llvmPackages.lld}/bin/ld.lld";
 
           linkerEnvVar = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER";
         in
@@ -132,17 +132,17 @@
             buildInputs =
               [p.cacert]
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
-                p.darwin.apple_sdk.frameworks.Security
+                p.apple-sdk_15
                 p.libiconv
               ];
             nativeBuildInputs =
               (
                 if isLinuxBuild
                 then [pkgs.mold]
-                else [pkgs.llvmPackages_20.lld]
+                else [pkgs.llvmPackages.lld]
               )
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
-                p.darwin.apple_sdk.frameworks.Security
+                p.apple-sdk_15
                 p.libiconv
               ];
             CARGO_BUILD_TARGET = targetArch;
@@ -241,14 +241,14 @@
               pkgs.diffutils
               pkgs.gnutar
               pkgs.gzip
-              pkgs.python3Full
+              pkgs.python3
               pkgs.unzip
               pkgs.zstd
               pkgs.cargo-bloat
               pkgs.mold-wrapped
               pkgs.reindeer
-              pkgs.lld_16
-              pkgs.clang_16
+              pkgs.lld_21
+              pkgs.clang_21
               buck2-rust
             ];
           };
@@ -367,9 +367,9 @@
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
 
-            inherit (pkgs) buildstream buildbox buck2 mongodb wait4x bazelisk;
+            inherit (pkgs) buildstream buck2 mongodb wait4x bazelisk;
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
-              inherit nativelink buildstream buildbox;
+              inherit nativelink buildstream;
             };
             mongo-with-nativelink-test = pkgs.callPackage integration_tests/mongo/mongo-with-nativelink-test.nix {
               inherit nativelink mongodb wait4x bazelisk;
@@ -380,7 +380,12 @@
             buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
               inherit nativelink buck2;
             };
-
+            update-module-hashes = pkgs.callPackage tools/updaters/rewrite-module.nix {
+              python-with-requests = pkgs.python3.withPackages (ps:
+                with ps; [
+                  ps.requests
+                ]);
+            };
             generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
             generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
           }
@@ -511,8 +516,7 @@
               pkgs.nativelink-tools.create-local-image
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-              pkgs.darwin.apple_sdk.frameworks.CoreFoundation
-              pkgs.darwin.apple_sdk.frameworks.Security
+              pkgs.apple-sdk_15
               pkgs.libiconv
             ]
             ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [
