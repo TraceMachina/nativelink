@@ -36,7 +36,7 @@ use nativelink_util::store_trait::{
 };
 use pretty_assertions::assert_eq;
 use redis::{RedisError, Value};
-use redis_test::{MockCmd, MockRedisConnection};
+use redis_test::{IntoRedisValue, MockCmd, MockRedisConnection};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::unbounded_channel;
@@ -626,29 +626,92 @@ fn test_connection_errors() {
     );
 }
 
+fn cmd_as_string(cmd: &redis::Cmd) -> String {
+    let raw = cmd.get_packed_command();
+    String::from_utf8(raw).unwrap()
+}
+
+fn arg_as_string(output: &mut String, arg: Value) {
+    match arg {
+        Value::SimpleString(s) => {
+            write!(output, "+{s}").unwrap();
+        }
+        Value::BulkString(s) => {
+            write!(
+                output,
+                "${}\r\n{}\r\n",
+                s.len(),
+                str::from_utf8(&s).unwrap()
+            )
+            .unwrap();
+        }
+        Value::Int(v) => {
+            write!(output, ":{v}\r\n").unwrap();
+        }
+        Value::Array(values) => {
+            write!(output, "*{}\r\n", values.len()).unwrap();
+            for value in values {
+                arg_as_string(output, value);
+            }
+        }
+        Value::Map(values) => {
+            write!(output, "%{}\r\n", values.len()).unwrap();
+            for (key, value) in values {
+                arg_as_string(output, key);
+                arg_as_string(output, value);
+            }
+        }
+        _ => {
+            panic!("No support for {arg:?}")
+        }
+    }
+}
+
+fn args_as_string(args: Vec<Value>) -> String {
+    let mut output = String::new();
+    for arg in args {
+        arg_as_string(&mut output, arg);
+    }
+    output
+}
+
+fn add_to_response(response: &mut HashMap<String, String>, cmd: &redis::Cmd, args: Vec<Value>) {
+    response.insert(cmd_as_string(cmd), args_as_string(args));
+}
+
 fn setinfo(response: &mut HashMap<String, String>) {
     // Library sends both lib-name and lib-ver in one go, so we respond to both
-    response.insert(
-        "*4\r\n$6\r\nCLIENT\r\n$7\r\nSETINFO\r\n$8\r\nLIB-NAME\r\n".into(),
-        "+OK\r\n+OK\r\n".into(),
+    add_to_response(
+        response,
+        redis::cmd("CLIENT")
+            .arg("SETINFO")
+            .arg("LIB-NAME")
+            .arg("redis-rs"),
+        vec!["OK".into_redis_value(), "OK".into_redis_value()],
     );
 }
 
 fn fake_redis_stream() -> HashMap<String, String> {
     let mut response = HashMap::new();
     setinfo(&mut response);
-    response.insert(
-        "*3\r\n$6\r\nSCRIPT\r\n$4\r\nLOAD\r\n".into(),
-        "$40\r\nb22b9926cbce9dd9ba97fa7ba3626f89feea1ed5\r\n".into(),
+    add_to_response(
+        &mut response,
+        redis::cmd("SCRIPT").arg("LOAD").arg(LUA_VERSION_SET_SCRIPT),
+        vec!["b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5".into_redis_value()],
     );
     response
 }
 
 fn fake_redis_sentinel_master_stream() -> HashMap<String, String> {
     let mut response = fake_redis_stream();
-    response.insert(
-        "*1\r\n$4\r\nROLE\r\n".into(),
-        "*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n".into(),
+    add_to_response(
+        &mut response,
+        &redis::cmd("ROLE"),
+        vec![Value::Array(vec![
+            "master".into_redis_value(),
+            0.into_redis_value(),
+            Value::Array(vec![]),
+        ])],
     );
     response
 }
@@ -658,42 +721,21 @@ fn fake_redis_sentinel_stream(master_name: &str, redis_port: u16) -> HashMap<Str
     setinfo(&mut response);
 
     // Not a full "sentinel masters" response, but enough for redis-rs
-    let resp: Vec<(String, Value)> = vec![
+    let resp: Vec<(Value, Value)> = vec![
+        ("name".into_redis_value(), master_name.into_redis_value()),
+        ("ip".into_redis_value(), "127.0.0.1".into_redis_value()),
         (
-            "name".to_string(),
-            Value::SimpleString(master_name.to_string()),
+            "port".into_redis_value(),
+            i64::from(redis_port).into_redis_value(),
         ),
-        (
-            "ip".to_string(),
-            Value::SimpleString("127.0.0.1".to_string()),
-        ),
-        ("port".to_string(), Value::Int(i64::from(redis_port))),
-        (
-            "flags".to_string(),
-            Value::SimpleString("master".to_string()),
-        ),
+        ("flags".into_redis_value(), "master".into_redis_value()),
     ];
 
-    let mut master_response = format!("*1\r\n%{}\r\n", resp.len());
-    for (key, value) in &resp {
-        write!(master_response, "+{key}\r\n").unwrap();
-        match value {
-            Value::SimpleString(s) => {
-                write!(master_response, "+{s}\r\n").unwrap();
-            }
-            Value::Int(i) => {
-                write!(master_response, ":{i}\r\n").unwrap();
-            }
-            v => {
-                panic!("Add handling for: {v:?}");
-            }
-        }
-    }
-    response.insert(
-        "*2\r\n$8\r\nSENTINEL\r\n$7\r\nMASTERS\r\n".into(),
-        master_response,
+    add_to_response(
+        &mut response,
+        redis::cmd("SENTINEL").arg("MASTERS"),
+        vec![Value::Array(vec![Value::Map(resp)])],
     );
-    // buf.put_slice(format!("+sentinel\r\n*1\r\n+{master_name}\r\n").as_bytes());
     response
 }
 

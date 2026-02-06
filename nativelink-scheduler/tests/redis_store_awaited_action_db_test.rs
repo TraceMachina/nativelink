@@ -507,27 +507,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
 
     let worker_awaited_action = make_awaited_action(WORKER_OPERATION_ID_1);
 
-    let commands = vec![
-        MockCmd::new(redis::cmd("TESTA"), Ok(Value::Nil)),
-        MockCmd::new(
-            redis::cmd("FT.CREATE")
-                .arg(format!("aa__unique_qualifier__{SCRIPT_VERSION}"))
-                .arg("ON")
-                .arg("HASH")
-                .arg("NOHL")
-                .arg("NOFIELDS")
-                .arg("NOFREQS")
-                .arg("NOOFFSETS")
-                .arg("TEMPORARY")
-                .arg(86400)
-                .arg("PREFIX")
-                .arg(1)
-                .arg("aa_")
-                .arg("SCHEMA")
-                .arg("unique_qualifier")
-                .arg("TAG"),
-            Ok(Value::BulkString(b"data".to_vec())),
-        ),
+    let make_aggregate_cmd = || {
         MockCmd::new(redis::cmd("FT.AGGREGATE")
             .arg(format!("aa__unique_qualifier__{SCRIPT_VERSION}"))
             .arg(format!("@unique_qualifier:{{ {INSTANCE_NAME}_SHA256_0000000000000000000000000000000000000000000000000000000000000000_0_c }}"))
@@ -537,15 +517,18 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
             .arg("version")
             .arg("WITHCURSOR")
             .arg("COUNT")
-            .arg(256)
+            .arg(1500)
             .arg("MAXIDLE")
-            .arg(2000)
+            .arg(30000)
             .arg("SORTBY")
             .arg(0), Ok(Value::Array(vec![
                 Value::Array(vec![Value::Int(0)]),
                 Value::Int(0), // Means no more items in cursor.
             ]))
-        ),
+        )
+    };
+
+    let make_evalsha_cmd = || {
         MockCmd::new(
         redis::cmd("EVALSHA")
             .arg(VERSION_SCRIPT_HASH)
@@ -560,16 +543,23 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
             .arg("sort_key")
             .arg("80000000ffffffff"),
             Ok(Value::Array(vec![Value::Int(1), Value::Int(1)]))
-        ),
+        )
+    };
+
+    let make_publish_cmd = || {
         MockCmd::new(
             redis::cmd("PUBLISH")
                 .arg(SUB_CHANNEL)
                 .arg(format!("aa_{WORKER_OPERATION_ID_1}")),
             Ok(Value::Nil),
-        ),
-        MockCmd::new(redis::cmd("TESTC"), Ok(Value::Boolean(true))),
-        MockCmd::new(redis::cmd("TESTD"), Ok(Value::Nil)),
-    ];
+        )
+    };
+
+    let mut commands = vec![];
+    for _ in 0..20 {
+        commands.extend([make_aggregate_cmd(), make_evalsha_cmd(), make_publish_cmd()]);
+    }
+    commands.push(MockCmd::new(redis::cmd("TESTD"), Ok(Value::Nil)));
     let store = make_redis_store(SUB_CHANNEL, commands).await;
     // mocks.set_subscription_manager(store.subscription_manager().unwrap());
 
