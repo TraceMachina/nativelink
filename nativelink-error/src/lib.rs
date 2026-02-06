@@ -318,6 +318,12 @@ impl From<tokio::time::error::Elapsed> for Error {
     }
 }
 
+impl From<url::ParseError> for Error {
+    fn from(value: url::ParseError) -> Self {
+        Self::new(Code::Internal, value.to_string())
+    }
+}
+
 pub trait ResultExt<T> {
     /// # Errors
     ///

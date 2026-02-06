@@ -905,6 +905,26 @@ async fn test_sentinel_connect_with_bad_master() {
 }
 
 #[nativelink_test]
+async fn test_sentinel_connect_with_url_specified_master() {
+    let redis_port = make_fake_redis_with_responses(fake_redis_sentinel_master_stream())
+        .instrument(info_span!("redis"))
+        .await;
+    let port =
+        make_fake_redis_with_responses(fake_redis_sentinel_stream("specific_master", redis_port))
+            .instrument(info_span!("sentinel"))
+            .await;
+    let spec = RedisSpec {
+        addresses: vec![format!(
+            "redis+sentinel://127.0.0.1:{port}/?sentinelServiceName=specific_master"
+        )],
+        mode: RedisMode::Sentinel,
+        connection_timeout_ms: 100,
+        ..Default::default()
+    };
+    RedisStore::new_standard(spec).await.expect("Working spec");
+}
+
+#[nativelink_test]
 async fn test_redis_connect_timeout() {
     let port = make_fake_redis_with_responses(HashMap::new()).await;
     let spec = RedisSpec {

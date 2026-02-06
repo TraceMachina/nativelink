@@ -23,6 +23,7 @@ rust_library(
         "@crates//:serde_json5",
         "@crates//:tokio",
         "@crates//:tonic",
+        "@crates//:url",
         "@crates//:uuid",
         "@crates//:walkdir",
     ],

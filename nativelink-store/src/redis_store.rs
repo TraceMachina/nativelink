@@ -55,6 +55,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::{sleep, timeout};
 use tracing::{debug, error, info, trace, warn};
+use url::Url;
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
@@ -395,6 +396,7 @@ impl RedisStore<ConnectionManager> {
         let mut parsed_addr = local_addr
             .replace("redis+sentinel://", "redis://")
             .into_connection_info()?;
+        debug!(?parsed_addr, "Parsed redis addr");
 
         // FIXME (palfrey): We fish this out because there's bugs in the redis-rs sentinel code
         // See https://github.com/redis-rs/redis-rs/issues/1950
@@ -407,25 +409,33 @@ impl RedisStore<ConnectionManager> {
             connection_timeout,
             spawn!("connect", async move {
                 match spec.mode {
-                    RedisMode::Standard => Client::open(parsed_addr),
+                    RedisMode::Standard => {
+                        Client::open(parsed_addr).map_err(|e| Into::<Error>::into(e))
+                    }
                     RedisMode::Cluster => {
                         return Err(Error::new(
                             Code::Internal,
                             "Use RedisStore::new_cluster for cluster connections".to_owned(),
                         ));
                     }
-                    RedisMode::Sentinel => {
-                        async {
-                            SentinelClient::build(
-                                vec![parsed_addr],
-                                "master".to_string(),
-                                None,
-                                SentinelServerType::Master,
-                            )
-                        }
-                        .and_then(|mut s| async move { Ok(s.async_get_client().await) })
-                        .await?
+                    RedisMode::Sentinel => async {
+                        let url_parsing = Url::parse(&local_addr)?;
+                        let master_name = url_parsing
+                            .query_pairs()
+                            .find(|(key, _)| key == "sentinelServiceName")
+                            .and_then(|(_, value)| Some(value.to_string()))
+                            .unwrap_or("master".into());
+                        SentinelClient::build(
+                            vec![parsed_addr],
+                            master_name,
+                            None,
+                            SentinelServerType::Master,
+                        )
+                        .map_err(|e| Into::<Error>::into(e))
                     }
+                    .and_then(|mut s| async move { Ok(s.async_get_client().await) })
+                    .await?
+                    .map_err(|e| Into::<Error>::into(e)),
                 }
                 .err_tip_with_code(|_e| {
                     (
