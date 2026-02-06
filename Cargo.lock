@@ -108,6 +108,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69f7f8c3906b62b754cd5326047894316021dcfe5a194c8ea52bdd94934a3457"
 
 [[package]]
+name = "arcstr"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03918c3dbd7701a85c6b9887732e2921175f26c350b4563841d0958c21d57e6d"
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -635,6 +641,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "backon"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
+dependencies = [
+ "fastrand",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -942,7 +957,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
+ "futures-core",
  "memchr",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -1011,12 +1030,6 @@ name = "convert_case"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
-
-[[package]]
-name = "cookie-factory"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "396de984970346b0d9e93d1415082923c679e5ae5c3ee3dcbd104f5610af126b"
 
 [[package]]
 name = "core-foundation"
@@ -1469,15 +1482,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "float-cmp"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1503,48 +1507,6 @@ name = "formatx"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8866fac38f53fc87fa3ae1b09ddd723e0482f8fa74323518b4c59df2c55a00a"
-
-[[package]]
-name = "fred"
-version = "10.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a7b2fd0f08b23315c13b6156f971aeedb6f75fb16a29ac1872d2eabccc1490e"
-dependencies = [
- "arc-swap",
- "async-trait",
- "bytes",
- "bytes-utils",
- "float-cmp",
- "fred-macros",
- "futures",
- "glob-match",
- "log",
- "parking_lot",
- "rand 0.8.5",
- "redis-protocol",
- "rustls",
- "rustls-native-certs",
- "semver",
- "sha-1",
- "socket2 0.5.10",
- "tokio",
- "tokio-rustls",
- "tokio-stream",
- "tokio-util",
- "url",
- "urlencoding",
-]
-
-[[package]]
-name = "fred-macros"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1458c6e22d36d61507034d5afecc64f105c1d39712b7ac6ec3b352c423f715cc"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "funty"
@@ -1748,12 +1710,6 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
-
-[[package]]
-name = "glob-match"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9985c9503b412198aa4197559e9a318524ebc4519c229bfa05a535828c950b9d"
 
 [[package]]
 name = "group"
@@ -2672,6 +2628,7 @@ dependencies = [
  "nativelink-util",
  "nativelink-worker",
  "rand 0.9.2",
+ "redis",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
@@ -2701,16 +2658,17 @@ dependencies = [
 name = "nativelink-error"
 version = "0.8.0"
 dependencies = [
- "fred",
  "nativelink-metric",
  "nativelink-proto",
  "prost",
  "prost-types",
+ "redis",
  "rustls-pki-types",
  "serde",
  "serde_json5",
  "tokio",
  "tonic 0.13.1",
+ "url",
  "uuid",
  "walkdir",
 ]
@@ -2763,7 +2721,6 @@ dependencies = [
  "async-lock",
  "async-trait",
  "bytes",
- "fred",
  "futures",
  "lru 0.16.3",
  "mock_instant",
@@ -2779,6 +2736,8 @@ dependencies = [
  "parking_lot",
  "pretty_assertions",
  "prost",
+ "redis",
+ "redis-test",
  "scopeguard",
  "serde",
  "serde_json",
@@ -2847,9 +2806,7 @@ dependencies = [
  "blake3",
  "byteorder",
  "bytes",
- "bytes-utils",
  "const_format",
- "fred",
  "futures",
  "gcloud-auth",
  "gcloud-storage",
@@ -2877,6 +2834,8 @@ dependencies = [
  "pretty_assertions",
  "prost",
  "rand 0.9.2",
+ "redis",
+ "redis-test",
  "regex",
  "reqwest",
  "reqwest-middleware",
@@ -2892,6 +2851,7 @@ dependencies = [
  "tonic 0.13.1",
  "tracing",
  "tracing-test",
+ "url",
  "uuid",
 ]
 
@@ -3650,17 +3610,46 @@ dependencies = [
 ]
 
 [[package]]
-name = "redis-protocol"
-version = "6.0.0"
+name = "redis"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cdba59219406899220fc4cdfd17a95191ba9c9afb719b5fa5a083d63109a9f1"
+checksum = "47ba378d39b8053bffbfc2750220f5a24a06189b5129523d5db01618774e0239"
 dependencies = [
+ "ahash",
+ "arc-swap",
+ "arcstr",
+ "backon",
  "bytes",
- "bytes-utils",
- "cookie-factory",
+ "cfg-if",
+ "combine",
  "crc16",
+ "futures-channel",
+ "futures-util",
+ "itoa",
  "log",
- "nom",
+ "percent-encoding",
+ "pin-project-lite",
+ "rand 0.9.2",
+ "ryu",
+ "sha1_smol",
+ "socket2 0.6.1",
+ "tokio",
+ "tokio-util",
+ "url",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "redis-test"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7a5cadf877f090eebfef0f4e8646c56531ab416b388410fe1c974f4e6e9cb20"
+dependencies = [
+ "futures",
+ "rand 0.9.2",
+ "redis",
+ "socket2 0.6.1",
+ "tempfile",
 ]
 
 [[package]]
@@ -4237,17 +4226,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha-1"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5058ada175748e33390e40e872bd0fe59a19f265d0158daa551c5a88a76009c"
-dependencies = [
- "cfg-if",
- "cpufeatures",
- "digest",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4257,6 +4235,12 @@ dependencies = [
  "cpufeatures",
  "digest",
 ]
+
+[[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "sha2"
@@ -5553,6 +5537,12 @@ name = "xmlparser"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
 
 [[package]]
 name = "yansi"

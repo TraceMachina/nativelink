@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024-2025 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,42 +12,83 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::VecDeque;
+use core::fmt::Debug;
 
-use fred::error::{Error as RedisError, ErrorKind as RedisErrorKind};
-use fred::interfaces::RediSearchInterface;
-use fred::types::redisearch::FtAggregateOptions;
-use fred::types::{FromValue, Map as RedisMap, Value as RedisValue};
 use futures::Stream;
+use nativelink_error::Error;
+use redis::aio::ConnectionLike;
+use redis::{ErrorKind, RedisError, ToRedisArgs, Value};
+use tracing::error;
 
-/// Calls `FT_AGGREGATE` in redis. Fred does not properly support this command
+use crate::redis_utils::aggregate_types::RedisCursorData;
+use crate::redis_utils::ft_cursor_read::ft_cursor_read;
+
+#[derive(Debug)]
+pub(crate) struct FtAggregateCursor {
+    pub count: u64,
+    pub max_idle: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct FtAggregateOptions {
+    pub load: Vec<String>,
+    pub cursor: FtAggregateCursor,
+    pub sort_by: Vec<String>,
+}
+
+/// Calls `FT.AGGREGATE` in redis. redis-rs does not properly support this command
 /// so we have to manually handle it.
-pub(crate) async fn ft_aggregate<C, I, Q>(
-    client: C,
-    index: I,
+pub(crate) async fn ft_aggregate<C, Q>(
+    mut connection_manager: C,
+    index: String,
     query: Q,
     options: FtAggregateOptions,
-) -> Result<impl Stream<Item = Result<RedisMap, RedisError>> + Send, RedisError>
+) -> Result<impl Stream<Item = Result<Value, RedisError>> + Send, Error>
 where
-    C: RediSearchInterface,
-    I: Into<bytes_utils::string::Str>,
-    Q: Into<bytes_utils::string::Str>,
+    Q: ToRedisArgs + Debug,
+    C: ConnectionLike + Send,
 {
-    struct State<C: RediSearchInterface> {
-        client: C,
-        index: bytes_utils::string::Str,
+    struct State<C: ConnectionLike> {
+        connection_manager: C,
+        index: String,
         data: RedisCursorData,
     }
 
-    let index = index.into();
-    let query = query.into();
-    let data: RedisCursorData = client.ft_aggregate(index.clone(), query, options).await?;
+    let mut cmd = redis::cmd("FT.AGGREGATE");
+    let mut ft_aggregate_cmd = cmd
+        .arg(&index)
+        .arg(&query)
+        .arg("LOAD")
+        .arg(options.load.len())
+        .arg(&options.load)
+        .arg("WITHCURSOR")
+        .arg("COUNT")
+        .arg(options.cursor.count)
+        .arg("MAXIDLE")
+        .arg(options.cursor.max_idle)
+        .arg("SORTBY")
+        .arg(options.sort_by.len() * 2);
+    for key in &options.sort_by {
+        ft_aggregate_cmd = ft_aggregate_cmd.arg(key).arg("ASC");
+    }
+    let res = ft_aggregate_cmd
+        .to_owned()
+        .query_async::<Value>(&mut connection_manager)
+        .await;
+    let data = match res {
+        Ok(d) => d,
+        Err(e) => {
+            error!(?e, index, ?query, ?options, "Error calling ft.aggregate");
+            return Err(e.into());
+        }
+    };
 
     let state = State {
-        client,
+        connection_manager,
         index,
-        data,
+        data: data.try_into()?,
     };
+
     Ok(futures::stream::unfold(
         Some(state),
         move |maybe_state| async move {
@@ -59,10 +100,12 @@ where
                 if state.data.cursor == 0 {
                     return None;
                 }
-                let data_res = state
-                    .client
-                    .ft_cursor_read(state.index.clone(), state.data.cursor, None)
-                    .await;
+                let data_res = ft_cursor_read(
+                    &mut state.connection_manager,
+                    state.index.clone(),
+                    state.data.cursor,
+                )
+                .await;
                 state.data = match data_res {
                     Ok(data) => data,
                     Err(err) => return Some((Err(err), None)),
@@ -72,52 +115,78 @@ where
     ))
 }
 
-#[derive(Debug, Default)]
-struct RedisCursorData {
-    total: u64,
-    cursor: u64,
-    data: VecDeque<RedisMap>,
-}
-
-impl FromValue for RedisCursorData {
-    fn from_value(value: RedisValue) -> Result<Self, RedisError> {
-        if !value.is_array() {
-            return Err(RedisError::new(RedisErrorKind::Protocol, "Expected array"));
+impl TryFrom<Value> for RedisCursorData {
+    type Error = RedisError;
+    fn try_from(raw_value: Value) -> Result<Self, RedisError> {
+        let Value::Array(value) = raw_value else {
+            return Err(RedisError::from((ErrorKind::Parse, "Expected array")));
+        };
+        if value.len() < 2 {
+            return Err(RedisError::from((
+                ErrorKind::Parse,
+                "Expected at least 2 elements",
+            )));
         }
         let mut output = Self::default();
-        let value = value.into_array();
-        if value.len() < 2 {
-            return Err(RedisError::new(
-                RedisErrorKind::Protocol,
-                "Expected at least 2 elements",
-            ));
-        }
         let mut value = value.into_iter();
-        let data_ary = value.next().unwrap().into_array();
-        if data_ary.is_empty() {
-            return Err(RedisError::new(
-                RedisErrorKind::Protocol,
-                "Expected at least 1 element in data array",
-            ));
-        }
-        let Some(total) = data_ary[0].as_u64() else {
-            return Err(RedisError::new(
-                RedisErrorKind::Protocol,
-                "Expected integer as first element",
-            ));
+        let results_array = match value.next().unwrap() {
+            Value::Array(d) => d,
+            other => {
+                error!(?other, "Bad data in ft.aggregate, expected array");
+                return Err(RedisError::from((
+                    ErrorKind::Parse,
+                    "Non map item",
+                    format!("{other:?}"),
+                )));
+            }
         };
-        output.total = total;
-        output.data.reserve(data_ary.len() - 1);
-        for map_data in data_ary.into_iter().skip(1) {
-            output.data.push_back(map_data.into_map()?);
+        let mut results_iter = results_array.iter();
+        match results_iter.next() {
+            Some(Value::Int(t)) => {
+                output.total = *t;
+            }
+            Some(other) => {
+                error!(?other, "Non-int for first value in ft.aggregate");
+                return Err(RedisError::from((
+                    ErrorKind::Parse,
+                    "Non int for aggregate total",
+                    format!("{other:?}"),
+                )));
+            }
+            None => {
+                error!("No items in results array for ft.aggregate!");
+                return Err(RedisError::from((
+                    ErrorKind::Parse,
+                    "No items in results array for ft.aggregate",
+                )));
+            }
         }
-        let Some(cursor) = value.next().unwrap().as_u64() else {
-            return Err(RedisError::new(
-                RedisErrorKind::Protocol,
+
+        for item in results_iter {
+            match item {
+                Value::Array(items) if items.len() == 4 => {}
+                other => {
+                    error!(
+                        ?other,
+                        "Expected an array of size 4, didn't get it for aggregate value"
+                    );
+                    return Err(RedisError::from((
+                        ErrorKind::Parse,
+                        "Expected an array of size 4, didn't get it for aggregate value",
+                        format!("{other:?}"),
+                    )));
+                }
+            }
+
+            output.data.push_back(item.clone());
+        }
+        let Value::Int(cursor) = value.next().unwrap() else {
+            return Err(RedisError::from((
+                ErrorKind::Parse,
                 "Expected integer as last element",
-            ));
+            )));
         };
-        output.cursor = cursor;
+        output.cursor = cursor as u64;
         Ok(output)
     }
 }

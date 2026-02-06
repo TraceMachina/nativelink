@@ -14,11 +14,9 @@ version = "0.8.0"
 nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
 
-fred = { version = "10.1.0", default-features = false, features = [
-  "enable-rustls-ring",
-] }
 prost = { version = "0.13.5", default-features = false }
 prost-types = { version = "0.13.5", default-features = false }
+redis = { version = "1.0.0", default-features = false }
 rustls-pki-types = { version = "1.13.1", default-features = false }
 serde = { version = "1.0.219", default-features = false }
 serde_json5 = { version = "0.2.1", default-features = false }
@@ -32,5 +30,6 @@ tonic = { version = "0.13.0", features = [
   "tls-ring",
   "transport",
 ], default-features = false }
+url = { version = "2.5.7", default-features = false }
 uuid = { version = "1.16.0", default-features = false }
 walkdir = { version = "2.5.0", default-features = false }

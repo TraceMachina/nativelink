@@ -67,7 +67,6 @@ fn otlp_filter() -> EnvFilter {
         .add_directive(expect_parse("h2=off"))
         .add_directive(expect_parse("reqwest=off"))
         .add_directive(expect_parse("tower=off"))
-        .add_directive(expect_parse("fred=off"))
 }
 
 // Create a tracing layer intended for stdout printing.
