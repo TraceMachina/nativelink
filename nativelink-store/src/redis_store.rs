@@ -396,7 +396,8 @@ impl RedisStore<ConnectionManager> {
             .replace("redis+sentinel://", "redis://")
             .into_connection_info()?;
 
-        // We fish this out because there's bugs in the redis-rs sentinel code
+        // FIXME (palfrey): We fish this out because there's bugs in the redis-rs sentinel code
+        // See https://github.com/redis-rs/redis-rs/issues/1950
         let original_db = parsed_addr.redis_settings().db();
         if original_db != 0 {
             let revised_settings = parsed_addr.redis_settings().clone().set_db(0);
@@ -449,7 +450,8 @@ impl RedisStore<ConnectionManager> {
                 .await
                 .err_tip(|| format!("While connecting to redis with url: {addr}"))?;
 
-        // We could do this directly for regular clients, but we need something else for Sentinel as it's a bit broken
+        // FIXME(palfrey): We could do this directly for regular clients, but we need something else for Sentinel as it's a bit broken
+        // See https://github.com/redis-rs/redis-rs/issues/1950
         if original_db != 0 {
             debug!(original_db, "Getting revised db");
             let res: Value = redis::cmd("SELECT")
