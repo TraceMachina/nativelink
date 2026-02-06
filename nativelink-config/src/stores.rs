@@ -1102,6 +1102,7 @@ pub struct RedisSpec {
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
     pub addresses: Vec<String>,
 
+    /// DEPRECATED: use command_timeout_ms
     /// The response timeout for the Redis connection in seconds.
     ///
     /// Default: 10

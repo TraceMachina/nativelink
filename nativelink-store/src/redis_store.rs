@@ -279,6 +279,11 @@ impl<C: ConnectionLike + Clone + Sync> RedisStore<C> {
         if spec.broadcast_channel_capacity != 0 {
             warn!("broadcast_channel_capacity in Redis spec is deprecated and ignored");
         }
+        if spec.response_timeout_s != 0 {
+            warn!(
+                "response_timeout_s in Redis spec is deprecated and ignored, use command_timeout_ms"
+            );
+        }
         if spec.connection_timeout_s != 0 {
             if spec.connection_timeout_ms != 0 {
                 return Err(make_err!(

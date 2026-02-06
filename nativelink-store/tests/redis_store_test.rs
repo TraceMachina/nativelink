@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Write;
 use core::ops::RangeBounds;
-use core::time::Duration;
+use std::collections::HashMap;
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 use futures::TryStreamExt;
 use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -39,8 +40,7 @@ use redis_test::{MockCmd, MockRedisConnection};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::unbounded_channel;
-use tokio::time::sleep;
-use tracing::info;
+use tracing::{Instrument, info, info_span, warn};
 
 const VALID_HASH1: &str = "3031323334353637383961626364656630303030303030303030303030303030";
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -608,30 +608,54 @@ fn test_connection_errors() {
     // name is resolvable, but not connectable
     let spec = RedisSpec {
         addresses: vec!["redis://nativelink.com:6379/".to_string()],
+        connection_timeout_ms: 1000,
         ..Default::default()
     };
     let err = RedisStore::new_standard(spec)
         .await
         .expect_err("Shouldn't have connected");
-    assert_eq!(err.messages.len(), 2);
-    assert_eq!(err.messages[0], "Io: timed out", "{:?}", err.messages);
     assert_eq!(
-        err.messages[1], "While connecting to redis with url: redis://nativelink.com:6379/",
-        "{:?}",
-        err.messages
+        Error {
+            code: Code::DeadlineExceeded,
+            messages: vec![
+                "Io: timed out".into(),
+                format!("While connecting to redis with url: redis://nativelink.com:6379/")
+            ]
+        },
+        err
     );
 }
 
-fn fake_redis_stream() -> Bytes {
-    let mut buf = BytesMut::new();
-    buf.put_slice(b"+OK\r\n+OK\r\n");
-    buf.put_slice(b"$40\r\nb22b9926cbce9dd9ba97fa7ba3626f89feea1ed5\r\n");
-    buf.freeze()
+fn setinfo(response: &mut HashMap<String, String>) {
+    // Library sends both lib-name and lib-ver in one go, so we respond to both
+    response.insert(
+        "*4\r\n$6\r\nCLIENT\r\n$7\r\nSETINFO\r\n$8\r\nLIB-NAME\r\n".into(),
+        "+OK\r\n+OK\r\n".into(),
+    );
 }
 
-fn fake_redis_sentinel_stream(master_name: &str) -> Bytes {
-    let mut buf = BytesMut::new();
-    buf.put_slice(b"+OK\r\n+OK\r\n");
+fn fake_redis_stream() -> HashMap<String, String> {
+    let mut response = HashMap::new();
+    setinfo(&mut response);
+    response.insert(
+        "*3\r\n$6\r\nSCRIPT\r\n$4\r\nLOAD\r\n".into(),
+        "$40\r\nb22b9926cbce9dd9ba97fa7ba3626f89feea1ed5\r\n".into(),
+    );
+    response
+}
+
+fn fake_redis_sentinel_master_stream() -> HashMap<String, String> {
+    let mut response = fake_redis_stream();
+    response.insert(
+        "*1\r\n$4\r\nROLE\r\n".into(),
+        "*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n".into(),
+    );
+    response
+}
+
+fn fake_redis_sentinel_stream(master_name: &str, redis_port: u16) -> HashMap<String, String> {
+    let mut response = HashMap::new();
+    setinfo(&mut response);
 
     // Not a full "sentinel masters" response, but enough for redis-rs
     let resp: Vec<(String, Value)> = vec![
@@ -641,70 +665,86 @@ fn fake_redis_sentinel_stream(master_name: &str) -> Bytes {
         ),
         (
             "ip".to_string(),
-            Value::SimpleString("172.18.0.2".to_string()),
+            Value::SimpleString("127.0.0.1".to_string()),
         ),
-        ("port".to_string(), Value::Int(6379)),
+        ("port".to_string(), Value::Int(i64::from(redis_port))),
         (
             "flags".to_string(),
             Value::SimpleString("master".to_string()),
         ),
     ];
 
-    buf.put_slice(format!("*1\r\n%{}\r\n", resp.len()).as_bytes());
+    let mut master_response = format!("*1\r\n%{}\r\n", resp.len());
     for (key, value) in &resp {
-        buf.put_slice(format!("+{key}\r\n").as_bytes());
+        write!(master_response, "+{key}\r\n").unwrap();
         match value {
             Value::SimpleString(s) => {
-                buf.put_slice(format!("+{s}\r\n").as_bytes());
+                write!(master_response, "+{s}\r\n").unwrap();
             }
             Value::Int(i) => {
-                buf.put_slice(format!(":{i}\r\n").as_bytes());
+                write!(master_response, ":{i}\r\n").unwrap();
             }
             v => {
                 panic!("Add handling for: {v:?}");
             }
         }
     }
-    buf.freeze()
+    response.insert(
+        "*2\r\n$8\r\nSENTINEL\r\n$7\r\nMASTERS\r\n".into(),
+        master_response,
+    );
+    // buf.put_slice(format!("+sentinel\r\n*1\r\n+{master_name}\r\n").as_bytes());
+    response
 }
 
-async fn fake_redis(listener: TcpListener, output: Bytes) {
+async fn fake_redis(listener: TcpListener, responses: HashMap<String, String>) {
     loop {
-        let Ok((stream, _)) = listener.accept().await else {
+        let Ok((mut stream, _)) = listener.accept().await else {
             panic!("error");
         };
-        let value = output.clone();
-        info!("Buffer is: {:?}", value);
-        background_spawn!("fake redis thread", async move {
-            let (mut reader, mut writer) = stream.into_split();
-            background_spawn!("reader", async move {
-                loop {
-                    let mut buf = vec![0; 512];
-                    let res = reader.read(&mut buf).await.unwrap();
-                    if res != 0 {
-                        info!("Buf: {:?}", str::from_utf8(&buf[..res]));
+        let values = responses.clone();
+        info!("Responses are: {:?}", values);
+        background_spawn!("thread", async move {
+            loop {
+                let mut buf = vec![0; 8192];
+                let res = stream.read(&mut buf).await.unwrap();
+                if res != 0 {
+                    let str_buf = str::from_utf8(&buf[..res]);
+                    if let Ok(s) = str_buf {
+                        let mut matched = false;
+                        for (key, value) in &values {
+                            if s.starts_with(key) {
+                                info!("Responding to {}", s.replace("\r\n", "\\r\\n"));
+                                stream.write_all(value.as_bytes()).await.unwrap();
+                                matched = true;
+                                break;
+                            }
+                        }
+                        if !matched {
+                            warn!("Unknown command: {s}");
+                        }
+                    } else {
+                        warn!("Bytes buffer: {buf:?}");
                     }
                 }
-            });
-            writer.write_all(&value).await.unwrap();
-            sleep(Duration::MAX).await;
+            }
         });
     }
 }
 
-async fn make_fake_redis_with_bytes(output: Bytes) -> u16 {
+async fn make_fake_redis_with_responses(responses: HashMap<String, String>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
 
-    background_spawn!("fake redis listener", async move {
-        fake_redis(listener, output).await;
+    background_spawn!("listener", async move {
+        fake_redis(listener, responses).await;
     });
 
     port
 }
 
 async fn make_fake_redis() -> u16 {
-    make_fake_redis_with_bytes(fake_redis_stream()).await
+    make_fake_redis_with_responses(fake_redis_stream()).await
 }
 
 #[nativelink_test]
@@ -712,6 +752,7 @@ async fn test_health() {
     let port = make_fake_redis().await;
     let spec = RedisSpec {
         addresses: vec![format!("redis://127.0.0.1:{port}/")],
+        command_timeout_ms: 1000,
         ..Default::default()
     };
     let store = RedisStore::new_standard(spec).await.expect("Working spec");
@@ -766,10 +807,20 @@ async fn test_deprecated_broadcast_channel_capacity() {
 
 #[nativelink_test]
 async fn test_sentinel_connect() {
-    let port = make_fake_redis_with_bytes(fake_redis_sentinel_stream("master")).await;
+    let redis_span = info_span!("redis");
+    let redis_port = make_fake_redis_with_responses(fake_redis_sentinel_master_stream())
+        .instrument(redis_span)
+        .await;
+    let sentinel_span = info_span!("sentinel");
+    let sentinel_port =
+        make_fake_redis_with_responses(fake_redis_sentinel_stream("master", redis_port))
+            .instrument(sentinel_span)
+            .await;
     let spec = RedisSpec {
-        addresses: vec![format!("redis+sentinel://127.0.0.1:{port}/")],
+        addresses: vec![format!("redis+sentinel://127.0.0.1:{sentinel_port}/")],
         mode: RedisMode::Sentinel,
+        connection_timeout_ms: 10000,
+        command_timeout_ms: 10000,
         ..Default::default()
     };
     RedisStore::new_standard(spec).await.expect("Working spec");
@@ -777,7 +828,8 @@ async fn test_sentinel_connect() {
 
 #[nativelink_test]
 async fn test_sentinel_connect_with_bad_master() {
-    let port = make_fake_redis_with_bytes(fake_redis_sentinel_stream("other_name")).await;
+    // Note this is a fake redis port, which is fine because the sentinel code never connects to it
+    let port = make_fake_redis_with_responses(fake_redis_sentinel_stream("other_name", 1234)).await;
     let spec = RedisSpec {
         addresses: vec![format!("redis+sentinel://127.0.0.1:{port}/")],
         mode: RedisMode::Sentinel,
@@ -798,7 +850,7 @@ async fn test_sentinel_connect_with_bad_master() {
 
 #[nativelink_test]
 async fn test_redis_connect_timeout() {
-    let port = make_fake_redis_with_bytes(Bytes::new()).await;
+    let port = make_fake_redis_with_responses(HashMap::new()).await;
     let spec = RedisSpec {
         addresses: vec![format!("redis://127.0.0.1:{port}/")],
         connection_timeout_ms: 1,
