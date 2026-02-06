@@ -1017,6 +1017,8 @@ impl SchedulerIndexProvider for SearchByContentPrefix {
     const INDEX_NAME: &'static str = "content_prefix";
     type Versioned = TrueValue;
 
+    const MAYBE_SORT_KEY: Option<&'static str> = Some("sort_key");
+
     fn index_value(&self) -> std::borrow::Cow<'_, str> {
         std::borrow::Cow::Borrowed(&self.prefix)
     }
@@ -1043,7 +1045,7 @@ fn test_search_by_index() -> Result<(), Error> {
     fn make_ft_aggregate() -> MockCmd {
         MockCmd::new(
             redis::cmd("FT.AGGREGATE")
-                .arg("test:_content_prefix__3e762c15")
+                .arg("test:_content_prefix_sort_key_3e762c15")
                 .arg("@content_prefix:{ Searchable }")
                 .arg("LOAD")
                 .arg(2)
@@ -1055,7 +1057,9 @@ fn test_search_by_index() -> Result<(), Error> {
                 .arg("MAXIDLE")
                 .arg(30000)
                 .arg("SORTBY")
-                .arg(0),
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC"),
             Ok(Value::Array(vec![
                 Value::Array(vec![
                     Value::Int(1),

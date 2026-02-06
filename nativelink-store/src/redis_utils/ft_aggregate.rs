@@ -67,7 +67,7 @@ where
         .arg("MAXIDLE")
         .arg(options.cursor.max_idle)
         .arg("SORTBY")
-        .arg(options.sort_by.len());
+        .arg(options.sort_by.len() * 2);
     for key in &options.sort_by {
         ft_aggregate_cmd = ft_aggregate_cmd.arg(key).arg("ASC");
     }
