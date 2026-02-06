@@ -46,14 +46,15 @@ use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
 use redis::sentinel::{SentinelClient, SentinelServerType};
 use redis::{
-    AsyncCommands, AsyncIter, Client, PushInfo, RedisResult, ScanOptions, Script, Value, pipe,
+    AsyncCommands, AsyncIter, Client, IntoConnectionInfo, PushInfo, RedisResult, ScanOptions,
+    Script, Value, pipe,
 };
 use redis_test::MockRedisConnection;
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::{sleep, timeout};
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
@@ -391,11 +392,21 @@ impl RedisStore<ConnectionManager> {
         let command_timeout = Duration::from_millis(spec.command_timeout_ms);
 
         let local_addr = addr.clone();
+        let mut parsed_addr = local_addr
+            .replace("redis+sentinel://", "redis://")
+            .into_connection_info()?;
+
+        // We fish this out because there's bugs in the redis-rs sentinel code
+        let original_db = parsed_addr.redis_settings().db();
+        if original_db != 0 {
+            let revised_settings = parsed_addr.redis_settings().clone().set_db(0);
+            parsed_addr = parsed_addr.set_redis_settings(revised_settings);
+        };
         let client = timeout(
             connection_timeout,
             spawn!("connect", async move {
                 match spec.mode {
-                    RedisMode::Standard => Client::open(local_addr.clone()),
+                    RedisMode::Standard => Client::open(parsed_addr),
                     RedisMode::Cluster => {
                         return Err(Error::new(
                             Code::Internal,
@@ -405,7 +416,7 @@ impl RedisStore<ConnectionManager> {
                     RedisMode::Sentinel => {
                         async {
                             SentinelClient::build(
-                                vec![local_addr.replace("redis+sentinel://", "redis://")],
+                                vec![parsed_addr],
                                 "master".to_string(),
                                 None,
                                 SentinelServerType::Master,
@@ -433,10 +444,26 @@ impl RedisStore<ConnectionManager> {
                 .set_response_timeout(Some(command_timeout))
         };
 
-        let connection_manager: ConnectionManager =
+        let mut connection_manager: ConnectionManager =
             ConnectionManager::new_with_config(client, connection_manager_config)
                 .await
                 .err_tip(|| format!("While connecting to redis with url: {addr}"))?;
+
+        // We could do this directly for regular clients, but we need something else for Sentinel as it's a bit broken
+        if original_db != 0 {
+            debug!(original_db, "Getting revised db");
+            let res: Value = redis::cmd("SELECT")
+                .arg(original_db)
+                .query_async(&mut connection_manager)
+                .await?;
+            if res != Value::Okay {
+                warn!(?res, "Failed to set DB");
+                return Err(Error::new(
+                    Code::Internal,
+                    format!("Failed to set DB: {res:?}"),
+                ));
+            }
+        }
 
         Self::new_from_builder_and_parts(
             connection_manager,

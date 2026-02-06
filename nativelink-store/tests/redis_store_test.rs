@@ -40,7 +40,7 @@ use redis_test::{IntoRedisValue, MockCmd, MockRedisConnection};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::unbounded_channel;
-use tracing::{Instrument, info, info_span, warn};
+use tracing::{Instrument, error, info, info_span, warn};
 
 const VALID_HASH1: &str = "3031323334353637383961626364656630303030303030303030303030303030";
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -634,7 +634,10 @@ fn cmd_as_string(cmd: &redis::Cmd) -> String {
 fn arg_as_string(output: &mut String, arg: Value) {
     match arg {
         Value::SimpleString(s) => {
-            write!(output, "+{s}").unwrap();
+            write!(output, "+{s}\r\n").unwrap();
+        }
+        Value::Okay => {
+            write!(output, "+OK\r\n").unwrap();
         }
         Value::BulkString(s) => {
             write!(
@@ -679,27 +682,33 @@ fn add_to_response(response: &mut HashMap<String, String>, cmd: &redis::Cmd, arg
     response.insert(cmd_as_string(cmd), args_as_string(args));
 }
 
-fn setinfo(response: &mut HashMap<String, String>) {
+fn setinfo(responses: &mut HashMap<String, String>) {
     // Library sends both lib-name and lib-ver in one go, so we respond to both
     add_to_response(
-        response,
+        responses,
         redis::cmd("CLIENT")
             .arg("SETINFO")
             .arg("LIB-NAME")
             .arg("redis-rs"),
-        vec!["OK".into_redis_value(), "OK".into_redis_value()],
+        vec![Value::Okay, Value::Okay],
     );
 }
 
 fn fake_redis_stream() -> HashMap<String, String> {
-    let mut response = HashMap::new();
-    setinfo(&mut response);
+    let mut responses = HashMap::new();
+    setinfo(&mut responses);
     add_to_response(
-        &mut response,
+        &mut responses,
         redis::cmd("SCRIPT").arg("LOAD").arg(LUA_VERSION_SET_SCRIPT),
         vec!["b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5".into_redis_value()],
     );
-    response
+    // Does setinfo as well, so need to respond to all 3
+    add_to_response(
+        &mut responses,
+        redis::cmd("SELECT").arg("3"),
+        vec![Value::Okay, Value::Okay, Value::Okay],
+    );
+    responses
 }
 
 fn fake_redis_sentinel_master_stream() -> HashMap<String, String> {
@@ -740,12 +749,18 @@ fn fake_redis_sentinel_stream(master_name: &str, redis_port: u16) -> HashMap<Str
 }
 
 async fn fake_redis(listener: TcpListener, responses: HashMap<String, String>) {
+    info!("Responses are: {:?}", responses);
     loop {
+        info!(
+            "Waiting for connection on {}",
+            listener.local_addr().unwrap()
+        );
         let Ok((mut stream, _)) = listener.accept().await else {
+            error!("accept error");
             panic!("error");
         };
+        info!("Accepted new connection");
         let values = responses.clone();
-        info!("Responses are: {:?}", values);
         background_spawn!("thread", async move {
             loop {
                 let mut buf = vec![0; 8192];
@@ -777,6 +792,7 @@ async fn fake_redis(listener: TcpListener, responses: HashMap<String, String>) {
 async fn make_fake_redis_with_responses(responses: HashMap<String, String>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    info!("Using port {port}");
 
     background_spawn!("listener", async move {
         fake_redis(listener, responses).await;
@@ -861,8 +877,6 @@ async fn test_sentinel_connect() {
     let spec = RedisSpec {
         addresses: vec![format!("redis+sentinel://127.0.0.1:{sentinel_port}/")],
         mode: RedisMode::Sentinel,
-        connection_timeout_ms: 10000,
-        command_timeout_ms: 10000,
         ..Default::default()
     };
     RedisStore::new_standard(spec).await.expect("Working spec");
@@ -908,6 +922,37 @@ async fn test_redis_connect_timeout() {
         },
         RedisStore::new_standard(spec).await.unwrap_err()
     );
+}
+
+#[nativelink_test]
+async fn test_connect_other_db() {
+    let redis_port = make_fake_redis_with_responses(fake_redis_stream()).await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{redis_port}/3")],
+        ..Default::default()
+    };
+    RedisStore::new_standard(spec).await.expect("Working spec");
+}
+
+#[nativelink_test]
+async fn test_sentinel_connect_other_db() {
+    let redis_span = info_span!("redis");
+    let redis_port = make_fake_redis_with_responses(fake_redis_sentinel_master_stream())
+        .instrument(redis_span)
+        .await;
+    let sentinel_span = info_span!("sentinel");
+    let sentinel_port =
+        make_fake_redis_with_responses(fake_redis_sentinel_stream("master", redis_port))
+            .instrument(sentinel_span)
+            .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis+sentinel://127.0.0.1:{sentinel_port}/3")],
+        mode: RedisMode::Sentinel,
+        connection_timeout_ms: 5_000,
+        command_timeout_ms: 5_000,
+        ..Default::default()
+    };
+    RedisStore::new_standard(spec).await.expect("Working spec");
 }
 
 struct SearchByContentPrefix {
