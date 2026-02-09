@@ -8,6 +8,8 @@ runs:
       uses: >- # v3.1.0
         endersonmenezes/free-disk-space@e6ed9b02e683a3b55ed0252f1ee469ce3b39a885
       with:
+        rm_cmd: "rmz" # For speed up
+        testing: true
         remove_android: false # Takes too long.
         remove_dotnet: true
         remove_haskell: true
