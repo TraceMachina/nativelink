@@ -1385,7 +1385,11 @@ impl<C: RedisPatternSubscriber + Clone + ConnectionLike + Sync> SchedulerStore f
                         "{}",
                         get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
                     ),
-                    format!("@{}:{{ {} }}", K::INDEX_NAME, sanitized_field),
+                    if sanitized_field.is_empty() {
+                        "*".to_string()
+                    } else {
+                        format!("@{}:{{ {} }}", K::INDEX_NAME, sanitized_field)
+                    },
                     FtAggregateOptions {
                         load: vec![DATA_FIELD_NAME.into(), VERSION_FIELD_NAME.into()],
                         cursor: FtAggregateCursor {

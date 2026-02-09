@@ -17,7 +17,7 @@ use core::fmt::Debug;
 use futures::Stream;
 use nativelink_error::Error;
 use redis::aio::ConnectionLike;
-use redis::{Arg, ErrorKind, RedisError, ToRedisArgs, Value};
+use redis::{Arg, ErrorKind, RedisError, Value};
 use tracing::error;
 
 use crate::redis_utils::aggregate_types::RedisCursorData;
@@ -38,14 +38,13 @@ pub(crate) struct FtAggregateOptions {
 
 /// Calls `FT.AGGREGATE` in redis. redis-rs does not properly support this command
 /// so we have to manually handle it.
-pub(crate) async fn ft_aggregate<C, Q>(
+pub(crate) async fn ft_aggregate<C>(
     mut connection_manager: C,
     index: String,
-    query: Q,
+    query: String,
     options: FtAggregateOptions,
 ) -> Result<impl Stream<Item = Result<Value, RedisError>> + Send, Error>
 where
-    Q: ToRedisArgs + Debug,
     C: ConnectionLike + Send,
 {
     struct State<C: ConnectionLike> {
