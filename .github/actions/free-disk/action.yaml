@@ -5,8 +5,8 @@ runs:
   using: "composite"
   steps:
     - name: Free disk space
-      uses: >- # v2.0.0
-        endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
+      uses: >- # v3.1.0
+        endersonmenezes/free-disk-space@e6ed9b02e683a3b55ed0252f1ee469ce3b39a885
       with:
         remove_android: false # Takes too long.
         remove_dotnet: true
