@@ -29,6 +29,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
+      - name: Free disk space
+        uses: ./.github/actions/free-disk
+
       - name: Checkout
         uses: >- # v4.2.2
           actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
