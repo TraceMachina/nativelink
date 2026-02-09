@@ -30,7 +30,6 @@ runs:
           /usr/share/miniconda
           /usr/share/az*
           /usr/share/glade*
-          /usr/local/lib/node_modules
           /usr/local/share/chromium
           /usr/local/share/powershell
 
