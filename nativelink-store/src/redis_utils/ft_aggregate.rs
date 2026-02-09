@@ -17,7 +17,7 @@ use core::fmt::Debug;
 use futures::Stream;
 use nativelink_error::Error;
 use redis::aio::ConnectionLike;
-use redis::{ErrorKind, RedisError, ToRedisArgs, Value};
+use redis::{Arg, ErrorKind, RedisError, ToRedisArgs, Value};
 use tracing::error;
 
 use crate::redis_utils::aggregate_types::RedisCursorData;
@@ -72,13 +72,31 @@ where
         ft_aggregate_cmd = ft_aggregate_cmd.arg(key).arg("ASC");
     }
     let res = ft_aggregate_cmd
-        .to_owned()
         .query_async::<Value>(&mut connection_manager)
         .await;
     let data = match res {
         Ok(d) => d,
         Err(e) => {
-            error!(?e, index, ?query, ?options, "Error calling ft.aggregate");
+            let all_args: Vec<_> = ft_aggregate_cmd
+                .args_iter()
+                .map(|a| match a {
+                    Arg::Simple(bytes) => match str::from_utf8(bytes) {
+                        Ok(s) => s.to_string(),
+                        Err(_) => format!("{bytes:?}"),
+                    },
+                    other => {
+                        format!("{other:?}")
+                    }
+                })
+                .collect();
+            error!(
+                ?e,
+                index,
+                ?query,
+                ?options,
+                ?all_args,
+                "Error calling ft.aggregate"
+            );
             return Err(e.into());
         }
     };
