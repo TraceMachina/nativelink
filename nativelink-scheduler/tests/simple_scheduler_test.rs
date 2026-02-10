@@ -2395,3 +2395,58 @@ async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn logs_when_no_workers_match() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let mut prop_defs = HashMap::new();
+    prop_defs.insert("prop".to_string(), PropertyType::Minimum);
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            worker_match_logging_interval_s: 1,
+            supported_platform_properties: Some(prop_defs),
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut required_platform_properties = HashMap::new();
+    required_platform_properties.insert("prop".to_string(), "1".to_string());
+
+    let mut worker_properties = PlatformProperties::default();
+    worker_properties
+        .properties
+        .insert("prop".to_string(), PlatformPropertyValue::Minimum(0));
+
+    setup_new_worker(&scheduler, worker_id.clone(), worker_properties).await?;
+
+    setup_action(
+        &scheduler,
+        action_digest,
+        required_platform_properties,
+        make_system_time(1),
+    )
+    .await
+    .unwrap();
+
+    scheduler.do_try_match_for_test().await?;
+
+    assert!(logs_contain(
+        "Property mismatch on worker property prop. Minimum(0) < Minimum(1)"
+    ));
+    assert!(logs_contain("No workers matched"));
+
+    Ok(())
+}
