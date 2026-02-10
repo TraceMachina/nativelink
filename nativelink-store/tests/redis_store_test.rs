@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::fmt::Write;
 use core::ops::RangeBounds;
 use std::collections::HashMap;
 
@@ -21,13 +20,15 @@ use futures::TryStreamExt;
 use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
-use nativelink_redis_tester::MockPubSub;
+use nativelink_redis_tester::{
+    MockPubSub, add_lua_script, fake_redis_sentinel_master_stream, fake_redis_sentinel_stream,
+    fake_redis_stream, make_fake_redis_with_responses,
+};
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{
     DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE, DEFAULT_MAX_COUNT_PER_CURSOR, LUA_VERSION_SET_SCRIPT,
     RedisStore,
 };
-use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::HealthStatus;
@@ -37,10 +38,8 @@ use nativelink_util::store_trait::{
 };
 use pretty_assertions::assert_eq;
 use redis::{RedisError, Value};
-use redis_test::{IntoRedisValue, MockCmd, MockRedisConnection};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tracing::{Instrument, error, info, info_span, warn};
+use redis_test::{MockCmd, MockRedisConnection};
+use tracing::{Instrument, info, info_span};
 
 const VALID_HASH1: &str = "3031323334353637383961626364656630303030303030303030303030303030";
 const TEMP_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -59,6 +58,24 @@ fn make_temp_key(final_name: &str) -> String {
 
 async fn make_mock_store(commands: Vec<MockCmd>) -> RedisStore<MockRedisConnection, MockPubSub> {
     make_mock_store_with_prefix(commands, String::new()).await
+}
+
+fn add_lua_version_script(mut responses: HashMap<String, String>) -> HashMap<String, String> {
+    add_lua_script(
+        &mut responses,
+        LUA_VERSION_SET_SCRIPT,
+        "b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5",
+    );
+    responses
+}
+
+async fn make_fake_redis() -> u16 {
+    make_fake_redis_with_responses(add_lua_version_script(fake_redis_stream())).await
+}
+
+async fn fake_redis_sentinel_master_stream_with_script() -> u16 {
+    make_fake_redis_with_responses(add_lua_version_script(fake_redis_sentinel_master_stream()))
+        .await
 }
 
 async fn make_mock_store_with_prefix(
@@ -626,185 +643,6 @@ fn test_connection_errors() {
     );
 }
 
-fn cmd_as_string(cmd: &redis::Cmd) -> String {
-    let raw = cmd.get_packed_command();
-    String::from_utf8(raw).unwrap()
-}
-
-fn arg_as_string(output: &mut String, arg: Value) {
-    match arg {
-        Value::SimpleString(s) => {
-            write!(output, "+{s}\r\n").unwrap();
-        }
-        Value::Okay => {
-            write!(output, "+OK\r\n").unwrap();
-        }
-        Value::BulkString(s) => {
-            write!(
-                output,
-                "${}\r\n{}\r\n",
-                s.len(),
-                str::from_utf8(&s).unwrap()
-            )
-            .unwrap();
-        }
-        Value::Int(v) => {
-            write!(output, ":{v}\r\n").unwrap();
-        }
-        Value::Array(values) => {
-            write!(output, "*{}\r\n", values.len()).unwrap();
-            for value in values {
-                arg_as_string(output, value);
-            }
-        }
-        Value::Map(values) => {
-            write!(output, "%{}\r\n", values.len()).unwrap();
-            for (key, value) in values {
-                arg_as_string(output, key);
-                arg_as_string(output, value);
-            }
-        }
-        _ => {
-            panic!("No support for {arg:?}")
-        }
-    }
-}
-
-fn args_as_string(args: Vec<Value>) -> String {
-    let mut output = String::new();
-    for arg in args {
-        arg_as_string(&mut output, arg);
-    }
-    output
-}
-
-fn add_to_response(response: &mut HashMap<String, String>, cmd: &redis::Cmd, args: Vec<Value>) {
-    response.insert(cmd_as_string(cmd), args_as_string(args));
-}
-
-fn setinfo(responses: &mut HashMap<String, String>) {
-    // Library sends both lib-name and lib-ver in one go, so we respond to both
-    add_to_response(
-        responses,
-        redis::cmd("CLIENT")
-            .arg("SETINFO")
-            .arg("LIB-NAME")
-            .arg("redis-rs"),
-        vec![Value::Okay, Value::Okay],
-    );
-}
-
-fn fake_redis_stream() -> HashMap<String, String> {
-    let mut responses = HashMap::new();
-    setinfo(&mut responses);
-    add_to_response(
-        &mut responses,
-        redis::cmd("SCRIPT").arg("LOAD").arg(LUA_VERSION_SET_SCRIPT),
-        vec!["b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5".into_redis_value()],
-    );
-    // Does setinfo as well, so need to respond to all 3
-    add_to_response(
-        &mut responses,
-        redis::cmd("SELECT").arg("3"),
-        vec![Value::Okay, Value::Okay, Value::Okay],
-    );
-    responses
-}
-
-fn fake_redis_sentinel_master_stream() -> HashMap<String, String> {
-    let mut response = fake_redis_stream();
-    add_to_response(
-        &mut response,
-        &redis::cmd("ROLE"),
-        vec![Value::Array(vec![
-            "master".into_redis_value(),
-            0.into_redis_value(),
-            Value::Array(vec![]),
-        ])],
-    );
-    response
-}
-
-fn fake_redis_sentinel_stream(master_name: &str, redis_port: u16) -> HashMap<String, String> {
-    let mut response = HashMap::new();
-    setinfo(&mut response);
-
-    // Not a full "sentinel masters" response, but enough for redis-rs
-    let resp: Vec<(Value, Value)> = vec![
-        ("name".into_redis_value(), master_name.into_redis_value()),
-        ("ip".into_redis_value(), "127.0.0.1".into_redis_value()),
-        (
-            "port".into_redis_value(),
-            i64::from(redis_port).into_redis_value(),
-        ),
-        ("flags".into_redis_value(), "master".into_redis_value()),
-    ];
-
-    add_to_response(
-        &mut response,
-        redis::cmd("SENTINEL").arg("MASTERS"),
-        vec![Value::Array(vec![Value::Map(resp)])],
-    );
-    response
-}
-
-async fn fake_redis(listener: TcpListener, responses: HashMap<String, String>) {
-    info!("Responses are: {:?}", responses);
-    loop {
-        info!(
-            "Waiting for connection on {}",
-            listener.local_addr().unwrap()
-        );
-        let Ok((mut stream, _)) = listener.accept().await else {
-            error!("accept error");
-            panic!("error");
-        };
-        info!("Accepted new connection");
-        let values = responses.clone();
-        background_spawn!("thread", async move {
-            loop {
-                let mut buf = vec![0; 8192];
-                let res = stream.read(&mut buf).await.unwrap();
-                if res != 0 {
-                    let str_buf = str::from_utf8(&buf[..res]);
-                    if let Ok(s) = str_buf {
-                        let mut matched = false;
-                        for (key, value) in &values {
-                            if s.starts_with(key) {
-                                info!("Responding to {}", s.replace("\r\n", "\\r\\n"));
-                                stream.write_all(value.as_bytes()).await.unwrap();
-                                matched = true;
-                                break;
-                            }
-                        }
-                        if !matched {
-                            warn!("Unknown command: {s}");
-                        }
-                    } else {
-                        warn!("Bytes buffer: {:?}", &buf[..res]);
-                    }
-                }
-            }
-        });
-    }
-}
-
-async fn make_fake_redis_with_responses(responses: HashMap<String, String>) -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    info!("Using port {port}");
-
-    background_spawn!("listener", async move {
-        fake_redis(listener, responses).await;
-    });
-
-    port
-}
-
-async fn make_fake_redis() -> u16 {
-    make_fake_redis_with_responses(fake_redis_stream()).await
-}
-
 #[nativelink_test]
 async fn test_health() {
     let port = make_fake_redis().await;
@@ -866,7 +704,7 @@ async fn test_deprecated_broadcast_channel_capacity() {
 #[nativelink_test]
 async fn test_sentinel_connect() {
     let redis_span = info_span!("redis");
-    let redis_port = make_fake_redis_with_responses(fake_redis_sentinel_master_stream())
+    let redis_port = fake_redis_sentinel_master_stream_with_script()
         .instrument(redis_span)
         .await;
     let sentinel_span = info_span!("sentinel");
@@ -906,7 +744,7 @@ async fn test_sentinel_connect_with_bad_master() {
 
 #[nativelink_test]
 async fn test_sentinel_connect_with_url_specified_master() {
-    let redis_port = make_fake_redis_with_responses(fake_redis_sentinel_master_stream())
+    let redis_port = fake_redis_sentinel_master_stream_with_script()
         .instrument(info_span!("redis"))
         .await;
     let port =
@@ -946,7 +784,7 @@ async fn test_redis_connect_timeout() {
 
 #[nativelink_test]
 async fn test_connect_other_db() {
-    let redis_port = make_fake_redis_with_responses(fake_redis_stream()).await;
+    let redis_port = make_fake_redis().await;
     let spec = RedisSpec {
         addresses: vec![format!("redis://127.0.0.1:{redis_port}/3")],
         ..Default::default()
@@ -957,7 +795,7 @@ async fn test_connect_other_db() {
 #[nativelink_test]
 async fn test_sentinel_connect_other_db() {
     let redis_span = info_span!("redis");
-    let redis_port = make_fake_redis_with_responses(fake_redis_sentinel_master_stream())
+    let redis_port = fake_redis_sentinel_master_stream_with_script()
         .instrument(redis_span)
         .await;
     let sentinel_span = info_span!("sentinel");

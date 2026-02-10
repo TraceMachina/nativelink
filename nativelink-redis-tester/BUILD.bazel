@@ -10,10 +10,17 @@ load(
 rust_library(
     name = "nativelink-redis-tester",
     srcs = [
+        "src/fake_redis.rs",
         "src/lib.rs",
+        "src/pubsub.rs",
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//nativelink-util",
+        "@crates//:redis",
+        "@crates//:redis-test",
+        "@crates//:tokio",
+        "@crates//:tracing",
     ],
 )
 

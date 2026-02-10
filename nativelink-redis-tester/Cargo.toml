@@ -7,3 +7,9 @@ name = "nativelink-redis-tester"
 version = "0.8.0"
 
 [dependencies]
+nativelink-util = { path = "../nativelink-util" }
+
+redis = { version = "1.0.0", default-features = false }
+redis-test = { version = "1.0.0", default-features = false, features = ["aio"] }
+tokio = { version = "1.44.1", features = [], default-features = false }
+tracing = { version = "0.1.41", default-features = false }

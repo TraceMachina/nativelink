@@ -2717,6 +2717,13 @@ dependencies = [
 [[package]]
 name = "nativelink-redis-tester"
 version = "0.8.0"
+dependencies = [
+ "nativelink-util",
+ "redis",
+ "redis-test",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "nativelink-scheduler"
