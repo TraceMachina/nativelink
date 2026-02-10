@@ -11,6 +11,7 @@ nativelink-config = { path = "../nativelink-config" }
 nativelink-error = { path = "../nativelink-error" }
 nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
+nativelink-redis-tester = { path = "../nativelink-redis-tester" }
 nativelink-util = { path = "../nativelink-util" }
 
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
@@ -81,8 +82,6 @@ redis = { version = "1.0.0", default-features = false, features = [
   "sentinel",
   "tokio-comp",
 ] }
-# needed here for Psubscribe implementation
-redis-test = { version = "1.0.0", default-features = false, features = ["aio"] }
 regex = { version = "1.11.1", default-features = false }
 reqwest = { version = "0.12", default-features = false }
 reqwest-middleware = { version = "0.4.2", default-features = false }
@@ -140,6 +139,7 @@ rand = { version = "0.9.0", default-features = false, features = [
   "small_rng",
   "thread_rng",
 ] }
+redis-test = { version = "1.0.0", default-features = false, features = ["aio"] }
 serde_json = { version = "1.0.140", default-features = false }
 tempfile = { version = "3.8.1", default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [

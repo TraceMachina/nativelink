@@ -28,6 +28,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
 };
+use nativelink_redis_tester::MockPubSub;
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber,
 };
@@ -302,7 +303,7 @@ fn mock_uuid_generator() -> String {
 async fn make_redis_store(
     sub_channel: &str,
     mut commands: Vec<MockCmd>,
-) -> Arc<RedisStore<MockRedisConnection>> {
+) -> Arc<RedisStore<MockRedisConnection, MockPubSub>> {
     let (_tx, subscriber_channel) = unbounded_channel();
     commands.insert(
         0,
@@ -317,6 +318,7 @@ async fn make_redis_store(
         RedisStore::new_from_builder_and_parts(
             mock_connection,
             Some(sub_channel.into()),
+            Some(MockPubSub::new()),
             mock_uuid_generator,
             String::new(),
             4064,

@@ -30,6 +30,7 @@ use itertools::izip;
 use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
+use nativelink_redis_tester::MockPubSub;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::spawn;
@@ -41,15 +42,14 @@ use nativelink_util::store_trait::{
 use nativelink_util::task::JoinHandleDropGuard;
 use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
-use redis::aio::{ConnectionLike, ConnectionManager, ConnectionManagerConfig};
+use redis::aio::{ConnectionLike, ConnectionManager, ConnectionManagerConfig, PubSub};
 use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
 use redis::sentinel::{SentinelClient, SentinelNodeConnectionInfo, SentinelServerType};
 use redis::{
-    AsyncCommands, AsyncIter, Client, IntoConnectionInfo, PushInfo, RedisResult, ScanOptions,
+    AsyncCommands, AsyncIter, Client, IntoConnectionInfo, Msg, PushInfo, RedisResult, ScanOptions,
     Script, Value, pipe,
 };
-use redis_test::MockRedisConnection;
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -99,9 +99,10 @@ const DEFAULT_CLIENT_PERMITS: usize = 500;
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 #[derive(MetricsComponent)]
-pub struct RedisStore<C>
+pub struct RedisStore<C, P>
 where
     C: ConnectionLike + Clone,
+    P: RedisPatternSubscriber,
 {
     /// The client pool connecting to the backing Redis instance(s).
     connection_manager: C,
@@ -111,6 +112,8 @@ where
         help = "The pubsub channel to publish updates to when a key is added, removed, or modified"
     )]
     pub_sub_channel: Option<String>,
+
+    pub_sub: Mutex<Option<P>>,
 
     /// A function used to generate names for temporary keys.
     temp_name_generator_fn: fn() -> String,
@@ -158,7 +161,7 @@ where
     client_permits: Arc<Semaphore>,
 }
 
-impl<C: ConnectionLike + Clone> Debug for RedisStore<C> {
+impl<C: ConnectionLike + Clone, P: RedisPatternSubscriber> Debug for RedisStore<C, P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("RedisStore")
             .field("pub_sub_channel", &self.pub_sub_channel)
@@ -198,12 +201,13 @@ impl<C: ConnectionLike> Drop for ClientWithPermit<C> {
     }
 }
 
-impl<C: ConnectionLike + Clone + Sync> RedisStore<C> {
+impl<C: ConnectionLike + Clone + Sync, P: RedisPatternSubscriber> RedisStore<C, P> {
     /// Used for testing when determinism is required.
     #[expect(clippy::too_many_arguments)]
     pub async fn new_from_builder_and_parts(
         mut connection_manager: C,
         pub_sub_channel: Option<String>,
+        pub_sub: Option<P>,
         temp_name_generator_fn: fn() -> String,
         key_prefix: String,
         read_chunk_size: usize,
@@ -223,6 +227,7 @@ impl<C: ConnectionLike + Clone + Sync> RedisStore<C> {
         Ok(Self {
             connection_manager,
             pub_sub_channel,
+            pub_sub: Mutex::new(pub_sub),
             temp_name_generator_fn,
             key_prefix,
             read_chunk_size,
@@ -331,7 +336,7 @@ impl<C: ConnectionLike + Clone + Sync> RedisStore<C> {
     }
 }
 
-impl RedisStore<ClusterConnection> {
+impl RedisStore<ClusterConnection, PubSub> {
     pub async fn new_cluster(mut spec: RedisSpec) -> Result<Arc<Self>, Error> {
         if spec.mode != RedisMode::Cluster {
             return Err(Error::new(
@@ -362,6 +367,7 @@ impl RedisStore<ClusterConnection> {
         Self::new_from_builder_and_parts(
             client.get_async_connection().await?,
             spec.experimental_pub_sub_channel.clone(),
+            None,
             || Uuid::new_v4().to_string(),
             spec.key_prefix.clone(),
             spec.read_chunk_size,
@@ -376,7 +382,7 @@ impl RedisStore<ClusterConnection> {
     }
 }
 
-impl RedisStore<ConnectionManager> {
+impl RedisStore<ConnectionManager, PubSub> {
     /// Create a new `RedisStore` from the given configuration.
     pub async fn new_standard(mut spec: RedisSpec) -> Result<Arc<Self>, Error> {
         Self::set_spec_defaults(&mut spec)?;
@@ -402,9 +408,7 @@ impl RedisStore<ConnectionManager> {
             connection_timeout,
             spawn!("connect", async move {
                 match spec.mode {
-                    RedisMode::Standard => {
-                        Client::open(parsed_addr).map_err(|e| Into::<Error>::into(e))
-                    }
+                    RedisMode::Standard => Client::open(parsed_addr).map_err(Into::<Error>::into),
                     RedisMode::Cluster => {
                         return Err(Error::new(
                             Code::Internal,
@@ -416,8 +420,7 @@ impl RedisStore<ConnectionManager> {
                         let master_name = url_parsing
                             .query_pairs()
                             .find(|(key, _)| key == "sentinelServiceName")
-                            .and_then(|(_, value)| Some(value.to_string()))
-                            .unwrap_or("master".into());
+                            .map_or_else(|| "master".into(), |(_, value)| value.to_string());
 
                         let redis_connection_info = parsed_addr.redis_settings().clone();
                         let sentinel_connection_info = SentinelNodeConnectionInfo::default()
@@ -430,7 +433,7 @@ impl RedisStore<ConnectionManager> {
                             // sentinel_connection_info has the actual DB set
                             let revised_settings = parsed_addr.redis_settings().clone().set_db(0);
                             parsed_addr = parsed_addr.set_redis_settings(revised_settings);
-                        };
+                        }
 
                         SentinelClient::build(
                             vec![parsed_addr],
@@ -438,11 +441,11 @@ impl RedisStore<ConnectionManager> {
                             Some(sentinel_connection_info),
                             SentinelServerType::Master,
                         )
-                        .map_err(|e| Into::<Error>::into(e))
+                        .map_err(Into::<Error>::into)
                     }
                     .and_then(|mut s| async move { Ok(s.async_get_client().await) })
                     .await?
-                    .map_err(|e| Into::<Error>::into(e)),
+                    .map_err(Into::<Error>::into),
                 }
                 .err_tip_with_code(|_e| {
                     (
@@ -462,6 +465,13 @@ impl RedisStore<ConnectionManager> {
                 .set_response_timeout(Some(command_timeout))
         };
 
+        let err_addr = addr.clone();
+        let pub_sub = timeout(connection_timeout, async {
+            client.get_async_pubsub().await
+        })
+        .await
+        .err_tip(|| format!("While connecting to redis with url: {err_addr}"))??;
+
         let connection_manager: ConnectionManager =
             ConnectionManager::new_with_config(client, connection_manager_config)
                 .await
@@ -470,6 +480,7 @@ impl RedisStore<ConnectionManager> {
         Self::new_from_builder_and_parts(
             connection_manager,
             spec.experimental_pub_sub_channel.clone(),
+            Some(pub_sub),
             || Uuid::new_v4().to_string(),
             spec.key_prefix.clone(),
             spec.read_chunk_size,
@@ -485,7 +496,9 @@ impl RedisStore<ConnectionManager> {
 }
 
 #[async_trait]
-impl<C: ConnectionLike + Clone + 'static + Send + Sync + Unpin> StoreDriver for RedisStore<C> {
+impl<C: ConnectionLike + Clone + 'static + Send + Sync + Unpin, P: RedisPatternSubscriber + Unpin>
+    StoreDriver for RedisStore<C, P>
+{
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -838,8 +851,8 @@ impl<C: ConnectionLike + Clone + 'static + Send + Sync + Unpin> StoreDriver for 
 }
 
 #[async_trait]
-impl<C: ConnectionLike + Clone + 'static + Send + Sync + Unpin> HealthStatusIndicator
-    for RedisStore<C>
+impl<C: ConnectionLike + Clone + 'static + Send + Sync + Unpin, P: RedisPatternSubscriber + Unpin>
+    HealthStatusIndicator for RedisStore<C, P>
 {
     fn get_name(&self) -> &'static str {
         "RedisStore"
@@ -1088,38 +1101,42 @@ pub struct RedisSubscriptionManager {
 /// Trait for subscribing to Redis pub/sub channels with pattern matching.
 pub trait RedisPatternSubscriber: Send + 'static {
     /// Subscribe to channels matching the given pattern.
+    #[allow(clippy::manual_async_fn)]
     fn subscribe_to_pattern(
         &mut self,
         channel_pattern: &str,
-    ) -> impl Future<Output = RedisResult<()>> + Send;
+    ) -> impl Future<Output = RedisResult<Pin<Box<dyn Stream<Item = Msg> + '_ + Send>>>> + Send;
 }
 
-impl RedisPatternSubscriber for ConnectionManager {
+impl RedisPatternSubscriber for PubSub {
+    #[allow(clippy::manual_async_fn)]
     fn subscribe_to_pattern(
         &mut self,
         channel_pattern: &str,
-    ) -> impl Future<Output = RedisResult<()>> + Send {
-        self.psubscribe(channel_pattern)
+    ) -> impl Future<Output = RedisResult<Pin<Box<dyn Stream<Item = Msg> + '_ + Send>>>> + Send
+    {
+        async move {
+            self.psubscribe(channel_pattern).await?;
+            Ok(self.on_message().boxed())
+        }
     }
 }
 
-impl RedisPatternSubscriber for MockRedisConnection {
+impl RedisPatternSubscriber for MockPubSub {
+    #[allow(clippy::manual_async_fn)]
     fn subscribe_to_pattern(
         &mut self,
         _channel_pattern: &str,
-    ) -> impl Future<Output = RedisResult<()>> + Send {
-        future::ready(Ok(()))
+    ) -> impl Future<Output = RedisResult<Pin<Box<dyn Stream<Item = Msg> + '_ + Send>>>> + Send
+    {
+        async move { Ok(stream::empty().boxed()) }
     }
 }
 
 impl RedisSubscriptionManager {
-    pub fn new<C>(
-        mut connection_manager: C,
-        mut subscription_channel: UnboundedReceiver<PushInfo>,
-        pub_sub_channel: String,
-    ) -> Self
+    pub fn new<P>(mut pub_sub: P, pub_sub_channel: String) -> Self
     where
-        C: RedisPatternSubscriber,
+        P: RedisPatternSubscriber,
     {
         let subscribed_keys = Arc::new(RwLock::new(StringPatriciaMap::new()));
         let subscribed_keys_weak = Arc::downgrade(&subscribed_keys);
@@ -1128,13 +1145,13 @@ impl RedisSubscriptionManager {
             subscribed_keys,
             tx_for_test,
             _subscription_spawn: spawn!("redis_subscribe_spawn", async move {
-                if let Err(e) = connection_manager
-                    .subscribe_to_pattern(&pub_sub_channel)
-                    .await
-                {
-                    error!(?e, "Failed to subscribe to Redis pattern");
-                    return;
-                }
+                let mut stream = match pub_sub.subscribe_to_pattern(&pub_sub_channel).await {
+                    Err(e) => {
+                        error!(?e, "Failed to subscribe to Redis pattern");
+                        return;
+                    }
+                    Ok(s) => s,
+                };
                 loop {
                     loop {
                         let key = select! {
@@ -1144,12 +1161,9 @@ impl RedisSubscriptionManager {
                                 };
                                 value
                             },
-                            msg = subscription_channel.recv() => {
+                            msg = stream.next() => {
                                 if let Some(msg) = msg {
-                                    if msg.data.len() != 1 {
-                                        error!(?msg.data, "Received several messages!");
-                                    }
-                                    if let Value::SimpleString(s) = msg.data.first().expect("Expected data") {
+                                    if let Value::SimpleString(s) = msg.get_payload().expect("Valid payload") {
                                         s.clone()
                                     } else {
                                         error!("Received non-string message in RedisSubscriptionManager");
@@ -1240,7 +1254,9 @@ impl SchedulerSubscriptionManager for RedisSubscriptionManager {
     }
 }
 
-impl<C: RedisPatternSubscriber + Clone + ConnectionLike + Sync> SchedulerStore for RedisStore<C> {
+impl<C: Clone + ConnectionLike + Sync + Send + 'static, P: RedisPatternSubscriber> SchedulerStore
+    for RedisStore<C, P>
+{
     type SubscriptionManager = RedisSubscriptionManager;
 
     fn subscription_manager(&self) -> Result<Arc<RedisSubscriptionManager>, Error> {
@@ -1254,16 +1270,14 @@ impl<C: RedisPatternSubscriber + Clone + ConnectionLike + Sync> SchedulerStore f
                     "RedisStore must have a pubsub channel for a Redis Scheduler if using subscriptions"
                 ));
             };
-            // Use pre-created channel if available (cluster mode), otherwise create on demand.
-            // TODO: For standard mode, the sender should be connected to Redis push notifications.
-            let subscriber_channel = self
-                .subscriber_channel
-                .lock()
-                .take()
-                .unwrap_or_else(|| unbounded_channel().1);
+            let mut lock_pub_sub = self.pub_sub.lock();
+            let Some(pub_sub) = lock_pub_sub.take() else {
+                return Err(make_input_err!(
+                    "RedisStore must have a pubsub for Redis Scheduler if using subscriptions"
+                ));
+            };
             let sub = Arc::new(RedisSubscriptionManager::new(
-                self.connection_manager.clone(),
-                subscriber_channel,
+                pub_sub,
                 pub_sub_channel.clone(),
             ));
             *subscription_manager = Some(sub.clone());

@@ -84,6 +84,7 @@ rust_test_suite(
         "//nativelink-error",
         "//nativelink-metric",
         "//nativelink-proto",
+        "//nativelink-redis-tester",
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:async-lock",

@@ -1,0 +1,9 @@
+#:schema ../tools/cargo-with-detailed-deps.json
+lints.workspace = true
+
+[package]
+edition = "2024"
+name = "nativelink-redis-tester"
+version = "0.8.0"
+
+[dependencies]

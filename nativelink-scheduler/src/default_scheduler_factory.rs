@@ -25,7 +25,7 @@ use nativelink_store::redis_store::RedisStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::operation_state_manager::ClientStateManager;
-use redis::aio::ConnectionManager;
+use redis::aio::{ConnectionManager, PubSub};
 use tokio::sync::{Notify, mpsc};
 
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
@@ -130,7 +130,7 @@ fn simple_scheduler_factory(
             let store = store
                 .into_inner()
                 .as_any_arc()
-                .downcast::<RedisStore<ConnectionManager>>()
+                .downcast::<RedisStore<ConnectionManager, PubSub>>()
                 .map_err(|_| {
                     make_input_err!(
                         "Could not downcast to redis store in RedisAwaitedActionDb::new"

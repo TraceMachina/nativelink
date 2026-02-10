@@ -53,6 +53,7 @@ uuid = { version = "1.16.0", default-features = false, features = [
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
+nativelink-redis-tester = { path = "../nativelink-redis-tester" }
 
 pretty_assertions = { version = "1.4.1", features = [
   "std",

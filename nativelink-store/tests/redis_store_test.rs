@@ -21,6 +21,7 @@ use futures::TryStreamExt;
 use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_redis_tester::MockPubSub;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{
     DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE, DEFAULT_MAX_COUNT_PER_CURSOR, LUA_VERSION_SET_SCRIPT,
@@ -39,7 +40,6 @@ use redis::{RedisError, Value};
 use redis_test::{IntoRedisValue, MockCmd, MockRedisConnection};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc::unbounded_channel;
 use tracing::{Instrument, error, info, info_span, warn};
 
 const VALID_HASH1: &str = "3031323334353637383961626364656630303030303030303030303030303030";
@@ -57,15 +57,14 @@ fn make_temp_key(final_name: &str) -> String {
     format!("temp-{TEMP_UUID}-{{{final_name}}}")
 }
 
-async fn make_mock_store(commands: Vec<MockCmd>) -> RedisStore<MockRedisConnection> {
+async fn make_mock_store(commands: Vec<MockCmd>) -> RedisStore<MockRedisConnection, MockPubSub> {
     make_mock_store_with_prefix(commands, String::new()).await
 }
 
 async fn make_mock_store_with_prefix(
     mut commands: Vec<MockCmd>,
     key_prefix: String,
-) -> RedisStore<MockRedisConnection> {
-    let (_tx, subscriber_channel) = unbounded_channel();
+) -> RedisStore<MockRedisConnection, MockPubSub> {
     commands.insert(
         0,
         MockCmd::new(
@@ -77,6 +76,7 @@ async fn make_mock_store_with_prefix(
     RedisStore::new_from_builder_and_parts(
         mock_connection,
         None,
+        None,
         mock_uuid_generator,
         key_prefix,
         DEFAULT_READ_CHUNK_SIZE,
@@ -84,7 +84,7 @@ async fn make_mock_store_with_prefix(
         DEFAULT_SCAN_COUNT,
         DEFAULT_MAX_PERMITS,
         DEFAULT_MAX_COUNT_PER_CURSOR,
-        Some(subscriber_channel),
+        None,
     )
     .await
     .unwrap()
@@ -482,7 +482,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
 #[nativelink_test]
 async fn list_test() -> Result<(), Error> {
     async fn get_list(
-        store: &RedisStore<MockRedisConnection>,
+        store: &RedisStore<MockRedisConnection, MockPubSub>,
         range: impl RangeBounds<StoreKey<'static>> + Send + Sync + 'static,
     ) -> Vec<StoreKey<'static>> {
         let mut found_keys = vec![];
@@ -618,7 +618,7 @@ fn test_connection_errors() {
         Error {
             code: Code::DeadlineExceeded,
             messages: vec![
-                "Io: timed out".into(),
+                "deadline has elapsed".into(),
                 format!("While connecting to redis with url: redis://nativelink.com:6379/")
             ]
         },
@@ -781,7 +781,7 @@ async fn fake_redis(listener: TcpListener, responses: HashMap<String, String>) {
                             warn!("Unknown command: {s}");
                         }
                     } else {
-                        warn!("Bytes buffer: {buf:?}");
+                        warn!("Bytes buffer: {:?}", &buf[..res]);
                     }
                 }
             }
@@ -827,7 +827,7 @@ async fn test_health() {
         } => {
             assert_eq!(
                 struct_name,
-                "nativelink_store::redis_store::RedisStore<redis::aio::connection_manager::ConnectionManager>"
+                "nativelink_store::redis_store::RedisStore<redis::aio::connection_manager::ConnectionManager, redis::aio::pubsub::PubSub>"
             );
             assert!(
                 message.starts_with("Store.update_oneshot() failed: Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"While appending to temp key ("),
@@ -936,7 +936,7 @@ async fn test_redis_connect_timeout() {
         Error {
             code: Code::DeadlineExceeded,
             messages: vec![
-                "Io: timed out".into(),
+                "deadline has elapsed".into(),
                 format!("While connecting to redis with url: redis://127.0.0.1:{port}/")
             ]
         },

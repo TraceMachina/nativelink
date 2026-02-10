@@ -19,7 +19,7 @@ use nativelink_util::store_trait::{
 use nativelink_util::telemetry::init_tracing;
 use nativelink_util::{background_spawn, spawn};
 use rand::Rng;
-use redis::aio::ConnectionManager;
+use redis::aio::{ConnectionManager, PubSub};
 use tokio::time::sleep;
 use tracing::{error, info};
 
@@ -119,9 +119,9 @@ enum RedisModeArg {
 impl From<RedisModeArg> for RedisMode {
     fn from(arg: RedisModeArg) -> Self {
         match arg {
-            RedisModeArg::Standard => RedisMode::Standard,
-            RedisModeArg::Sentinel => RedisMode::Sentinel,
-            RedisModeArg::Cluster => RedisMode::Cluster,
+            RedisModeArg::Standard => Self::Standard,
+            RedisModeArg::Sentinel => Self::Sentinel,
+            RedisModeArg::Cluster => Self::Cluster,
         }
     }
 }
@@ -240,7 +240,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                 background_spawn!("action", async move {
                     async fn run_action(
                         action_value: usize,
-                        store_clone: Arc<RedisStore<ConnectionManager>>,
+                        store_clone: Arc<RedisStore<ConnectionManager, PubSub>>,
                     ) -> Result<(), Error> {
                         match action_value {
                             0 => {

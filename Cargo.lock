@@ -2715,6 +2715,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nativelink-redis-tester"
+version = "0.8.0"
+
+[[package]]
 name = "nativelink-scheduler"
 version = "0.8.0"
 dependencies = [
@@ -2729,6 +2733,7 @@ dependencies = [
  "nativelink-macro",
  "nativelink-metric",
  "nativelink-proto",
+ "nativelink-redis-tester",
  "nativelink-store",
  "nativelink-util",
  "opentelemetry",
@@ -2827,6 +2832,7 @@ dependencies = [
  "nativelink-macro",
  "nativelink-metric",
  "nativelink-proto",
+ "nativelink-redis-tester",
  "nativelink-util",
  "opentelemetry",
  "parking_lot",
