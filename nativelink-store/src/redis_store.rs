@@ -1166,11 +1166,17 @@ impl RedisSubscriptionManager {
                                 },
                                 msg = stream.next() => {
                                     if let Some(msg) = msg {
-                                        if let Value::SimpleString(s) = msg.get_payload().expect("Valid payload") {
-                                            s.clone()
-                                        } else {
-                                            error!("Received non-string message in RedisSubscriptionManager");
-                                            continue;
+                                        match msg.get_payload().expect("Valid payload") {
+                                            Value::SimpleString(s) => {
+                                                s.clone()
+                                            }
+                                            Value::BulkString(v) => {
+                                                String::from_utf8(v).expect("String message")
+                                            }
+                                            _ => {
+                                                error!(?msg, "Received non-string message in RedisSubscriptionManager");
+                                                continue;
+                                            }
                                         }
                                     } else {
                                         // Check to see if our parent has been dropped and if so kill spawn.
