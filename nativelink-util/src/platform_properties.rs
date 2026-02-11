@@ -52,9 +52,18 @@ impl PlatformProperties {
             if let Some(worker_value) = worker_properties.properties.get(property) {
                 if !check_value.is_satisfied_by(worker_value) {
                     if full_worker_logging {
-                        info!(
-                            "Property mismatch on worker property {property}. {worker_value:?} != {check_value:?}"
-                        );
+                        match check_value {
+                            PlatformPropertyValue::Minimum(_) => {
+                                info!(
+                                    "Property mismatch on worker property {property}. {worker_value:?} < {check_value:?}"
+                                );
+                            }
+                            _ => {
+                                info!(
+                                    "Property mismatch on worker property {property}. {worker_value:?} != {check_value:?}"
+                                );
+                            }
+                        }
                     }
                     return false;
                 }
