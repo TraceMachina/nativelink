@@ -181,15 +181,15 @@ impl TryFrom<Value> for RedisCursorData {
 
         for item in results_iter {
             match item {
-                Value::Array(items) if items.len() == 4 => {}
+                Value::Array(items) if items.len() % 2 == 0 => {}
                 other => {
                     error!(
                         ?other,
-                        "Expected an array of size 4, didn't get it for aggregate value"
+                        "Expected an array with an even number of items, didn't get it for aggregate value"
                     );
                     return Err(RedisError::from((
                         ErrorKind::Parse,
-                        "Expected an array of size 4, didn't get it for aggregate value",
+                        "Expected an array with an even number of items, didn't get it for aggregate value",
                         format!("{other:?}"),
                     )));
                 }

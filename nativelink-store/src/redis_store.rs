@@ -1539,10 +1539,14 @@ impl<C: Clone + ConnectionLike + Sync + Send + 'static, P: RedisPatternSubscribe
                         version = Some(raw_version);
                     }
                     other => {
-                        return Some(Err(Error::new(
-                            Code::Internal,
-                            format!("Extra keys from ft_aggregate: {other}"),
-                        )));
+                        if K::MAYBE_SORT_KEY == Some(other) {
+                            // ignore sort keys
+                        } else {
+                            return Some(Err(Error::new(
+                                Code::Internal,
+                                format!("Extra keys from ft_aggregate: {other}"),
+                            )));
+                        }
                     }
                 }
             }

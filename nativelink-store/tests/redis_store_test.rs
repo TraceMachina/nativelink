@@ -980,3 +980,86 @@ fn test_search_by_index_failure() -> Result<(), Error> {
 
     Ok(())
 }
+
+#[nativelink_test]
+fn test_search_by_index_with_sort_key() -> Result<(), Error> {
+    fn make_ft_aggregate() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.AGGREGATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("@content_prefix:{ Searchable }")
+                .arg("LOAD")
+                .arg(2)
+                .arg("data")
+                .arg("version")
+                .arg("WITHCURSOR")
+                .arg("COUNT")
+                .arg(1500)
+                .arg("MAXIDLE")
+                .arg(30000)
+                .arg("SORTBY")
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC"),
+            Ok(Value::Array(vec![
+                Value::Array(vec![
+                    Value::Int(1),
+                    Value::Array(vec![
+                        Value::BulkString(b"data".to_vec()),
+                        Value::BulkString(b"1234".to_vec()),
+                        Value::BulkString(b"version".to_vec()),
+                        Value::BulkString(b"1".to_vec()),
+                        Value::BulkString(b"sort_key".to_vec()),
+                        Value::BulkString(b"1234".to_vec()),
+                    ]),
+                ]),
+                Value::Int(0),
+            ])),
+        )
+    }
+
+    let commands = vec![
+        make_ft_aggregate(),
+        MockCmd::new(
+            redis::cmd("FT.CREATE")
+                .arg("test:_content_prefix__3e762c15")
+                .arg("ON")
+                .arg("HASH")
+                .arg("NOHL")
+                .arg("NOFIELDS")
+                .arg("NOFREQS")
+                .arg("NOOFFSETS")
+                .arg("TEMPORARY")
+                .arg(86400)
+                .arg("PREFIX")
+                .arg(1)
+                .arg("test:")
+                .arg("SCHEMA")
+                .arg("content_prefix")
+                .arg("TAG"),
+            Ok(Value::Nil),
+        ),
+        make_ft_aggregate(),
+    ];
+    let store = make_mock_store(commands).await;
+    let search_provider = SearchByContentPrefix {
+        prefix: "Searchable".to_string(),
+    };
+
+    let search_results: Vec<TestSchedulerData> = store
+        .search_by_index_prefix(search_provider)
+        .await
+        .err_tip(|| "Failed to search by index")?
+        .try_collect()
+        .await?;
+
+    assert!(search_results.len() == 1, "Should find 1 matching entry");
+
+    assert_eq!(
+        search_results[0].content, "1234",
+        "Content should match search pattern: '{}'",
+        search_results[0].content
+    );
+
+    Ok(())
+}
