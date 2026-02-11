@@ -1,0 +1,48 @@
+---
+name: Free up disk space
+description: "Free up disk space on workers"
+runs:
+  using: "composite"
+  steps:
+    - name: Free disk space
+      uses: >- # v3.1.0
+        endersonmenezes/free-disk-space@e6ed9b02e683a3b55ed0252f1ee469ce3b39a885
+      with:
+        rm_cmd: "rmz" # For speed up
+        remove_android: false # Takes too long.
+        remove_dotnet: true
+        remove_haskell: true
+        remove_tool_cache: false # TODO(palfrey): Do we really need this?
+        # Note: Not deleting google-cloud-cli because it takes too long.
+        remove_packages: >
+          azure-cli
+          microsoft-edge-stable
+          google-chrome-stable
+          firefox
+          postgresql*
+          temurin-*
+          *llvm*
+          mysql*
+          dotnet-sdk-*
+        remove_packages_one_command: true
+        remove_folders: >
+          /usr/share/swift
+          /usr/share/miniconda
+          /usr/share/az*
+          /usr/share/glade*
+          /usr/local/share/chromium
+          /usr/local/share/powershell
+
+    - name: Delete platform specific items to free up disk space
+      shell: bash
+      run: |
+        if [ "$(uname)" = "Darwin" ]; then
+          echo "Deleting Applications"
+          sudo rm -rf ~/Applications/*
+          echo "Deleting all iOS simulators"
+          xcrun simctl delete all
+          echo "Deleting iOS Simulator caches"
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/*
+        else
+          echo "Nothing to do here."
+        fi
