@@ -60,7 +60,7 @@ use crate::cas_utils::is_zero_digest;
 use crate::common_s3_utils::TlsClient;
 
 // S3 parts cannot be smaller than this number
-const MIN_MULTIPART_SIZE: u64 = 5 * 1024 * 1024; // 5MB
+const MIN_MULTIPART_SIZE: u64 = 100 * 1024 * 1024; // 100MB
 
 // S3 parts cannot be larger than this number
 const MAX_MULTIPART_SIZE: u64 = 5 * 1024 * 1024 * 1024; // 5GB
