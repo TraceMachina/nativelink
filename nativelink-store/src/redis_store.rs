@@ -16,6 +16,7 @@ use core::cmp;
 use core::fmt::Debug;
 use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
+use core::str::FromStr;
 use core::time::Duration;
 use std::borrow::Cow;
 use std::sync::{Arc, Weak};
@@ -30,7 +31,7 @@ use itertools::izip;
 use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
-use nativelink_redis_tester::MockPubSub;
+use nativelink_redis_tester::{MockPubSub, SubscriptionManagerNotify};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::spawn;
@@ -1091,11 +1092,11 @@ impl RedisSubscriptionPublisher {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RedisSubscriptionManager {
     subscribed_keys: Arc<RwLock<StringPatriciaMap<RedisSubscriptionPublisher>>>,
     tx_for_test: tokio::sync::mpsc::UnboundedSender<String>,
-    _subscription_spawn: JoinHandleDropGuard<()>,
+    _subscription_spawn: Arc<Mutex<JoinHandleDropGuard<()>>>,
 }
 
 /// Trait for subscribing to Redis pub/sub channels with pattern matching.
@@ -1144,42 +1145,59 @@ impl RedisSubscriptionManager {
         Self {
             subscribed_keys,
             tx_for_test,
-            _subscription_spawn: spawn!("redis_subscribe_spawn", async move {
-                let mut stream = match pub_sub.subscribe_to_pattern(&pub_sub_channel).await {
-                    Err(e) => {
-                        error!(?e, "Failed to subscribe to Redis pattern");
-                        return;
-                    }
-                    Ok(s) => s,
-                };
-                loop {
+            _subscription_spawn: Arc::new(Mutex::new(spawn!(
+                "redis_subscribe_spawn",
+                async move {
+                    let mut stream = match pub_sub.subscribe_to_pattern(&pub_sub_channel).await {
+                        Err(e) => {
+                            error!(?e, "Failed to subscribe to Redis pattern");
+                            return;
+                        }
+                        Ok(s) => s,
+                    };
                     loop {
-                        let key = select! {
-                            value = rx_for_test.recv() => {
-                                let Some(value) = value else {
-                                    unreachable!("Channel should never close");
-                                };
-                                value
-                            },
-                            msg = stream.next() => {
-                                if let Some(msg) = msg {
-                                    if let Value::SimpleString(s) = msg.get_payload().expect("Valid payload") {
-                                        s.clone()
+                        loop {
+                            let key = select! {
+                                value = rx_for_test.recv() => {
+                                    let Some(value) = value else {
+                                        unreachable!("Channel should never close");
+                                    };
+                                    value
+                                },
+                                msg = stream.next() => {
+                                    if let Some(msg) = msg {
+                                        if let Value::SimpleString(s) = msg.get_payload().expect("Valid payload") {
+                                            s.clone()
+                                        } else {
+                                            error!("Received non-string message in RedisSubscriptionManager");
+                                            continue;
+                                        }
                                     } else {
-                                        error!("Received non-string message in RedisSubscriptionManager");
-                                        continue;
+                                        // Check to see if our parent has been dropped and if so kill spawn.
+                                        if subscribed_keys_weak.upgrade().is_none() {
+                                            warn!("It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
+                                            return;
+                                        }
+                                        error!("Error receiving message in RedisSubscriptionManager reconnecting and flagging everything changed");
+                                        break;
                                     }
-                                } else {
-                                    // Check to see if our parent has been dropped and if so kill spawn.
-                                    if subscribed_keys_weak.upgrade().is_none() {
-                                        warn!("It appears our parent has been dropped, exiting RedisSubscriptionManager spawn");
-                                        return;
-                                    }
-                                    error!("Error receiving message in RedisSubscriptionManager reconnecting and flagging everything changed");
-                                    break;
-                                }
-                            },
-                        };
+                                },
+                            };
+                            let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
+                                warn!(
+                                    "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn"
+                                );
+                                return;
+                            };
+                            let subscribed_keys_mux = subscribed_keys.read();
+                            subscribed_keys_mux
+                                .common_prefix_values(&*key)
+                                .for_each(RedisSubscriptionPublisher::notify);
+                        }
+                        // Sleep for a small amount of time to ensure we don't reconnect too quickly.
+                        sleep(Duration::from_secs(1)).await;
+                        // If we reconnect or lag behind we might have had dirty keys, so we need to
+                        // flag all of them as changed.
                         let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
                             warn!(
                                 "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn"
@@ -1187,37 +1205,25 @@ impl RedisSubscriptionManager {
                             return;
                         };
                         let subscribed_keys_mux = subscribed_keys.read();
-                        subscribed_keys_mux
-                            .common_prefix_values(&*key)
-                            .for_each(RedisSubscriptionPublisher::notify);
-                    }
-                    // Sleep for a small amount of time to ensure we don't reconnect too quickly.
-                    sleep(Duration::from_secs(1)).await;
-                    // If we reconnect or lag behind we might have had dirty keys, so we need to
-                    // flag all of them as changed.
-                    let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
-                        warn!(
-                            "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn"
-                        );
-                        return;
-                    };
-                    let subscribed_keys_mux = subscribed_keys.read();
-                    // Just in case also get a new receiver.
-                    for publisher in subscribed_keys_mux.values() {
-                        publisher.notify();
+                        // Just in case also get a new receiver.
+                        for publisher in subscribed_keys_mux.values() {
+                            publisher.notify();
+                        }
                     }
                 }
-            }),
+            ))),
         }
+    }
+}
+
+impl SubscriptionManagerNotify for RedisSubscriptionManager {
+    fn notify_for_test(&self, value: String) {
+        self.tx_for_test.send(value).unwrap();
     }
 }
 
 impl SchedulerSubscriptionManager for RedisSubscriptionManager {
     type Subscription = RedisSubscription;
-
-    fn notify_for_test(&self, value: String) {
-        self.tx_for_test.send(value).unwrap();
-    }
 
     fn subscribe<K>(&self, key: K) -> Result<Self::Subscription, Error>
     where
@@ -1569,8 +1575,17 @@ impl<C: Clone + ConnectionLike + Sync + Send + 'static, P: RedisPatternSubscribe
             return Ok(None);
         };
         #[allow(clippy::get_first)]
-        let version = if let Some(Value::Int(v)) = results.get(0) {
-            *v
+        let version = if let Some(raw_v) = results.get(0) {
+            match raw_v {
+                Value::Int(v) => *v,
+                Value::BulkString(v) => i64::from_str(str::from_utf8(v).expect("utf-8 bulkstring"))
+                    .expect("integer bulkstring"),
+                Value::Nil => 0,
+                _ => {
+                    warn!(?raw_v, "Non-integer version!");
+                    0
+                }
+            }
         } else {
             0
         };

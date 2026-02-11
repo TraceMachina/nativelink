@@ -1,3 +1,17 @@
+// Copyright 2026 The NativeLink Authors. All rights reserved.
+//
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    See LICENSE file for details
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use core::fmt::Write;
 use core::hash::BuildHasher;
 use std::collections::HashMap;
@@ -14,7 +28,7 @@ fn cmd_as_string(cmd: &redis::Cmd) -> String {
     String::from_utf8(raw).unwrap()
 }
 
-fn arg_as_string(output: &mut String, arg: Value) {
+pub(crate) fn arg_as_string(output: &mut String, arg: Value) {
     match arg {
         Value::SimpleString(s) => {
             write!(output, "+{s}\r\n").unwrap();
@@ -46,6 +60,9 @@ fn arg_as_string(output: &mut String, arg: Value) {
                 arg_as_string(output, key);
                 arg_as_string(output, value);
             }
+        }
+        Value::Nil => {
+            write!(output, "_\r\n").unwrap();
         }
         _ => {
             panic!("No support for {arg:?}")
@@ -142,11 +159,10 @@ pub fn fake_redis_sentinel_stream(master_name: &str, redis_port: u16) -> HashMap
     response
 }
 
-async fn fake_redis<B: BuildHasher + Clone + Send + 'static>(
-    listener: TcpListener,
-    responses: HashMap<String, String, B>,
-) {
-    info!("Responses are: {:?}", responses);
+pub(crate) async fn fake_redis_internal<H>(listener: TcpListener, handler: H)
+where
+    H: Fn(&[u8]) -> String + Send + Clone + 'static,
+{
     loop {
         info!(
             "Waiting for connection on {}",
@@ -157,33 +173,44 @@ async fn fake_redis<B: BuildHasher + Clone + Send + 'static>(
             panic!("error");
         };
         info!("Accepted new connection");
-        let values = responses.clone();
+        let local_handler = handler.clone();
         background_spawn!("thread", async move {
             loop {
                 let mut buf = vec![0; 8192];
                 let res = stream.read(&mut buf).await.unwrap();
                 if res != 0 {
-                    let str_buf = str::from_utf8(&buf[..res]);
-                    if let Ok(s) = str_buf {
-                        let mut matched = false;
-                        for (key, value) in &values {
-                            if s.starts_with(key) {
-                                info!("Responding to {}", s.replace("\r\n", "\\r\\n"));
-                                stream.write_all(value.as_bytes()).await.unwrap();
-                                matched = true;
-                                break;
-                            }
-                        }
-                        if !matched {
-                            warn!("Unknown command: {s}");
-                        }
-                    } else {
-                        warn!("Bytes buffer: {:?}", &buf[..res]);
+                    let output = local_handler(&buf[..res]);
+                    if !output.is_empty() {
+                        stream.write_all(output.as_bytes()).await.unwrap();
                     }
                 }
             }
         });
     }
+}
+
+async fn fake_redis<B>(listener: TcpListener, responses: HashMap<String, String, B>)
+where
+    B: BuildHasher + Clone + Send + 'static,
+{
+    info!("Responses are: {:?}", responses);
+    let values = responses.clone();
+    let inner = move |buf: &[u8]| -> String {
+        let str_buf = str::from_utf8(buf);
+        if let Ok(s) = str_buf {
+            for (key, value) in &values {
+                if s.starts_with(key) {
+                    info!("Responding to {}", s.replace("\r\n", "\\r\\n"));
+                    return value.clone();
+                }
+            }
+            warn!("Unknown command: {s}");
+        } else {
+            warn!("Bytes buffer: {:?}", &buf);
+        }
+        String::new()
+    };
+    fake_redis_internal(listener, inner).await;
 }
 
 pub async fn make_fake_redis_with_responses<B: BuildHasher + Clone + Send + 'static>(

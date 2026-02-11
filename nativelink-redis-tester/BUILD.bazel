@@ -10,6 +10,7 @@ load(
 rust_library(
     name = "nativelink-redis-tester",
     srcs = [
+        "src/dynamic_fake_redis.rs",
         "src/fake_redis.rs",
         "src/lib.rs",
         "src/pubsub.rs",
@@ -18,6 +19,7 @@ rust_library(
     deps = [
         "//nativelink-util",
         "@crates//:redis",
+        "@crates//:redis-protocol",
         "@crates//:redis-test",
         "@crates//:tokio",
         "@crates//:tracing",

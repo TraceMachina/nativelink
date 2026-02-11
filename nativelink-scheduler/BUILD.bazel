@@ -95,7 +95,6 @@ rust_test_suite(
         "@crates//:pretty_assertions",
         "@crates//:prost",
         "@crates//:redis",
-        "@crates//:redis-test",
         "@crates//:serde_json",
         "@crates//:tokio",
         "@crates//:tokio-stream",

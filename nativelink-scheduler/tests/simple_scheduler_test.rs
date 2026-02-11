@@ -205,8 +205,6 @@ async fn bad_worker_match_logging_interval() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
-    MockClock::set_time(Duration::from_secs(NOW_TIME));
-
     async fn advance_time<T>(duration: Duration, poll_fut: &mut Pin<&mut impl Future<Output = T>>) {
         const STEP_AMOUNT: Duration = Duration::from_millis(100);
         for _ in 0..(duration.as_millis() / STEP_AMOUNT.as_millis()) {
@@ -215,6 +213,8 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
             assert!(poll!(&mut *poll_fut).is_pending());
         }
     }
+
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
 
     let worker_id = WorkerId("worker_id".to_string());
 
