@@ -126,6 +126,12 @@ pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endp
         &endpoint_config.address,
         load_client_config(&endpoint_config.tls_config)?,
     )?;
+    tracing::info!(
+        address = %endpoint_config.address,
+        concurrency_limit = ?endpoint_config.concurrency_limit,
+        "tls_utils::endpoint: creating gRPC endpoint \
+         (note: no tcp_keepalive, http2_keepalive, or connect_timeout configured)",
+    );
     if let Some(concurrency_limit) = endpoint_config.concurrency_limit {
         Ok(endpoint.concurrency_limit(concurrency_limit))
     } else {

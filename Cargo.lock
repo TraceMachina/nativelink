@@ -2910,6 +2910,7 @@ dependencies = [
  "humantime",
  "hyper 1.7.0",
  "hyper-util",
+ "libc",
  "lru 0.16.3",
  "mock_instant",
  "nativelink-config",

@@ -41,6 +41,32 @@ pub struct FileSlot {
     inner: tokio::fs::File,
 }
 
+impl FileSlot {
+    /// Advise the kernel to drop page cache for this file's contents.
+    /// This is a best-effort operation — failures are logged but not propagated,
+    /// as the kernel is free to ignore the advice.
+    /// Only available on Linux; no-op on other platforms (macOS lacks posix_fadvise).
+    #[cfg(target_os = "linux")]
+    pub fn advise_dontneed(&self) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.inner.as_raw_fd();
+        // SAFETY: posix_fadvise is safe to call on any valid fd with valid advice.
+        let ret = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) };
+        if ret != 0 {
+            tracing::debug!(
+                fd,
+                ret,
+                "posix_fadvise(DONTNEED) returned non-zero (best-effort, ignoring)",
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn advise_dontneed(&self) {
+        // No-op: posix_fadvise is not available on macOS/Windows.
+    }
+}
+
 impl AsRef<tokio::fs::File> for FileSlot {
     fn as_ref(&self) -> &tokio::fs::File {
         &self.inner

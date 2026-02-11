@@ -69,6 +69,7 @@ const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 /// Default maximum amount of time a task is allowed to run for.
 /// If this value gets modified the documentation in `cas_server.rs` must also be updated.
 const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_secs(1200); // 20 mins.
+const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_secs(600); // 10 mins.
 
 struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
     config: &'a LocalWorkerConfig,
@@ -488,6 +489,11 @@ pub async fn new_local_worker(
     } else {
         Duration::from_secs(config.max_action_timeout as u64)
     };
+    let max_upload_timeout = if config.max_upload_timeout == 0 {
+        DEFAULT_MAX_UPLOAD_TIMEOUT
+    } else {
+        Duration::from_secs(config.max_upload_timeout as u64)
+    };
 
     // Initialize directory cache if configured
     let directory_cache = if let Some(cache_config) = &config.directory_cache {
@@ -538,6 +544,7 @@ pub async fn new_local_worker(
             historical_store,
             upload_action_result_config: &config.upload_action_result,
             max_action_timeout,
+            max_upload_timeout,
             timeout_handled_externally: config.timeout_handled_externally,
             directory_cache,
         })?);
