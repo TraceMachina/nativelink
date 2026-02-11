@@ -81,6 +81,10 @@ use tonic::Request;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
+fn duration_millis_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// For simplicity we use a fixed exit code for cases when our program is terminated
 /// due to a signal.
 const EXIT_CODE_FOR_SIGNAL: i32 = 9;
@@ -363,14 +367,14 @@ async fn upload_file(
             {
                 debug!(
                     ?digest,
-                    has_elapsed_ms = has_start.elapsed().as_millis() as u64,
+                    has_elapsed_ms = duration_millis_u64(has_start.elapsed()),
                     "upload_file: digest already exists in CAS, skipping upload",
                 );
                 return Ok(());
             }
             debug!(
                 ?digest,
-                has_elapsed_ms = has_start.elapsed().as_millis() as u64,
+                has_elapsed_ms = duration_millis_u64(has_start.elapsed()),
                 file_size = digest.size_bytes(),
                 "upload_file: digest not in CAS, starting upload",
             );
@@ -394,7 +398,7 @@ async fn upload_file(
                 .map(|_slot| ());
             debug!(
                 ?digest,
-                upload_elapsed_ms = file_upload_start.elapsed().as_millis() as u64,
+                upload_elapsed_ms = duration_millis_u64(file_upload_start.elapsed()),
                 success = upload_result.is_ok(),
                 "upload_file: update_with_whole_file completed",
             );
@@ -1358,7 +1362,7 @@ impl RunningActionImpl {
             debug!(
                 ?digest,
                 data_len,
-                elapsed_ms = start.elapsed().as_millis() as u64,
+                elapsed_ms = duration_millis_u64(start.elapsed()),
                 "upload_results: stdout upload completed",
             );
             Result::<DigestInfo, Error>::Ok(digest)
@@ -1375,7 +1379,7 @@ impl RunningActionImpl {
             debug!(
                 ?digest,
                 data_len,
-                elapsed_ms = start.elapsed().as_millis() as u64,
+                elapsed_ms = duration_millis_u64(start.elapsed()),
                 "upload_results: stderr upload completed",
             );
             Result::<DigestInfo, Error>::Ok(digest)
@@ -1406,7 +1410,7 @@ impl RunningActionImpl {
         drop(output_path_futures);
         debug!(
             operation_id = ?self.operation_id,
-            elapsed_ms = join_start.elapsed().as_millis() as u64,
+            elapsed_ms = duration_millis_u64(join_start.elapsed()),
             success = upload_result.is_ok(),
             "upload_results: all uploads completed",
         );
@@ -1443,7 +1447,7 @@ impl RunningActionImpl {
         }
         info!(
             operation_id = ?self.operation_id,
-            total_elapsed_ms = upload_start.elapsed().as_millis() as u64,
+            total_elapsed_ms = duration_millis_u64(upload_start.elapsed()),
             num_output_files,
             num_output_folders,
             "upload_results: inner_upload_results completed successfully",

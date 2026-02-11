@@ -17,6 +17,7 @@ use core::cmp::{max, min};
 use core::ops::Range;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::sync::{Arc, Weak};
@@ -38,6 +39,10 @@ use nativelink_util::store_trait::{
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
 use tracing::{debug, trace, warn};
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -436,7 +441,7 @@ impl StoreDriver for FastSlowStore {
                 if send_elapsed.as_secs() >= 5 {
                     warn!(
                         chunk_len,
-                        send_elapsed_ms = send_elapsed.as_millis() as u64,
+                        send_elapsed_ms = duration_millis_u64(send_elapsed),
                         total_bytes = bytes_sent,
                         "FastSlowStore::update: channel send stalled (>5s) — a downstream store may be hanging",
                     );
@@ -469,7 +474,7 @@ impl StoreDriver for FastSlowStore {
         if data_stream_res.is_err() || fast_res.is_err() || slow_res.is_err() {
             warn!(
                 key = %key_debug,
-                elapsed_ms = total_elapsed.as_millis() as u64,
+                elapsed_ms = duration_millis_u64(total_elapsed),
                 data_stream_ok = data_stream_res.is_ok(),
                 fast_store_ok = fast_res.is_ok(),
                 slow_store_ok = slow_res.is_ok(),
@@ -478,7 +483,7 @@ impl StoreDriver for FastSlowStore {
         } else {
             debug!(
                 key = %key_debug,
-                elapsed_ms = total_elapsed.as_millis() as u64,
+                elapsed_ms = duration_millis_u64(total_elapsed),
                 "FastSlowStore::update: completed successfully",
             );
         }
@@ -528,7 +533,7 @@ impl StoreDriver for FastSlowStore {
                 .await
                 .err_tip(|| "In FastSlowStore::update_with_whole_file slow_store")?;
                 debug!(
-                    elapsed_ms = slow_start.elapsed().as_millis() as u64,
+                    elapsed_ms = duration_millis_u64(slow_start.elapsed()),
                     "FastSlowStore::update_with_whole_file: slow_store upload completed",
                 );
             }

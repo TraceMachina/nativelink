@@ -62,7 +62,7 @@ impl FileSlot {
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub fn advise_dontneed(&self) {
+    pub const fn advise_dontneed(&self) {
         // No-op: posix_fadvise is not available on macOS/Windows.
     }
 }

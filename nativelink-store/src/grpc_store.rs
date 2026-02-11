@@ -56,6 +56,10 @@ use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+fn duration_millis_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
@@ -326,7 +330,7 @@ impl GrpcStore {
                             let instance_for_rpc = instance_name.clone();
                             debug!(
                                 instance_name = %instance_for_rpc,
-                                conn_elapsed_ms = conn_elapsed.as_millis() as u64,
+                                conn_elapsed_ms = duration_millis_u64(conn_elapsed),
                                 "GrpcStore::write: got connection, starting ByteStream.Write RPC",
                             );
                             let rpc_start = std::time::Instant::now();
@@ -338,7 +342,7 @@ impl GrpcStore {
                                     .err_tip(|| "in GrpcStore::write");
                                 debug!(
                                     instance_name = %instance_for_rpc,
-                                    rpc_elapsed_ms = rpc_start.elapsed().as_millis() as u64,
+                                    rpc_elapsed_ms = duration_millis_u64(rpc_start.elapsed()),
                                     success = res.is_ok(),
                                     "GrpcStore::write: ByteStream.Write RPC returned",
                                 );
@@ -351,7 +355,7 @@ impl GrpcStore {
                         warn!(
                             instance_name = %instance_name,
                             attempt,
-                            elapsed_ms = conn_start.elapsed().as_millis() as u64,
+                            elapsed_ms = duration_millis_u64(conn_start.elapsed()),
                             "GrpcStore::write: connection+RPC took >30s — possible stall",
                         );
                     }
@@ -394,7 +398,7 @@ impl GrpcStore {
             .await?;
         info!(
             instance_name = %self.instance_name,
-            total_elapsed_ms = write_start.elapsed().as_millis() as u64,
+            total_elapsed_ms = duration_millis_u64(write_start.elapsed()),
             "GrpcStore::write: completed successfully",
         );
         Ok(result)
