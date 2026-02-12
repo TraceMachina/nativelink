@@ -347,17 +347,29 @@ impl RedisStore<ClusterConnection, PubSub> {
         }
         Self::set_spec_defaults(&mut spec)?;
 
-        let full_urls: Vec<_> = spec
+        let parsed_addrs: Vec<_> = spec
             .addresses
             .iter_mut()
-            .map(|addr| format!("{addr}?protocol=resp3"))
-            .collect();
+            .map(|addr| {
+                addr.clone()
+                    .into_connection_info()
+                    .and_then(|connection_info| {
+                        let redis_settings = connection_info
+                            .redis_settings()
+                            .clone()
+                            // We need RESP3 here because the cluster mode doesn't support RESP2 pubsub
+                            // See also https://docs.rs/redis/latest/redis/cluster_async/index.html#pubsub
+                            .set_protocol(redis::ProtocolVersion::RESP3);
+                        Ok(connection_info.set_redis_settings(redis_settings))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let connection_timeout = Duration::from_millis(spec.connection_timeout_ms);
         let command_timeout = Duration::from_millis(spec.command_timeout_ms);
         let (tx, subscriber_channel) = unbounded_channel();
 
-        let builder = ClusterClient::builder(full_urls)
+        let builder = ClusterClient::builder(parsed_addrs)
             .connection_timeout(connection_timeout)
             .response_timeout(command_timeout)
             .push_sender(tx)
