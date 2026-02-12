@@ -1128,14 +1128,14 @@ pub struct RedisSpec {
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
     pub addresses: Vec<String>,
 
-    /// DEPRECATED: use command_timeout_ms
+    /// DEPRECATED: use `command_timeout_ms`
     /// The response timeout for the Redis connection in seconds.
     ///
     /// Default: 10
     #[serde(default)]
     pub response_timeout_s: u64,
 
-    /// DEPRECATED: use connection_timeout_ms
+    /// DEPRECATED: use `connection_timeout_ms`
     ///
     /// The connection timeout for the Redis connection in seconds.
     ///

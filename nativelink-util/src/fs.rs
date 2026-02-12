@@ -314,15 +314,10 @@ impl AsMut<tokio::fs::ReadDir> for ReadDir {
 
 pub async fn read_dir(path: impl AsRef<Path>) -> Result<ReadDir, Error> {
     let path = path.as_ref().to_owned();
-    let (permit, inner) = call_with_permit(move |permit| {
-        Ok((
-            permit,
-            tokio::runtime::Handle::current()
-                .block_on(tokio::fs::read_dir(path))
-                .map_err(Into::<Error>::into)?,
-        ))
-    })
-    .await?;
+    let permit = get_permit().await?;
+    let inner = tokio::fs::read_dir(path)
+        .await
+        .map_err(Into::<Error>::into)?;
     Ok(ReadDir { permit, inner })
 }
 
