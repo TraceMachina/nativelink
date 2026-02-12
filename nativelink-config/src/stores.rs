@@ -1102,12 +1102,15 @@ pub struct RedisSpec {
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
     pub addresses: Vec<String>,
 
+    /// DEPRECATED: use command_timeout_ms
     /// The response timeout for the Redis connection in seconds.
     ///
     /// Default: 10
     #[serde(default)]
     pub response_timeout_s: u64,
 
+    /// DEPRECATED: use connection_timeout_ms
+    ///
     /// The connection timeout for the Redis connection in seconds.
     ///
     /// Default: 10
@@ -1145,10 +1148,7 @@ pub struct RedisSpec {
     #[serde(default)]
     pub mode: RedisMode,
 
-    /// When using pubsub interface, this is the maximum number of items to keep
-    /// queued up before dropping old items.
-    ///
-    /// Default: 4096
+    /// Deprecated as redis-rs doesn't use it
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub broadcast_channel_capacity: usize,
 
@@ -1203,7 +1203,7 @@ pub struct RedisSpec {
     ///
     /// Default: 10000
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
-    pub scan_count: u32,
+    pub scan_count: usize,
 
     /// Retry configuration to use when a network request fails.
     /// See the `Retry` struct for more information.

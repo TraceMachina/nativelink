@@ -39,7 +39,7 @@ use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
-use tracing::{error, info, info_span, warn};
+use tracing::{debug, error, info, info_span, warn};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
@@ -280,6 +280,7 @@ impl SimpleScheduler {
                     return Err(err);
                 }
 
+                debug!(%worker_id, %operation_id, ?action_info, "Notifying worker of operation");
                 workers
                     .worker_notify_run_action(worker_id, operation_id, action_info)
                     .await
