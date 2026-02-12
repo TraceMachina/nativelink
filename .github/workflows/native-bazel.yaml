@@ -95,11 +95,22 @@ jobs:
           MAX_LOOPS: 10 # running sequentially just to test all the actions work
         shell: bash
 
-      - name: Run Store tester
+      - name: Run Store tester with standard
         run: |
           bazel run //:redis_store_tester \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode standard --mode sequential
+        env:
+          RUST_LOG: trace
+          REDIS_HOST: localhost
+          MAX_LOOPS: 10 # running sequentially just to test all the actions work
+        shell: bash
+
+      - name: Run Store tester with cluster
+        run: |
+          bazel run //:redis_store_tester \
+            --extra_toolchains=@rust_toolchains//:all \
+            --verbose_failures -- --redis-mode cluster --mode sequential
         env:
           RUST_LOG: trace
           REDIS_HOST: localhost

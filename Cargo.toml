@@ -57,7 +57,6 @@ mimalloc = { version = "0.1.44", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
-redis = { version = "1.0.0", default-features = false, features = ["aio"] }
 rustls-pki-types = { version = "1.13.1", features = [
   "std",
 ], default-features = false }

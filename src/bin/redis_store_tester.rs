@@ -13,13 +13,12 @@ use nativelink_store::redis_store::RedisStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::store_trait::{
     SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
-    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider, StoreKey,
-    StoreLike, TrueValue, UploadSizeInfo,
+    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider, StoreDriver,
+    StoreKey, StoreLike, TrueValue, UploadSizeInfo,
 };
 use nativelink_util::telemetry::init_tracing;
 use nativelink_util::{background_spawn, spawn};
 use rand::Rng;
-use redis::aio::{ConnectionManager, PubSub};
 use tokio::time::sleep;
 use tracing::{error, info};
 
@@ -148,6 +147,141 @@ struct Args {
     mode: TestMode,
 }
 
+async fn run<S: StoreDriver + SchedulerStore>(
+    store: Arc<S>,
+    max_loops: usize,
+    failed: Arc<RwLock<bool>>,
+    mode: TestMode,
+) -> Result<(), Error> {
+    let mut count = 0;
+    let in_flight = Arc::new(AtomicUsize::new(0));
+
+    loop {
+        if count % 1000 == 0 {
+            info!(
+                "Loop count {count}. In flight: {}",
+                in_flight.load(Ordering::Relaxed)
+            );
+            if *failed.read().unwrap() {
+                return Err(Error::new(
+                    Code::Internal,
+                    "Failed in redis_store_tester".to_string(),
+                ));
+            }
+        }
+        if count == max_loops {
+            loop {
+                let remaining = in_flight.load(Ordering::Relaxed);
+                if remaining == 0 {
+                    return Ok(());
+                }
+                info!(remaining, "Remaining");
+                sleep(Duration::from_secs(1)).await;
+            }
+        }
+        count += 1;
+        in_flight.fetch_add(1, Ordering::Relaxed);
+
+        let store_clone = store.clone();
+        let local_fail = failed.clone();
+        let local_in_flight = in_flight.clone();
+
+        let max_action_value = 7;
+        let action_value = match mode {
+            TestMode::Random => rand::rng().random_range(0..max_action_value),
+            TestMode::Sequential => count % max_action_value,
+        };
+
+        background_spawn!("action", async move {
+            async fn run_action<S: StoreDriver + SchedulerStore>(
+                action_value: usize,
+                store_clone: Arc<S>,
+            ) -> Result<(), Error> {
+                match action_value {
+                    0 => {
+                        store_clone.has(random_key()).await?;
+                    }
+                    1 => {
+                        let (mut tx, rx) = make_buf_channel_pair();
+                        tx.send(Bytes::from_static(b"12345")).await?;
+                        tx.send_eof()?;
+                        store_clone
+                            .update(random_key(), rx, UploadSizeInfo::ExactSize(5))
+                            .await?;
+                    }
+                    2 => {
+                        let mut results = (0..MAX_KEY).map(|_| None).collect::<Vec<_>>();
+
+                        store_clone
+                            .has_with_results(
+                                &(0..MAX_KEY)
+                                    .map(|i| StoreKey::Str(Cow::Owned(i.to_string())))
+                                    .collect::<Vec<_>>(),
+                                &mut results,
+                            )
+                            .await?;
+                    }
+                    3 => {
+                        store_clone
+                            .update_oneshot(random_key(), Bytes::from_static(b"1234"))
+                            .await?;
+                    }
+                    4 => {
+                        let res = store_clone
+                            .list(.., |_key| true)
+                            .await
+                            .err_tip(|| "In list")?;
+                        info!(%res, "end list");
+                    }
+                    5 => {
+                        let search_provider = SearchByContentPrefix {
+                            prefix: "Searchable".to_string(),
+                        };
+                        for i in 0..5 {
+                            let data = TestSchedulerData {
+                                key: format!("test:search_key_{i}"),
+                                content: format!("Searchable content #{i}"),
+                                version: 0,
+                            };
+
+                            store_clone.update_data(data).await?;
+                        }
+                        let search_results: Vec<_> = store_clone
+                            .search_by_index_prefix(search_provider)
+                            .await?
+                            .try_collect()
+                            .await?;
+                        info!(?search_results, "search results");
+                    }
+                    _ => {
+                        let mut data = TestSchedulerData {
+                            key: "test:scheduler_key_1".to_string(),
+                            content: "Test scheduler data #1".to_string(),
+                            version: 0,
+                        };
+
+                        let res = store_clone.get_and_decode(data.clone()).await?;
+                        if let Some(existing_data) = res {
+                            data.version = existing_data.version + 1;
+                        }
+
+                        store_clone.update_data(data).await?;
+                    }
+                }
+                Ok(())
+            }
+            match run_action(action_value, store_clone).await {
+                Ok(()) => {}
+                Err(e) => {
+                    error!(?e, "Error!");
+                    *local_fail.write().unwrap() = true;
+                }
+            }
+            local_in_flight.fetch_sub(1, Ordering::Relaxed);
+        });
+    }
+}
+
 fn main() -> Result<(), Box<dyn core::error::Error>> {
     let args = Args::parse();
     let redis_mode: RedisMode = args.redis_mode.into();
@@ -178,7 +312,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             let redis_port = match redis_mode {
                 RedisMode::Standard => 6379,
                 RedisMode::Sentinel => 26379,
-                RedisMode::Cluster => 36379,
+                RedisMode::Cluster => 7000,
             };
             let addr = match redis_mode {
                 RedisMode::Sentinel => format!("redis+sentinel://{redis_host}:{redis_port}/"),
@@ -191,139 +325,15 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                 mode: redis_mode,
                 ..Default::default()
             };
-            let store = match spec.mode {
-                RedisMode::Standard | RedisMode::Sentinel => RedisStore::new_standard(spec).await?,
+            match spec.mode {
+                RedisMode::Standard | RedisMode::Sentinel => {
+                    let store = RedisStore::new_standard(spec).await?;
+                    run(store, max_loops, failed.clone(), args.mode).await
+                }
                 RedisMode::Cluster => {
-                    unimplemented!("Cluster has different return type");
+                    let store = RedisStore::new_cluster(spec).await?;
+                    run(store, max_loops, failed.clone(), args.mode).await
                 }
-            };
-
-            let mut count = 0;
-            let in_flight = Arc::new(AtomicUsize::new(0));
-
-            loop {
-                if count % 1000 == 0 {
-                    info!(
-                        "Loop count {count}. In flight: {}",
-                        in_flight.load(Ordering::Relaxed)
-                    );
-                    if *failed.read().unwrap() {
-                        return Err(Error::new(
-                            Code::Internal,
-                            "Failed in redis_store_tester".to_string(),
-                        ));
-                    }
-                }
-                if count == max_loops {
-                    loop {
-                        let remaining = in_flight.load(Ordering::Relaxed);
-                        if remaining == 0 {
-                            return Ok(());
-                        }
-                        info!(remaining, "Remaining");
-                        sleep(Duration::from_secs(1)).await;
-                    }
-                }
-                count += 1;
-                in_flight.fetch_add(1, Ordering::Relaxed);
-
-                let store_clone = store.clone();
-                let local_fail = failed.clone();
-                let local_in_flight = in_flight.clone();
-
-                let max_action_value = 7;
-                let action_value = match args.mode {
-                    TestMode::Random => rand::rng().random_range(0..max_action_value),
-                    TestMode::Sequential => count % max_action_value,
-                };
-
-                background_spawn!("action", async move {
-                    async fn run_action(
-                        action_value: usize,
-                        store_clone: Arc<RedisStore<ConnectionManager, PubSub>>,
-                    ) -> Result<(), Error> {
-                        match action_value {
-                            0 => {
-                                store_clone.has(random_key()).await?;
-                            }
-                            1 => {
-                                let (mut tx, rx) = make_buf_channel_pair();
-                                tx.send(Bytes::from_static(b"12345")).await?;
-                                tx.send_eof()?;
-                                store_clone
-                                    .update(random_key(), rx, UploadSizeInfo::ExactSize(5))
-                                    .await?;
-                            }
-                            2 => {
-                                let mut results = (0..MAX_KEY).map(|_| None).collect::<Vec<_>>();
-
-                                store_clone
-                                    .has_with_results(
-                                        &(0..MAX_KEY)
-                                            .map(|i| StoreKey::Str(Cow::Owned(i.to_string())))
-                                            .collect::<Vec<_>>(),
-                                        &mut results,
-                                    )
-                                    .await?;
-                            }
-                            3 => {
-                                store_clone
-                                    .update_oneshot(random_key(), Bytes::from_static(b"1234"))
-                                    .await?;
-                            }
-                            4 => {
-                                let res = store_clone
-                                    .list(.., |_key| true)
-                                    .await
-                                    .err_tip(|| "In list")?;
-                                info!(%res, "end list");
-                            }
-                            5 => {
-                                let search_provider = SearchByContentPrefix {
-                                    prefix: "Searchable".to_string(),
-                                };
-                                for i in 0..5 {
-                                    let data = TestSchedulerData {
-                                        key: format!("test:search_key_{i}"),
-                                        content: format!("Searchable content #{i}"),
-                                        version: 0,
-                                    };
-
-                                    store_clone.update_data(data).await?;
-                                }
-                                let search_results: Vec<_> = store_clone
-                                    .search_by_index_prefix(search_provider)
-                                    .await?
-                                    .try_collect()
-                                    .await?;
-                                info!(?search_results, "search results");
-                            }
-                            _ => {
-                                let mut data = TestSchedulerData {
-                                    key: "test:scheduler_key_1".to_string(),
-                                    content: "Test scheduler data #1".to_string(),
-                                    version: 0,
-                                };
-
-                                let res = store_clone.get_and_decode(data.clone()).await?;
-                                if let Some(existing_data) = res {
-                                    data.version = existing_data.version + 1;
-                                }
-
-                                store_clone.update_data(data).await?;
-                            }
-                        }
-                        Ok(())
-                    }
-                    match run_action(action_value, store_clone).await {
-                        Ok(()) => {}
-                        Err(e) => {
-                            error!(?e, "Error!");
-                            *local_fail.write().unwrap() = true;
-                        }
-                    }
-                    local_in_flight.fetch_sub(1, Ordering::Relaxed);
-                });
             }
         })
         .unwrap();
