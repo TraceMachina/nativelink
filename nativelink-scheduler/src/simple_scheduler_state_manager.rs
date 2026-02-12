@@ -755,7 +755,15 @@ where
                         result => return result,
                     }
                 }
-                UpdateOperationType::UpdateWithActionStage(stage) => stage.clone(),
+                UpdateOperationType::UpdateWithActionStage(stage) => {
+                    if stage == &ActionStage::Executing
+                        && awaited_action.state().stage == ActionStage::Executing
+                    {
+                        warn!(state = ?awaited_action.state(), "Action already assigned");
+                        return Err(make_err!(Code::Aborted, "Action already assigned"));
+                    }
+                    stage.clone()
+                }
                 UpdateOperationType::UpdateWithError(err) => {
                     // Don't count a backpressure failure as an attempt for an action.
                     let due_to_backpressure = err.code == Code::ResourceExhausted;

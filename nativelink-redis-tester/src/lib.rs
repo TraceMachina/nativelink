@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2026 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,9 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod aggregate_types;
-mod ft_aggregate;
-mod ft_create;
-mod ft_cursor_read;
-pub(crate) use ft_aggregate::{FtAggregateCursor, FtAggregateOptions, ft_aggregate};
-pub(crate) use ft_create::{FtCreateOptions, SearchSchema, ft_create};
+mod dynamic_fake_redis;
+mod fake_redis;
+mod pubsub;
+
+pub use dynamic_fake_redis::{FakeRedisBackend, SubscriptionManagerNotify};
+pub use fake_redis::{
+    add_lua_script, fake_redis_sentinel_master_stream, fake_redis_sentinel_stream,
+    fake_redis_stream, make_fake_redis_with_responses,
+};
+pub use pubsub::MockPubSub;
