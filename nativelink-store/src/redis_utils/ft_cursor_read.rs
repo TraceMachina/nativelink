@@ -58,7 +58,8 @@ where
     };
 
     Ok(RedisCursorData {
-        total: -1, // FIXME(palfrey): fill in value
+        // this should generally be impossible, but -1 provides a decent "obviously bad" value just in case
+        total: i64::try_from(data_ary.len()).unwrap_or(-1),
         cursor: new_cursor_id as u64,
         data: data_ary.into(),
     })
