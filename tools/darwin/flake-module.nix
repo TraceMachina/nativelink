@@ -35,6 +35,8 @@
           bazelrcContent = ''
             build --@rules_rust//:extra_rustc_flags=-L${pkgs.libiconv}/lib,-Lframework=${pkgs.darwin.Security}/Library/Frameworks,-Lframework=${pkgs.darwin.CF}/Library/Frameworks
             build --@rules_rust//:extra_exec_rustc_flags=-L${pkgs.libiconv}/lib,-Lframework=${pkgs.darwin.Security}/Library/Frameworks,-Lframework=${pkgs.darwin.CF}/Library/Frameworks
+            build:asan --@rules_rust//:extra_rustc_flags=-L${pkgs.libiconv}/lib
+            build:asan --@rules_rust//:extra_exec_rustc_flags=-L${pkgs.libiconv}/lib
           '';
         in
           import ../installation-script.nix {

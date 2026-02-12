@@ -15,10 +15,9 @@
 use std::collections::HashMap;
 
 use nativelink_error::{Error, ResultExt};
-use serde::{Deserialize, Serialize};
-
 #[cfg(feature = "dev-schema")]
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::schedulers::SchedulerSpec;
 use crate::serde_utils::{

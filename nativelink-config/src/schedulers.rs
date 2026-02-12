@@ -14,10 +14,9 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-
 #[cfg(feature = "dev-schema")]
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
     convert_duration_with_shellexpand, convert_duration_with_shellexpand_and_negative,

@@ -16,7 +16,6 @@ use core::time::Duration;
 use std::sync::Arc;
 
 use rand::Rng;
-
 #[cfg(feature = "dev-schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
