@@ -365,8 +365,7 @@ impl ApiWorkerSchedulerImpl {
             // Note: We need to run this before dealing with backpressure logic.
             let complete_action_res = worker.complete_action(operation_id).await;
 
-            if (due_to_backpressure || !worker.can_accept_work()) && worker.has_actions()
-            {
+            if (due_to_backpressure || !worker.can_accept_work()) && worker.has_actions() {
                 worker.is_paused = true;
             }
             complete_action_res
