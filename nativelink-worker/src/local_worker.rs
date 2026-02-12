@@ -16,13 +16,16 @@ use core::pin::Pin;
 use core::str;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::env;
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
 
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{Future, FutureExt, StreamExt, TryFutureExt, select};
-use nativelink_config::cas_server::LocalWorkerConfig;
+use nativelink_config::cas_server::{EnvironmentSource, LocalWorkerConfig};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
@@ -45,7 +48,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
-use tracing::{Level, debug, error, event, info, info_span, instrument, warn};
+use tracing::{Level, debug, error, event, info, info_span, instrument, trace, warn};
 
 use crate::running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
@@ -85,7 +88,10 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     metrics: Arc<Metrics>,
 }
 
-async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Error> {
+pub async fn preconditions_met(
+    precondition_script: Option<String>,
+    extra_envs: &HashMap<String, String>,
+) -> Result<(), Error> {
     let Some(precondition_script) = &precondition_script else {
         // No script means we are always ok to proceed.
         return Ok(());
@@ -96,15 +102,31 @@ async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Er
     //       future to pass useful information through?  Or perhaps we'll
     //       have a pre-condition and a pre-execute script instead, although
     //       arguably entrypoint already gives us that.
-    let precondition_process = process::Command::new(precondition_script)
+
+    let maybe_split_cmd = shlex::split(precondition_script);
+    let (command, args) = match &maybe_split_cmd {
+        Some(split_cmd) => (&split_cmd[0], &split_cmd[1..]),
+        None => {
+            return Err(make_input_err!(
+                "Could not parse the value of precondition_script: '{}'",
+                precondition_script,
+            ));
+        }
+    };
+
+    let precondition_process = process::Command::new(command)
+        .args(args)
         .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .env_clear()
+        .envs(extra_envs)
         .spawn()
         .err_tip(|| format!("Could not execute precondition command {precondition_script:?}"))?;
     let output = precondition_process.wait_with_output().await?;
+    let stdout = str::from_utf8(&output.stdout).unwrap_or("");
+    trace!(status = %output.status, %stdout, "Preconditions script returned");
     if output.status.code() == Some(0) {
         Ok(())
     } else {
@@ -112,7 +134,7 @@ async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Er
             Code::ResourceExhausted,
             "Preconditions script returned status {} - {}",
             output.status,
-            str::from_utf8(&output.stdout).unwrap_or("")
+            stdout
         ))
     }
 }
@@ -255,6 +277,23 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
                             let start_action_fut = {
                                 let precondition_script_cfg = self.config.experimental_precondition_script.clone();
+                                let mut extra_envs: HashMap<String, String> = HashMap::new();
+                                if let Some(ref additional_environment) = self.config.additional_environment {
+                                    for (name, source) in additional_environment {
+                                        let value = match source {
+                                            EnvironmentSource::Property(property) => start_execute
+                                                .platform.as_ref().and_then(|p|p.properties.iter().find(|pr| &pr.name == property))
+                                                .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.value.as_str())),
+                                            EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                                            EnvironmentSource::FromEnvironment => Cow::Owned(env::var(name).unwrap_or_default()),
+                                            other => {
+                                                debug!(?other, "Worker doesn't support this type of additional environment");
+                                                continue;
+                                            }
+                                        };
+                                        extra_envs.insert(name.clone(), value.into_owned());
+                                    }
+                                }
                                 let actions_in_transit = self.actions_in_transit.clone();
                                 let worker_id = self.worker_id.clone();
                                 let running_actions_manager = self.running_actions_manager.clone();
@@ -263,7 +302,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     operation_id: operation_id.clone(),
                                 };
                                 self.metrics.clone().wrap(move |metrics| async move {
-                                    metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
+                                    metrics.preconditions.wrap(preconditions_met(precondition_script_cfg, &extra_envs))
                                     .and_then(|()| running_actions_manager.create_and_add_action(worker_id, start_execute))
                                     .map(move |r| {
                                         // Now that we either failed or registered our action, we can
@@ -614,9 +653,30 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         &self,
         client: &mut T,
     ) -> Result<(String, Streaming<UpdateForWorker>), Error> {
+        let mut extra_envs: HashMap<String, String> = HashMap::new();
+        if let Some(ref additional_environment) = self.config.additional_environment {
+            for (name, source) in additional_environment {
+                let value = match source {
+                    EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                    EnvironmentSource::FromEnvironment => {
+                        Cow::Owned(env::var(name).unwrap_or_default())
+                    }
+                    other => {
+                        debug!(
+                            ?other,
+                            "Worker registration doesn't support this type of additional environment"
+                        );
+                        continue;
+                    }
+                };
+                extra_envs.insert(name.clone(), value.into_owned());
+            }
+        }
+
         let connect_worker_request = make_connect_worker_request(
             self.config.name.clone(),
             &self.config.platform_properties,
+            &extra_envs,
             self.config.max_inflight_tasks,
         )
         .await?;
