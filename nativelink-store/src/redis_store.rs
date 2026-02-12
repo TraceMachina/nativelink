@@ -1502,7 +1502,7 @@ impl<C: Clone + ConnectionLike + Sync + Send + 'static, P: RedisPatternSubscribe
             let Some(redis_map) = raw_redis_map.as_sequence() else {
                 return Some(Err(Error::new(
                     Code::Internal,
-                    format!("Non-map from ft_aggregate: {raw_redis_map:?}"),
+                    format!("Non-array from ft_aggregate: {raw_redis_map:?}"),
                 )));
             };
             let mut redis_map_iter = redis_map.iter();

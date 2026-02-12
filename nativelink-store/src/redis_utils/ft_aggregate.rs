@@ -132,10 +132,211 @@ where
     ))
 }
 
+fn resp2_data_parse(
+    output: &mut RedisCursorData,
+    results_array: &Vec<Value>,
+) -> Result<(), RedisError> {
+    let mut results_iter = results_array.iter();
+    match results_iter.next() {
+        Some(Value::Int(t)) => {
+            output.total = *t;
+        }
+        Some(other) => {
+            error!(?other, "Non-int for first value in ft.aggregate");
+            return Err(RedisError::from((
+                ErrorKind::Parse,
+                "Non int for aggregate total",
+                format!("{other:?}"),
+            )));
+        }
+        None => {
+            error!("No items in results array for ft.aggregate!");
+            return Err(RedisError::from((
+                ErrorKind::Parse,
+                "No items in results array for ft.aggregate",
+            )));
+        }
+    }
+
+    for item in results_iter {
+        match item {
+            Value::Array(items) if items.len() % 2 == 0 => {}
+            other => {
+                error!(
+                    ?other,
+                    "Expected an array with an even number of items, didn't get it for aggregate value"
+                );
+                return Err(RedisError::from((
+                    ErrorKind::Parse,
+                    "Expected an array with an even number of items, didn't get it for aggregate value",
+                    format!("{other:?}"),
+                )));
+            }
+        }
+
+        output.data.push_back(item.clone());
+    }
+    Ok(())
+}
+
+fn resp3_data_parse(
+    output: &mut RedisCursorData,
+    results_map: &Vec<(Value, Value)>,
+) -> Result<(), RedisError> {
+    for (raw_key, value) in results_map {
+        let Value::SimpleString(key) = raw_key else {
+            return Err(RedisError::from((
+                ErrorKind::Parse,
+                "Expected SimpleString keys",
+                format!("{raw_key:?}"),
+            )));
+        };
+        match key.as_str() {
+            "attributes" => {
+                let Value::Array(attributes) = value else {
+                    return Err(RedisError::from((
+                        ErrorKind::Parse,
+                        "Expected array for attributes",
+                        format!("{value:?}"),
+                    )));
+                };
+                if !attributes.is_empty() {
+                    return Err(RedisError::from((
+                        ErrorKind::Parse,
+                        "Expected empty attributes",
+                        format!("{attributes:?}"),
+                    )));
+                }
+            }
+            "format" => {
+                let Value::SimpleString(format) = value else {
+                    return Err(RedisError::from((
+                        ErrorKind::Parse,
+                        "Expected SimpleString for format",
+                        format!("{value:?}"),
+                    )));
+                };
+                if format.as_str() != "STRING" {
+                    return Err(RedisError::from((
+                        ErrorKind::Parse,
+                        "Expected STRING format",
+                        format!("{format}"),
+                    )));
+                }
+            }
+            "results" => {
+                let Value::Array(values) = value else {
+                    return Err(RedisError::from((
+                        ErrorKind::Parse,
+                        "Expected Array for results",
+                        format!("{value:?}"),
+                    )));
+                };
+                for raw_value in values {
+                    let Value::Map(value) = raw_value else {
+                        return Err(RedisError::from((
+                            ErrorKind::Parse,
+                            "Expected list of maps in result",
+                            format!("{raw_value:?}"),
+                        )));
+                    };
+                    for (raw_map_key, raw_map_value) in value {
+                        let Value::SimpleString(map_key) = raw_map_key else {
+                            return Err(RedisError::from((
+                                ErrorKind::Parse,
+                                "Expected SimpleString keys for result maps",
+                                format!("{raw_key:?}"),
+                            )));
+                        };
+                        match map_key.as_str() {
+                            "extra_attributes" => {
+                                let Value::Map(extra_attributes_values) = raw_map_value else {
+                                    return Err(RedisError::from((
+                                        ErrorKind::Parse,
+                                        "Expected Map for extra_attributes",
+                                        format!("{raw_map_value:?}"),
+                                    )));
+                                };
+                                let mut output_array = vec![];
+                                for (e_key, e_value) in extra_attributes_values {
+                                    output_array.push(e_key.clone());
+                                    output_array.push(e_value.clone());
+                                }
+                                output.data.push_back(Value::Array(output_array));
+                            }
+                            "values" => {
+                                let Value::Array(values_values) = raw_map_value else {
+                                    return Err(RedisError::from((
+                                        ErrorKind::Parse,
+                                        "Expected Array for values",
+                                        format!("{raw_map_value:?}"),
+                                    )));
+                                };
+                                if !values_values.is_empty() {
+                                    return Err(RedisError::from((
+                                        ErrorKind::Parse,
+                                        "Expected empty values (all in extra_attributes)",
+                                        format!("{values_values:?}"),
+                                    )));
+                                }
+                            }
+                            _ => {
+                                return Err(RedisError::from((
+                                    ErrorKind::Parse,
+                                    "Unknown result map key",
+                                    format!("{map_key:?}"),
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+            "total_results" => {
+                let Value::Int(total) = value else {
+                    return Err(RedisError::from((
+                        ErrorKind::Parse,
+                        "Expected int for total_results",
+                        format!("{value:?}"),
+                    )));
+                };
+                output.total = *total;
+            }
+            "warning" => {
+                let Value::Array(warnings) = value else {
+                    return Err(RedisError::from((
+                        ErrorKind::Parse,
+                        "Expected Array for warning",
+                        format!("{value:?}"),
+                    )));
+                };
+                if !warnings.is_empty() {
+                    return Err(RedisError::from((
+                        ErrorKind::Parse,
+                        "Expected empty warnings",
+                        format!("{warnings:?}"),
+                    )));
+                }
+            }
+            _ => {
+                return Err(RedisError::from((
+                    ErrorKind::Parse,
+                    "Unexpected key in ft.aggregate",
+                    format!("{key} => {value:?}"),
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl TryFrom<Value> for RedisCursorData {
     type Error = RedisError;
     fn try_from(raw_value: Value) -> Result<Self, RedisError> {
         let Value::Array(value) = raw_value else {
+            error!(
+                ?raw_value,
+                "Bad data in ft.aggregate, expected array at top-level"
+            );
             return Err(RedisError::from((ErrorKind::Parse, "Expected array")));
         };
         if value.len() < 2 {
@@ -146,10 +347,14 @@ impl TryFrom<Value> for RedisCursorData {
         }
         let mut output = Self::default();
         let mut value = value.into_iter();
-        let results_array = match value.next().unwrap() {
-            Value::Array(d) => d,
+        match value.next().unwrap() {
+            Value::Array(d) => resp2_data_parse(&mut output, &d)?,
+            Value::Map(d) => resp3_data_parse(&mut output, &d)?,
             other => {
-                error!(?other, "Bad data in ft.aggregate, expected array");
+                error!(
+                    ?other,
+                    "Bad data in ft.aggregate, expected array for results"
+                );
                 return Err(RedisError::from((
                     ErrorKind::Parse,
                     "Non map item",
@@ -157,46 +362,6 @@ impl TryFrom<Value> for RedisCursorData {
                 )));
             }
         };
-        let mut results_iter = results_array.iter();
-        match results_iter.next() {
-            Some(Value::Int(t)) => {
-                output.total = *t;
-            }
-            Some(other) => {
-                error!(?other, "Non-int for first value in ft.aggregate");
-                return Err(RedisError::from((
-                    ErrorKind::Parse,
-                    "Non int for aggregate total",
-                    format!("{other:?}"),
-                )));
-            }
-            None => {
-                error!("No items in results array for ft.aggregate!");
-                return Err(RedisError::from((
-                    ErrorKind::Parse,
-                    "No items in results array for ft.aggregate",
-                )));
-            }
-        }
-
-        for item in results_iter {
-            match item {
-                Value::Array(items) if items.len() % 2 == 0 => {}
-                other => {
-                    error!(
-                        ?other,
-                        "Expected an array with an even number of items, didn't get it for aggregate value"
-                    );
-                    return Err(RedisError::from((
-                        ErrorKind::Parse,
-                        "Expected an array with an even number of items, didn't get it for aggregate value",
-                        format!("{other:?}"),
-                    )));
-                }
-            }
-
-            output.data.push_back(item.clone());
-        }
         let Value::Int(cursor) = value.next().unwrap() else {
             return Err(RedisError::from((
                 ErrorKind::Parse,
