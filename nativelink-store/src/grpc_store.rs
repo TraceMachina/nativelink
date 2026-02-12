@@ -66,6 +66,8 @@ pub struct GrpcStore {
     store_type: nativelink_config::stores::StoreType,
     retrier: Retrier,
     connection_manager: ConnectionManager,
+    /// Per-RPC timeout. Duration::ZERO means disabled.
+    rpc_timeout: Duration,
 }
 
 impl GrpcStore {
@@ -88,6 +90,12 @@ impl GrpcStore {
             endpoints.push(endpoint);
         }
 
+        let rpc_timeout = if spec.rpc_timeout_s > 0 {
+            Duration::from_secs(spec.rpc_timeout_s)
+        } else {
+            Duration::from_secs(120)
+        };
+
         Ok(Arc::new(Self {
             instance_name: spec.instance_name.clone(),
             store_type: spec.store_type,
@@ -103,6 +111,7 @@ impl GrpcStore {
                 spec.retry.clone(),
                 jitter_fn,
             ),
+            rpc_timeout,
         }))
     }
 
@@ -296,8 +305,10 @@ impl GrpcStore {
 
         let write_start = std::time::Instant::now();
         let instance_name = self.instance_name.clone();
+        let rpc_timeout = self.rpc_timeout;
         debug!(
             instance_name = %instance_name,
+            rpc_timeout_s = rpc_timeout.as_secs(),
             "GrpcStore::write: starting ByteStream write",
         );
         let mut attempt: u32 = 0;
@@ -318,7 +329,7 @@ impl GrpcStore {
                         "GrpcStore::write: requesting connection from pool",
                     );
                     let conn_start = std::time::Instant::now();
-                    let result = self
+                    let rpc_fut = self
                         .connection_manager
                         .connection()
                         .and_then(|channel| {
@@ -344,17 +355,29 @@ impl GrpcStore {
                                 );
                                 res
                             }
-                        })
-                        .await;
+                        });
 
-                    if conn_start.elapsed().as_secs() >= 30 {
-                        warn!(
-                            instance_name = %instance_name,
-                            attempt,
-                            elapsed_ms = conn_start.elapsed().as_millis() as u64,
-                            "GrpcStore::write: connection+RPC took >30s — possible stall",
-                        );
-                    }
+                    let result = if rpc_timeout > Duration::ZERO {
+                        match tokio::time::timeout(rpc_timeout, rpc_fut).await {
+                            Ok(res) => res,
+                            Err(_elapsed) => {
+                                warn!(
+                                    instance_name = %instance_name,
+                                    attempt,
+                                    rpc_timeout_s = rpc_timeout.as_secs(),
+                                    "GrpcStore::write: per-RPC timeout exceeded, cancelling",
+                                );
+                                #[allow(unused_qualifications)]
+                                Err(nativelink_error::make_err!(
+                                    nativelink_error::Code::DeadlineExceeded,
+                                    "GrpcStore::write RPC timed out after {}s",
+                                    rpc_timeout.as_secs()
+                                ))
+                            }
+                        }
+                    } else {
+                        rpc_fut.await
+                    };
 
                     // Get the state back from StateWrapper, this should be
                     // uncontended since write has returned.
