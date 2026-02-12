@@ -55,6 +55,7 @@ use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::{sleep, timeout};
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
 use uuid::Uuid;
@@ -1147,13 +1148,21 @@ impl RedisPatternSubscriber for MockPubSub {
 }
 
 impl RedisSubscriptionManager {
-    pub fn new<P>(mut pub_sub: P, pub_sub_channel: String) -> Self
+    pub fn new<P>(
+        mut pub_sub: P,
+        subscriber_channel: Option<UnboundedReceiver<PushInfo>>,
+        pub_sub_channel: String,
+    ) -> Self
     where
         P: RedisPatternSubscriber,
     {
         let subscribed_keys = Arc::new(RwLock::new(StringPatriciaMap::new()));
         let subscribed_keys_weak = Arc::downgrade(&subscribed_keys);
         let (tx_for_test, mut rx_for_test) = unbounded_channel();
+        let mut local_subscriber_channel: Pin<Box<dyn Stream<Item = PushInfo> + Send>> =
+            subscriber_channel
+                .and_then(|channel| Some(UnboundedReceiverStream::new(channel).boxed()))
+                .unwrap_or_else(|| stream::empty::<PushInfo>().boxed());
         Self {
             subscribed_keys,
             tx_for_test,
@@ -1200,6 +1209,29 @@ impl RedisSubscriptionManager {
                                         break;
                                     }
                                 },
+                                maybe_push_info = local_subscriber_channel.next() => {
+                                    if let Some(push_info) = maybe_push_info {
+                                        if push_info.data.len() != 1 {
+                                            error!(?push_info, "Expected exactly one message on subscriber_channel");
+                                            continue;
+                                        }
+                                        match push_info.data.first().unwrap() {
+                                            Value::SimpleString(s) => {
+                                                s.clone()
+                                            }
+                                            Value::BulkString(v) => {
+                                                String::from_utf8(v.to_vec()).expect("String message")
+                                            }
+                                            other => {
+                                                error!(?other, "Received non-string message in RedisSubscriptionManager");
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        error!("Error receiving message in RedisSubscriptionManager from subscriber_channel");
+                                        break;
+                                    }
+                                }
                             };
                             let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
                                 warn!(
@@ -1302,6 +1334,7 @@ impl<C: Clone + ConnectionLike + Sync + Send + 'static, P: RedisPatternSubscribe
             };
             let sub = Arc::new(RedisSubscriptionManager::new(
                 pub_sub,
+                self.subscriber_channel.lock().take(),
                 pub_sub_channel.clone(),
             ));
             *subscription_manager = Some(sub.clone());
