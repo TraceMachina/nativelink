@@ -362,13 +362,10 @@ impl ApiWorkerSchedulerImpl {
 
         // Clear this action from the current worker if finished.
         let complete_action_res = {
-            let was_paused = !worker.can_accept_work();
-
             // Note: We need to run this before dealing with backpressure logic.
             let complete_action_res = worker.complete_action(operation_id).await;
 
-            // Only pause if there's an action still waiting that will unpause.
-            if (was_paused || due_to_backpressure) && worker.has_actions() {
+            if (due_to_backpressure || !worker.can_accept_work()) && worker.has_actions() {
                 worker.is_paused = true;
             }
             complete_action_res
