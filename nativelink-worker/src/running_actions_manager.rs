@@ -1500,15 +1500,15 @@ impl RunningAction for RunningActionImpl {
                 () = &mut stall_warn_fut => unreachable!(),
             }
         })
-            .await
-            .map_err(|_| {
-                make_err!(
+        .await
+        .map_err(|_| {
+            make_err!(
                 Code::DeadlineExceeded,
                 "Upload results timed out after {}s for operation {:?}",
                 upload_timeout.as_secs(),
                 operation_id,
             )
-            })?;
+        })?;
         if let Err(ref e) = res {
             warn!(?operation_id, ?e, "Error during upload_results");
         }

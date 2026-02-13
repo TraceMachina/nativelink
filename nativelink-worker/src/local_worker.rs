@@ -71,7 +71,6 @@ const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_secs(1200); // 20 mins.
 const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_secs(600); // 10 mins.
 
-
 struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
     config: &'a LocalWorkerConfig,
     // According to the tonic documentation it is a cheap operation to clone this.
