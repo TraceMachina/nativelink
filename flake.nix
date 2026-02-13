@@ -118,7 +118,7 @@
           linkerPath =
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
-            else "${pkgs.llvmPackages.lld}/bin/ld.lld";
+            else "${pkgs.llvmPackages_22.lld}/bin/ld.lld";
 
           linkerEnvVar = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER";
         in
@@ -139,7 +139,7 @@
               (
                 if isLinuxBuild
                 then [pkgs.mold]
-                else [pkgs.llvmPackages.lld]
+                else [pkgs.llvmPackages_22.lld]
               )
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
                 p.apple-sdk_15
