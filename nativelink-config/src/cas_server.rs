@@ -727,6 +727,14 @@ pub struct LocalWorkerConfig {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_action_timeout: usize,
 
+    /// Maximum time allowed for uploading action results to CAS after execution
+    /// completes. If upload takes longer than this, the action fails with
+    /// DeadlineExceeded and may be retried by the scheduler. Value in seconds.
+    ///
+    /// Default: 600 (seconds / 10 mins)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub max_upload_timeout: usize,
+
     /// Maximum number of inflight tasks this worker can cope with.
     ///
     /// Default: 0 (infinite tasks)

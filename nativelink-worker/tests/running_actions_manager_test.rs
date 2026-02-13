@@ -455,6 +455,7 @@ mod tests {
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             },
@@ -578,6 +579,7 @@ mod tests {
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             },
@@ -703,6 +705,7 @@ mod tests {
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             },
@@ -884,6 +887,7 @@ mod tests {
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             },
@@ -1066,6 +1070,7 @@ mod tests {
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             },
@@ -1274,6 +1279,7 @@ mod tests {
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             },
@@ -1409,6 +1415,7 @@ mod tests {
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
@@ -1612,6 +1619,7 @@ exit 0
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
@@ -1788,6 +1796,7 @@ exit 0
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
@@ -1958,6 +1967,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
@@ -2042,6 +2052,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
@@ -2117,6 +2128,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
@@ -2198,6 +2210,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
@@ -2300,6 +2313,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
@@ -2346,6 +2360,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
@@ -2414,6 +2429,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
@@ -2533,6 +2549,7 @@ exit 1
                             ..Default::default()
                         },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
+                    max_upload_timeout: Duration::from_secs(600),
                     timeout_handled_externally: false,
                     directory_cache: None,
                 },
@@ -2620,6 +2637,7 @@ exit 1
                             ..Default::default()
                         },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
+                    max_upload_timeout: Duration::from_secs(600),
                     timeout_handled_externally: false,
                     directory_cache: None,
                 },
@@ -2707,6 +2725,7 @@ exit 1
                             ..Default::default()
                         },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
+                    max_upload_timeout: Duration::from_secs(600),
                     timeout_handled_externally: false,
                     directory_cache: None,
                 },
@@ -2791,6 +2810,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             },
@@ -2943,6 +2963,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             },
@@ -3112,6 +3133,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             },
@@ -3212,6 +3234,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
@@ -3326,6 +3349,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             },
@@ -3506,6 +3530,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             },
@@ -3626,6 +3651,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
@@ -3767,6 +3793,7 @@ exit 1
                         ..Default::default()
                     },
                 max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(600),
                 timeout_handled_externally: false,
                 directory_cache: None,
             })?);
