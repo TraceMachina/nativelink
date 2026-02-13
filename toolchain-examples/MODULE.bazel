@@ -46,7 +46,7 @@ archive_override(
 )
 
 # Rust
-bazel_dep(name = "rules_rust", version = "0.61.0")
+bazel_dep(name = "rules_rust", version = "0.68.1")
 
 # C++ toolchain via zig-cc.
 #
