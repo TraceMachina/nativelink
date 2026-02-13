@@ -1041,6 +1041,29 @@ pub struct GrpcEndpoint {
     pub tls_config: Option<ClientTlsConfig>,
     /// The maximum concurrency to allow on this endpoint.
     pub concurrency_limit: Option<usize>,
+
+    /// Timeout for establishing a TCP connection to the endpoint (seconds).
+    /// If not set or 0, defaults to 30 seconds.
+    #[serde(default)]
+    pub connect_timeout_s: u64,
+
+    /// TCP keepalive interval (seconds). Sends TCP keepalive probes at this
+    /// interval to detect dead connections at the OS level.
+    /// If not set or 0, defaults to 30 seconds.
+    #[serde(default)]
+    pub tcp_keepalive_s: u64,
+
+    /// HTTP/2 keepalive interval (seconds). Sends HTTP/2 PING frames at this
+    /// interval to detect dead connections at the application level.
+    /// If not set or 0, defaults to 30 seconds.
+    #[serde(default)]
+    pub http2_keepalive_interval_s: u64,
+
+    /// HTTP/2 keepalive timeout (seconds). If a PING response is not received
+    /// within this duration, the connection is considered dead.
+    /// If not set or 0, defaults to 20 seconds.
+    #[serde(default)]
+    pub http2_keepalive_timeout_s: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1070,6 +1093,14 @@ pub struct GrpcSpec {
     /// the load over multiple TCP connections.  Default 1.
     #[serde(default)]
     pub connections_per_endpoint: usize,
+
+    /// Maximum time (seconds) allowed for a single RPC request (e.g. a
+    /// ByteStream.Write call) before it is cancelled. This prevents
+    /// individual RPCs from hanging forever on dead connections.
+    ///
+    /// Default: 120 (seconds)
+    #[serde(default)]
+    pub rpc_timeout_s: u64,
 }
 
 /// The possible error codes that might occur on an upstream request.
