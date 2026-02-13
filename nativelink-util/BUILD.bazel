@@ -59,6 +59,7 @@ rust_library(
         "@crates//:humantime",
         "@crates//:hyper-1.7.0",
         "@crates//:hyper-util",
+        "@crates//:libc",
         "@crates//:lru",
         "@crates//:mock_instant",
         "@crates//:opentelemetry",
