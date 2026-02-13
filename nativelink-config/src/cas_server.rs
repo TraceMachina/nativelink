@@ -609,6 +609,9 @@ pub enum EnvironmentSource {
     /// The raw value to set.
     Value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
 
+    /// Take the value from the local environment corresponding to the name key
+    FromEnvironment,
+
     /// The max amount of time in milliseconds the command is allowed to run
     /// (requested by the client).
     TimeoutMillis,
@@ -726,6 +729,14 @@ pub struct LocalWorkerConfig {
     /// Default: 1200 (seconds / 20 mins)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_action_timeout: usize,
+
+    /// Maximum time allowed for uploading action results to CAS after execution
+    /// completes. If upload takes longer than this, the action fails with
+    /// DeadlineExceeded and may be retried by the scheduler. Value in seconds.
+    ///
+    /// Default: 600 (seconds / 10 mins)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub max_upload_timeout: usize,
 
     /// Maximum number of inflight tasks this worker can cope with.
     ///
