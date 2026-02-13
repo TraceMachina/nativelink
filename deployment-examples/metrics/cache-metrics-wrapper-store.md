@@ -26,7 +26,7 @@ Wrap an existing `Arc<dyn StoreDriver>` with a new `StoreDriver` that:
 3. Classifies the outcome (hit/miss/error/etc)
 4. Records OpenTelemetry metrics
 
-This produces uniform metrics across all stores (filesystem, memory, Redis, S3, grpc, for example) with one implementation.
+This produces uniform metrics across all stores (filesystem, memory, Redis, S3, gRPC, for example) with one implementation.
 
 ### B) Instrument Inside Each Store
 
