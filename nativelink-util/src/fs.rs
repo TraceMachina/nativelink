@@ -41,6 +41,29 @@ pub struct FileSlot {
     inner: tokio::fs::File,
 }
 
+impl FileSlot {
+    /// Advise the kernel to drop page cache for this file's contents.
+    /// Only available on Linux;
+    #[cfg(target_os = "linux")]
+    pub fn advise_dontneed(&self) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.inner.as_raw_fd();
+        let ret = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) };
+        if ret != 0 {
+            tracing::debug!(
+                fd,
+                ret,
+                "posix_fadvise(DONTNEED) returned non-zero (best-effort, ignoring)",
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub const fn advise_dontneed(&self) {
+        // No-op: posix_fadvise is not available on Mac or Windows.
+    }
+}
+
 impl AsRef<tokio::fs::File> for FileSlot {
     fn as_ref(&self) -> &tokio::fs::File {
         &self.inner
