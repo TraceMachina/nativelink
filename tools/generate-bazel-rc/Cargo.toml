@@ -8,6 +8,7 @@ version = "0.1.0"
 toml = { version = "1.0.0", default-features = false, features = [
   "display",
   "parse",
+  "serde",
 ] }
 
 [workspace]
