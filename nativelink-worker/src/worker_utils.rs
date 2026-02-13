@@ -30,6 +30,7 @@ use tracing::info;
 pub async fn make_connect_worker_request<S: BuildHasher>(
     worker_id_prefix: String,
     worker_properties: &HashMap<String, WorkerProperty, S>,
+    extra_envs: &HashMap<String, String>,
     max_inflight_tasks: u64,
 ) -> Result<ConnectWorkerRequest, Error> {
     let mut futures = vec![];
@@ -60,6 +61,7 @@ pub async fn make_connect_worker_request<S: BuildHasher>(
                     };
                     let mut process = process::Command::new(command);
                     process.env_clear();
+                    process.envs(extra_envs);
                     process.args(args);
                     process.stdin(Stdio::null());
                     let err_fn =
