@@ -755,6 +755,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .await
             .err_tip(|| "Failed to sync_data in filesystem store")?;
 
+        temp_file.advise_dontneed();
         trace!(?temp_file, "Dropping file to update_file");
         drop(temp_file);
 
@@ -957,6 +958,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             .await
             .err_tip(|| "Failed to sync_data in filesystem store update_oneshot")?;
 
+        temp_file.advise_dontneed();
         drop(temp_file);
 
         *entry.data_size_mut() = data.len() as u64;
@@ -995,6 +997,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // We are done with the file, if we hold a reference to the file here, it could
         // result in a deadlock if `emplace_file()` also needs file descriptors.
         trace!(?file, "Dropping file to to update_with_whole_file");
+        file.advise_dontneed();
         drop(file);
         self.emplace_file(key.into_owned(), Arc::new(entry))
             .await
@@ -1054,6 +1057,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .await
                 .err_tip(|| "Failed to send chunk in filesystem store get_part")?;
         }
+        temp_file.get_ref().advise_dontneed();
         writer
             .send_eof()
             .err_tip(|| "Filed to send EOF in filesystem store get_part")?;
