@@ -366,15 +366,13 @@ where
             false
         };
 
-        if registry_alive && self.max_executing_timeout > Duration::ZERO {
-            let last_update = awaited_action.last_worker_updated_timestamp();
-            if let Ok(elapsed) = now.duration_since(last_update) {
-                if elapsed > self.max_executing_timeout {
-                    return true;
+        if registry_alive {
+            if self.max_executing_timeout > Duration::ZERO {
+                let last_update = awaited_action.last_worker_updated_timestamp();
+                if let Ok(elapsed) = now.duration_since(last_update) {
+                    return elapsed > self.max_executing_timeout;
                 }
             }
-            return false;
-        } else if registry_alive {
             return false;
         }
 
@@ -383,11 +381,7 @@ where
             .checked_add(self.no_event_action_timeout)
             .unwrap_or(now);
 
-        if worker_should_update_before >= now {
-            return false;
-        }
-
-        true
+        worker_should_update_before < now
     }
 
     async fn apply_filter_predicate(
