@@ -96,7 +96,6 @@ impl GrpcStore {
             Duration::from_secs(120)
         };
 
-
         Ok(Arc::new(Self {
             instance_name: spec.instance_name.clone(),
             store_type: spec.store_type,
@@ -330,33 +329,30 @@ impl GrpcStore {
                         "GrpcStore::write: requesting connection from pool",
                     );
                     let conn_start = std::time::Instant::now();
-                    let rpc_fut = self
-                        .connection_manager
-                        .connection()
-                        .and_then(|channel| {
-                            let conn_elapsed = conn_start.elapsed();
-                            let instance_for_rpc = instance_name.clone();
+                    let rpc_fut = self.connection_manager.connection().and_then(|channel| {
+                        let conn_elapsed = conn_start.elapsed();
+                        let instance_for_rpc = instance_name.clone();
+                        debug!(
+                            instance_name = %instance_for_rpc,
+                            conn_elapsed_ms = conn_elapsed.as_millis() as u64,
+                            "GrpcStore::write: got connection, starting ByteStream.Write RPC",
+                        );
+                        let rpc_start = std::time::Instant::now();
+                        let local_state_for_rpc = local_state.clone();
+                        async move {
+                            let res = ByteStreamClient::new(channel)
+                                .write(WriteStateWrapper::new(local_state_for_rpc))
+                                .await
+                                .err_tip(|| "in GrpcStore::write");
                             debug!(
                                 instance_name = %instance_for_rpc,
-                                conn_elapsed_ms = conn_elapsed.as_millis() as u64,
-                                "GrpcStore::write: got connection, starting ByteStream.Write RPC",
+                                rpc_elapsed_ms = rpc_start.elapsed().as_millis() as u64,
+                                success = res.is_ok(),
+                                "GrpcStore::write: ByteStream.Write RPC returned",
                             );
-                            let rpc_start = std::time::Instant::now();
-                            let local_state_for_rpc = local_state.clone();
-                            async move {
-                                let res = ByteStreamClient::new(channel)
-                                    .write(WriteStateWrapper::new(local_state_for_rpc))
-                                    .await
-                                    .err_tip(|| "in GrpcStore::write");
-                                debug!(
-                                    instance_name = %instance_for_rpc,
-                                    rpc_elapsed_ms = rpc_start.elapsed().as_millis() as u64,
-                                    success = res.is_ok(),
-                                    "GrpcStore::write: ByteStream.Write RPC returned",
-                                );
-                                res
-                            }
-                        });
+                            res
+                        }
+                    });
 
                     let result = if rpc_timeout > Duration::ZERO {
                         match tokio::time::timeout(rpc_timeout, rpc_fut).await {
