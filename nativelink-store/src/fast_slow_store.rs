@@ -436,12 +436,12 @@ impl StoreDriver for FastSlowStore {
                 if send_elapsed.as_secs() >= 5 {
                     warn!(
                         chunk_len,
-                        send_elapsed_ms = send_elapsed.as_millis() as u64,
+                        send_elapsed_ms = send_elapsed.as_millis(),
                         total_bytes = bytes_sent,
-                        "FastSlowStore::update: channel send stalled (>5s) — a downstream store may be hanging",
+                        "FastSlowStore::update: channel send stalled (>5s). A downstream store may be hanging",
                     );
                 }
-                bytes_sent += chunk_len as u64;
+                bytes_sent += u64::try_from(chunk_len).unwrap_or(u64::MAX);
                 fast_result
                     .map_err(|e| {
                         make_err!(
@@ -470,7 +470,7 @@ impl StoreDriver for FastSlowStore {
         if data_stream_res.is_err() || fast_res.is_err() || slow_res.is_err() {
             warn!(
                 key = %key_debug,
-                elapsed_ms = total_elapsed.as_millis() as u64,
+                elapsed_ms = total_elapsed.as_millis(),
                 data_stream_ok = data_stream_res.is_ok(),
                 fast_store_ok = fast_res.is_ok(),
                 slow_store_ok = slow_res.is_ok(),
@@ -479,7 +479,7 @@ impl StoreDriver for FastSlowStore {
         } else {
             trace!(
                 key = %key_debug,
-                elapsed_ms = total_elapsed.as_millis() as u64,
+                elapsed_ms = total_elapsed.as_millis(),
                 "FastSlowStore::update: completed successfully",
             );
         }
@@ -529,7 +529,7 @@ impl StoreDriver for FastSlowStore {
                 .await
                 .err_tip(|| "In FastSlowStore::update_with_whole_file slow_store")?;
                 trace!(
-                    elapsed_ms = slow_start.elapsed().as_millis() as u64,
+                    elapsed_ms = slow_start.elapsed().as_millis(),
                     "FastSlowStore::update_with_whole_file: slow_store upload completed",
                 );
             }
