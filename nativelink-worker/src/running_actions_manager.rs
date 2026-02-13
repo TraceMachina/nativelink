@@ -1466,14 +1466,51 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        let res = self
-            .metrics()
-            .clone()
+        let upload_timeout = self.running_actions_manager.max_upload_timeout;
+        let operation_id = self.operation_id.clone();
+        info!(
+            ?operation_id,
+            upload_timeout_s = upload_timeout.as_secs(),
+            "upload_results: starting with timeout",
+        );
+        let metrics = self.metrics().clone();
+        let upload_fut = metrics
             .upload_results
-            .wrap(Self::inner_upload_results(self))
-            .await;
+            .wrap(Self::inner_upload_results(self));
+
+        let stall_warn_fut = async {
+            let mut elapsed_secs = 0u64;
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                elapsed_secs += 60;
+                warn!(
+                    ?operation_id,
+                    elapsed_s = elapsed_secs,
+                    timeout_s = upload_timeout.as_secs(),
+                    "upload_results: still in progress — possible stall",
+                );
+            }
+        };
+
+        let res = tokio::time::timeout(upload_timeout, async {
+            tokio::pin!(upload_fut);
+            tokio::pin!(stall_warn_fut);
+            tokio::select! {
+                result = &mut upload_fut => result,
+                () = &mut stall_warn_fut => unreachable!(),
+            }
+        })
+        .await
+        .map_err(|_| {
+            make_err!(
+                Code::DeadlineExceeded,
+                "Upload results timed out after {}s for operation {:?}",
+                upload_timeout.as_secs(),
+                operation_id,
+            )
+        })?;
         if let Err(ref e) = res {
-            warn!(?e, "Error during upload_results");
+            warn!(?operation_id, ?e, "Error during upload_results");
         }
         res
     }
@@ -1829,6 +1866,7 @@ pub struct RunningActionsManagerArgs<'a> {
     pub historical_store: Store,
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
+    pub max_upload_timeout: Duration,
     pub timeout_handled_externally: bool,
     pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
 }
@@ -1859,6 +1897,7 @@ pub struct RunningActionsManagerImpl {
     filesystem_store: Arc<FilesystemStore>,
     upload_action_results: UploadActionResults,
     max_action_timeout: Duration,
+    max_upload_timeout: Duration,
     timeout_handled_externally: bool,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
@@ -1912,6 +1951,7 @@ impl RunningActionsManagerImpl {
             )
             .err_tip(|| "During RunningActionsManagerImpl construction")?,
             max_action_timeout: args.max_action_timeout,
+            max_upload_timeout: args.max_upload_timeout,
             timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
