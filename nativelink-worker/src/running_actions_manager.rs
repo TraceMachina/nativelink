@@ -364,14 +364,14 @@ async fn upload_file(
             {
                 trace!(
                     ?digest,
-                    has_elapsed_ms = has_start.elapsed().as_millis() as u64,
+                    has_elapsed_ms = has_start.elapsed().as_millis(),
                     "upload_file: digest already exists in CAS, skipping upload",
                 );
                 return Ok(());
             }
             trace!(
                 ?digest,
-                has_elapsed_ms = has_start.elapsed().as_millis() as u64,
+                has_elapsed_ms = has_start.elapsed().as_millis(),
                 file_size = digest.size_bytes(),
                 "upload_file: digest not in CAS, starting upload",
             );
@@ -395,7 +395,7 @@ async fn upload_file(
                 .map(|_slot| ());
             trace!(
                 ?digest,
-                upload_elapsed_ms = file_upload_start.elapsed().as_millis() as u64,
+                upload_elapsed_ms = file_upload_start.elapsed().as_millis(),
                 success = upload_result.is_ok(),
                 "upload_file: update_with_whole_file completed",
             );
@@ -1362,7 +1362,7 @@ impl RunningActionImpl {
             debug!(
                 ?digest,
                 data_len,
-                elapsed_ms = start.elapsed().as_millis() as u64,
+                elapsed_ms = start.elapsed().as_millis(),
                 "upload_results: stdout upload completed",
             );
             Result::<DigestInfo, Error>::Ok(digest)
@@ -1379,7 +1379,7 @@ impl RunningActionImpl {
             debug!(
                 ?digest,
                 data_len,
-                elapsed_ms = start.elapsed().as_millis() as u64,
+                elapsed_ms = start.elapsed().as_millis(),
                 "upload_results: stderr upload completed",
             );
             Result::<DigestInfo, Error>::Ok(digest)
@@ -1410,7 +1410,7 @@ impl RunningActionImpl {
         drop(output_path_futures);
         debug!(
             operation_id = ?self.operation_id,
-            elapsed_ms = join_start.elapsed().as_millis() as u64,
+            elapsed_ms = join_start.elapsed().as_millis(),
             success = upload_result.is_ok(),
             "upload_results: all uploads completed",
         );
@@ -1447,7 +1447,7 @@ impl RunningActionImpl {
         }
         debug!(
             operation_id = ?self.operation_id,
-            total_elapsed_ms = upload_start.elapsed().as_millis() as u64,
+            total_elapsed_ms = upload_start.elapsed().as_millis(),
             num_output_files,
             num_output_folders,
             "upload_results: inner_upload_results completed successfully",
