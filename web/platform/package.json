@@ -48,7 +48,7 @@
     "astro": "astro",
     "biome": "biome",
     "build": "bun fix && astro build",
-    "build.docs": "cd ../.. && unset TMPDIR TMP; bazel build --@local-remote-execution//rust:channel=nightly nativelink-config:docs_json && cd web/platform && bun run utils/metaphase_aot.ts",
+    "build.docs": "cd ../.. && unset TMPDIR TMP; bazel build --extra_toolchains=@rust_toolchains//:all --config=nightly nativelink-config:docs_json && cd web/platform && bun run utils/metaphase_aot.ts",
     "check": "biome ci . && astro check",
     "check.format": "biome format .",
     "check.lint": "biome check .",
