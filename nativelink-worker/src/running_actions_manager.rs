@@ -21,6 +21,7 @@ use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::vec_deque::VecDeque;
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::ffi::{OsStr, OsString};
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
@@ -942,6 +943,9 @@ impl RunningActionImpl {
                         .get(property)
                         .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.as_str())),
                     EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                    EnvironmentSource::FromEnvironment => {
+                        Cow::Owned(env::var(name).unwrap_or_default())
+                    }
                     EnvironmentSource::TimeoutMillis => {
                         Cow::Owned(requested_timeout.as_millis().to_string())
                     }

@@ -76,6 +76,15 @@
           ac_store: "AC_MAIN_STORE",
         },
         work_directory: "/tmp/nativelink/work",
+        additional_environment: {
+          foo: "from_environment",
+          bar: {
+            value: "something",
+          },
+          baz: "timeout_millis",
+          channel: "side_channel_file",
+          action: "action_directory",
+        },
         platform_properties: {
           cpu_count: {
             values: [

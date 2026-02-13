@@ -54,6 +54,7 @@ rust_test_suite(
     srcs = [
         "tests/local_worker_test.rs",
         "tests/running_actions_manager_test.rs",
+        "tests/worker_utils_test.rs",
     ],
     compile_data = [
         "tests/utils/local_worker_test_utils.rs",

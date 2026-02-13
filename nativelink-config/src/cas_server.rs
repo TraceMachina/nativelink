@@ -609,6 +609,9 @@ pub enum EnvironmentSource {
     /// The raw value to set.
     Value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
 
+    /// Take the value from the local environment corresponding to the name key
+    FromEnvironment,
+
     /// The max amount of time in milliseconds the command is allowed to run
     /// (requested by the client).
     TimeoutMillis,
