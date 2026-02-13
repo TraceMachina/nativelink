@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::convert::Into;
+use core::str::Utf8Error;
 use std::sync::{MutexGuard, PoisonError};
 
 use nativelink_metric::{
@@ -240,6 +241,12 @@ impl From<AcquireError> for Error {
     }
 }
 
+impl From<Utf8Error> for Error {
+    fn from(err: Utf8Error) -> Self {
+        make_err!(Code::Internal, "{}", err)
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Self {
@@ -249,26 +256,29 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<fred::error::Error> for Error {
-    fn from(error: fred::error::Error) -> Self {
-        use fred::error::ErrorKind::{
-            Auth, Backpressure, Canceled, Cluster, Config, IO, InvalidArgument, InvalidCommand,
-            NotFound, Parse, Protocol, Routing, Sentinel, Timeout, Tls, Unknown, Url,
+impl From<redis::RedisError> for Error {
+    fn from(error: redis::RedisError) -> Self {
+        use redis::ErrorKind::{
+            AuthenticationFailed, InvalidClientConfig, Io as IoError, Parse as ParseError,
+            UnexpectedReturnType,
         };
 
         // Conversions here are based on https://grpc.github.io/grpc/core/md_doc_statuscodes.html.
         let code = match error.kind() {
-            Config | InvalidCommand | InvalidArgument | Url => Code::InvalidArgument,
-            IO | Protocol | Tls | Cluster | Parse | Sentinel | Routing => Code::Internal,
-            Auth => Code::PermissionDenied,
-            Canceled => Code::Aborted,
-            Unknown => Code::Unknown,
-            Timeout => Code::DeadlineExceeded,
-            NotFound => Code::NotFound,
-            Backpressure => Code::Unavailable,
+            AuthenticationFailed => Code::PermissionDenied,
+            ParseError | UnexpectedReturnType | InvalidClientConfig => Code::InvalidArgument,
+            IoError => {
+                if error.is_timeout() {
+                    Code::DeadlineExceeded
+                } else {
+                    Code::Internal
+                }
+            }
+            _ => Code::Unknown,
         };
 
-        make_err!(code, "{error}")
+        let kind = error.kind();
+        make_err!(code, "{kind:?}: {error}")
     }
 }
 
@@ -298,6 +308,18 @@ impl From<uuid::Error> for Error {
 
 impl From<rustls_pki_types::pem::Error> for Error {
     fn from(value: rustls_pki_types::pem::Error) -> Self {
+        Self::new(Code::Internal, value.to_string())
+    }
+}
+
+impl From<tokio::time::error::Elapsed> for Error {
+    fn from(value: tokio::time::error::Elapsed) -> Self {
+        Self::new(Code::DeadlineExceeded, value.to_string())
+    }
+}
+
+impl From<url::ParseError> for Error {
+    fn from(value: url::ParseError) -> Self {
         Self::new(Code::Internal, value.to_string())
     }
 }

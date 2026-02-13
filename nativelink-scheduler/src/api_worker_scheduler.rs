@@ -281,7 +281,7 @@ impl ApiWorkerSchedulerImpl {
         // Iterate in LRU order based on allocation strategy.
         let workers_iter = self.workers.iter();
 
-        match self.allocation_strategy {
+        let worker_id = match self.allocation_strategy {
             // Use rfind to get the least recently used that satisfies the properties.
             WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
                 .rev()
@@ -294,7 +294,11 @@ impl ApiWorkerSchedulerImpl {
                 .filter(|(worker_id, _)| candidates.contains(worker_id))
                 .find(&worker_matches)
                 .map(|(_, w)| w.id.clone()),
+        };
+        if full_worker_logging && worker_id.is_none() {
+            warn!("No workers matched!");
         }
+        worker_id
     }
 
     async fn update_action(
@@ -358,13 +362,10 @@ impl ApiWorkerSchedulerImpl {
 
         // Clear this action from the current worker if finished.
         let complete_action_res = {
-            let was_paused = !worker.can_accept_work();
-
             // Note: We need to run this before dealing with backpressure logic.
             let complete_action_res = worker.complete_action(operation_id).await;
 
-            // Only pause if there's an action still waiting that will unpause.
-            if (was_paused || due_to_backpressure) && worker.has_actions() {
+            if (due_to_backpressure || !worker.can_accept_work()) && worker.has_actions() {
                 worker.is_paused = true;
             }
             complete_action_res

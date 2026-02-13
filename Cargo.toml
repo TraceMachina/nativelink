@@ -147,9 +147,11 @@ as-underscore = "deny"
 await-holding-lock = "deny"
 elidable-lifetime-names = "deny"
 explicit-into-iter-loop = "deny"
+future-not-send = "deny"
 redundant-closure-for-method-calls = "deny"
 semicolon-if-nothing-returned = "deny"
 std-instead-of-core = "deny"
+string-lit-as-bytes = "deny"
 todo = "deny"
 
 # Restriction Warnings with default priority

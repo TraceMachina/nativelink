@@ -4,7 +4,7 @@ go 1.24.7
 
 require (
 	github.com/docker/docker v28.5.2+incompatible
-	github.com/go-git/go-git/v5 v5.16.3
+	github.com/go-git/go-git/v5 v5.16.5
 	github.com/pulumi/pulumi-docker/sdk/v4 v4.9.0
 	github.com/pulumi/pulumi-kubernetes/sdk/v4 v4.24.0
 	github.com/pulumi/pulumi/sdk/v3 v3.206.0
