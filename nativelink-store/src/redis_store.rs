@@ -1143,7 +1143,7 @@ impl RedisPatternSubscriber for MockPubSub {
         _channel_pattern: &str,
     ) -> impl Future<Output = RedisResult<Pin<Box<dyn Stream<Item = Msg> + '_ + Send>>>> + Send
     {
-        async move { Ok(stream::empty().boxed()) }
+        async move { Ok(stream::pending().boxed()) }
     }
 }
 
@@ -1162,7 +1162,7 @@ impl RedisSubscriptionManager {
         let mut local_subscriber_channel: Pin<Box<dyn Stream<Item = PushInfo> + Send>> =
             subscriber_channel
                 .and_then(|channel| Some(UnboundedReceiverStream::new(channel).boxed()))
-                .unwrap_or_else(|| stream::empty::<PushInfo>().boxed());
+                .unwrap_or_else(|| stream::pending::<PushInfo>().boxed());
         Self {
             subscribed_keys,
             tx_for_test,
