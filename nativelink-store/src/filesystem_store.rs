@@ -758,11 +758,23 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             data_size += data_len as u64;
         }
 
+        let _permit = if let Some(sem) = &self.write_semaphore {
+            Some(
+                sem.acquire()
+                    .await
+                    .map_err(|_| make_err!(Code::Internal, "Write semaphore closed"))?,
+            )
+        } else {
+            None
+        };
+
         temp_file
             .as_ref()
             .sync_all()
             .await
             .err_tip(|| "Failed to sync_data in filesystem store")?;
+
+        drop(_permit);
 
         temp_file.advise_dontneed();
         trace!(?temp_file, "Dropping file to update_file");
@@ -899,16 +911,6 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             return Ok(());
         }
 
-        let _permit = if let Some(sem) = &self.write_semaphore {
-            Some(
-                sem.acquire()
-                    .await
-                    .map_err(|_| make_err!(Code::Internal, "Write semaphore closed"))?,
-            )
-        } else {
-            None
-        };
-
         let temp_key = make_temp_key(&key);
 
         // There's a possibility of deadlock here where we take all of the
@@ -951,16 +953,6 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             return Ok(());
         }
 
-        let _permit = if let Some(sem) = &self.write_semaphore {
-            Some(
-                sem.acquire()
-                    .await
-                    .map_err(|_| make_err!(Code::Internal, "Write semaphore closed"))?,
-            )
-        } else {
-            None
-        };
-
         let temp_key = make_temp_key(&key);
         let (mut entry, mut temp_file, temp_full_path) = Fe::make_and_open_file(
             self.block_size,
@@ -981,11 +973,23 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .err_tip(|| format!("Failed to write data to {}", temp_full_path.display()))?;
         }
 
+        let _permit = if let Some(sem) = &self.write_semaphore {
+            Some(
+                sem.acquire()
+                    .await
+                    .map_err(|_| make_err!(Code::Internal, "Write semaphore closed"))?,
+            )
+        } else {
+            None
+        };
+
         temp_file
             .as_ref()
             .sync_all()
             .await
             .err_tip(|| "Failed to sync_data in filesystem store update_oneshot")?;
+
+        drop(_permit);
 
         temp_file.advise_dontneed();
         drop(temp_file);
