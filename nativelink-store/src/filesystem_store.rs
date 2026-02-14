@@ -39,6 +39,7 @@ use nativelink_util::store_trait::{
     RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
+use tokio::sync::Semaphore;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{debug, error, info, trace, warn};
 
@@ -636,6 +637,8 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     read_buffer_size: usize,
     weak_self: Weak<Self>,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
+    /// Limits concurrent write operations to prevent disk I/O saturation.
+    write_semaphore: Option<Semaphore>,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
@@ -693,6 +696,11 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         } else {
             spec.read_buffer_size as usize
         };
+        let write_semaphore = if spec.max_concurrent_writes > 0 {
+            Some(Semaphore::new(spec.max_concurrent_writes))
+        } else {
+            None
+        };
         Ok(Arc::new_cyclic(|weak_self| Self {
             shared_context,
             evicting_map,
@@ -700,6 +708,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             read_buffer_size,
             weak_self: weak_self.clone(),
             rename_fn,
+            write_semaphore,
         }))
     }
 
@@ -890,6 +899,16 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             return Ok(());
         }
 
+        let _permit = if let Some(sem) = &self.write_semaphore {
+            Some(
+                sem.acquire()
+                    .await
+                    .map_err(|_| make_err!(Code::Internal, "Write semaphore closed"))?,
+            )
+        } else {
+            None
+        };
+
         let temp_key = make_temp_key(&key);
 
         // There's a possibility of deadlock here where we take all of the
@@ -931,6 +950,16 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         if is_zero_digest(key.borrow()) {
             return Ok(());
         }
+
+        let _permit = if let Some(sem) = &self.write_semaphore {
+            Some(
+                sem.acquire()
+                    .await
+                    .map_err(|_| make_err!(Code::Internal, "Write semaphore closed"))?,
+            )
+        } else {
+            None
+        };
 
         let temp_key = make_temp_key(&key);
         let (mut entry, mut temp_file, temp_full_path) = Fe::make_and_open_file(
