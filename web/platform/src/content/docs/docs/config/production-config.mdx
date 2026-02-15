@@ -454,6 +454,24 @@ Here is the final CAS Config JSON without the 99 extra shards for writing to S3.
 }
 ```
 
+## Limit Worker Inflight Tasks
+
+If your workers are getting saturated, cap the number of concurrent tasks they
+will accept with `max_inflight_tasks`. This helps avoid runaway scheduling when
+actions spike or when a single worker falls behind.
+
+```json
+workers: [{
+  local: {
+    worker_api_endpoint: {
+      uri: "grpc://127.0.0.1:50061",
+    },
+    // Set to 0 for unlimited.
+    max_inflight_tasks: 32,
+  }
+}]
+```
+
 
 ## Speed Up NativeLink by Turning Off a Hidden Redis Query
 
