@@ -610,6 +610,16 @@ pub struct FilesystemSpec {
     /// Default: 4096
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub block_size: u64,
+
+    /// Maximum number of concurrent write operations allowed.
+    /// Each write involves streaming data to a temp file and calling sync_all(),
+    /// which can saturate disk I/O when many writes happen simultaneously.
+    /// Limiting concurrency prevents disk saturation from blocking the async
+    /// runtime.
+    /// A value of 0 means unlimited (no concurrency limit).
+    /// Default: 0
+    #[serde(default)]
+    pub max_concurrent_writes: usize,
 }
 
 // NetApp ONTAP S3 Spec
