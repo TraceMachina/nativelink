@@ -196,12 +196,12 @@ pub struct GrpcSpec {
     /// Limit the number of simultaneous upstream requests to this many.  A
     /// value of zero is treated as unlimited.  If the limit is reached the
     /// request is queued.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_requests: usize,
 
     /// The number of connections to make to each specified endpoint to balance
     /// the load over multiple TCP connections.  Default 1.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub connections_per_endpoint: usize,
 }
 

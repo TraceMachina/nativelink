@@ -19,8 +19,9 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
-    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
-    convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
+    convert_boolean_with_shellexpand, convert_data_size_with_shellexpand,
+    convert_duration_with_shellexpand, convert_numeric_with_shellexpand,
+    convert_optional_data_size_with_shellexpand, convert_optional_numeric_with_shellexpand,
     convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
     convert_vec_string_with_shellexpand,
 };
@@ -472,6 +473,8 @@ pub enum StoreSpec {
     ///   "endpoints": [
     ///     {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
     ///   ],
+    ///   "connections_per_endpoint": "5",
+    ///   "rpc_timeout_s": "5m",
     ///   "store_type": "ac"
     /// }
     /// ```
@@ -542,6 +545,7 @@ pub struct ShardConfig {
     /// all the store's weights divided by the individual store's weight.
     ///
     /// Default: 1
+    #[serde(deserialize_with = "convert_optional_numeric_with_shellexpand")]
     pub weight: Option<u32>,
 }
 
@@ -618,7 +622,7 @@ pub struct FilesystemSpec {
     /// runtime.
     /// A value of 0 means unlimited (no concurrency limit).
     /// Default: 0
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_writes: usize,
 }
 
@@ -632,7 +636,7 @@ pub struct ExperimentalOntapS3Spec {
     pub vserver_name: String,
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub bucket: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     pub root_certificates: Option<String>,
 
     /// Common retry and upload configuration
@@ -786,7 +790,7 @@ pub struct VerifySpec {
     /// an upload of data.
     ///
     /// This should be set to false for AC, but true for CAS stores.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub verify_size: bool,
 
     /// If the data should be hashed and verify that the key matches the
@@ -794,7 +798,7 @@ pub struct VerifySpec {
     /// request and if not set will use the global default.
     ///
     /// This should be set to false for AC, but true for CAS stores.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub verify_hash: bool,
 }
 
@@ -930,6 +934,10 @@ pub struct ExperimentalGcsSpec {
     /// Chunk size for resumable uploads.
     ///
     /// Default: 2MB
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
     pub resumable_chunk_size: Option<usize>,
 
     /// Common retry and upload configuration
@@ -937,17 +945,17 @@ pub struct ExperimentalGcsSpec {
     pub common: CommonObjectSpec,
 
     /// Error if authentication was not found.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub authentication_required: bool,
 
     /// Connection timeout in milliseconds.
     /// Default: 3000
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub connection_timeout_s: u64,
 
     /// Read timeout in milliseconds.
     /// Default: 3000
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub read_timeout_s: u64,
 }
 
@@ -981,17 +989,26 @@ pub struct CommonObjectSpec {
     /// upload will be aborted and the client will likely receive an error.
     ///
     /// Default: 5MB.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
     pub max_retry_buffer_per_request: Option<usize>,
 
     /// Maximum number of concurrent `UploadPart` requests per `MultipartUpload`.
     ///
     /// Default: 10.
+    ///
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub multipart_max_concurrent_uploads: Option<usize>,
 
     /// Allow unencrypted HTTP connections. Only use this for local testing.
     ///
     /// Default: false
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub insecure_allow_http: bool,
 
     /// Disable http/2 connections and only use http/1.1. Default client
@@ -1001,7 +1018,7 @@ pub struct CommonObjectSpec {
     /// underlying network environment, S3, or GCS API servers specify otherwise.
     ///
     /// Default: false
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub disable_http2: bool,
 }
 
@@ -1050,29 +1067,33 @@ pub struct GrpcEndpoint {
     /// The TLS configuration to use to connect to the endpoint (if grpcs).
     pub tls_config: Option<ClientTlsConfig>,
     /// The maximum concurrency to allow on this endpoint.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub concurrency_limit: Option<usize>,
 
     /// Timeout for establishing a TCP connection to the endpoint (seconds).
     /// If not set or 0, defaults to 30 seconds.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub connect_timeout_s: u64,
 
     /// TCP keepalive interval (seconds). Sends TCP keepalive probes at this
     /// interval to detect dead connections at the OS level.
     /// If not set or 0, defaults to 30 seconds.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub tcp_keepalive_s: u64,
 
     /// HTTP/2 keepalive interval (seconds). Sends HTTP/2 PING frames at this
     /// interval to detect dead connections at the application level.
     /// If not set or 0, defaults to 30 seconds.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub http2_keepalive_interval_s: u64,
 
     /// HTTP/2 keepalive timeout (seconds). If a PING response is not received
     /// within this duration, the connection is considered dead.
     /// If not set or 0, defaults to 20 seconds.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub http2_keepalive_timeout_s: u64,
 }
 
@@ -1096,12 +1117,12 @@ pub struct GrpcSpec {
     /// Limit the number of simultaneous upstream requests to this many.  A
     /// value of zero is treated as unlimited.  If the limit is reached the
     /// request is queued.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_requests: usize,
 
     /// The number of connections to make to each specified endpoint to balance
     /// the load over multiple TCP connections.  Default 1.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub connections_per_endpoint: usize,
 
     /// Maximum time (seconds) allowed for a single RPC request (e.g. a
@@ -1109,7 +1130,7 @@ pub struct GrpcSpec {
     /// individual RPCs from hanging forever on dead connections.
     ///
     /// Default: 120 (seconds)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub rpc_timeout_s: u64,
 }
 
@@ -1175,7 +1196,7 @@ pub struct RedisSpec {
     /// organize your data according to the shared prefix.
     ///
     /// Default: (Empty String / No Prefix)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub key_prefix: String,
 
     /// Set the mode Redis is operating in.
@@ -1396,7 +1417,7 @@ pub struct ExperimentalMongoSpec {
     /// Enable `MongoDB` change streams for real-time updates.
     /// Required for scheduler subscriptions.
     /// Default: false
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub enable_change_streams: bool,
 
     /// Write concern 'w' parameter.
