@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-util"
-version = "0.8.0"
+version = "1.0.0-rc2"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
