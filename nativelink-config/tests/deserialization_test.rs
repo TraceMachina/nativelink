@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use nativelink_config::serde_utils::{
-    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
+    convert_boolean_with_shellexpand, convert_data_size_with_shellexpand,
+    convert_duration_with_shellexpand, convert_optional_data_size_with_shellexpand,
     convert_optional_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
 };
 use serde::Deserialize;
@@ -31,6 +32,15 @@ struct DataSizeEntity {
 }
 
 #[derive(Deserialize, Debug)]
+struct OptionalDataSizeEntity {
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
+    data_size: Option<usize>,
+}
+
+#[derive(Deserialize, Debug)]
 struct OptionalNumericEntity {
     #[serde(
         default,
@@ -43,6 +53,12 @@ struct OptionalNumericEntity {
 struct OptionalStringEntity {
     #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     value: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct BoolEntity {
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    value: bool,
 }
 
 mod duration_tests {
@@ -290,6 +306,21 @@ mod optional_values_tests {
     }
 
     #[test]
+    fn test_optional_datasize_values() {
+        let examples = [
+            (r#"{"data_size": null}"#, None),
+            (r#"{"data_size": 42}"#, Some(42)),
+            (r"{}", None), // Missing field
+            (r#"{"data_size": "20K"}"#, Some(20000)),
+        ];
+
+        for (input, expected) in examples {
+            let deserialized: OptionalDataSizeEntity = serde_json5::from_str(input).unwrap();
+            assert_eq!(deserialized.data_size, expected);
+        }
+    }
+
+    #[test]
     fn test_mixed_optional_values() {
         #[derive(Deserialize)]
         struct MixedOptionals {
@@ -331,8 +362,34 @@ mod optional_values_tests {
     }
 }
 
+mod boolean_tests {
+    use crate::BoolEntity;
+
+    #[test]
+    fn test_bool_parsing() {
+        let examples = [
+            // Standard value
+            (r#"{"value": true}"#, true),
+            (r#"{"value": false}"#, false),
+            // Stringy values
+            (r#"{"value": "true"}"#, true),
+            (r#"{"value": "false"}"#, false),
+            // Stringy values with odd cases
+            (r#"{"value": "TRue"}"#, true),
+            (r#"{"value": "faLSE"}"#, false),
+        ];
+
+        for (input, expected) in examples {
+            let deserialized: BoolEntity =
+                serde_json5::from_str(input).unwrap_or_else(|_| panic!("Failed on '{input}'"));
+            assert_eq!(deserialized.value, expected, "{input}");
+        }
+    }
+}
+
 mod shellexpand_tests {
     use pretty_assertions::assert_eq;
+    use serde_json5::Location;
 
     use super::*;
 
@@ -347,6 +404,8 @@ mod shellexpand_tests {
             std::env::set_var("TEST_NUMBER", "42");
             std::env::set_var("TEST_VAR", "test_value");
             std::env::set_var("EMPTY_VAR", "");
+            std::env::set_var("TEST_GOOD_BOOL", "true");
+            std::env::set_var("TEST_BAD_BOOL", "wibble");
         };
 
         // Test duration with environment variable
@@ -358,6 +417,11 @@ mod shellexpand_tests {
         let size_result =
             serde_json5::from_str::<DataSizeEntity>(r#"{"data_size": "${TEST_SIZE}"}"#).unwrap();
         assert_eq!(size_result.data_size, 1_000_000_000);
+
+        let size_result =
+            serde_json5::from_str::<OptionalDataSizeEntity>(r#"{"data_size": "${TEST_SIZE}"}"#)
+                .unwrap();
+        assert_eq!(size_result.data_size, Some(1_000_000_000));
 
         // Test optional numeric with environment variable
         let numeric_result =
@@ -383,6 +447,23 @@ mod shellexpand_tests {
                 .unwrap_err()
                 .to_string()
                 .contains("environment variable not found")
+        );
+
+        let good_bool_results =
+            serde_json5::from_str::<BoolEntity>(r#"{"value": "${TEST_GOOD_BOOL}"}"#).unwrap();
+        assert!(good_bool_results.value);
+
+        let bad_bool_results =
+            serde_json5::from_str::<BoolEntity>(r#"{"value": "${TEST_BAD_BOOL}"}"#).unwrap_err();
+        assert_eq!(
+            bad_bool_results,
+            serde_json5::Error::Message {
+                msg: "provided string was not `true` or `false`".into(),
+                location: Some(Location {
+                    line: 1,
+                    column: 11
+                })
+            }
         );
     }
 }
