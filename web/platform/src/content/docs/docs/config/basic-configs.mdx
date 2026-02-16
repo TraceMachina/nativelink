@@ -26,6 +26,9 @@ memory and filesystem stores instead of S3 and Redis.
       "filesystem": {
         "content_path": "/tmp/nativelink/data-worker-test/content_path-ac",
         "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-ac",
+        // Limit concurrent writes to avoid disk I/O saturation.
+        // Set to 0 for unlimited.
+        "max_concurrent_writes": 8,
         "eviction_policy": {
           // 1gb.
           "max_bytes": 1000000000,
@@ -40,6 +43,9 @@ memory and filesystem stores instead of S3 and Redis.
           "filesystem": {
             "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
             "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
+            // Limit concurrent writes to avoid disk I/O saturation.
+            // Set to 0 for unlimited.
+            "max_concurrent_writes": 8,
             "eviction_policy": {
               // 10gb.
               "max_bytes": 10000000000,

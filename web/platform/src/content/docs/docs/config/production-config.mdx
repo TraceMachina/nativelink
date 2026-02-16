@@ -454,6 +454,22 @@ Here is the final CAS Config JSON without the 99 extra shards for writing to S3.
 }
 ```
 
+## Limit Concurrent Filesystem Writes
+
+If the CAS server is under heavy disk I/O pressure, cap the number of
+simultaneous writes to the filesystem store with `max_concurrent_writes`.
+Each write streams to a temp file and calls `sync_all()`, which can saturate
+the disk and block the async runtime if too many happen at once.
+
+```json
+"filesystem": {
+  "content_path": "/var/lib/nativelink/cas",
+  "temp_path": "/var/lib/nativelink/tmp",
+  // Set to 0 for unlimited.
+  "max_concurrent_writes": 16
+}
+```
+
 
 ## Speed Up NativeLink by Turning Off a Hidden Redis Query
 
