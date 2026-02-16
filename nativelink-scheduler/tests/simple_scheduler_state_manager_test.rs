@@ -23,6 +23,7 @@ async fn drops_missing_actions() -> Result<(), Error> {
         0,
         Duration::from_secs(10),
         Duration::from_secs(10),
+        Duration::ZERO,
         awaited_action_db,
         SystemTime::now,
         None,

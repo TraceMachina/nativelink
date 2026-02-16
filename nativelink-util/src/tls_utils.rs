@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
+
 use nativelink_config::stores::{ClientTlsConfig, GrpcEndpoint};
 use nativelink_error::{Code, Error, make_err, make_input_err};
 use tonic::transport::Uri;
-use tracing::warn;
+use tracing::{info, warn};
 
 pub fn load_client_config(
     config: &Option<ClientTlsConfig>,
@@ -126,9 +128,48 @@ pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endp
         &endpoint_config.address,
         load_client_config(&endpoint_config.tls_config)?,
     )?;
-    if let Some(concurrency_limit) = endpoint_config.concurrency_limit {
-        Ok(endpoint.concurrency_limit(concurrency_limit))
+
+    let connect_timeout = if endpoint_config.connect_timeout_s > 0 {
+        Duration::from_secs(endpoint_config.connect_timeout_s)
     } else {
-        Ok(endpoint)
+        Duration::from_secs(30)
+    };
+    let tcp_keepalive = if endpoint_config.tcp_keepalive_s > 0 {
+        Duration::from_secs(endpoint_config.tcp_keepalive_s)
+    } else {
+        Duration::from_secs(30)
+    };
+    let http2_keepalive_interval = if endpoint_config.http2_keepalive_interval_s > 0 {
+        Duration::from_secs(endpoint_config.http2_keepalive_interval_s)
+    } else {
+        Duration::from_secs(30)
+    };
+    let http2_keepalive_timeout = if endpoint_config.http2_keepalive_timeout_s > 0 {
+        Duration::from_secs(endpoint_config.http2_keepalive_timeout_s)
+    } else {
+        Duration::from_secs(20)
+    };
+
+    info!(
+        address = %endpoint_config.address,
+        concurrency_limit = ?endpoint_config.concurrency_limit,
+        connect_timeout_s = connect_timeout.as_secs(),
+        tcp_keepalive_s = tcp_keepalive.as_secs(),
+        http2_keepalive_interval_s = http2_keepalive_interval.as_secs(),
+        http2_keepalive_timeout_s = http2_keepalive_timeout.as_secs(),
+        "tls_utils::endpoint: creating gRPC endpoint with keepalive",
+    );
+
+    let mut endpoint = endpoint
+        .connect_timeout(connect_timeout)
+        .tcp_keepalive(Some(tcp_keepalive))
+        .http2_keep_alive_interval(http2_keepalive_interval)
+        .keep_alive_timeout(http2_keepalive_timeout)
+        .keep_alive_while_idle(true);
+
+    if let Some(concurrency_limit) = endpoint_config.concurrency_limit {
+        endpoint = endpoint.concurrency_limit(concurrency_limit);
     }
+
+    Ok(endpoint)
 }

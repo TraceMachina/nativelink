@@ -298,6 +298,10 @@ where
     /// if it is not being processed by any worker.
     client_action_timeout: Duration,
 
+    /// Maximum time an action can stay in Executing state without any worker
+    /// update, regardless of worker keepalive status. Duration::ZERO disables.
+    max_executing_timeout: Duration,
+
     // A lock to ensure only one timeout operation is running at a time
     // on this service.
     timeout_operation_mux: Mutex<()>,
@@ -325,6 +329,7 @@ where
         max_job_retries: usize,
         no_event_action_timeout: Duration,
         client_action_timeout: Duration,
+        max_executing_timeout: Duration,
         action_db: T,
         now_fn: NowFn,
         worker_registry: Option<SharedWorkerRegistry>,
@@ -334,6 +339,7 @@ where
             max_job_retries,
             no_event_action_timeout,
             client_action_timeout,
+            max_executing_timeout,
             timeout_operation_mux: Mutex::new(()),
             weak_self: weak_self.clone(),
             now_fn,
@@ -361,6 +367,12 @@ where
         };
 
         if registry_alive {
+            if self.max_executing_timeout > Duration::ZERO {
+                let last_update = awaited_action.last_worker_updated_timestamp();
+                if let Ok(elapsed) = now.duration_since(last_update) {
+                    return elapsed > self.max_executing_timeout;
+                }
+            }
             return false;
         }
 
@@ -369,11 +381,7 @@ where
             .checked_add(self.no_event_action_timeout)
             .unwrap_or(now);
 
-        if worker_should_update_before >= now {
-            return false;
-        }
-
-        true
+        worker_should_update_before < now
     }
 
     async fn apply_filter_predicate(

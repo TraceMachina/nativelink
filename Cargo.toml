@@ -52,7 +52,9 @@ clap = { version = "4.5.35", features = [
 ], default-features = false }
 futures = { version = "0.3.31", default-features = false }
 hyper = { version = "1.6.0", default-features = false }
-hyper-util = { version = "0.1.11", default-features = false }
+hyper-util = { version = "0.1.11", default-features = false, features = [
+  "tracing",
+] }
 mimalloc = { version = "0.1.44", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
