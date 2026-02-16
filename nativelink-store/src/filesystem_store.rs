@@ -39,6 +39,7 @@ use nativelink_util::store_trait::{
     RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
+use tokio::sync::Semaphore;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{debug, error, info, trace, warn};
 
@@ -636,6 +637,8 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     read_buffer_size: usize,
     weak_self: Weak<Self>,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
+    /// Limits concurrent write operations to prevent disk I/O saturation.
+    write_semaphore: Option<Semaphore>,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
@@ -693,6 +696,11 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         } else {
             spec.read_buffer_size as usize
         };
+        let write_semaphore = if spec.max_concurrent_writes > 0 {
+            Some(Semaphore::new(spec.max_concurrent_writes))
+        } else {
+            None
+        };
         Ok(Arc::new_cyclic(|weak_self| Self {
             shared_context,
             evicting_map,
@@ -700,6 +708,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             read_buffer_size,
             weak_self: weak_self.clone(),
             rename_fn,
+            write_semaphore,
         }))
     }
 
@@ -749,12 +758,25 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             data_size += data_len as u64;
         }
 
+        let _permit = if let Some(sem) = &self.write_semaphore {
+            Some(
+                sem.acquire()
+                    .await
+                    .map_err(|_| make_err!(Code::Internal, "Write semaphore closed"))?,
+            )
+        } else {
+            None
+        };
+
         temp_file
             .as_ref()
             .sync_all()
             .await
             .err_tip(|| "Failed to sync_data in filesystem store")?;
 
+        drop(_permit);
+
+        temp_file.advise_dontneed();
         trace!(?temp_file, "Dropping file to update_file");
         drop(temp_file);
 
@@ -951,12 +973,25 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .err_tip(|| format!("Failed to write data to {}", temp_full_path.display()))?;
         }
 
+        let _permit = if let Some(sem) = &self.write_semaphore {
+            Some(
+                sem.acquire()
+                    .await
+                    .map_err(|_| make_err!(Code::Internal, "Write semaphore closed"))?,
+            )
+        } else {
+            None
+        };
+
         temp_file
             .as_ref()
             .sync_all()
             .await
             .err_tip(|| "Failed to sync_data in filesystem store update_oneshot")?;
 
+        drop(_permit);
+
+        temp_file.advise_dontneed();
         drop(temp_file);
 
         *entry.data_size_mut() = data.len() as u64;
@@ -995,6 +1030,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // We are done with the file, if we hold a reference to the file here, it could
         // result in a deadlock if `emplace_file()` also needs file descriptors.
         trace!(?file, "Dropping file to to update_with_whole_file");
+        file.advise_dontneed();
         drop(file);
         self.emplace_file(key.into_owned(), Arc::new(entry))
             .await
@@ -1054,6 +1090,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .await
                 .err_tip(|| "Failed to send chunk in filesystem store get_part")?;
         }
+        temp_file.get_ref().advise_dontneed();
         writer
             .send_eof()
             .err_tip(|| "Filed to send EOF in filesystem store get_part")?;
