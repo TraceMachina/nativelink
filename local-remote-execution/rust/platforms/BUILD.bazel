@@ -23,7 +23,7 @@ platform(
     name = "aarch64-apple-darwin",
     exec_properties = {
         # nix eval .#packages.aarch64-darwin.nativelink-worker-lre-rs.imageTag
-        "lre-rs": "jgrrcngbqbr5wd85l828i9p3sbvhbv7d",
+        "lre-rs": "mzf9c3l73d832w5hrz5z5j8zh2hbc7gw",
     },
     parents = ["@local-remote-execution//platforms:aarch64-darwin"],
 )
@@ -33,7 +33,7 @@ platform(
     constraint_values = ["@local-remote-execution//libc:glibc"],
     exec_properties = {
         # nix eval .#packages.aarch64-linux.nativelink-worker-lre-rs.imageTag
-        "lre-rs": "b3qlrygw1wdy9xif32islwzvbcdr3dzb",
+        "lre-rs": "9wv8asbybdvjx5rl26zvwdp1fya8cps6",
     },
     parents = ["@local-remote-execution//platforms:aarch64-linux"],
 )
@@ -43,7 +43,7 @@ platform(
     constraint_values = ["@local-remote-execution//libc:musl"],
     exec_properties = {
         # nix eval .#packages.aarch64-linux.nativelink-worker-lre-rs.imageTag
-        "lre-rs": "b3qlrygw1wdy9xif32islwzvbcdr3dzb",
+        "lre-rs": "9wv8asbybdvjx5rl26zvwdp1fya8cps6",
     },
     parents = ["@local-remote-execution//platforms:aarch64-linux"],
 )
@@ -52,7 +52,7 @@ platform(
     name = "x86_64-apple-darwin",
     exec_properties = {
         # nix eval .#packages.x86_64-darwin.nativelink-worker-lre-rs.imageTag
-        "lre-rs": "yzmzsmj00lcd44ldnygl4z2xp52yi4lv",
+        "lre-rs": "av6lyqwrww7iqqmwfpar5xn3qk0n4h30",
     },
     parents = ["@local-remote-execution//platforms:x86_64-darwin"],
 )
@@ -62,7 +62,7 @@ platform(
     constraint_values = ["@local-remote-execution//libc:glibc"],
     exec_properties = {
         # nix eval .#packages.x86_64-linux.nativelink-worker-lre-rs.imageTag
-        "lre-rs": "wis5g0pgp4jnmpqlh2q1wd2wvzmclz9n",
+        "lre-rs": "44i9qsswrqgysm4f7mby5bsdgcrm9asi",
     },
     parents = ["@local-remote-execution//platforms:x86_64-linux"],
 )
@@ -72,7 +72,7 @@ platform(
     constraint_values = ["@local-remote-execution//libc:musl"],
     exec_properties = {
         # nix eval .#packages.x86_64-linux.nativelink-worker-lre-rs.imageTag
-        "lre-rs": "wis5g0pgp4jnmpqlh2q1wd2wvzmclz9n",
+        "lre-rs": "44i9qsswrqgysm4f7mby5bsdgcrm9asi",
     },
     parents = ["@local-remote-execution//platforms:x86_64-linux"],
 )

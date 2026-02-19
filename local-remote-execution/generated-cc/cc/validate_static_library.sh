@@ -30,11 +30,11 @@ set -euo pipefail
 #    of nm because it is not in POSIX and demangled names may not be unique
 #    (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=35201).
 DUPLICATE_SYMBOLS=$(
-    "/nix/store/ck7fyp44vvsass6akvg633xv125a1kkb-llvm-binutils-wrapper-21.1.8/bin/nm" -A -g -P "$1" |
+    "/nix/store/80a5p150l4mfra332azxz9vpfj9dy150-llvm-binutils-wrapper-22.1.0-rc2/bin/nm" -A -g -P "$1" |
         sed -E -e 's/.*\[([^][]+)\]: (.+) ([A-TX-Z]) [a-f0-9]+ [a-f0-9]+/\1: \3 \2/g' -e t -e d |
         LC_ALL=C sort -k 3 |
         LC_ALL=C uniq -D -f 2 |
-        "/nix/store/ck7fyp44vvsass6akvg633xv125a1kkb-llvm-binutils-wrapper-21.1.8/bin/c++filt"
+        "/nix/store/80a5p150l4mfra332azxz9vpfj9dy150-llvm-binutils-wrapper-22.1.0-rc2/bin/c++filt"
 )
 if [[ -n $DUPLICATE_SYMBOLS ]]; then
     >&2 echo "Duplicate symbols found in $1:"
