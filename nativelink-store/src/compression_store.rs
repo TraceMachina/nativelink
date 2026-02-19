@@ -44,7 +44,7 @@ pub const CURRENT_STREAM_FORMAT_VERSION: u8 = 1;
 // Default block size that will be used to slice stream into.
 pub const DEFAULT_BLOCK_SIZE: u32 = 64 * 1024;
 
-const U32_SZ: u64 = size_of::<u8>() as u64;
+const U32_SZ: u64 = size_of::<u32>() as u64;
 
 // We use a custom frame format here because I wanted the ability in the future to:
 // * Read a random part of the data without needing to parse entire file.
@@ -630,14 +630,16 @@ impl StoreDriver for CompressionStore {
         };
 
         let (read_result, get_part_fut_result) = tokio::join!(read_fut, get_part_fut);
-        if let Err(mut e) = read_result {
-            // We may need to propagate the error from reading the data through first.
-            if let Err(err) = get_part_fut_result {
-                e = err.merge(e);
-            }
-            return Err(e);
+        // Propagate errors from both futures. Previously, if read_fut
+        // succeeded but get_part_fut failed (e.g., inner store returned
+        // NotFound), the error was silently swallowed — masking real
+        // data-loss errors from the caller.
+        match (read_result, get_part_fut_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(e), Ok(())) => Err(e),
+            (Ok(()), Err(e)) => Err(e),
+            (Err(read_err), Err(get_err)) => Err(get_err.merge(read_err)),
         }
-        Ok(())
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
