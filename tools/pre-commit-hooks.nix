@@ -3,6 +3,7 @@
   nightly-rust,
   generate-bazel-rc,
   generate-stores-config,
+  renovate-patched,
   ...
 }: let
   excludes = ["nativelink-proto/genproto" "native-cli/vendor"];
@@ -213,7 +214,7 @@ in {
   renovate = {
     description = "Validate renovate config";
     enable = true;
-    entry = "${pkgs.renovate}/bin/renovate-config-validator";
+    entry = "${renovate-patched}/bin/renovate-config-validator";
     args = ["--strict"];
     files = "renovate.json5";
   };

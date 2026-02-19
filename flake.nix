@@ -418,6 +418,7 @@
           hooks = import ./tools/pre-commit-hooks.nix {
             inherit pkgs;
             inherit (packages) generate-bazel-rc generate-stores-config;
+            renovate-patched = pkgs.callPackage ./tools/renovate.nix {};
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
@@ -519,7 +520,6 @@
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.apple-sdk_15
               pkgs.libiconv
-              pkgs.libtool
             ]
             ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [
               # Old darwin systems are incompatible with deno.
