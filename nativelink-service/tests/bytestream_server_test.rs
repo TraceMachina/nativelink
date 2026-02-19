@@ -991,7 +991,7 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
         // Test to ensure if we send exactly our max message size, it will succeed.
         let data = Bytes::from(vec![0u8; MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE]);
         let write_request = WriteRequest {
-            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            resource_name: make_resource_name(MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE),
             write_offset: 0,
             finish_write: true,
             data,
@@ -1012,7 +1012,7 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
             MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE + 1
         ]);
         let write_request = WriteRequest {
-            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            resource_name: make_resource_name(MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE + 1),
             write_offset: 0,
             finish_write: true,
             data,
