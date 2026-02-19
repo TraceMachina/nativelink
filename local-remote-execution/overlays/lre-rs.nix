@@ -65,6 +65,7 @@
       ''
         ${" "}       "@local-remote-execution//rust/triple:${target}": glob([
         ${" "}           "lib/rustlib/${target}/lib/*.rlib",
+        ${" "}           "lib/rustlib/${target}/lib/*.rmeta",  # See https://github.com/bazelbuild/rules_rust/issues/3859
         ${" "}           "lib/rustlib/${target}/lib/*.so",
         ${" "}           "lib/rustlib/${target}/lib/*.a",''
       + (lib.optionalString (builtins.match ".*-musl" target != null)
