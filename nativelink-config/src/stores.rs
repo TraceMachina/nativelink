@@ -578,7 +578,7 @@ pub struct RefSpec {
     pub name: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct FilesystemSpec {
     /// Path on the system where to store the actual content. This is where
@@ -599,7 +599,7 @@ pub struct FilesystemSpec {
 
     /// Buffer size to use when reading files. Generally this should be left
     /// to the default value except for testing.
-    /// Default: 32k.
+    /// Default: 256k.
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub read_buffer_size: u32,
 
@@ -624,6 +624,29 @@ pub struct FilesystemSpec {
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_writes: usize,
+
+    /// If true, use sync_data() instead of sync_all() when flushing writes
+    /// to disk. sync_data() only syncs the file data without metadata
+    /// (timestamps, permissions), which is faster. For content-addressed
+    /// storage where the content is verified by hash, metadata sync is
+    /// unnecessary and this significantly reduces write latency.
+    /// Default: true
+    #[serde(default = "default_sync_data_only")]
+    pub sync_data_only: bool,
+}
+
+impl Default for FilesystemSpec {
+    fn default() -> Self {
+        Self {
+            content_path: String::new(),
+            temp_path: String::new(),
+            read_buffer_size: 0,
+            eviction_policy: None,
+            block_size: 0,
+            max_concurrent_writes: 0,
+            sync_data_only: true,
+        }
+    }
 }
 
 // NetApp ONTAP S3 Spec
@@ -1095,6 +1118,20 @@ pub struct GrpcEndpoint {
     /// If not set or 0, defaults to 20 seconds.
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub http2_keepalive_timeout_s: u64,
+
+    /// Whether to set TCP_NODELAY on the connection socket.
+    /// Disables Nagle's algorithm, reducing latency for small writes.
+    /// Default: true
+    #[serde(default = "default_tcp_nodelay")]
+    pub tcp_nodelay: bool,
+}
+
+fn default_sync_data_only() -> bool {
+    true
+}
+
+fn default_tcp_nodelay() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

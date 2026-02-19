@@ -34,11 +34,10 @@ const ZERO_DATA: Bytes = Bytes::new();
 /// the number of bytes sent.
 #[must_use]
 pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
-    // We allow up to 2 items in the buffer at any given time. There is no major
-    // reason behind this magic number other than thinking it will be nice to give
-    // a little time for another thread to wake up and consume data if another
-    // thread is pumping large amounts of data into the channel.
-    let (tx, rx) = mpsc::channel(2);
+    // We allow up to 64 items in the buffer at any given time. At 10Gbps with
+    // 256KiB chunks (default read_buffer_size), 64 slots = 16MiB of buffer —
+    // enough to absorb scheduling jitter without stalling the producer.
+    let (tx, rx) = mpsc::channel(64);
     let eof_sent = Arc::new(AtomicBool::new(false));
     (
         DropCloserWriteHalf {
@@ -368,7 +367,9 @@ impl DropCloserReadHalf {
             }
             chunk
         };
-        let mut output = BytesMut::new();
+        // If we get here, first_chunk was not enough and there is more data.
+        // Fall back to concatenation for multiple chunks.
+        let mut output = BytesMut::with_capacity(size.min(first_chunk.len() * 2));
         output.extend_from_slice(&first_chunk);
 
         loop {
@@ -396,20 +397,41 @@ impl DropCloserReadHalf {
 impl Stream for DropCloserReadHalf {
     type Item = Result<Bytes, std::io::Error>;
 
-    // TODO(palfrey) This is not very efficient as we are creating a new future on every
-    // poll() call. It might be better to use a waker.
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Box::pin(self.recv())
-            .as_mut()
-            .poll(cx)
-            .map(|result| match result {
+        // First drain any queued data (e.g., from try_reset_stream or peek).
+        if let Some(chunk) = self.queued_data.pop_front() {
+            // queued_data may contain empty bytes representing EOF.
+            if chunk.is_empty() {
+                return Poll::Ready(None);
+            }
+            return Poll::Ready(Some(Ok(chunk)));
+        }
+
+        // Check for previous errors.
+        if let Some(err) = &self.last_err {
+            return Poll::Ready(Some(Err(err.clone().to_std_err())));
+        }
+
+        // Poll the underlying mpsc channel directly to avoid heap allocation.
+        match self.rx.poll_recv(cx) {
+            Poll::Ready(Some(bytes)) => match self.recv_inner(bytes) {
                 Ok(bytes) => {
                     if bytes.is_empty() {
-                        return None;
+                        Poll::Ready(None) // EOF
+                    } else {
+                        Poll::Ready(Some(Ok(bytes)))
                     }
-                    Some(Ok(bytes))
                 }
-                Err(e) => Some(Err(e.to_std_err())),
-            })
+                Err(e) => Poll::Ready(Some(Err(e.to_std_err()))),
+            },
+            Poll::Ready(None) => {
+                // Channel closed — treat as EOF or error depending on eof_sent flag.
+                match self.recv_inner(ZERO_DATA) {
+                    Ok(_) => Poll::Ready(None),
+                    Err(e) => Poll::Ready(Some(Err(e.to_std_err()))),
+                }
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 }

@@ -47,7 +47,10 @@ use crate::callback_utils::RemoveItemCallbackHolder;
 use crate::cas_utils::is_zero_digest;
 
 // Default size to allocate memory of the buffer when reading files.
-const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
+// 256 KiB reduces syscalls by 4x compared to 64 KiB. At 10Gbps, 64 KiB reads
+// cause ~19,500 syscalls/sec/stream; 256 KiB brings this down to ~4,900.
+// Modern NVMe SSDs perform significantly better with larger read sizes.
+const DEFAULT_BUFF_SIZE: usize = 256 * 1024;
 // Default block size of all major filesystems is 4KB
 const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024;
 
@@ -637,6 +640,8 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     read_buffer_size: usize,
     weak_self: Weak<Self>,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
+    /// Whether to use sync_data() instead of sync_all().
+    sync_data_only: bool,
     /// Limits concurrent write operations to prevent disk I/O saturation.
     write_semaphore: Option<Semaphore>,
 }
@@ -708,6 +713,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             read_buffer_size,
             weak_self: weak_self.clone(),
             rename_fn,
+            sync_data_only: spec.sync_data_only,
             write_semaphore,
         }))
     }
@@ -768,11 +774,19 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             None
         };
 
-        temp_file
-            .as_ref()
-            .sync_all()
-            .await
-            .err_tip(|| "Failed to sync_data in filesystem store")?;
+        if self.sync_data_only {
+            temp_file
+                .as_ref()
+                .sync_data()
+                .await
+                .err_tip(|| "Failed to sync_data in filesystem store")?;
+        } else {
+            temp_file
+                .as_ref()
+                .sync_all()
+                .await
+                .err_tip(|| "Failed to sync_all in filesystem store")?;
+        }
 
         drop(_permit);
 
@@ -983,11 +997,19 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             None
         };
 
-        temp_file
-            .as_ref()
-            .sync_all()
-            .await
-            .err_tip(|| "Failed to sync_data in filesystem store update_oneshot")?;
+        if self.sync_data_only {
+            temp_file
+                .as_ref()
+                .sync_data()
+                .await
+                .err_tip(|| "Failed to sync_data in filesystem store update_oneshot")?;
+        } else {
+            temp_file
+                .as_ref()
+                .sync_all()
+                .await
+                .err_tip(|| "Failed to sync_all in filesystem store update_oneshot")?;
+        }
 
         drop(_permit);
 
@@ -1076,8 +1098,12 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             Err(err)
         }).await?;
 
+        // Allocate once and reuse: split() takes the written data while
+        // leaving the underlying allocation for reuse, avoiding per-iteration
+        // allocator pressure (~4,900 iterations/sec/stream at 256KiB reads).
+        let mut buf = BytesMut::with_capacity(self.read_buffer_size);
         loop {
-            let mut buf = BytesMut::with_capacity(self.read_buffer_size);
+            buf.reserve(self.read_buffer_size);
             temp_file
                 .read_buf(&mut buf)
                 .await
@@ -1085,8 +1111,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             if buf.is_empty() {
                 break; // EOF.
             }
+            let chunk = buf.split().freeze();
             writer
-                .send(buf.freeze())
+                .send(chunk)
                 .await
                 .err_tip(|| "Failed to send chunk in filesystem store get_part")?;
         }
