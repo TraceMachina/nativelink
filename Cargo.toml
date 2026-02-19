@@ -72,8 +72,10 @@ tokio-rustls = { version = "0.26.2", default-features = false, features = [
   "ring",
 ] }
 tonic = { version = "0.13.0", features = [
+  "gzip",
   "tls-ring",
   "transport",
+  "zstd",
 ], default-features = false }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
@@ -89,7 +91,7 @@ redis-test = ["aio"]
 serial_test = ["async"]
 tokio = ["fs", "io-util", "rt-multi-thread", "signal"]
 tokio-stream = ["fs"]
-tonic = ["tls", "transport"]
+tonic = ["gzip", "tls", "transport", "zstd"]
 tonic-build = ["prost"]
 uuid = ["serde", "v4"]
 

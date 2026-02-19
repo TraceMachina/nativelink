@@ -63,8 +63,11 @@ pub enum HttpCompressionAlgorithm {
     #[default]
     None,
 
-    /// Zlib compression.
+    /// Gzip compression.
     Gzip,
+
+    /// Zstandard compression.
+    Zstd,
 }
 
 /// Note: Compressing data in the cloud rarely has a benefit, since most
