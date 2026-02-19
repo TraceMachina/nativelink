@@ -100,9 +100,11 @@ impl Drop for LoaderGuard<'_> {
             return;
         };
 
+        // Pre-compute the owned key outside the lock to minimize lock hold time.
+        let owned_key = self.key.borrow().into_owned();
         let mut guard = store.populating_digests.lock();
         if let std::collections::hash_map::Entry::Occupied(occupied_entry) =
-            guard.entry(self.key.borrow().into_owned())
+            guard.entry(owned_key)
         {
             if Arc::ptr_eq(occupied_entry.get(), &loader) {
                 drop(loader);
@@ -143,10 +145,12 @@ impl FastSlowStore {
     fn get_loader<'a>(&self, key: StoreKey<'a>) -> LoaderGuard<'a> {
         // Get a single loader instance that's used to populate the fast store
         // for this digest.  If another request comes in then it's de-duplicated.
+        // Pre-compute the owned key outside the lock to minimize lock hold time.
+        let owned_key = key.borrow().into_owned();
         let loader = match self
             .populating_digests
             .lock()
-            .entry(key.borrow().into_owned())
+            .entry(owned_key)
         {
             std::collections::hash_map::Entry::Occupied(occupied_entry) => {
                 occupied_entry.get().clone()
@@ -588,19 +592,34 @@ impl StoreDriver for FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        // TODO(palfrey) Investigate if we should maybe ignore errors here instead of
-        // forwarding them up.
         if self.fast_store.has(key.borrow()).await?.is_some() {
-            self.metrics
-                .fast_store_hit_count
-                .fetch_add(1, Ordering::Acquire);
-            self.fast_store
-                .get_part(key, writer.borrow_mut(), offset, length)
-                .await?;
-            self.metrics
-                .fast_store_downloaded_bytes
-                .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
-            return Ok(());
+            // Try the fast store first. If the item was evicted between the
+            // has() check and this get_part() call (TOCTOU race), fall through
+            // to the slow-store path instead of propagating NotFound.
+            match self
+                .fast_store
+                .get_part(key.borrow(), writer.borrow_mut(), offset, length)
+                .await
+            {
+                Ok(()) => {
+                    self.metrics
+                        .fast_store_hit_count
+                        .fetch_add(1, Ordering::Acquire);
+                    self.metrics
+                        .fast_store_downloaded_bytes
+                        .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+                    return Ok(());
+                }
+                Err(err) if err.code == Code::NotFound && writer.get_bytes_written() == 0 => {
+                    // Item was evicted between has() and get_part().
+                    // Only safe to fall through if no bytes were written yet.
+                    debug!(
+                        ?key,
+                        "Fast store item evicted between has() and get_part(), falling through to slow store"
+                    );
+                }
+                Err(err) => return Err(err),
+            }
         }
 
         // If the fast store is noop or read only or update only then bypass it.
@@ -630,15 +649,36 @@ impl StoreDriver for FastSlowStore {
             })
             .await?;
 
-        // If we didn't stream then re-enter which will stream from the fast
-        // store, or retry the download.  We should not get in a loop here
-        // because OnceCell has the good sense to retry for all callers so in
-        // order to get here the fast store will have been populated.  There's
-        // an outside chance it was evicted, but that's slim.
+        // If we were a waiter (not the streaming thread), read from the
+        // fast store which was just populated. If the blob was evicted
+        // between populate and this read, fall back directly to the slow
+        // store instead of recursing (which could loop indefinitely under
+        // heavy eviction pressure).
         if let Some(writer) = writer.take() {
-            self.get_part(key, writer, offset, length).await
+            let bytes_before = writer.get_bytes_written();
+            match self
+                .fast_store
+                .get_part(key.borrow(), &mut *writer, offset, length)
+                .await
+            {
+                Ok(()) => Ok(()),
+                Err(err)
+                    if err.code == Code::NotFound
+                        && writer.get_bytes_written() == bytes_before =>
+                {
+                    warn!(
+                        ?key,
+                        "Fast store item evicted immediately after population, \
+                         reading directly from slow store"
+                    );
+                    self.slow_store
+                        .get_part(key, &mut *writer, offset, length)
+                        .await
+                }
+                Err(err) => Err(err),
+            }
         } else {
-            // This was the thread that did the streaming already, lucky duck.
+            // This was the thread that did the streaming already.
             Ok(())
         }
     }

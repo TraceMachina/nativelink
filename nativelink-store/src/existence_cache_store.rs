@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nativelink_config::stores::{EvictionPolicy, ExistenceCacheSpec};
-use nativelink_error::{Error, ResultExt, error_if};
+use nativelink_error::{Code, Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
@@ -233,19 +233,32 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
+        // Check the inner store directly, bypassing the existence cache.
+        // The existence cache may have a stale positive entry for a blob
+        // that was evicted from the inner store (the async eviction callback
+        // may not have fired yet). If we trusted the cache here, we would
+        // skip the upload and the blob would remain missing — causing
+        // Bazel's "Lost inputs no longer available remotely" error.
         let mut exists = [None];
-        self.inner_has_with_results(&[digest], &mut exists)
+        self.inner_store
+            .has_with_results(&[digest.into()], &mut exists)
             .await
             .err_tip(|| "In ExistenceCacheStore::update")?;
         if exists[0].is_some() {
-            // We need to drain the reader to avoid the writer complaining that we dropped
-            // the connection prematurely.
+            // Blob genuinely exists in the inner store. Safe to skip.
             reader
                 .drain()
                 .await
                 .err_tip(|| "In ExistenceCacheStore::update")?;
+            // Refresh the existence cache entry since we verified it exists.
+            let _ = self
+                .existence_cache
+                .insert(digest, ExistenceItem(exists[0].unwrap()))
+                .await;
             return Ok(());
         }
+        // If the existence cache had a stale entry, remove it now.
+        self.existence_cache.remove(&digest).await;
         {
             let mut locked_callbacks = self.pause_remove_callbacks.lock();
             if locked_callbacks.is_none() {
@@ -256,12 +269,17 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         let result = self.inner_store.update(digest, reader, size_info).await;
         if result.is_ok() {
             trace!(?digest, "Inserting into existence cache");
-            if let UploadSizeInfo::ExactSize(size) = size_info {
-                let _ = self
-                    .existence_cache
-                    .insert(digest, ExistenceItem(size))
-                    .await;
-            }
+            // Always cache after a successful upload, regardless of whether
+            // the size was ExactSize or MaxSize. The digest carries the
+            // authoritative size for content-addressed blobs.
+            let size = match size_info {
+                UploadSizeInfo::ExactSize(size) => size,
+                UploadSizeInfo::MaxSize(_) => digest.size_bytes(),
+            };
+            let _ = self
+                .existence_cache
+                .insert(digest, ExistenceItem(size))
+                .await;
         }
         {
             let maybe_keys = self.pause_remove_callbacks.lock().take();
@@ -288,11 +306,22 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             .inner_store
             .get_part(digest, writer, offset, length)
             .await;
-        if result.is_ok() {
-            let _ = self
-                .existence_cache
-                .insert(digest, ExistenceItem(digest.size_bytes()))
-                .await;
+        match &result {
+            Ok(()) => {
+                let _ = self
+                    .existence_cache
+                    .insert(digest, ExistenceItem(digest.size_bytes()))
+                    .await;
+            }
+            Err(err) if err.code == Code::NotFound => {
+                // The blob was evicted from the inner store. Remove the
+                // stale entry from the existence cache so that subsequent
+                // has() calls go to the inner store and get an accurate
+                // result. Without this, CompletenessCheckingStore would
+                // keep returning stale AC entries whose CAS blobs are gone.
+                self.existence_cache.remove(&digest).await;
+            }
+            Err(_) => {}
         }
         result
     }
