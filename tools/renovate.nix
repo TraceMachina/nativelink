@@ -15,7 +15,7 @@
   nixosTests,
   nix-update-script,
   yq-go,
-  libtool,
+  apple-sdk_15,
 }: let
   nodejs = nodejs_24;
 in
@@ -44,7 +44,7 @@ in
         python3
         yq-go
       ]
-      ++ lib.optional stdenv.hostPlatform.isDarwin [xcbuild libtool];
+      ++ lib.optional stdenv.hostPlatform.isDarwin [xcbuild apple-sdk_15];
 
     pnpmDeps = fetchPnpmDeps {
       inherit (finalAttrs) pname version src;
