@@ -519,6 +519,7 @@
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.apple-sdk_15
               pkgs.libiconv
+              pkgs.libtool
             ]
             ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [
               # Old darwin systems are incompatible with deno.
