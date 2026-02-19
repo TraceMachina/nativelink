@@ -30,6 +30,7 @@ use nativelink_util::operation_state_manager::{
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
 use nativelink_util::origin_event::OriginMetadata;
+use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
@@ -51,7 +52,9 @@ use crate::worker_scheduler::WorkerScheduler;
 
 /// Default timeout for workers in seconds.
 /// If this changes, remember to change the documentation in the config.
-const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
+/// A 5-second timeout causes unnecessary worker churn on any brief network
+/// hiccup or GC pause, so we use a more generous default.
+const DEFAULT_WORKER_TIMEOUT_S: u64 = 30;
 
 /// Mark operations as completed with error if no client has updated them
 /// within this duration.
@@ -216,98 +219,24 @@ impl SimpleScheduler {
     // can create a map of capabilities of each worker and then try and match
     // the actions to the worker using the map lookup (ie. map reduce).
     async fn do_try_match(&self, full_worker_logging: bool) -> Result<(), Error> {
-        async fn match_action_to_worker(
-            action_state_result: &dyn ActionStateResult,
-            workers: &ApiWorkerScheduler,
-            matching_engine_state_manager: &dyn MatchingEngineStateManager,
-            platform_property_manager: &PlatformPropertyManager,
-            full_worker_logging: bool,
-        ) -> Result<(), Error> {
-            let (action_info, maybe_origin_metadata) =
-                action_state_result
-                    .as_action_info()
-                    .await
-                    .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
+        /// Maximum number of actions to process concurrently during matching.
+        /// Currently set to 1 (sequential) because find_worker_for_action
+        /// does not atomically reserve the worker — with concurrency > 1,
+        /// two actions could be dispatched to the same worker before its
+        /// capacity is reduced. The FuturesUnordered infrastructure is kept
+        /// so parallelism can be re-enabled once find + claim are atomic.
+        const MATCH_CONCURRENCY: usize = 1;
 
-            // TODO(palfrey) We should not compute this every time and instead store
-            // it with the ActionInfo when we receive it.
-            let platform_properties = platform_property_manager
-                .make_platform_properties(action_info.platform_properties.clone())
-                .err_tip(
-                    || "Failed to make platform properties in SimpleScheduler::do_try_match",
-                )?;
-
-            let action_info = ActionInfoWithProps {
-                inner: action_info,
-                platform_properties,
-            };
-
-            // Try to find a worker for the action.
-            let worker_id = {
-                match workers
-                    .find_worker_for_action(&action_info.platform_properties, full_worker_logging)
-                    .await
-                {
-                    Some(worker_id) => worker_id,
-                    // If we could not find a worker for the action,
-                    // we have nothing to do.
-                    None => return Ok(()),
-                }
-            };
-
-            let attach_operation_fut = async move {
-                // Extract the operation_id from the action_state.
-                let operation_id = {
-                    let (action_state, _origin_metadata) = action_state_result
-                        .as_state()
-                        .await
-                        .err_tip(|| "Failed to get action_info from as_state_result stream")?;
-                    action_state.client_operation_id.clone()
-                };
-
-                // Tell the matching engine that the operation is being assigned to a worker.
-                let assign_result = matching_engine_state_manager
-                    .assign_operation(&operation_id, Ok(&worker_id))
-                    .await
-                    .err_tip(|| "Failed to assign operation in do_try_match");
-                if let Err(err) = assign_result {
-                    if err.code == Code::Aborted {
-                        // If the operation was aborted, it means that the operation was
-                        // cancelled due to another operation being assigned to the worker.
-                        return Ok(());
-                    }
-                    // Any other error is a real error.
-                    return Err(err);
-                }
-
-                debug!(%worker_id, %operation_id, ?action_info, "Notifying worker of operation");
-                workers
-                    .worker_notify_run_action(worker_id, operation_id, action_info)
-                    .await
-                    .err_tip(|| {
-                        "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
-                    })
-            };
-            tokio::pin!(attach_operation_fut);
-
-            let origin_metadata = maybe_origin_metadata.unwrap_or_default();
-
-            let ctx = Context::current_with_baggage(vec![KeyValue::new(
-                ENDUSER_ID,
-                origin_metadata.identity,
-            )]);
-
-            info_span!("do_try_match")
-                .in_scope(|| attach_operation_fut)
-                .with_context(ctx)
-                .await
-        }
-
-        let mut result = Ok(());
+        // Cache for computed platform properties, keyed by sorted key-value
+        // pairs. This avoids recomputing the same PlatformProperties for
+        // actions that share identical platform requirements (the common case).
+        let props_cache: std::sync::Mutex<
+            HashMap<Vec<(String, String)>, Arc<PlatformProperties>>,
+        > = std::sync::Mutex::new(HashMap::new());
 
         let start = Instant::now();
 
-        let mut stream = self
+        let stream = self
             .get_queued_operations()
             .await
             .err_tip(|| "Failed to get queued operations in do_try_match")?;
@@ -320,17 +249,45 @@ impl SimpleScheduler {
             );
         }
 
-        while let Some(action_state_result) = stream.next().await {
-            result = result.merge(
-                match_action_to_worker(
-                    action_state_result.as_ref(),
+        // Collect all queued actions so we own them, then process up to
+        // MATCH_CONCURRENCY concurrently using FuturesUnordered. Each action
+        // independently finds a worker and assigns itself; conflicts are
+        // resolved by the existing error handling (Aborted codes, None from
+        // find_worker, etc.).
+        let queued_actions: Vec<Box<dyn ActionStateResult>> = stream.collect().await;
+
+        let mut futures_set = futures::stream::FuturesUnordered::<
+            std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + '_>>,
+        >::new();
+        let mut action_iter = queued_actions.into_iter();
+        let mut result = Ok(());
+
+        // Seed the initial batch.
+        for action_state_result in action_iter.by_ref().take(MATCH_CONCURRENCY) {
+            futures_set.push(Box::pin(Self::match_action_to_worker_cached(
+                action_state_result,
+                self.worker_scheduler.as_ref(),
+                self.matching_engine_state_manager.as_ref(),
+                self.platform_property_manager.as_ref(),
+                &props_cache,
+                full_worker_logging,
+            )));
+        }
+
+        // Process futures as they complete, adding new ones to maintain concurrency.
+        while let Some(match_result) = futures_set.next().await {
+            result = result.merge(match_result);
+
+            if let Some(action_state_result) = action_iter.next() {
+                futures_set.push(Box::pin(Self::match_action_to_worker_cached(
+                    action_state_result,
                     self.worker_scheduler.as_ref(),
                     self.matching_engine_state_manager.as_ref(),
                     self.platform_property_manager.as_ref(),
+                    &props_cache,
                     full_worker_logging,
-                )
-                .await,
-            );
+                )));
+            }
         }
 
         let total_elapsed = start.elapsed();
@@ -343,6 +300,117 @@ impl SimpleScheduler {
         }
 
         result
+    }
+
+    /// Matches a single action to a worker, using a shared cache for computed
+    /// platform properties to avoid redundant recomputation across actions
+    /// with identical platform requirements.
+    async fn match_action_to_worker_cached(
+        action_state_result: Box<dyn ActionStateResult>,
+        workers: &ApiWorkerScheduler,
+        matching_engine_state_manager: &dyn MatchingEngineStateManager,
+        platform_property_manager: &PlatformPropertyManager,
+        props_cache: &std::sync::Mutex<
+            HashMap<Vec<(String, String)>, Arc<PlatformProperties>>,
+        >,
+        full_worker_logging: bool,
+    ) -> Result<(), Error> {
+        let (action_info, maybe_origin_metadata) = action_state_result
+            .as_action_info()
+            .await
+            .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
+
+        // Build a deterministic cache key from the raw platform
+        // properties (sorted key-value pairs).
+        let mut cache_key: Vec<(String, String)> =
+            action_info.platform_properties.clone().into_iter().collect();
+        cache_key.sort();
+
+        // Look up or compute and cache the platform properties.
+        let platform_properties = {
+            let mut cache = props_cache.lock().unwrap();
+            if let Some(cached) = cache.get(&cache_key) {
+                cached.clone()
+            } else {
+                let computed = platform_property_manager
+                    .make_platform_properties(action_info.platform_properties.clone())
+                    .err_tip(|| {
+                        "Failed to make platform properties in SimpleScheduler::do_try_match"
+                    })?;
+                let arc = Arc::new(computed);
+                cache.insert(cache_key, arc.clone());
+                arc
+            }
+        };
+
+        let action_info_with_props = ActionInfoWithProps {
+            inner: action_info,
+            platform_properties: (*platform_properties).clone(),
+        };
+
+        // Try to find a worker for the action.
+        let worker_id = match workers
+            .find_worker_for_action(
+                &action_info_with_props.platform_properties,
+                full_worker_logging,
+            )
+            .await
+        {
+            Some(worker_id) => worker_id,
+            // If we could not find a worker for the action,
+            // we have nothing to do.
+            None => return Ok(()),
+        };
+
+        // Extract the operation_id from the action_state.
+        let operation_id = {
+            let (action_state, _origin_metadata) = action_state_result
+                .as_state()
+                .await
+                .err_tip(|| "Failed to get action_info from as_state_result stream")?;
+            action_state.client_operation_id.clone()
+        };
+
+        // Tell the matching engine that the operation is being assigned to a worker.
+        let assign_result = matching_engine_state_manager
+            .assign_operation(&operation_id, Ok(&worker_id))
+            .await
+            .err_tip(|| "Failed to assign operation in do_try_match");
+        if let Err(err) = assign_result {
+            if err.code == Code::Aborted {
+                // The operation was cancelled due to another operation
+                // being assigned to the worker.
+                return Ok(());
+            }
+            // Any other error is a real error.
+            return Err(err);
+        }
+
+        let origin_metadata = maybe_origin_metadata.unwrap_or_default();
+        let ctx = Context::current_with_baggage(vec![KeyValue::new(
+            ENDUSER_ID,
+            origin_metadata.identity,
+        )]);
+
+        let notify_fut = async {
+            debug!(
+                %worker_id,
+                %operation_id,
+                ?action_info_with_props,
+                "Notifying worker of operation"
+            );
+            workers
+                .worker_notify_run_action(worker_id, operation_id, action_info_with_props)
+                .await
+                .err_tip(|| {
+                    "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
+                })
+        };
+
+        info_span!("do_try_match")
+            .in_scope(|| notify_fut)
+            .with_context(ctx)
+            .await
     }
 }
 
@@ -357,15 +425,12 @@ impl SimpleScheduler {
             spec,
             awaited_action_db,
             || {
-                // The cost of running `do_try_match()` is very high, but constant
-                // in relation to the number of changes that have happened. This
-                // means that grabbing this lock to process `do_try_match()` should
-                // always yield to any other tasks that might want the lock. The
-                // easiest and most fair way to do this is to sleep for a small
-                // amount of time. Using something like tokio::task::yield_now()
-                // does not yield as aggressively as we'd like if new futures are
-                // scheduled within a future.
-                tokio::time::sleep(Duration::from_millis(1))
+                // Yield to allow other tasks to make progress between match
+                // cycles. A full 1ms sleep is too aggressive and caps matching
+                // to ~1000 cycles/sec. sleep(ZERO) defers to the next timer
+                // tick, preventing busy-spinning when no other tasks are
+                // runnable (unlike yield_now which returns immediately).
+                tokio::time::sleep(Duration::ZERO)
             },
             task_change_notify,
             SystemTime::now,
