@@ -124,6 +124,16 @@ pub struct SimpleSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub worker_timeout_s: u64,
 
+    /// Maximum time (seconds) an action can stay in Executing state without
+    /// any worker update before being timed out and re-queued.
+    /// This applies regardless of worker keepalive status, catching cases
+    /// where a worker is alive (sending keepalives) but stuck on a specific
+    /// action. Set to 0 to disable (relies only on worker_timeout_s).
+    ///
+    /// Default: 0 (disabled)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub max_action_executing_timeout_s: u64,
+
     /// If a job returns an internal error or times out this many times when
     /// attempting to run on a worker the scheduler will return the last error
     /// to the client. Jobs will be retried and this configuration is to help
@@ -186,12 +196,12 @@ pub struct GrpcSpec {
     /// Limit the number of simultaneous upstream requests to this many.  A
     /// value of zero is treated as unlimited.  If the limit is reached the
     /// request is queued.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_requests: usize,
 
     /// The number of connections to make to each specified endpoint to balance
     /// the load over multiple TCP connections.  Default 1.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub connections_per_endpoint: usize,
 }
 

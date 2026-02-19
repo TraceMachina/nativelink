@@ -53,7 +53,7 @@ use parking_lot::Mutex;
 use prost::Message;
 use tokio::time::sleep;
 use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
-use tracing::error;
+use tracing::{error, trace, warn};
 use uuid::Uuid;
 
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
@@ -66,6 +66,8 @@ pub struct GrpcStore {
     store_type: nativelink_config::stores::StoreType,
     retrier: Retrier,
     connection_manager: ConnectionManager,
+    /// Per-RPC timeout. Duration::ZERO means disabled.
+    rpc_timeout: Duration,
 }
 
 impl GrpcStore {
@@ -88,6 +90,12 @@ impl GrpcStore {
             endpoints.push(endpoint);
         }
 
+        let rpc_timeout = if spec.rpc_timeout_s > 0 {
+            Duration::from_secs(spec.rpc_timeout_s)
+        } else {
+            Duration::from_secs(120)
+        };
+
         Ok(Arc::new(Self {
             instance_name: spec.instance_name.clone(),
             store_type: spec.store_type,
@@ -103,6 +111,7 @@ impl GrpcStore {
                 spec.retry.clone(),
                 jitter_fn,
             ),
+            rpc_timeout,
         }))
     }
 
@@ -294,51 +303,126 @@ impl GrpcStore {
             stream,
         )));
 
+        let write_start = std::time::Instant::now();
+        let instance_name = self.instance_name.clone();
+        let rpc_timeout = self.rpc_timeout;
+        trace!(
+            instance_name = %instance_name,
+            rpc_timeout_s = rpc_timeout.as_secs(),
+            "GrpcStore::write: starting ByteStream write",
+        );
+        let mut attempt: u32 = 0;
         let result = self
             .retrier
-            .retry(unfold(local_state, move |local_state| async move {
-                // The client write may occur on a separate thread and
-                // therefore in order to share the state with it we have to
-                // wrap it in a Mutex and retrieve it after the write
-                // has completed.  There is no way to get the value back
-                // from the client.
-                let result = self
-                    .connection_manager
-                    .connection()
-                    .and_then(|channel| async {
-                        ByteStreamClient::new(channel)
-                            .write(WriteStateWrapper::new(local_state.clone()))
-                            .await
-                            .err_tip(|| "in GrpcStore::write")
-                    })
-                    .await;
-
-                // Get the state back from StateWrapper, this should be
-                // uncontended since write has returned.
-                let mut local_state_locked = local_state.lock();
-
-                let result = local_state_locked
-                    .take_read_stream_error()
-                    .map(|err| RetryResult::Err(err.append("Where read_stream_error was set")))
-                    .unwrap_or_else(|| {
-                        // No stream error, handle the original result
-                        match result {
-                            Ok(response) => RetryResult::Ok(response),
-                            Err(err) => {
-                                if local_state_locked.can_resume() {
-                                    local_state_locked.resume();
-                                    RetryResult::Retry(err)
-                                } else {
-                                    RetryResult::Err(err.append("Retry is not possible"))
-                                }
-                            }
+            .retry(unfold(local_state, move |local_state| {
+                attempt += 1;
+                let instance_name = instance_name.clone();
+                async move {
+                    // The client write may occur on a separate thread and
+                    // therefore in order to share the state with it we have to
+                    // wrap it in a Mutex and retrieve it after the write
+                    // has completed.  There is no way to get the value back
+                    // from the client.
+                    trace!(
+                        instance_name = %instance_name,
+                        attempt,
+                        "GrpcStore::write: requesting connection from pool",
+                    );
+                    let conn_start = std::time::Instant::now();
+                    let rpc_fut = self.connection_manager.connection().and_then(|channel| {
+                        let conn_elapsed = conn_start.elapsed();
+                        let instance_for_rpc = instance_name.clone();
+                        let conn_elapsed_ms =
+                            u64::try_from(conn_elapsed.as_millis()).unwrap_or(u64::MAX);
+                        trace!(
+                            instance_name = %instance_for_rpc,
+                            conn_elapsed_ms,
+                            "GrpcStore::write: got connection, starting ByteStream.Write RPC",
+                        );
+                        let rpc_start = std::time::Instant::now();
+                        let local_state_for_rpc = local_state.clone();
+                        async move {
+                            let res = ByteStreamClient::new(channel)
+                                .write(WriteStateWrapper::new(local_state_for_rpc))
+                                .await
+                                .err_tip(|| "in GrpcStore::write");
+                            let rpc_elapsed_ms =
+                                u64::try_from(rpc_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                            trace!(
+                                instance_name = %instance_for_rpc,
+                                rpc_elapsed_ms,
+                                success = res.is_ok(),
+                                "GrpcStore::write: ByteStream.Write RPC returned",
+                            );
+                            res
                         }
                     });
 
-                drop(local_state_locked);
-                Some((result, local_state))
+                    let result = if rpc_timeout > Duration::ZERO {
+                        match tokio::time::timeout(rpc_timeout, rpc_fut).await {
+                            Ok(res) => res,
+                            Err(_elapsed) => {
+                                warn!(
+                                    instance_name = %instance_name,
+                                    attempt,
+                                    rpc_timeout_s = rpc_timeout.as_secs(),
+                                    "GrpcStore::write: per-RPC timeout exceeded, cancelling",
+                                );
+                                #[allow(unused_qualifications)]
+                                Err(nativelink_error::make_err!(
+                                    nativelink_error::Code::DeadlineExceeded,
+                                    "GrpcStore::write RPC timed out after {}s",
+                                    rpc_timeout.as_secs()
+                                ))
+                            }
+                        }
+                    } else {
+                        rpc_fut.await
+                    };
+
+                    // Get the state back from StateWrapper, this should be
+                    // uncontended since write has returned.
+                    let mut local_state_locked = local_state.lock();
+
+                    let result = local_state_locked
+                        .take_read_stream_error()
+                        .map(|err| RetryResult::Err(err.append("Where read_stream_error was set")))
+                        .unwrap_or_else(|| {
+                            // No stream error, handle the original result
+                            match result {
+                                Ok(response) => RetryResult::Ok(response),
+                                Err(ref err) => {
+                                    warn!(
+                                        instance_name = %instance_name,
+                                        attempt,
+                                        ?err,
+                                        can_resume = local_state_locked.can_resume(),
+                                        "GrpcStore::write: RPC failed",
+                                    );
+                                    if local_state_locked.can_resume() {
+                                        local_state_locked.resume();
+                                        RetryResult::Retry(err.clone())
+                                    } else {
+                                        RetryResult::Err(
+                                            err.clone().append("Retry is not possible"),
+                                        )
+                                    }
+                                }
+                            }
+                        });
+
+                    drop(local_state_locked);
+                    Some((result, local_state))
+                }
             }))
             .await?;
+
+        let total_elapsed_ms = u64::try_from(write_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        trace!(
+            instance_name = %self.instance_name,
+            total_elapsed_ms,
+            "GrpcStore::write: completed successfully",
+        );
         Ok(result)
     }
 
@@ -595,6 +679,12 @@ impl StoreDriver for GrpcStore {
             digest_function,
             digest.packed_hash(),
             digest.size_bytes(),
+        );
+        trace!(
+            resource_name = %resource_name,
+            digest_hash = %digest.packed_hash(),
+            digest_size = digest.size_bytes(),
+            "GrpcStore::update: starting upload for digest",
         );
         let local_state = LocalState {
             resource_name,

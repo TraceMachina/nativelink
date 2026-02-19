@@ -238,6 +238,14 @@ impl ApiWorkerSchedulerImpl {
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
     ) -> Option<WorkerId> {
+        // Do a fast check to see if any workers are available at all for work allocation
+        if !self.workers.iter().any(|(_, w)| w.can_accept_work()) {
+            if full_worker_logging {
+                info!("All workers are fully allocated");
+            }
+            return None;
+        }
+
         // Use capability index to get candidate workers that match STATIC properties
         // (Exact, Unknown) and have the required property keys (Priority, Minimum).
         // This reduces complexity from O(W × P) to O(P × log(W)) for exact properties.

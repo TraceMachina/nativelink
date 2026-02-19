@@ -56,7 +56,7 @@ where
             .next()
             .await
             .err_tip(|| "Error receiving first message in stream")?
-            .err_tip(|| "Expected WriteRequest struct in stream")?;
+            .err_tip(|| "Expected WriteRequest struct in stream (from)")?;
 
         let resource_info = ResourceInfo::new(&first_msg.resource_name, true)
             .err_tip(|| {
@@ -120,7 +120,9 @@ where
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Some(maybe_message)) => maybe_message
                     .err_tip(|| format!("Stream error at byte {}", self.bytes_received)),
-                Poll::Ready(None) => Err(make_input_err!("Expected WriteRequest struct in stream")),
+                Poll::Ready(None) => Err(make_input_err!(
+                    "Expected WriteRequest struct in stream (got None)"
+                )),
             }
         };
 
