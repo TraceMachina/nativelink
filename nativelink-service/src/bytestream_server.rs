@@ -62,7 +62,7 @@ use tracing::{Instrument, Level, debug, error, error_span, info, instrument, tra
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// If this value changes update the documentation in the config definition.
-const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
+const DEFAULT_MAX_BYTES_PER_STREAM: usize = 2 * 1024 * 1024;
 
 /// Metrics for `ByteStream` server operations.
 /// Tracks upload/download activity, throughput, and latency.
@@ -494,8 +494,18 @@ impl ByteStreamServer {
         // Parse UUID string to u128 key for efficient HashMap operations
         let uuid_key = parse_uuid_to_key(uuid_str);
 
-        let (uuid, bytes_received, is_collision) =
-            match instance.active_uploads.lock().entry(uuid_key) {
+        // We handle the three cases in two phases to avoid holding the
+        // mutex guard across a second .lock() call (which would deadlock
+        // on parking_lot::Mutex since it is not reentrant).
+        enum UploadAction {
+            Resume(Box<ActiveStreamGuard>),
+            New(u128, Arc<AtomicU64>),
+            Collision(u128),
+        }
+
+        let action = {
+            let mut active_uploads = instance.active_uploads.lock();
+            match active_uploads.entry(uuid_key) {
                 Entry::Occupied(mut entry) => {
                     let maybe_idle_stream = entry.get_mut();
                     if let Some(idle_stream) = maybe_idle_stream.1.take() {
@@ -510,34 +520,41 @@ impl ByteStreamServer {
                             .metrics
                             .resumed_uploads
                             .fetch_add(1, Ordering::Relaxed);
-                        return idle_stream.into_active_stream(bytes_received, instance);
+                        UploadAction::Resume(Box::new(
+                            idle_stream.into_active_stream(bytes_received, instance),
+                        ))
+                    } else {
+                        // Case 3: Stream is active - generate a unique UUID to avoid collision
+                        let original_key = *entry.key();
+                        let unique_key = Self::generate_unique_uuid_key(original_key);
+                        warn!(
+                            msg = "UUID collision detected, generating unique UUID to prevent conflict",
+                            original_uuid = format!("{:032x}", original_key),
+                            unique_uuid = format!("{:032x}", unique_key)
+                        );
+                        UploadAction::Collision(unique_key)
                     }
-                    // Case 3: Stream is active - generate a unique UUID to avoid collision
-                    // Using nanosecond timestamp makes collision probability essentially zero
-                    let original_key = *entry.key();
-                    let unique_key = Self::generate_unique_uuid_key(original_key);
-                    warn!(
-                        msg = "UUID collision detected, generating unique UUID to prevent conflict",
-                        original_uuid = format!("{:032x}", original_key),
-                        unique_uuid = format!("{:032x}", unique_key)
-                    );
-                    // Entry goes out of scope here, releasing the lock
-
-                    let bytes_received = Arc::new(AtomicU64::new(0));
-                    let mut active_uploads = instance.active_uploads.lock();
-                    // Insert with the unique UUID - this should never collide due to nanosecond precision
-                    active_uploads.insert(unique_key, (bytes_received.clone(), None));
-                    (unique_key, bytes_received, true)
                 }
                 Entry::Vacant(entry) => {
                     // Case 1: UUID doesn't exist, create new stream
                     let bytes_received = Arc::new(AtomicU64::new(0));
                     let uuid = *entry.key();
-                    // Our stream is "in use" if the key is in the map, but the value is None.
                     entry.insert((bytes_received.clone(), None));
-                    (uuid, bytes_received, false)
+                    UploadAction::New(uuid, bytes_received)
                 }
-            };
+            }
+        }; // First lock guard dropped here.
+
+        let (uuid, bytes_received, is_collision) = match action {
+            UploadAction::Resume(guard) => return *guard,
+            UploadAction::New(uuid, bytes_received) => (uuid, bytes_received, false),
+            UploadAction::Collision(unique_key) => {
+                let bytes_received = Arc::new(AtomicU64::new(0));
+                let mut active_uploads = instance.active_uploads.lock();
+                active_uploads.insert(unique_key, (bytes_received.clone(), None));
+                (unique_key, bytes_received, true)
+            }
+        };
 
         // Track metrics for new upload
         instance
@@ -785,6 +802,17 @@ impl ByteStreamServer {
                     return Err(make_input_err!("Received more bytes than expected"));
                 }
                 if write_request.finish_write {
+                    // Validate that we received the expected number of bytes
+                    // before accepting the upload. The stream wrapper only
+                    // validates on a *subsequent* poll_next after finish_write,
+                    // which we never perform, so check here explicitly.
+                    if tx.get_bytes_written() != expected_size {
+                        return Err(make_input_err!(
+                            "Client declared size {} but only sent {} bytes",
+                            expected_size,
+                            tx.get_bytes_written()
+                        ));
+                    }
                     // Gracefully close our stream.
                     tx.send_eof()
                         .err_tip(|| "Failed to send EOF in ByteStream::write")?;
@@ -898,6 +926,15 @@ impl ByteStreamServer {
             }
 
             if write_request.finish_write {
+                // Validate that we received the expected number of bytes
+                // before accepting the upload.
+                if bytes_received != expected_size {
+                    return Err(make_input_err!(
+                        "Client declared size {} but only sent {} bytes",
+                        expected_size,
+                        bytes_received
+                    ));
+                }
                 break;
             }
         }

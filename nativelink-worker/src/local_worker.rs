@@ -319,12 +319,14 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .clone()
                                             .prepare_action()
                                             .and_then(RunningAction::execute)
+                                            .and_then(RunningAction::upload_results)
                                             .and_then(|result| async move {
                                                 // Notify that execution has completed so it can schedule a new action.
+                                                // This must happen AFTER upload_results to ensure outputs are
+                                                // fully uploaded before the worker is freed for new work.
                                                 drop(grpc_client.execution_complete(complete).await);
                                                 Ok(result)
                                             })
-                                            .and_then(RunningAction::upload_results)
                                             .and_then(RunningAction::get_finished_result)
                                             // Note: We need ensure we run cleanup even if one of the other steps fail.
                                             .then(|result| async move {
