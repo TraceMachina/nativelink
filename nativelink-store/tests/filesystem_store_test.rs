@@ -407,7 +407,13 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
         }
     }
 
-    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    // Use a large value so the producer is still blocked mid-stream when we
+    // check the temp directory. With read_buffer_size=1 and channel capacity 64,
+    // the producer sends 1-byte chunks. It needs well over 64 bytes to ensure
+    // it can't finish before the test inspects temp_path.
+    let large_value1: String = "abcdefghij".repeat(10); // 100 bytes
+    let large_value2: String = "ABCDEFGHIJ".repeat(10); // 100 bytes
+    let digest1 = DigestInfo::try_new(HASH1, large_value1.len())?;
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
 
@@ -427,7 +433,9 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
     );
 
     // Insert data into store.
-    store.update_oneshot(digest1, VALUE1.into()).await?;
+    store
+        .update_oneshot(digest1, large_value1.clone().into())
+        .await?;
 
     let (writer, mut reader) = make_buf_channel_pair();
     let store_clone = store.clone();
@@ -445,13 +453,15 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
             .err_tip(|| "Error reading first byte")?;
         assert_eq!(
             first_byte[0],
-            VALUE1.as_bytes()[0],
+            large_value1.as_bytes()[0],
             "Expected first byte to match"
         );
     }
 
     // Replace content.
-    store.update_oneshot(digest1, VALUE2.into()).await?;
+    store
+        .update_oneshot(digest1, large_value2.into())
+        .await?;
 
     // Ensure we let any background tasks finish.
     tokio::task::yield_now().await;
@@ -470,7 +480,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
             let data = read_file_contents(path.as_os_str()).await?;
             assert_eq!(
                 &data[..],
-                VALUE1.as_bytes(),
+                large_value1.as_bytes(),
                 "Expected file content to match"
             );
         }
@@ -487,7 +497,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
 
     assert_eq!(
         &remaining_file_data,
-        &VALUE1.as_bytes()[1..],
+        &large_value1.as_bytes()[1..],
         "Expected file content to match"
     );
 
