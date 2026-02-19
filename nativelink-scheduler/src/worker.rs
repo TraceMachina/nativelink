@@ -92,6 +92,12 @@ pub struct Worker {
     #[metric(help = "If the worker is paused.")]
     pub is_paused: bool,
 
+    /// Whether the pause was caused by explicit worker backpressure
+    /// (ResourceExhausted) as opposed to a capacity check. When true,
+    /// the scheduler should not auto-clear is_paused based on capacity
+    /// alone — it should wait for the worker to complete an action.
+    pub paused_due_to_backpressure: bool,
+
     /// Whether the worker is draining.
     #[metric(help = "If the worker is draining.")]
     pub is_draining: bool,
@@ -116,7 +122,7 @@ fn send_msg_to_worker(
 /// Reduces the platform properties available on the worker based on the platform properties provided.
 /// This is used because we allow more than 1 job to run on a worker at a time, and this is how the
 /// scheduler knows if more jobs can run on a given worker.
-fn reduce_platform_properties(
+pub(crate) fn reduce_platform_properties(
     parent_props: &mut PlatformProperties,
     reduction_props: &PlatformProperties,
 ) {
@@ -149,6 +155,7 @@ impl Worker {
             restored_platform_properties: HashSet::new(),
             last_update_timestamp: timestamp,
             is_paused: false,
+            paused_due_to_backpressure: false,
             is_draining: false,
             max_inflight_tasks,
             metrics: Arc::new(Metrics {
@@ -256,6 +263,7 @@ impl Worker {
             self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
         }
         self.is_paused = false;
+        self.paused_due_to_backpressure = false;
         self.metrics.actions_completed.inc();
         Ok(())
     }
