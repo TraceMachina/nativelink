@@ -120,6 +120,11 @@ pub fn endpoint_from(
         tonic::transport::Endpoint::from(endpoint)
     };
 
+    // Always enable TCP_NODELAY to reduce latency on gRPC connections.
+    // Nagle's algorithm delays small writes (up to 40ms), which is
+    // harmful for gRPC's many small HTTP/2 frames.
+    let endpoint_transport = endpoint_transport.tcp_nodelay(true);
+
     Ok(endpoint_transport)
 }
 
@@ -162,10 +167,16 @@ pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endp
 
     let mut endpoint = endpoint
         .connect_timeout(connect_timeout)
+        .tcp_nodelay(endpoint_config.tcp_nodelay)
         .tcp_keepalive(Some(tcp_keepalive))
         .http2_keep_alive_interval(http2_keepalive_interval)
         .keep_alive_timeout(http2_keepalive_timeout)
-        .keep_alive_while_idle(true);
+        .keep_alive_while_idle(true)
+        // Default to 16 MiB stream window and 32 MiB connection window
+        // to avoid capping per-stream throughput at ~64 MB/s with 1ms RTT
+        // (hyper's default of 64 KiB is too small for high-bandwidth links).
+        .initial_stream_window_size(16 * 1024 * 1024)
+        .initial_connection_window_size(32 * 1024 * 1024);
 
     if let Some(concurrency_limit) = endpoint_config.concurrency_limit {
         endpoint = endpoint.concurrency_limit(concurrency_limit);

@@ -181,6 +181,7 @@ async fn inner_main(
     const fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
             HttpCompressionAlgorithm::Gzip => Some(CompressionEncoding::Gzip),
+            HttpCompressionAlgorithm::Zstd => Some(CompressionEncoding::Zstd),
             HttpCompressionAlgorithm::None => None,
         }
     }
@@ -525,12 +526,19 @@ async fn inner_main(
                     || "Could not convert experimental_http2_max_pending_accept_reset_streams",
                 )?);
         }
-        if let Some(value) = http_config.experimental_http2_initial_stream_window_size {
-            http.http2().initial_stream_window_size(value);
-        }
-        if let Some(value) = http_config.experimental_http2_initial_connection_window_size {
-            http.http2().initial_connection_window_size(value);
-        }
+        // Default to 16 MiB stream window and 32 MiB connection window
+        // to avoid capping per-stream throughput at ~64 MB/s with 1ms RTT
+        // (hyper's default of 64 KiB is too small for high-bandwidth links).
+        http.http2().initial_stream_window_size(
+            http_config
+                .experimental_http2_initial_stream_window_size
+                .unwrap_or(16 * 1024 * 1024),
+        );
+        http.http2().initial_connection_window_size(
+            http_config
+                .experimental_http2_initial_connection_window_size
+                .unwrap_or(32 * 1024 * 1024),
+        );
         if let Some(value) = http_config.experimental_http2_adaptive_window {
             http.http2().adaptive_window(value);
         }
@@ -562,6 +570,15 @@ async fn inner_main(
                     accept_result = tcp_listener.accept() => {
                         match accept_result {
                             Ok((tcp_stream, remote_addr)) => {
+                                // Disable Nagle's algorithm to reduce latency
+                                // on small writes (e.g., gRPC frames).
+                                if let Err(err) = tcp_stream.set_nodelay(true) {
+                                    error!(
+                                        target: "nativelink::services",
+                                        ?err,
+                                        "Failed to set TCP_NODELAY"
+                                    );
+                                }
                                 info!(
                                     target: "nativelink::services",
                                     ?remote_addr,
