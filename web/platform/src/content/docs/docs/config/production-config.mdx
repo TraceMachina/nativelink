@@ -525,3 +525,25 @@ Setting it to `-1` turns off the logging entirely.
 
 You won't see those worker matching logs anymore. If you need to debug why actions aren't getting assigned to workers, you'll have to turn this back on temporarily or look at other metrics.
 For most production setups at scale, that's a fair trade-off for better Redis performance.
+
+## RPC Timeouts and Back Pressure
+
+Timeouts and concurrency limits help keep upstream RPC requests from piling up and
+stalling the system. These are especially important for Redis-backed stores.
+
+### Redis Store Timeouts
+
+Use `command_timeout_ms` and `connection_timeout_ms` to bound slow or stuck
+requests and trigger reconnects:
+
+```json
+"redis_store": {
+  "addresses": ["${REDIS_STORE_URL:-redis://redis-headless:6379}"],
+  "command_timeout_ms": 10000,
+  "connection_timeout_ms": 3000,
+  "max_client_permits": 500
+}
+```
+
+`max_client_permits` caps simultaneous in-flight requests to Redis, which can
+prevent timeouts and reduce pressure during spikes.
