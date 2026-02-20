@@ -104,7 +104,7 @@ cc_toolchain(
 
 cc_toolchain_config(
     name = "local",
-    abi_libc_version = "glibc_2.35",
+    abi_libc_version = "glibc_2.38",
     abi_version = "local",
     compile_flags = [
         "-fstack-protector",
@@ -159,7 +159,7 @@ cc_toolchain_config(
     ],
     opt_link_flags = ["-Wl,--gc-sections"],
     supports_start_end_lib = True,
-    target_libc = "glibc_2.35",
+    target_libc = "glibc_2.38",
     target_system_name = "local",
     tool_paths = {
         "ar": "/nix/store/80a5p150l4mfra332azxz9vpfj9dy150-llvm-binutils-wrapper-22.1.0-rc2/bin/ar",
