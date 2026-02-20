@@ -136,7 +136,8 @@
                 p.libiconv
               ];
             nativeBuildInputs =
-              (
+              [p.bashNonInteractive] # needed for some command tests
+              ++ (
                 if isLinuxBuild
                 then [pkgs.mold]
                 else [pkgs.llvmPackages_20.lld]

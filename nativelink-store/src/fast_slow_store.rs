@@ -37,7 +37,7 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
-use tracing::trace;
+use tracing::{debug, trace, warn};
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -399,6 +399,14 @@ impl StoreDriver for FastSlowStore {
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (mut slow_tx, slow_rx) = make_buf_channel_pair();
 
+        let key_debug = format!("{key:?}");
+        trace!(
+            key = %key_debug,
+            "FastSlowStore::update: starting dual-store upload",
+        );
+        let update_start = std::time::Instant::now();
+        let mut bytes_sent: u64 = 0;
+
         let data_stream_fut = async move {
             loop {
                 let buffer = reader
@@ -413,11 +421,27 @@ impl StoreDriver for FastSlowStore {
                     slow_tx
                         .send_eof()
                         .err_tip(|| "Failed to write eof to writer in fast_slow store update")?;
+                    debug!(
+                        total_bytes = bytes_sent,
+                        "FastSlowStore::update: data_stream sent EOF to both stores",
+                    );
                     return Result::<(), Error>::Ok(());
                 }
 
+                let chunk_len = buffer.len();
+                let send_start = std::time::Instant::now();
                 let (fast_result, slow_result) =
                     join!(fast_tx.send(buffer.clone()), slow_tx.send(buffer));
+                let send_elapsed = send_start.elapsed();
+                if send_elapsed.as_secs() >= 5 {
+                    warn!(
+                        chunk_len,
+                        send_elapsed_ms = send_elapsed.as_millis(),
+                        total_bytes = bytes_sent,
+                        "FastSlowStore::update: channel send stalled (>5s). A downstream store may be hanging",
+                    );
+                }
+                bytes_sent += u64::try_from(chunk_len).unwrap_or(u64::MAX);
                 fast_result
                     .map_err(|e| {
                         make_err!(
@@ -441,6 +465,24 @@ impl StoreDriver for FastSlowStore {
 
         let (data_stream_res, fast_res, slow_res) =
             join!(data_stream_fut, fast_store_fut, slow_store_fut);
+
+        let total_elapsed = update_start.elapsed();
+        if data_stream_res.is_err() || fast_res.is_err() || slow_res.is_err() {
+            warn!(
+                key = %key_debug,
+                elapsed_ms = total_elapsed.as_millis(),
+                data_stream_ok = data_stream_res.is_ok(),
+                fast_store_ok = fast_res.is_ok(),
+                slow_store_ok = slow_res.is_ok(),
+                "FastSlowStore::update: completed with error(s)",
+            );
+        } else {
+            trace!(
+                key = %key_debug,
+                elapsed_ms = total_elapsed.as_millis(),
+                "FastSlowStore::update: completed successfully",
+            );
+        }
         data_stream_res.merge(fast_res).merge(slow_res)?;
         Ok(())
     }
@@ -460,6 +502,11 @@ impl StoreDriver for FastSlowStore {
         mut file: fs::FileSlot,
         upload_size: UploadSizeInfo,
     ) -> Result<Option<fs::FileSlot>, Error> {
+        trace!(
+            key = ?key,
+            ?upload_size,
+            "FastSlowStore::update_with_whole_file: starting",
+        );
         if self
             .fast_store
             .optimized_for(StoreOptimizations::FileUpdates)
@@ -471,6 +518,8 @@ impl StoreDriver for FastSlowStore {
                 && self.slow_direction != StoreDirection::ReadOnly
                 && self.slow_direction != StoreDirection::Get
             {
+                trace!("FastSlowStore::update_with_whole_file: uploading to slow_store");
+                let slow_start = std::time::Instant::now();
                 slow_update_store_with_file(
                     self.slow_store.as_store_driver_pin(),
                     key.borrow(),
@@ -479,6 +528,10 @@ impl StoreDriver for FastSlowStore {
                 )
                 .await
                 .err_tip(|| "In FastSlowStore::update_with_whole_file slow_store")?;
+                trace!(
+                    elapsed_ms = slow_start.elapsed().as_millis(),
+                    "FastSlowStore::update_with_whole_file: slow_store upload completed",
+                );
             }
             if self.fast_direction == StoreDirection::ReadOnly
                 || self.fast_direction == StoreDirection::Get
