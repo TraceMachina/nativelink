@@ -5,9 +5,10 @@ name = "generate-bazel-rc"
 version = "0.1.0"
 
 [dependencies]
-toml = { version = "0.8.22", default-features = false, features = [
+toml = { version = "1.0.0", default-features = false, features = [
   "display",
   "parse",
+  "serde",
 ] }
 
 [workspace]

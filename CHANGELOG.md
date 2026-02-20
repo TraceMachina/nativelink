@@ -3,6 +3,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0-rc2](https://github.com/TraceMachina/nativelink/compare/v0.8.0..1.0.0-rc2) - 2026-02-16
+
+
+
+### ⛰️  Features
+
+- Add Max Concurrent Writes ([#2156](https://github.com/TraceMachina/nativelink/issues/2156)) - ([3a90838](https://github.com/TraceMachina/nativelink/commit/3a90838081e3e6a14d13ee231075492256753d22))
+- Add logs for stall detection ([#2155](https://github.com/TraceMachina/nativelink/issues/2155)) - ([94e7e3f](https://github.com/TraceMachina/nativelink/commit/94e7e3f134f2586aa89384e6088544a83dba2694))
+- Add Max action executing timeouts to scheduler ([#2153](https://github.com/TraceMachina/nativelink/issues/2153)) - ([5549a96](https://github.com/TraceMachina/nativelink/commit/5549a969bd7be1f10b94dc725ae6dcd68dd00130))
+- Add gRPC timeouts and other improvements to detect dead connections ([#2152](https://github.com/TraceMachina/nativelink/issues/2152)) - ([b4b44ba](https://github.com/TraceMachina/nativelink/commit/b4b44ba6db8b830d05de2d6180d0c452836eeea2))
+- Allows setting environment variables from the environment ([#2143](https://github.com/TraceMachina/nativelink/issues/2143)) - ([a57c771](https://github.com/TraceMachina/nativelink/commit/a57c7714b868e5b22bdcb7736e370ea454f5c843))
+- Add Max Upload timeout to CAS ([#2150](https://github.com/TraceMachina/nativelink/issues/2150)) - ([24cc324](https://github.com/TraceMachina/nativelink/commit/24cc324b21de72d8079fc7e54e5dc4abf678c0bd))
+- Add tracing to hyper-util ([#2132](https://github.com/TraceMachina/nativelink/issues/2132)) - ([bc773dc](https://github.com/TraceMachina/nativelink/commit/bc773dc3d43ff208e996e97547528c5b111abd14))
+
+### 🐛 Bug Fixes
+
+- *(deps)* update module github.com/go-git/go-git/v5 to v5.16.5 [security] ([#2138](https://github.com/TraceMachina/nativelink/issues/2138)) - ([dc25843](https://github.com/TraceMachina/nativelink/commit/dc258438336ba6ab5e63c0a48e71987bb88b4621))
+- Fix integer overflow in compression_store.rs data retrieval logic ([#2151](https://github.com/TraceMachina/nativelink/issues/2151)) - ([f996507](https://github.com/TraceMachina/nativelink/commit/f996507b152a7a5e79367475e7854680cce3eb2c))
+- Fix Max Inflight Workers job acceptance ([#2142](https://github.com/TraceMachina/nativelink/issues/2142)) - ([6ffab5f](https://github.com/TraceMachina/nativelink/commit/6ffab5f049666158b14e277653d8ce6b487c2ff6))
+
+### ⚙️ Miscellaneous
+
+- *(deps)* update rust crate toml to v1 ([#2147](https://github.com/TraceMachina/nativelink/issues/2147)) - ([85e9ecf](https://github.com/TraceMachina/nativelink/commit/85e9ecf05e1e6646513f4b32a8ce1fba609ebcf7))
+- *(deps)* update rust crate bytes to v1.11.1 [security] ([#2134](https://github.com/TraceMachina/nativelink/issues/2134)) - ([5d32d18](https://github.com/TraceMachina/nativelink/commit/5d32d181fe68d29bf354a2a5f41e634d8faaec37))
+- Dummy streams should be pending, not empty ([#2154](https://github.com/TraceMachina/nativelink/issues/2154)) - ([e72b5a0](https://github.com/TraceMachina/nativelink/commit/e72b5a0feaace00ee9960886d3c2715eeb76c361))
+- fix metrics ([#2097](https://github.com/TraceMachina/nativelink/issues/2097)) - ([e6c7097](https://github.com/TraceMachina/nativelink/commit/e6c70977a879d552b98ebc2cb23717ab51658a2a))
+- Advise the kernel to drop page cache ([#2149](https://github.com/TraceMachina/nativelink/issues/2149)) - ([727760d](https://github.com/TraceMachina/nativelink/commit/727760d1e208ca8be7bc134f432baf5dc5bf5928))
+- Replace Fred with redis-rs ([#2076](https://github.com/TraceMachina/nativelink/issues/2076)) - ([4956889](https://github.com/TraceMachina/nativelink/commit/4956889cd258a98f0e8720b5b7ef028ca0ed4d99))
+- No workers logging ([#2137](https://github.com/TraceMachina/nativelink/issues/2137)) - ([12c63f5](https://github.com/TraceMachina/nativelink/commit/12c63f50fef02bf36624ac0770fc8f5dac407a9c))
+- Make update_with_whole_file logging default to trace ([#2131](https://github.com/TraceMachina/nativelink/issues/2131)) - ([ecd2903](https://github.com/TraceMachina/nativelink/commit/ecd2903f8ca5086e10f74290533a9fc75c580a7c))
+- Be clearer about what property values workers are missing ([#2121](https://github.com/TraceMachina/nativelink/issues/2121)) - ([85385e6](https://github.com/TraceMachina/nativelink/commit/85385e68271d78b2b72a24098202aade157a5553))
+
+### ⬆️ Bumps & Version Updates
+
+- Update jsonwebtoken ([#2135](https://github.com/TraceMachina/nativelink/issues/2135)) - ([56a8955](https://github.com/TraceMachina/nativelink/commit/56a89557ee14130ca10b44f1688d5e9b6e4691d5))
+
 ## [0.8.0](https://github.com/TraceMachina/nativelink/compare/v0.7.10..0.8.0) - 2026-01-29
 
 ### ⛰️  Features

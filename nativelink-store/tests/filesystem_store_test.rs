@@ -420,6 +420,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
             }),
             block_size: 1,
             read_buffer_size: 1,
+            ..Default::default()
         })
         .await?,
     );
@@ -528,6 +529,7 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
             }),
             block_size: 1,
             read_buffer_size: 1,
+            ..Default::default()
         })
         .await?,
     );

@@ -427,6 +427,7 @@ impl SimpleScheduler {
             max_job_retries,
             Duration::from_secs(worker_timeout_s),
             Duration::from_secs(client_action_timeout_s),
+            Duration::from_secs(spec.max_action_executing_timeout_s),
             awaited_action_db,
             now_fn,
             Some(worker_registry.clone()),

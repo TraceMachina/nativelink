@@ -21,6 +21,7 @@ use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::vec_deque::VecDeque;
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::ffi::{OsStr, OsString};
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
@@ -355,21 +356,34 @@ async fn upload_file(
             // a much cheaper operation than an upload.
             let cas_store = cas_store.as_store_driver_pin();
             let store_key: nativelink_util::store_trait::StoreKey<'_> = digest.into();
+            let has_start = std::time::Instant::now();
             if cas_store
                 .has(store_key.borrow())
                 .await
                 .is_ok_and(|result| result.is_some())
             {
+                trace!(
+                    ?digest,
+                    has_elapsed_ms = has_start.elapsed().as_millis(),
+                    "upload_file: digest already exists in CAS, skipping upload",
+                );
                 return Ok(());
             }
+            trace!(
+                ?digest,
+                has_elapsed_ms = has_start.elapsed().as_millis(),
+                file_size = digest.size_bytes(),
+                "upload_file: digest not in CAS, starting upload",
+            );
 
             file.rewind().await.err_tip(|| "Could not rewind file")?;
 
             // Note: For unknown reasons we appear to be hitting:
             // https://github.com/rust-lang/rust/issues/92096
-            // or a smiliar issue if we try to use the non-store driver function, so we
+            // or a similar issue if we try to use the non-store driver function, so we
             // are using the store driver function here.
             let store_key_for_upload = store_key.clone();
+            let file_upload_start = std::time::Instant::now();
             let upload_result = cas_store
                 .update_with_whole_file(
                     store_key_for_upload,
@@ -379,6 +393,12 @@ async fn upload_file(
                 )
                 .await
                 .map(|_slot| ());
+            trace!(
+                ?digest,
+                upload_elapsed_ms = file_upload_start.elapsed().as_millis(),
+                success = upload_result.is_ok(),
+                "upload_file: update_with_whole_file completed",
+            );
 
             match upload_result {
                 Ok(()) => Ok(()),
@@ -942,6 +962,9 @@ impl RunningActionImpl {
                         .get(property)
                         .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.as_str())),
                     EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                    EnvironmentSource::FromEnvironment => {
+                        Cow::Owned(env::var(name).unwrap_or_default())
+                    }
                     EnvironmentSource::TimeoutMillis => {
                         Cow::Owned(requested_timeout.as_millis().to_string())
                     }
@@ -1164,7 +1187,11 @@ impl RunningActionImpl {
             DirectorySymlink(SymlinkInfo),
         }
 
-        debug!("Worker uploading results",);
+        let upload_start = std::time::Instant::now();
+        debug!(
+            operation_id = ?self.operation_id,
+            "Worker uploading results - starting",
+        );
         let (mut command_proto, execution_result, mut execution_metadata) = {
             let mut state = self.state.lock();
             state.execution_metadata.output_upload_start_timestamp =
@@ -1324,24 +1351,46 @@ impl RunningActionImpl {
         }
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
+            let start = std::time::Instant::now();
             let data = execution_result.stdout;
+            let data_len = data.len();
             let digest = compute_buf_digest(&data, &mut hasher.hasher());
             cas_store
                 .update_oneshot(digest, data)
                 .await
                 .err_tip(|| "Uploading stdout")?;
+            debug!(
+                ?digest,
+                data_len,
+                elapsed_ms = start.elapsed().as_millis(),
+                "upload_results: stdout upload completed",
+            );
             Result::<DigestInfo, Error>::Ok(digest)
         });
         let stderr_digest_fut = self.metrics().upload_stderr.wrap(async {
+            let start = std::time::Instant::now();
             let data = execution_result.stderr;
+            let data_len = data.len();
             let digest = compute_buf_digest(&data, &mut hasher.hasher());
             cas_store
                 .update_oneshot(digest, data)
                 .await
-                .err_tip(|| "Uploading stdout")?;
+                .err_tip(|| "Uploading  stderr")?;
+            debug!(
+                ?digest,
+                data_len,
+                elapsed_ms = start.elapsed().as_millis(),
+                "upload_results: stderr upload completed",
+            );
             Result::<DigestInfo, Error>::Ok(digest)
         });
 
+        debug!(
+            operation_id = ?self.operation_id,
+            num_output_paths = output_path_futures.len(),
+            "upload_results: starting stdout/stderr/output_paths uploads",
+        );
+        let join_start = std::time::Instant::now();
         let upload_result = futures::try_join!(stdout_digest_fut, stderr_digest_fut, async {
             while let Some(output_type) = output_path_futures.try_next().await? {
                 match output_type {
@@ -1359,6 +1408,12 @@ impl RunningActionImpl {
             Ok(())
         });
         drop(output_path_futures);
+        debug!(
+            operation_id = ?self.operation_id,
+            elapsed_ms = join_start.elapsed().as_millis(),
+            success = upload_result.is_ok(),
+            "upload_results: all uploads completed",
+        );
         let (stdout_digest, stderr_digest) = match upload_result {
             Ok((stdout_digest, stderr_digest, ())) => (stdout_digest, stderr_digest),
             Err(e) => return Err(e).err_tip(|| "Error while uploading results"),
@@ -1370,6 +1425,8 @@ impl RunningActionImpl {
         output_folders.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         output_file_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         output_directory_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
+        let num_output_files = output_files.len();
+        let num_output_folders = output_folders.len();
         {
             let mut state = self.state.lock();
             execution_metadata.worker_completed_timestamp =
@@ -1388,6 +1445,13 @@ impl RunningActionImpl {
                 message: String::new(), // Will be filled in on cache_action_result if needed.
             });
         }
+        debug!(
+            operation_id = ?self.operation_id,
+            total_elapsed_ms = upload_start.elapsed().as_millis(),
+            num_output_files,
+            num_output_folders,
+            "upload_results: inner_upload_results completed successfully",
+        );
         Ok(self)
     }
 
@@ -1466,14 +1530,51 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        let res = self
-            .metrics()
-            .clone()
+        let upload_timeout = self.running_actions_manager.max_upload_timeout;
+        let operation_id = self.operation_id.clone();
+        info!(
+            ?operation_id,
+            upload_timeout_s = upload_timeout.as_secs(),
+            "upload_results: starting with timeout",
+        );
+        let metrics = self.metrics().clone();
+        let upload_fut = metrics
             .upload_results
-            .wrap(Self::inner_upload_results(self))
-            .await;
+            .wrap(Self::inner_upload_results(self));
+
+        let stall_warn_fut = async {
+            let mut elapsed_secs = 0u64;
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                elapsed_secs += 60;
+                warn!(
+                    ?operation_id,
+                    elapsed_s = elapsed_secs,
+                    timeout_s = upload_timeout.as_secs(),
+                    "upload_results: still in progress — possible stall",
+                );
+            }
+        };
+
+        let res = tokio::time::timeout(upload_timeout, async {
+            tokio::pin!(upload_fut);
+            tokio::pin!(stall_warn_fut);
+            tokio::select! {
+                result = &mut upload_fut => result,
+                () = &mut stall_warn_fut => unreachable!(),
+            }
+        })
+        .await
+        .map_err(|_| {
+            make_err!(
+                Code::DeadlineExceeded,
+                "Upload results timed out after {}s for operation {:?}",
+                upload_timeout.as_secs(),
+                operation_id,
+            )
+        })?;
         if let Err(ref e) = res {
-            warn!(?e, "Error during upload_results");
+            warn!(?operation_id, ?e, "Error during upload_results");
         }
         res
     }
@@ -1829,6 +1930,7 @@ pub struct RunningActionsManagerArgs<'a> {
     pub historical_store: Store,
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
+    pub max_upload_timeout: Duration,
     pub timeout_handled_externally: bool,
     pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
 }
@@ -1859,6 +1961,7 @@ pub struct RunningActionsManagerImpl {
     filesystem_store: Arc<FilesystemStore>,
     upload_action_results: UploadActionResults,
     max_action_timeout: Duration,
+    max_upload_timeout: Duration,
     timeout_handled_externally: bool,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
@@ -1912,6 +2015,7 @@ impl RunningActionsManagerImpl {
             )
             .err_tip(|| "During RunningActionsManagerImpl construction")?,
             max_action_timeout: args.max_action_timeout,
+            max_upload_timeout: args.max_upload_timeout,
             timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,

@@ -53,6 +53,8 @@ use nativelink_util::common::{DigestInfo, encode_stream_proto, fs};
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::Store;
 use nativelink_worker::local_worker::new_local_worker;
+#[cfg(target_family = "unix")]
+use nativelink_worker::local_worker::preconditions_met;
 use pretty_assertions::assert_eq;
 use prost::Message;
 use rand::Rng;
@@ -747,5 +749,19 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
     // Make sure that the killed action is the one we intended
     assert_eq!(killed_operation_id, operation_id);
 
+    Ok(())
+}
+
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn preconditions_met_extra_envs() -> Result<(), Error> {
+    let mut extra_envs = HashMap::new();
+    extra_envs.insert("DEMO_ENV".into(), "test_value_for_demo_env".into());
+
+    // So we have bash for nix cases, because the PATH gets reset
+    extra_envs.insert("PATH".into(), env::var("PATH").unwrap());
+
+    preconditions_met(Some("bash -c \"echo $DEMO_ENV\"".to_string()), &extra_envs).await?;
+    assert!(logs_contain("test_value_for_demo_env"));
     Ok(())
 }
