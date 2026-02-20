@@ -502,7 +502,7 @@ impl ApiWorkerScheduler {
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
-                worker_state_manager: worker_state_manager.clone(),
+                worker_state_manager,
                 allocation_strategy,
                 worker_change_notify,
                 worker_registry: worker_registry.clone(),

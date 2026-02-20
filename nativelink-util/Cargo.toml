@@ -84,6 +84,8 @@ tracing-subscriber = { version = "0.3.19", features = [
   "env-filter",
   "json",
 ], default-features = false }
+tracing-test = { version = "0.2.5", default-features = false, features = [] }
+
 uuid = { version = "1.16.0", default-features = false, features = [
   "serde",
   "v4",

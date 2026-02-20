@@ -262,6 +262,7 @@ fn calculate_directory_size_impl<'a>(
 mod tests {
     use std::path::PathBuf;
 
+    use nativelink_macro::nativelink_test;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
 
@@ -293,7 +294,7 @@ mod tests {
         Ok((temp_dir, test_dir))
     }
 
-    #[tokio::test]
+    #[nativelink_test("crate")]
     async fn test_hardlink_directory_tree() -> Result<(), Error> {
         let (temp_dir, src_dir) = create_test_directory().await?;
         let dst_dir = temp_dir.path().join("test_dst");
@@ -329,7 +330,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test("crate")]
     async fn test_set_readonly_recursive() -> Result<(), Error> {
         let (_temp_dir, test_dir) = create_test_directory().await?;
 
@@ -345,7 +346,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test("crate")]
     async fn test_calculate_directory_size() -> Result<(), Error> {
         let (_temp_dir, test_dir) = create_test_directory().await?;
 
@@ -359,7 +360,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test("crate")]
     async fn test_hardlink_nonexistent_source() {
         let temp_dir = TempDir::new().unwrap();
         let src = temp_dir.path().join("nonexistent");
@@ -369,10 +370,10 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
+    #[nativelink_test("crate")]
     async fn test_hardlink_existing_destination() -> Result<(), Error> {
-        let (_temp_dir, src_dir) = create_test_directory().await?;
-        let dst_dir = _temp_dir.path().join("existing");
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        let dst_dir = temp_dir.path().join("existing");
 
         fs::create_dir(&dst_dir).await?;
 

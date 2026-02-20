@@ -352,17 +352,15 @@ impl RedisStore<ClusterConnection, PubSub> {
             .addresses
             .iter_mut()
             .map(|addr| {
-                addr.clone()
-                    .into_connection_info()
-                    .and_then(|connection_info| {
-                        let redis_settings = connection_info
-                            .redis_settings()
-                            .clone()
-                            // We need RESP3 here because the cluster mode doesn't support RESP2 pubsub
-                            // See also https://docs.rs/redis/latest/redis/cluster_async/index.html#pubsub
-                            .set_protocol(redis::ProtocolVersion::RESP3);
-                        Ok(connection_info.set_redis_settings(redis_settings))
-                    })
+                addr.clone().into_connection_info().map(|connection_info| {
+                    let redis_settings = connection_info
+                        .redis_settings()
+                        .clone()
+                        // We need RESP3 here because the cluster mode doesn't support RESP2 pubsub
+                        // See also https://docs.rs/redis/latest/redis/cluster_async/index.html#pubsub
+                        .set_protocol(redis::ProtocolVersion::RESP3);
+                    connection_info.set_redis_settings(redis_settings)
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -890,6 +888,7 @@ const VERSION_FIELD_NAME: &str = "version";
 /// The time to live of indexes in seconds. After this time redis may delete the index.
 const INDEX_TTL_S: u64 = 60 * 60 * 24; // 24 hours.
 
+#[allow(rustdoc::broken_intra_doc_links)]
 /// Lua script to set a key if the version matches.
 /// Args:
 ///   KEYS[1]: The key where the version is stored.
@@ -1160,9 +1159,10 @@ impl RedisSubscriptionManager {
         let subscribed_keys_weak = Arc::downgrade(&subscribed_keys);
         let (tx_for_test, mut rx_for_test) = unbounded_channel();
         let mut local_subscriber_channel: Pin<Box<dyn Stream<Item = PushInfo> + Send>> =
-            subscriber_channel
-                .and_then(|channel| Some(UnboundedReceiverStream::new(channel).boxed()))
-                .unwrap_or_else(|| stream::pending::<PushInfo>().boxed());
+            subscriber_channel.map_or_else(
+                || stream::pending::<PushInfo>().boxed(),
+                |channel| UnboundedReceiverStream::new(channel).boxed(),
+            );
         Self {
             subscribed_keys,
             tx_for_test,
@@ -1220,7 +1220,7 @@ impl RedisSubscriptionManager {
                                                 s.clone()
                                             }
                                             Value::BulkString(v) => {
-                                                String::from_utf8(v.to_vec()).expect("String message")
+                                                String::from_utf8(v.clone()).expect("String message")
                                             }
                                             other => {
                                                 error!(?other, "Received non-string message in RedisSubscriptionManager");

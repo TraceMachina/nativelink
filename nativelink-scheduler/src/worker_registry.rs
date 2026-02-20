@@ -96,9 +96,11 @@ pub type SharedWorkerRegistry = Arc<WorkerRegistry>;
 
 #[cfg(test)]
 mod tests {
+    use nativelink_macro::nativelink_test;
+
     use super::*;
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn test_worker_heartbeat() {
         let registry = WorkerRegistry::new();
         let worker_id = WorkerId::from(String::from("test"));
@@ -136,7 +138,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn test_remove_worker() {
         let registry = WorkerRegistry::new();
         let worker_id = WorkerId::from(String::from("test-worker"));

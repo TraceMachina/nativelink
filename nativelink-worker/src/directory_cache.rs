@@ -434,6 +434,8 @@ pub struct CacheStats {
 
 #[cfg(test)]
 mod tests {
+    use nativelink_config::stores::MemorySpec;
+    use nativelink_macro::nativelink_test;
     use nativelink_store::memory_store::MemoryStore;
     use nativelink_util::common::DigestInfo;
     use nativelink_util::store_trait::StoreLike;
@@ -443,7 +445,7 @@ mod tests {
     use super::*;
 
     async fn setup_test_store() -> (Store, DigestInfo) {
-        let store = Store::new(MemoryStore::new(&Default::default()));
+        let store = Store::new(MemoryStore::new(&MemorySpec::default()));
 
         // Create a simple directory structure
         let file_content = b"Hello, World!";
@@ -493,7 +495,7 @@ mod tests {
         (store, dir_digest)
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn test_directory_cache_basic() -> Result<(), Error> {
         let temp_dir = TempDir::new().unwrap();
         let cache_root = temp_dir.path().join("cache");

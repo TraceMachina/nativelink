@@ -160,6 +160,7 @@ rust_test(
         "@crates//:rand",
         "@crates//:serde_json",
         "@crates//:tempfile",
+        "@crates//:tracing-test",
     ],
 )
 

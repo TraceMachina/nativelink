@@ -134,7 +134,7 @@ where
 
 fn resp2_data_parse(
     output: &mut RedisCursorData,
-    results_array: &Vec<Value>,
+    results_array: &[Value],
 ) -> Result<(), RedisError> {
     let mut results_iter = results_array.iter();
     match results_iter.next() {
@@ -220,7 +220,7 @@ fn resp3_data_parse(
                     return Err(RedisError::from((
                         ErrorKind::Parse,
                         "Expected STRING format",
-                        format!("{format}"),
+                        format.to_string(),
                     )));
                 }
             }
@@ -361,7 +361,7 @@ impl TryFrom<Value> for RedisCursorData {
                     format!("{other:?}"),
                 )));
             }
-        };
+        }
         let Value::Int(cursor) = value.next().unwrap() else {
             return Err(RedisError::from((
                 ErrorKind::Parse,

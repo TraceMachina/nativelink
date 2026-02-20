@@ -50,6 +50,8 @@ _HEADER = """\
     clippy::missing_const_for_fn,
     clippy::similar_names,
     clippy::std_instead_of_core,
+    clippy::use_self,
+    rustdoc::broken_intra_doc_links,
     rustdoc::invalid_html_tags
 )]
 """
