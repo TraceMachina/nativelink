@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use core::hash::{Hash, Hasher};
-use core::u64;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

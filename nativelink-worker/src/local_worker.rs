@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::hash::BuildHasher;
 use core::pin::Pin;
 use core::str;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -88,9 +89,9 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     metrics: Arc<Metrics>,
 }
 
-pub async fn preconditions_met(
+pub async fn preconditions_met<H: BuildHasher + Sync>(
     precondition_script: Option<String>,
-    extra_envs: &HashMap<String, String>,
+    extra_envs: &HashMap<String, String, H>,
 ) -> Result<(), Error> {
     let Some(precondition_script) = &precondition_script else {
         // No script means we are always ok to proceed.
