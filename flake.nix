@@ -150,6 +150,7 @@
           }
           // (pkgs.lib.optionalAttrs isLinuxTarget {
             CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+            TARGET_CC = "${pkgs.lre.clang}/bin/customClang";
             ${linkerEnvVar} = linkerPath;
           });
 
@@ -291,16 +292,7 @@
 
         nativelinkCoverageFor = p: let
           coverageArgs =
-            (commonArgsFor p)
-            // {
-              # TODO(palfrey): For some reason we're triggering an edgecase where
-              #                    mimalloc builds against glibc headers in coverage
-              #                    builds. This leads to nonexistent __memcpy_chk and
-              #                    __memset_chk symbols if fortification is enabled.
-              #                    Our regular builds also have this issue, but we
-              #                    should investigate further.
-              hardeningDisable = ["fortify"];
-            };
+            commonArgsFor p;
         in
           (nightlyCraneLibFor p).cargoLlvmCov (coverageArgs
             // {
