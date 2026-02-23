@@ -72,8 +72,8 @@ const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 
 /// Default maximum amount of time a task is allowed to run for.
 /// If this value gets modified the documentation in `cas_server.rs` must also be updated.
-const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_secs(1200); // 20 mins.
-const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_secs(600); // 10 mins.
+const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_mins(20);
+const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_mins(10);
 
 struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
     config: &'a LocalWorkerConfig,
@@ -348,15 +348,14 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     match res {
                                         Ok(mut action_result) => {
                                             // Save in the action cache before notifying the scheduler that we've completed.
-                                            if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
-                                                if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
+                                            if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) &&
+                                                let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
                                                     error!(
                                                         ?err,
                                                         ?action_digest,
                                                         "Error saving action in store",
                                                     );
                                                 }
-                                            }
                                             let action_stage = ActionStage::Completed(action_result);
                                             grpc_client.execution_response(
                                                 ExecuteResult{

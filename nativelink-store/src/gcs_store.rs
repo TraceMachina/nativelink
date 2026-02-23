@@ -157,12 +157,12 @@ where
                     )
                 }) {
                     Ok(Some(metadata)) => {
-                        if consider_expired_after_s != 0 {
-                            if let Some(update_time) = &metadata.update_time {
-                                let now_s = now_fn().unix_timestamp() as i64;
-                                if update_time.seconds + consider_expired_after_s <= now_s {
-                                    return Some((RetryResult::Ok(None), object_path));
-                                }
+                        if consider_expired_after_s != 0
+                            && let Some(update_time) = &metadata.update_time
+                        {
+                            let now_s = now_fn().unix_timestamp() as i64;
+                            if update_time.seconds + consider_expired_after_s <= now_s {
+                                return Some((RetryResult::Ok(None), object_path));
                             }
                         }
 
@@ -251,21 +251,21 @@ where
         );
 
         // For small files with exact size, we'll use simple upload
-        if let UploadSizeInfo::ExactSize(size) = upload_size {
-            if size < MIN_MULTIPART_SIZE {
-                let content = reader.consume(Some(usize::try_from(size)?)).await?;
-                let client = &self.client;
+        if let UploadSizeInfo::ExactSize(size) = upload_size
+            && size < MIN_MULTIPART_SIZE
+        {
+            let content = reader.consume(Some(usize::try_from(size)?)).await?;
+            let client = &self.client;
 
-                return self
-                    .retrier
-                    .retry(unfold(content, |content| async {
-                        match client.write_object(&object_path, content.to_vec()).await {
-                            Ok(()) => Some((RetryResult::Ok(()), content)),
-                            Err(e) => Some((RetryResult::Retry(e), content)),
-                        }
-                    }))
-                    .await;
-            }
+            return self
+                .retrier
+                .retry(unfold(content, |content| async {
+                    match client.write_object(&object_path, content.to_vec()).await {
+                        Ok(()) => Some((RetryResult::Ok(()), content)),
+                        Err(e) => Some((RetryResult::Retry(e), content)),
+                    }
+                }))
+                .await;
         }
 
         // For larger files, we'll use resumable upload

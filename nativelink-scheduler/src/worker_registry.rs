@@ -68,18 +68,18 @@ impl WorkerRegistry {
     ) -> bool {
         let workers = self.workers.read().await;
 
-        if let Some(last_seen) = workers.get(worker_id) {
-            if let Some(deadline) = last_seen.checked_add(timeout) {
-                let is_alive = deadline > now;
-                trace!(
-                    ?worker_id,
-                    ?last_seen,
-                    ?timeout,
-                    is_alive,
-                    "FLOW: Worker liveness check"
-                );
-                return is_alive;
-            }
+        if let Some(last_seen) = workers.get(worker_id)
+            && let Some(deadline) = last_seen.checked_add(timeout)
+        {
+            let is_alive = deadline > now;
+            trace!(
+                ?worker_id,
+                ?last_seen,
+                ?timeout,
+                is_alive,
+                "FLOW: Worker liveness check"
+            );
+            return is_alive;
         }
 
         trace!(?worker_id, "FLOW: Worker not found or timed out");

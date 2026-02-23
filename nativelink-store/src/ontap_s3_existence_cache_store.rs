@@ -287,12 +287,13 @@ where
         let current_time = (self.now_fn)().unix_timestamp();
 
         // Load existing cache to compare against
-        let mut existing_digests = HashSet::new();
-        if let Ok(contents) = fs::read_to_string(&self.index_path).await {
-            if let Ok(cache_file) = serde_json::from_str::<CacheFile>(&contents) {
-                existing_digests = cache_file.digests;
-            }
-        }
+        let existing_digests = if let Ok(contents) = fs::read_to_string(&self.index_path).await
+            && let Ok(cache_file) = serde_json::from_str::<CacheFile>(&contents)
+        {
+            cache_file.digests
+        } else {
+            HashSet::new()
+        };
 
         // Get all objects
         let objects = match self.list_objects(Some(client)).await {

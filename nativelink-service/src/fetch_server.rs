@@ -56,7 +56,7 @@ impl FetchServer {
                 .ok_or_else(|| {
                     make_input_err!("'fetch_store': '{}' does not exist", config.fetch_store)
                 })?;
-            stores.insert(config.instance_name.to_string(), FetchStoreInfo { store });
+            stores.insert(config.instance_name.clone(), FetchStoreInfo { store });
         }
         Ok(Self {
             stores: stores.clone(),

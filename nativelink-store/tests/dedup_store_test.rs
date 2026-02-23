@@ -114,7 +114,7 @@ async fn check_missing_last_chunk_test() -> Result<(), Error> {
 }
 
 /// Test to ensure if we upload a bit of data then request just a slice of it, we get the
-/// proper data out. Internal to DedupStore we only download the slices that contain the
+/// proper data out. Internal to `DedupStore` we only download the slices that contain the
 /// requested data; this test covers that use case.
 #[nativelink_test]
 async fn fetch_part_test() -> Result<(), Error> {

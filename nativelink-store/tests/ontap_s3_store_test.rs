@@ -192,7 +192,7 @@ async fn has_with_expired_result() -> Result<(), Error> {
     // Time starts at 1970-01-01 00:00:00.
     let digest = DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE).unwrap();
     {
-        MockClock::advance(Duration::from_secs(24 * 60 * 60)); // 1 day.
+        MockClock::advance(Duration::from_hours(24)); // 1 day.
         // Date is now 1970-01-02 00:00:00.
         let mut results = vec![None];
         store
@@ -202,7 +202,7 @@ async fn has_with_expired_result() -> Result<(), Error> {
         assert_eq!(results, vec![Some(512)]);
     }
     {
-        MockClock::advance(Duration::from_secs(24 * 60 * 60)); // 1 day.
+        MockClock::advance(Duration::from_hours(24)); // 1 day.
         // Date is now 1970-01-03 00:00:00.
         let mut results = vec![None];
         store

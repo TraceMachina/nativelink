@@ -709,12 +709,12 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
         .await
         .map_err(|e| make_err!(Code::Internal, "Failed to get next document: {e}"))?
     {
-        if doc_count < 3 {
-            if let Ok(key) = doc.get_str("_id") {
-                eprintln!("  - Key: {key}");
-                if let Ok(size) = doc.get_i64("size") {
-                    eprintln!("    Size: {size} bytes");
-                }
+        if doc_count < 3
+            && let Ok(key) = doc.get_str("_id")
+        {
+            eprintln!("  - Key: {key}");
+            if let Ok(size) = doc.get_i64("size") {
+                eprintln!("    Size: {size} bytes");
             }
         }
         doc_count += 1;
