@@ -18,7 +18,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Weak};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use async_lock::RwLock;
 use async_trait::async_trait;
@@ -26,7 +26,7 @@ use bytes::{Bytes, BytesMut};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{
@@ -455,9 +455,11 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 key: key.borrow().into_owned(),
             }),
         );
+        // If atime is newer than anchor_time (e.g. file was touched between
+        // capturing `now` and reading metadata), treat it as most-recently-used.
         let time_since_anchor = anchor_time
             .duration_since(atime)
-            .map_err(|_| make_input_err!("File access time newer than now"))?;
+            .unwrap_or(Duration::ZERO);
         evicting_map
             .insert_with_time(
                 key.into_owned().into(),
