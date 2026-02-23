@@ -299,7 +299,7 @@ where
     client_action_timeout: Duration,
 
     /// Maximum time an action can stay in Executing state without any worker
-    /// update, regardless of worker keepalive status. Duration::ZERO disables.
+    /// update, regardless of worker keepalive status. `Duration::ZERO` disables.
     max_executing_timeout: Duration,
 
     // A lock to ensure only one timeout operation is running at a time

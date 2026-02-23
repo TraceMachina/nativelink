@@ -758,7 +758,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             data_size += data_len as u64;
         }
 
-        let _permit = if let Some(sem) = &self.write_semaphore {
+        let permit = if let Some(sem) = &self.write_semaphore {
             Some(
                 sem.acquire()
                     .await
@@ -774,7 +774,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .await
             .err_tip(|| "Failed to sync_data in filesystem store")?;
 
-        drop(_permit);
+        drop(permit);
 
         temp_file.advise_dontneed();
         trace!(?temp_file, "Dropping file to update_file");

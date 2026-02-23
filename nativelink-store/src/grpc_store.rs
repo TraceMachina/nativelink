@@ -66,7 +66,7 @@ pub struct GrpcStore {
     store_type: nativelink_config::stores::StoreType,
     retrier: Retrier,
     connection_manager: ConnectionManager,
-    /// Per-RPC timeout. Duration::ZERO means disabled.
+    /// Per-RPC timeout. `Duration::ZERO` means disabled.
     rpc_timeout: Duration,
 }
 

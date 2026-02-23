@@ -26,7 +26,7 @@ At the top level of the CAS Config, we've stores and servers. Each server define
 
 Specifically, under servers, we've two separate servers defined:
 
-```json
+```json5
 "servers": [{
   "listener": {
     "http": {
@@ -52,7 +52,7 @@ Specifically, under servers, we've two separate servers defined:
 ```
 
 Let’s focus on the main server that exposes the CAS and ActionCache services.
-```json
+```json5
 {
   "listener": {
     "http": {
@@ -82,7 +82,7 @@ From this definition, we see that an HTTP listener binds to port 50051 on all ne
 This server hosts four services: CAS, ac, capabilities, and bytestream. The capabilities service is needed for supporting the Bazel protocol. The bytestream service is used to stream data to and from the CAS and is recommended for handling large objects.
 
 You might be wondering what the “main” object under "CAS" and “AC” services means. In this case, it indicates the instance name, which means you need to pass --remote_instance_name=main. Alternatively, you can use the following Configuration so your Bazel clients don’t have to pass the --remote_instance_name parameter:
-```json
+```json5
 "cas": [{
   "cas_store": "cas_STORE"
 }],
@@ -128,7 +128,7 @@ Completeness checking store verifies if the output files & folders exist in the 
 
 Effectively, this store ensures the CAS and ActionCache are in a consistent state for a given Action digest (key). If not, then the requested Action digest is treated as a cache miss and needs to be re-computed. As mentioned above, the Remote execution proto gives hints about the behavior of the ActionCache, such as this comment for the GetActionResult endpoint:
 
-```json
+```json5
   // Implementations SHOULD ensure that any blobs referenced from the
   // [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage]
   // are available at the time of returning the
@@ -160,7 +160,7 @@ The slow side of the Action Cache `fast_slow` in our cloud platform uses the Red
 Notice that we pull the actual address of Redis from the REDIS_STORE_URL environment variable, which helps keep the Config structure free of environment specific settings.
 
 The fast side of the Action Cache `fast_slow` store is a `size_partitioning` store:
-```json
+```json5
 "size_partitioning":{
  "size": 1000,
  "lower_store": {
@@ -187,7 +187,7 @@ That covers the stores for the ActionCache, now let’s look at the CAS service 
 CAS
 
 The NativeLink CAS service stores content using a cryptographic hash of the content itself as the cache key, known as Content Addressable Storage. From a distributed build system perspective, it makes sense to use a CAS since we can avoid rebuilding outputs during the build process because the CAS guarantees stored content hasn't changed for any given hash key. However, we’re not here to learn how Bazel remote caching works with CAS, as there are plenty of resources about that on the Web, so let’s turn our attention to how the NativeLink CAS store works. In the Config JSON, we define the top-level cas_STORE:
-```json
+```json5
 "cas_STORE": {
  "existence_cache": {
    "backend": {
@@ -219,7 +219,7 @@ Intuitively, this store is an optimization that helps speed up requests for the 
 Here we’re using a verify store which verifies the size of the data being uploaded into the CAS. This store helps ensure the integrity of your CAS. In this case, we chose to not have a store named cas_VERIFY_STORE that references the cas_FAST_SLOW_STORE but that would be an acceptable Configuration if you wanted to avoid nesting stores within stores in your Configuration.
 
 The back-end for the verify store is a `fast_slow` store. Let’s look at the slow store first.
-```json
+```json5
 "slow": {
  "size_partitioning":{
    "size": 1500000,
@@ -258,7 +258,7 @@ To recap, for our CAS slow store, we send smaller objects to Redis and larger to
 
 On the fast side, we use a similar approach we did for ActionCache using `size_partitioning` scheme with a memory store.
 
-```json
+```json5
 "fast": {
  "size_partitioning":{
    "size": 64000,
@@ -283,7 +283,7 @@ CAS Config JSON
 Here is the final CAS Config JSON without the 99 extra shards for writing to S3.
 
 ## Production CAS JSON
-```json
+```json5
 {
   "stores": {
     "AC_FAST_SLOW_STORE": {
@@ -454,6 +454,24 @@ Here is the final CAS Config JSON without the 99 extra shards for writing to S3.
 }
 ```
 
+## Limit Worker Inflight Tasks
+
+If your workers are getting saturated, cap the number of concurrent tasks they
+will accept with `max_inflight_tasks`. This helps avoid runaway scheduling when
+actions spike or when a single worker falls behind.
+
+```json5
+workers: [{
+  local: {
+    worker_api_endpoint: {
+      uri: "grpc://127.0.0.1:50061",
+    },
+    // Set to 0 for unlimited.
+    max_inflight_tasks: 32,
+  }
+}]
+```
+
 
 ## Speed Up NativeLink by Turning Off a Hidden Redis Query
 
@@ -469,11 +487,11 @@ Every time this runs, it fires off a wildcard query to Redis. These queries aren
 
 Add one line to your scheduler config:
 
-```json
+```json5
 worker_match_logging_interval_s: -1
 ```
 
-```json
+```json5
 schedulers: [
   {
     name: "MAIN_SCHEDULER",
@@ -507,3 +525,25 @@ Setting it to `-1` turns off the logging entirely.
 
 You won't see those worker matching logs anymore. If you need to debug why actions aren't getting assigned to workers, you'll have to turn this back on temporarily or look at other metrics.
 For most production setups at scale, that's a fair trade-off for better Redis performance.
+
+## RPC Timeouts and Back Pressure
+
+Timeouts and concurrency limits help keep upstream RPC requests from piling up and
+stalling the system. These are especially important for Redis-backed stores.
+
+### Redis Store Timeouts
+
+Use `command_timeout_ms` and `connection_timeout_ms` to bound slow or stuck
+requests and trigger reconnects:
+
+```json
+"redis_store": {
+  "addresses": ["${REDIS_STORE_URL:-redis://redis-headless:6379}"],
+  "command_timeout_ms": 10000,
+  "connection_timeout_ms": 3000,
+  "max_client_permits": 500
+}
+```
+
+`max_client_permits` caps simultaneous in-flight requests to Redis, which can
+prevent timeouts and reduce pressure during spikes.
