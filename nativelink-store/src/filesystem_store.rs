@@ -725,6 +725,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         self.weak_self.upgrade()
     }
 
+    /// Remove a digest's entry from the evicting map so the next
+    /// `populate_fast_store` is forced to re-download from the slow store.
+    pub async fn remove_entry_for_digest(&self, digest: &DigestInfo) {
+        self.evicting_map.remove(&digest.into()).await;
+    }
+
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
         if is_zero_digest(digest) {
             return Ok(Arc::new(Fe::create(
