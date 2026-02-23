@@ -461,7 +461,7 @@ simultaneous writes to the filesystem store with `max_concurrent_writes`.
 Each write streams to a temp file and calls `sync_all()`, which can saturate
 the disk and block the async runtime if too many happen at once.
 
-```json
+```json5
 "filesystem": {
   "content_path": "/var/lib/nativelink/cas",
   "temp_path": "/var/lib/nativelink/tmp",
