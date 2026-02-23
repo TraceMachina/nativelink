@@ -234,6 +234,7 @@ async fn inner_main(
     for SchedulerConfig { name, spec } in cfg.schedulers.iter().flatten() {
         let (maybe_action_scheduler, maybe_worker_scheduler) =
             scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref())
+                .await
                 .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
         if let Some(action_scheduler) = maybe_action_scheduler {
             action_schedulers.insert(name.clone(), action_scheduler.clone());

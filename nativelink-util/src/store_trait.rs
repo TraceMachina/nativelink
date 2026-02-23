@@ -885,7 +885,7 @@ pub trait SchedulerStore: Send + Sync + 'static {
     type SubscriptionManager: SchedulerSubscriptionManager;
 
     /// Returns the subscription manager for the scheduler store.
-    fn subscription_manager(&self) -> Result<Arc<Self::SubscriptionManager>, Error>;
+    fn subscription_manager(&self) -> impl Future<Output = Result<Arc<Self::SubscriptionManager>, Error>> + Send;
 
     /// Updates or inserts an entry into the underlying store.
     /// Metadata about the key is attached to the compile-time type.

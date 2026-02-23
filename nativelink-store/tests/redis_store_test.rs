@@ -22,13 +22,13 @@ use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::{
-    MockPubSub, add_lua_script, fake_redis_sentinel_master_stream, fake_redis_sentinel_stream,
+    add_lua_script, fake_redis_sentinel_master_stream, fake_redis_sentinel_stream,
     fake_redis_stream, make_fake_redis_with_responses,
 };
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{
-    DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE, DEFAULT_MAX_COUNT_PER_CURSOR, LUA_VERSION_SET_SCRIPT,
-    RedisStore, RedisSubscriptionManager,
+    ClusterRedisManager, DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE, DEFAULT_MAX_COUNT_PER_CURSOR,
+    LUA_VERSION_SET_SCRIPT, RedisStore, RedisSubscriptionManager,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
@@ -58,7 +58,9 @@ fn make_temp_key(final_name: &str) -> String {
     format!("temp-{TEMP_UUID}-{{{final_name}}}")
 }
 
-async fn make_mock_store(commands: Vec<MockCmd>) -> RedisStore<MockRedisConnection, MockPubSub> {
+async fn make_mock_store(
+    commands: Vec<MockCmd>,
+) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
     make_mock_store_with_prefix(commands, String::new()).await
 }
 
@@ -83,7 +85,7 @@ async fn fake_redis_sentinel_master_stream_with_script() -> u16 {
 async fn make_mock_store_with_prefix(
     mut commands: Vec<MockCmd>,
     key_prefix: String,
-) -> RedisStore<MockRedisConnection, MockPubSub> {
+) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
     commands.insert(
         0,
         MockCmd::new(
@@ -92,9 +94,9 @@ async fn make_mock_store_with_prefix(
         ),
     );
     let mock_connection = MockRedisConnection::new(commands);
+    let manager = ClusterRedisManager::new(mock_connection).await.unwrap();
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     RedisStore::new_from_builder_and_parts(
-        mock_connection,
-        None,
         None,
         mock_uuid_generator,
         key_prefix,
@@ -103,7 +105,8 @@ async fn make_mock_store_with_prefix(
         DEFAULT_SCAN_COUNT,
         DEFAULT_MAX_PERMITS,
         DEFAULT_MAX_COUNT_PER_CURSOR,
-        None,
+        rx,
+        manager,
     )
     .await
     .unwrap()
@@ -501,7 +504,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
 #[nativelink_test]
 async fn list_test() -> Result<(), Error> {
     async fn get_list(
-        store: &RedisStore<MockRedisConnection, MockPubSub>,
+        store: &RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>>,
         range: impl RangeBounds<StoreKey<'static>> + Send + Sync + 'static,
     ) -> Vec<StoreKey<'static>> {
         let mut found_keys = vec![];
@@ -1174,8 +1177,9 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let subscription_manager =
-        RedisSubscriptionManager::new(MockPubSub::new(), None, "test_pub_sub".into());
+        RedisSubscriptionManager::new(rx);
 
     // To give the stream enough time to get polled
     sleep(Duration::from_secs(1)).await;
