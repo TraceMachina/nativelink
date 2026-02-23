@@ -371,9 +371,10 @@ impl LenEntry for FileEntryImpl {
     async fn unref(&self) {
         let mut encoded_file_path = self.encoded_file_path.write().await;
         if encoded_file_path.path_type == PathType::Temp {
-            // We are already a temp file that is now marked for deletion on drop.
-            // This is very rare, but most likely the rename into the content path failed.
-            warn!(
+            // Already a temp file marked for deletion on drop. This happens
+            // when the entry is evicted from the map before emplace_file
+            // renames it into the content path — expected under cache pressure.
+            debug!(
                 key = ?encoded_file_path.key,
                 "File is already a temp file",
             );
