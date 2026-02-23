@@ -102,6 +102,7 @@ rust_test(
         "@crates//:rand",
         "@crates//:serial_test",
         "@crates//:tempfile",
+        "@crates//:tracing-test",
     ],
 )
 

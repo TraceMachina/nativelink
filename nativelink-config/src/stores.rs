@@ -616,7 +616,7 @@ pub struct FilesystemSpec {
     pub block_size: u64,
 
     /// Maximum number of concurrent write operations allowed.
-    /// Each write involves streaming data to a temp file and calling sync_all(),
+    /// Each write involves streaming data to a temp file and calling `sync_all()`,
     /// which can saturate disk I/O when many writes happen simultaneously.
     /// Limiting concurrency prevents disk saturation from blocking the async
     /// runtime.
@@ -1164,14 +1164,14 @@ pub struct RedisSpec {
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
     pub addresses: Vec<String>,
 
-    /// DEPRECATED: use command_timeout_ms
+    /// DEPRECATED: use `command_timeout_ms`
     /// The response timeout for the Redis connection in seconds.
     ///
     /// Default: 10
     #[serde(default)]
     pub response_timeout_s: u64,
 
-    /// DEPRECATED: use connection_timeout_ms
+    /// DEPRECATED: use `connection_timeout_ms`
     ///
     /// The connection timeout for the Redis connection in seconds.
     ///
