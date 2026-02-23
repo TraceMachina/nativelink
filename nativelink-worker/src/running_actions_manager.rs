@@ -703,9 +703,17 @@ async fn do_cleanup(
 
     debug!("Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
-    let remove_dir_result = fs::remove_dir_all(action_directory)
-        .await
-        .err_tip(|| format!("Could not remove working directory {action_directory}"));
+    let remove_dir_result = match fs::remove_dir_all(action_directory).await {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            // On macOS, Spotlight/Finder can momentarily recreate files
+            // (e.g. .DS_Store) during deletion, causing ENOTEMPTY. A
+            // short delay and single retry is sufficient.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            fs::remove_dir_all(action_directory).await
+        }
+    }
+    .err_tip(|| format!("Could not remove working directory {action_directory}"));
 
     if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
         error!(%operation_id, ?err, "Error cleaning up action");
