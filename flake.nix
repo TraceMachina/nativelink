@@ -299,7 +299,7 @@
               #                    __memset_chk symbols if fortification is enabled.
               #                    Our regular builds also have this issue, but we
               #                    should investigate further.
-              hardeningDisable = ["fortify"];
+              hardeningDisable = ["all"];
             };
         in
           (nightlyCraneLibFor p).cargoLlvmCov (coverageArgs
