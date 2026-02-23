@@ -160,19 +160,43 @@ pub fn download_to_directory<'a>(
                         const MAX_RETRIES: u32 = 3;
                         let mut last_err = None;
                         for attempt in 0..MAX_RETRIES {
+                            if attempt > 0 {
+                                // Invalidate the stale evicting_map entry so
+                                // populate_fast_store's `has()` check won't
+                                // short-circuit and skip re-downloading.
+                                filesystem_store.remove_entry_for_digest(&digest).await;
+                            }
                             cas_store.populate_fast_store(digest.into()).await?;
-                            let file_entry = filesystem_store
-                                .get_file_entry_for_digest(&digest)
-                                .await
-                                .err_tip(|| "During hard link")?;
-                            // Create the hardlink while holding the file entry's
-                            // path read-lock.  This prevents `unref()` (which
-                            // needs the write-lock) from moving the file out from
-                            // under us.
-                            let dest_clone = dest.clone();
-                            match file_entry.get_file_path_locked(move |src| async move {
-                                fs::hard_link(&src, &dest_clone).await
-                            }).await {
+
+                            // Both get_file_entry_for_digest (entry evicted from
+                            // map) and hard_link (file moved on disk) can fail with
+                            // NotFound under cache pressure.  Catch either as
+                            // retryable.
+                            let result = async {
+                                let file_entry = filesystem_store
+                                    .get_file_entry_for_digest(&digest)
+                                    .await
+                                    .err_tip(|| "Getting file entry for hardlink")?;
+                                let dest_clone = dest.clone();
+                                file_entry
+                                    .get_file_path_locked(move |src| async move {
+                                        let src_exists = Path::new(&src).exists();
+                                        let result = fs::hard_link(&src, &dest_clone).await;
+                                        if result.is_err() {
+                                            warn!(
+                                                src = %src.to_string_lossy(),
+                                                src_exists = src_exists,
+                                                dest = %dest_clone,
+                                                "hard_link failed while holding read lock"
+                                            );
+                                        }
+                                        result
+                                    })
+                                    .await
+                            }
+                            .await;
+
+                            match result {
                                 Ok(()) => {
                                     last_err = None;
                                     break;
@@ -183,10 +207,10 @@ pub fn download_to_directory<'a>(
                                         max_retries = MAX_RETRIES,
                                         ?digest,
                                         dest = %dest,
-                                        "Hardlink failed, file evicted from cache. Retrying."
+                                        err = ?e,
+                                        "File evicted from cache during hardlink. Retrying."
                                     );
                                     last_err = Some(e);
-                                    // Loop will re-populate from slow store.
                                 }
                                 Err(e) => {
                                     return Err(make_err!(
