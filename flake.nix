@@ -155,7 +155,7 @@
 
         # Additional target for external dependencies to simplify caching.
         cargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
-        nightlyCargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
+        nightlyCargoArtifactsFor = p: (nightlyCraneLibFor p).buildDepsOnly (commonArgsFor p);
 
         nativelinkFor = p:
           (craneLibFor p).buildPackage ((commonArgsFor p)
@@ -295,11 +295,11 @@
             // {
               # TODO(palfrey): For some reason we're triggering an edgecase where
               #                    mimalloc builds against glibc headers in coverage
-              #                    builds. This leads to nonexistend __memcpy_chk and
+              #                    builds. This leads to nonexistent __memcpy_chk and
               #                    __memset_chk symbols if fortification is enabled.
               #                    Our regular builds also have this issue, but we
               #                    should investigate further.
-              hardeningDisable = ["all"];
+              hardeningDisable = ["fortify"];
             };
         in
           (nightlyCraneLibFor p).cargoLlvmCov (coverageArgs
