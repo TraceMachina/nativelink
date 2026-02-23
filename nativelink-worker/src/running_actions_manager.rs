@@ -149,70 +149,93 @@ pub fn download_to_directory<'a>(
                 unix_mode = Some(unix_mode.unwrap_or(0o444) | 0o111);
             }
             futures.push(
-                cas_store
-                    .populate_fast_store(digest.into())
-                    .and_then(move |()| async move {
-                        if is_zero_digest(digest) {
-                            let mut file_slot = fs::create_file(&dest).await?;
-                            file_slot.write_all(&[]).await?;
-                        }
-                        else {
+                async move {
+                    if is_zero_digest(digest) {
+                        cas_store.populate_fast_store(digest.into()).await?;
+                        let mut file_slot = fs::create_file(&dest).await?;
+                        file_slot.write_all(&[]).await?;
+                    } else {
+                        // Retry loop: if the file is evicted between populate and
+                        // hardlink, re-populate from the slow store and try again.
+                        const MAX_RETRIES: u32 = 3;
+                        let mut last_err = None;
+                        for attempt in 0..MAX_RETRIES {
+                            cas_store.populate_fast_store(digest.into()).await?;
                             let file_entry = filesystem_store
                                 .get_file_entry_for_digest(&digest)
                                 .await
                                 .err_tip(|| "During hard link")?;
                             // TODO: add a test for #2051: deadlock with large number of files
                             let src_path = file_entry.get_file_path_locked(|src| async move { Ok(PathBuf::from(src)) }).await?;
-                            fs::hard_link(&src_path, &dest)
-                                .await
-                                .map_err(|e| {
-                                    if e.code == Code::NotFound {
-                                        make_err!(
-                                            Code::Internal,
-                                            "Could not make hardlink, file was likely evicted from cache. {e:?} : {dest}\n\
-                                            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
-                                            To fix this issue:\n\
-                                            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
-                                            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
-                                            3. The setting is typically found in your nativelink.json config under:\n\
-                                            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
-                                            4. Restart NativeLink after making the change\n\n\
-                                            If this error persists after increasing max_bytes several times, please report at:\n\
-                                            https://github.com/TraceMachina/nativelink/issues\n\
-                                            Include your config file and both server and client logs to help us assist you."
-                                        )
-                                    } else {
-                                        make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}")
-                                    }
-                                })?;
+                            match fs::hard_link(&src_path, &dest).await {
+                                Ok(()) => {
+                                    last_err = None;
+                                    break;
+                                }
+                                Err(e) if e.code == Code::NotFound => {
+                                    warn!(
+                                        attempt = attempt + 1,
+                                        max_retries = MAX_RETRIES,
+                                        ?digest,
+                                        dest = %dest,
+                                        "Hardlink failed, file evicted from cache. Retrying."
+                                    );
+                                    last_err = Some(e);
+                                    // Loop will re-populate from slow store.
+                                }
+                                Err(e) => {
+                                    return Err(make_err!(
+                                        Code::Internal,
+                                        "Could not make hardlink, {e:?} : {dest}"
+                                    ));
+                                }
                             }
-                        #[cfg(target_family = "unix")]
-                        if let Some(unix_mode) = unix_mode {
-                            fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
-                                .await
-                                .err_tip(|| {
-                                    format!(
-                                        "Could not set unix mode in download_to_directory {dest}"
-                                    )
-                                })?;
                         }
-                        if let Some(mtime) = mtime {
-                            spawn_blocking!("download_to_directory_set_mtime", move || {
-                                set_file_mtime(
-                                    &dest,
-                                    FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
-                                )
-                                .err_tip(|| {
-                                    format!("Failed to set mtime in download_to_directory {dest}")
-                                })
-                            })
+                        if let Some(e) = last_err {
+                            return Err(make_err!(
+                                Code::Internal,
+                                "Could not make hardlink after {MAX_RETRIES} attempts, \
+                                file was repeatedly evicted from cache. {e:?} : {dest}\n\
+                                This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+                                To fix this issue:\n\
+                                1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+                                2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+                                3. The setting is typically found in your nativelink.json config under:\n\
+                                stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+                                4. Restart NativeLink after making the change\n\n\
+                                If this error persists after increasing max_bytes several times, please report at:\n\
+                                https://github.com/TraceMachina/nativelink/issues\n\
+                                Include your config file and both server and client logs to help us assist you."
+                            ));
+                        }
+                    }
+                    #[cfg(target_family = "unix")]
+                    if let Some(unix_mode) = unix_mode {
+                        fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
                             .await
-                            .err_tip(
-                                || "Failed to launch spawn_blocking in download_to_directory",
-                            )??;
-                        }
-                        Ok(())
-                    })
+                            .err_tip(|| {
+                                format!(
+                                    "Could not set unix mode in download_to_directory {dest}"
+                                )
+                            })?;
+                    }
+                    if let Some(mtime) = mtime {
+                        spawn_blocking!("download_to_directory_set_mtime", move || {
+                            set_file_mtime(
+                                &dest,
+                                FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
+                            )
+                            .err_tip(|| {
+                                format!("Failed to set mtime in download_to_directory {dest}")
+                            })
+                        })
+                        .await
+                        .err_tip(
+                            || "Failed to launch spawn_blocking in download_to_directory",
+                        )??;
+                    }
+                    Ok(())
+                }
                     .map_err(move |e| e.append(format!("for digest {digest}")))
                     .boxed(),
             );
