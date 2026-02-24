@@ -468,6 +468,8 @@ the disk and block the async runtime if too many happen at once.
   // Set to 0 for unlimited.
   "max_concurrent_writes": 16
 }
+```
+
 ## Limit Worker Inflight Tasks
 
 If your workers are getting saturated, cap the number of concurrent tasks they
@@ -485,7 +487,6 @@ workers: [{
   }
 }]
 ```
-
 
 ## Speed Up NativeLink by Turning Off a Hidden Redis Query
 
