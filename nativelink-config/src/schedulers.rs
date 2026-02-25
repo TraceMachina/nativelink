@@ -160,6 +160,17 @@ pub struct SimpleSpec {
         deserialize_with = "convert_duration_with_shellexpand_and_negative"
     )]
     pub worker_match_logging_interval_s: i64,
+
+    /// Maximum number of actions that can be matched to workers for a single
+    /// client (identified by `instance_name`) in one matching cycle. When
+    /// multiple clients are competing for workers, this prevents one client
+    /// from monopolizing all available workers by round-robin interleaving
+    /// actions from different clients.
+    ///
+    /// Set to 0 to disable fair scheduling (unlimited matches per client
+    /// per cycle). Default: 0 (disabled).
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_matches_per_client_per_cycle: usize,
 }
 
 #[derive(Deserialize, Serialize, Debug)]

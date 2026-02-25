@@ -149,6 +149,11 @@ pub struct SimpleScheduler {
     /// e.g. "worker busy", "can't find any worker"
     /// Set to None to disable. This is quite noisy, so we limit it
     worker_match_logging_interval: Option<Duration>,
+
+    /// Maximum number of actions that can be matched per client
+    /// (identified by `instance_name`) in one matching cycle.
+    /// 0 means unlimited (fair scheduling disabled).
+    _max_matches_per_client_per_cycle: usize,
 }
 
 impl core::fmt::Debug for SimpleScheduler {
@@ -220,12 +225,11 @@ impl SimpleScheduler {
     // the actions to the worker using the map lookup (ie. map reduce).
     async fn do_try_match(&self, full_worker_logging: bool) -> Result<(), Error> {
         /// Maximum number of actions to process concurrently during matching.
-        /// Currently set to 1 (sequential) because find_worker_for_action
-        /// does not atomically reserve the worker — with concurrency > 1,
-        /// two actions could be dispatched to the same worker before its
-        /// capacity is reduced. The FuturesUnordered infrastructure is kept
-        /// so parallelism can be re-enabled once find + claim are atomic.
-        const MATCH_CONCURRENCY: usize = 1;
+        /// find_and_reserve_worker atomically finds AND reserves the worker
+        /// (reducing platform properties and inserting into running_action_infos)
+        /// under a single lock acquisition, so concurrent matches cannot
+        /// select the same worker.
+        const MATCH_CONCURRENCY: usize = 8;
 
         // Cache for computed platform properties, keyed by sorted key-value
         // pairs. This avoids recomputing the same PlatformProperties for
@@ -348,21 +352,9 @@ impl SimpleScheduler {
             platform_properties: (*platform_properties).clone(),
         };
 
-        // Try to find a worker for the action.
-        let worker_id = match workers
-            .find_worker_for_action(
-                &action_info_with_props.platform_properties,
-                full_worker_logging,
-            )
-            .await
-        {
-            Some(worker_id) => worker_id,
-            // If we could not find a worker for the action,
-            // we have nothing to do.
-            None => return Ok(()),
-        };
-
-        // Extract the operation_id from the action_state.
+        // Extract the operation_id from the action_state BEFORE finding a
+        // worker, so we can pass it to find_and_reserve_worker for atomic
+        // reservation.
         let operation_id = {
             let (action_state, _origin_metadata) = action_state_result
                 .as_state()
@@ -371,12 +363,33 @@ impl SimpleScheduler {
             action_state.client_operation_id.clone()
         };
 
+        // Atomically find a worker AND reserve it for this operation.
+        // The worker's platform properties are reduced and the action is
+        // recorded in running_action_infos under a single lock acquisition,
+        // preventing concurrent matches from selecting the same worker.
+        let (worker_id, tx, msg) = match workers
+            .find_and_reserve_worker(
+                &action_info_with_props.platform_properties,
+                &operation_id,
+                &action_info_with_props,
+                full_worker_logging,
+            )
+            .await
+        {
+            Some(result) => result,
+            // If we could not find a worker for the action,
+            // we have nothing to do.
+            None => return Ok(()),
+        };
+
         // Tell the matching engine that the operation is being assigned to a worker.
         let assign_result = matching_engine_state_manager
             .assign_operation(&operation_id, Ok(&worker_id))
             .await
             .err_tip(|| "Failed to assign operation in do_try_match");
         if let Err(err) = assign_result {
+            // Undo the worker reservation since the assignment failed.
+            workers.unreserve_worker(&worker_id, &operation_id).await;
             if err.code == Code::Aborted {
                 // The operation was cancelled due to another operation
                 // being assigned to the worker.
@@ -400,10 +413,10 @@ impl SimpleScheduler {
                 "Notifying worker of operation"
             );
             workers
-                .worker_notify_run_action(worker_id, operation_id, action_info_with_props)
+                .send_reserved_worker_notification(&worker_id, tx, msg)
                 .await
                 .err_tip(|| {
-                    "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
+                    "Failed to send_reserved_worker_notification in SimpleScheduler::do_try_match"
                 })
         };
 
@@ -651,6 +664,7 @@ impl SimpleScheduler {
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
                 worker_match_logging_interval,
+                _max_matches_per_client_per_cycle: spec.max_matches_per_client_per_cycle,
             }
         });
         (action_scheduler, worker_scheduler_clone)
