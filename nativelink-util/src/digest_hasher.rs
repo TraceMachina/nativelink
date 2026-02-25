@@ -29,7 +29,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 
 use crate::common::DigestInfo;
-use crate::{fs, spawn_blocking};
+use crate::fs;
 
 static DEFAULT_DIGEST_HASHER_FUNC: OnceLock<DigestHasherFunc> = OnceLock::new();
 
@@ -287,17 +287,26 @@ impl DigestHasher for DigestHasherImpl {
         match self.hash_func_impl {
             DigestHasherFuncImpl::Sha256(_) => self.hash_file(file).await,
             DigestHasherFuncImpl::Blake3(mut hasher) => {
-                spawn_blocking!("digest_for_file", move || {
-                    hasher.update_mmap_rayon(file_path).map_err(|e| {
-                        make_err!(Code::Internal, "Error in blake3's update_mmap_rayon: {e:?}")
-                    })?;
-                    Result::<_, Error>::Ok((
-                        DigestInfo::new(hasher.finalize().into(), hasher.count()),
-                        file,
-                    ))
-                })
-                .await
-                .err_tip(|| "Could not spawn blocking task in digest_for_file")?
+                // Use rayon::spawn + oneshot instead of spawn_blocking so we
+                // don't hold a tokio blocking thread while rayon's thread pool
+                // does the parallel hashing work.
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                rayon::spawn(move || {
+                    let result = match hasher.update_mmap_rayon(file_path) {
+                        Ok(_) => Ok((
+                            DigestInfo::new(hasher.finalize().into(), hasher.count()),
+                            file,
+                        )),
+                        Err(e) => Err(make_err!(
+                            Code::Internal,
+                            "Error in blake3's update_mmap_rayon: {e:?}"
+                        )),
+                    };
+                    drop(tx.send(result));
+                });
+                rx.await.map_err(|_| {
+                    make_err!(Code::Internal, "Rayon task dropped in digest_for_file")
+                })?
             }
         }
     }
