@@ -716,21 +716,16 @@ where
 
             // Make sure we don't update an action that is already completed.
             if awaited_action.state().stage.is_finished() {
-                match &update {
-                    UpdateOperationType::UpdateWithDisconnect | UpdateOperationType::KeepAlive => {
-                        // No need to error a keep-alive when it's completed, it's just
-                        // unnecessary log noise.
-                        return Ok(());
-                    }
-                    _ => {
-                        return Err(make_err!(
-                            Code::Internal,
-                            "Action {operation_id} is already completed with state {:?} - maybe_worker_id: {:?}",
-                            awaited_action.state().stage,
-                            maybe_worker_id,
-                        ));
-                    }
-                }
+                // This is a benign race: the worker finished after the scheduler
+                // already timed out the operation (e.g. client stopped listening).
+                // No client is waiting for the result, so just log and move on.
+                debug!(
+                    %operation_id,
+                    ?maybe_worker_id,
+                    stage = ?awaited_action.state().stage,
+                    "Ignoring late update for already-completed action"
+                );
+                return Ok(());
             }
 
             let stage = match &update {
