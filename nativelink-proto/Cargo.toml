@@ -12,20 +12,19 @@ path = "genproto/lib.rs"
 derive_more = { version = "2.0.1", default-features = false, features = [
   "debug",
 ] }
-prost = { version = "0.13.5", default-features = false }
-prost-types = { version = "0.13.5", default-features = false }
-tonic = { version = "0.13.0", features = [
+prost = { version = "0.14.3", default-features = false }
+prost-types = { version = "0.14.3", default-features = false }
+tonic = { version = "0.14.5", features = [
   "codegen",
-  "prost",
   "tls-ring",
   "transport",
 ], default-features = false }
+tonic-prost = { version = "0.14.5", default-features = false }
 
 [dev-dependencies]
-prost-build = { version = "0.13.5", default-features = false }
-tonic-build = { version = "0.13.0", features = [
-  "prost",
-], default-features = false }
+prost-build = { version = "0.14.3", default-features = false }
+tonic-build = { version = "0.14.5", default-features = false }
+tonic-prost-build = { version = "0.14.5", default-features = false }
 
 [package.metadata.cargo-machete]
 # Used by gen_protos_tool.rs

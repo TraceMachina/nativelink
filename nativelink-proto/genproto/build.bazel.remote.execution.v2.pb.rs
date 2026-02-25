@@ -2058,7 +2058,7 @@ pub mod execution_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.Execution/Execute",
             );
@@ -2105,7 +2105,7 @@ pub mod execution_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.Execution/WaitExecution",
             );
@@ -2241,7 +2241,7 @@ pub mod action_cache_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.ActionCache/GetActionResult",
             );
@@ -2286,7 +2286,7 @@ pub mod action_cache_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.ActionCache/UpdateActionResult",
             );
@@ -2551,7 +2551,7 @@ pub mod content_addressable_storage_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.ContentAddressableStorage/FindMissingBlobs",
             );
@@ -2603,7 +2603,7 @@ pub mod content_addressable_storage_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.ContentAddressableStorage/BatchUpdateBlobs",
             );
@@ -2652,7 +2652,7 @@ pub mod content_addressable_storage_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.ContentAddressableStorage/BatchReadBlobs",
             );
@@ -2704,7 +2704,7 @@ pub mod content_addressable_storage_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.ContentAddressableStorage/GetTree",
             );
@@ -2831,7 +2831,7 @@ pub mod capabilities_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.Capabilities/GetCapabilities",
             );
@@ -3092,7 +3092,7 @@ pub mod execution_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ExecuteSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3138,7 +3138,7 @@ pub mod execution_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = WaitExecutionSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3368,7 +3368,7 @@ pub mod action_cache_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetActionResultSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3414,7 +3414,7 @@ pub mod action_cache_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = UpdateActionResultSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3843,7 +3843,7 @@ pub mod content_addressable_storage_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = FindMissingBlobsSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3892,7 +3892,7 @@ pub mod content_addressable_storage_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = BatchUpdateBlobsSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3941,7 +3941,7 @@ pub mod content_addressable_storage_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = BatchReadBlobsSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3988,7 +3988,7 @@ pub mod content_addressable_storage_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetTreeSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -4186,7 +4186,7 @@ pub mod capabilities_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetCapabilitiesSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,

@@ -42,7 +42,7 @@ bincode = { version = "2.0.1", default-features = false, features = [
   "alloc",
   "serde",
 ] }
-blake3 = { version = "1.8.0", default-features = false }
+blake3 = { version = "1.8.0", default-features = false, features = ["std", "rayon"] }
 byteorder = { version = "1.5.0", default-features = false }
 bytes = { version = "1.10.1", default-features = false }
 const_format = { version = "0.2.34", default-features = false }
@@ -74,13 +74,13 @@ mongodb = { version = "3", features = [
   "compat-3-0-0",
   "rustls-tls",
 ], default-features = false }
-opentelemetry = { version = "0.29.1", default-features = false }
+opentelemetry = { version = "0.31.0", default-features = false }
 parking_lot = { version = "0.12.3", features = [
   "arc_lock",
   "send_guard",
 ], default-features = false }
 patricia_tree = { version = "0.9.0", default-features = false }
-prost = { version = "0.13.5", default-features = false }
+prost = { version = "0.14.3", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
@@ -99,7 +99,7 @@ rustls = { version = "0.23.27", default-features = false, features = [] }
 rustls-pki-types = { version = "1.13.1", default-features = false }
 serde = { version = "1.0.219", default-features = false }
 serde_json = { version = "1.0.140", default-features = false }
-sha2 = { version = "0.10.8", default-features = false }
+sha2 = { version = "0.10.8", default-features = false, features = ["asm"] }
 tokio = { version = "1.44.1", features = [
   "fs",
   "io-util",
@@ -110,7 +110,7 @@ tokio-stream = { version = "0.1.17", features = [
   "fs",
 ], default-features = false }
 tokio-util = { version = "0.7.14", default-features = false }
-tonic = { version = "0.13.0", features = [
+tonic = { version = "0.14.5", features = [
   "tls-ring",
   "transport",
 ], default-features = false }
