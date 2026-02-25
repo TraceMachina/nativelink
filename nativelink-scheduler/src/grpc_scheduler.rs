@@ -216,7 +216,7 @@ impl GrpcScheduler {
             // Not in the cache, lookup the capabilities with the upstream.
             let channel = self
                 .connection_manager
-                .connection()
+                .connection("get_known_properties".into())
                 .await
                 .err_tip(|| "in get_platform_property_manager()")?;
             let capabilities_result = CapabilitiesClient::new(channel)
@@ -274,7 +274,7 @@ impl GrpcScheduler {
             .perform_request(request, |request| async move {
                 let channel = self
                     .connection_manager
-                    .connection()
+                    .connection(format!("add_action: {:?}", request.action_digest))
                     .await
                     .err_tip(|| "in add_action()")?;
                 ExecutionClient::new(channel)
@@ -309,7 +309,7 @@ impl GrpcScheduler {
             .perform_request(request, |request| async move {
                 let channel = self
                     .connection_manager
-                    .connection()
+                    .connection(format!("filter_operations: {}", request.name))
                     .await
                     .err_tip(|| "in find_by_client_operation_id()")?;
                 ExecutionClient::new(channel)
