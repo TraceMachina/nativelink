@@ -15,7 +15,7 @@ nativelink-proto = { path = "../nativelink-proto" }
 async-trait = { version = "0.1.88", default-features = false }
 base64 = { version = "0.22.1", default-features = false, features = ["std"] }
 bitflags = { version = "2.9.0", default-features = false }
-blake3 = { version = "1.8.0", features = ["mmap"], default-features = false }
+blake3 = { version = "1.8.0", features = ["mmap", "rayon"], default-features = false }
 bytes = { version = "1.10.1", default-features = false }
 futures = { version = "0.3.31", features = [
   "async-await",
@@ -71,7 +71,7 @@ tokio-stream = { version = "0.1.17", features = [
 tokio-util = { version = "0.7.14", default-features = false }
 tonic = { version = "0.14.5", features = [
   "tls-native-roots",
-  "tls-ring",
+  "tls-aws-lc",
   "transport",
 ], default-features = false }
 tower = { version = "0.5.2", default-features = false }

@@ -27,7 +27,7 @@ tokio = { version = "1.44.1", features = [
   "signal",
 ], default-features = false }
 tonic = { version = "0.14.5", features = [
-  "tls-ring",
+  "tls-aws-lc",
   "transport",
 ], default-features = false }
 url = { version = "2.5.7", default-features = false }

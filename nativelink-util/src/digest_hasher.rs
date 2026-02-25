@@ -288,8 +288,8 @@ impl DigestHasher for DigestHasherImpl {
             DigestHasherFuncImpl::Sha256(_) => self.hash_file(file).await,
             DigestHasherFuncImpl::Blake3(mut hasher) => {
                 spawn_blocking!("digest_for_file", move || {
-                    hasher.update_mmap(file_path).map_err(|e| {
-                        make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}")
+                    hasher.update_mmap_rayon(file_path).map_err(|e| {
+                        make_err!(Code::Internal, "Error in blake3's update_mmap_rayon: {e:?}")
                     })?;
                     Result::<_, Error>::Ok((
                         DigestInfo::new(hasher.finalize().into(), hasher.count()),
