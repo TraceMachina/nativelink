@@ -1205,13 +1205,18 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         );
     }
 
-    // Keep worker 2 alive.
+    // Keep worker 2 alive at 2x timeout so it survives both phases.
     scheduler
-        .worker_keep_alive_received(&worker_id2, NOW_TIME + WORKER_TIMEOUT_S)
+        .worker_keep_alive_received(&worker_id2, NOW_TIME + 2 * WORKER_TIMEOUT_S)
         .await?;
-    // This should remove worker 1 (the one executing our job).
+    // Phase 1: quarantine worker 1 at 1x timeout (stops receiving new work).
     scheduler
         .remove_timedout_workers(NOW_TIME + WORKER_TIMEOUT_S)
+        .await?;
+    tokio::task::yield_now().await;
+    // Phase 2: evict worker 1 at 2x timeout (fully removed, job rescheduled).
+    scheduler
+        .remove_timedout_workers(NOW_TIME + 2 * WORKER_TIMEOUT_S)
         .await?;
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
 
