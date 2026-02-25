@@ -82,7 +82,7 @@ tonic = { version = "0.14.5", features = [
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
 
-[workspace.cargo-features-manager.keep]
+[workspace.metadata.cargo-features-manager.keep]
 async-lock = ["std"]
 aws-sdk-s3 = ["rt-tokio"]
 aws-smithy-runtime = ["test-util"]

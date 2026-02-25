@@ -153,6 +153,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in find_missing_blobs")?;
             ContentAddressableStorageClient::new(channel)
+                .max_decoding_message_size(usize::MAX)
                 .find_missing_blobs(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::find_missing_blobs")
@@ -178,6 +179,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in batch_update_blobs")?;
             ContentAddressableStorageClient::new(channel)
+                .max_decoding_message_size(usize::MAX)
                 .batch_update_blobs(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::batch_update_blobs")
@@ -203,6 +205,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in batch_read_blobs")?;
             ContentAddressableStorageClient::new(channel)
+                .max_decoding_message_size(usize::MAX)
                 .batch_read_blobs(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::batch_read_blobs")
@@ -228,6 +231,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in get_tree")?;
             ContentAddressableStorageClient::new(channel)
+                .max_decoding_message_size(usize::MAX)
                 .get_tree(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::get_tree")
@@ -255,6 +259,7 @@ impl GrpcStore {
             .await
             .err_tip(|| "in read_internal")?;
         let mut response = ByteStreamClient::new(channel)
+            .max_decoding_message_size(usize::MAX)
             .read(Request::new(request))
             .await
             .err_tip(|| "in GrpcStore::read")?
@@ -343,6 +348,7 @@ impl GrpcStore {
                         let local_state_for_rpc = local_state.clone();
                         async move {
                             let res = ByteStreamClient::new(channel)
+                                .max_decoding_message_size(usize::MAX)
                                 .write(WriteStateWrapper::new(local_state_for_rpc))
                                 .await
                                 .err_tip(|| "in GrpcStore::write");
@@ -452,6 +458,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in query_write_status")?;
             ByteStreamClient::new(channel)
+                .max_decoding_message_size(usize::MAX)
                 .query_write_status(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::query_write_status")
@@ -472,6 +479,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in get_action_result")?;
             ActionCacheClient::new(channel)
+                .max_decoding_message_size(usize::MAX)
                 .get_action_result(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::get_action_result")
@@ -492,6 +500,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in update_action_result")?;
             ActionCacheClient::new(channel)
+                .max_decoding_message_size(usize::MAX)
                 .update_action_result(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::update_action_result")
