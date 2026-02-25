@@ -105,6 +105,12 @@ pub struct Worker {
     #[metric(help = "Maximum inflight tasks for this worker (or 0 for unlimited)")]
     pub max_inflight_tasks: u64,
 
+    /// When this worker entered quarantine (i.e. missed keepalive for
+    /// > worker_timeout but < 2*worker_timeout). While quarantined the
+    /// worker will not receive new actions but is not yet evicted.
+    /// Reset to `None` when a keepalive is received.
+    pub quarantined_at: Option<SystemTime>,
+
     /// Stats about the worker.
     #[metric]
     metrics: Arc<Metrics>,
@@ -157,6 +163,7 @@ impl Worker {
             paused_due_to_backpressure: false,
             is_draining: false,
             max_inflight_tasks,
+            quarantined_at: None,
             metrics: Arc::new(Metrics {
                 connected_timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -271,7 +278,7 @@ impl Worker {
         !self.running_action_infos.is_empty()
     }
 
-    fn restore_platform_properties(&mut self, props: &PlatformProperties) {
+    pub(crate) fn restore_platform_properties(&mut self, props: &PlatformProperties) {
         for (property, prop_value) in &props.properties {
             if let PlatformPropertyValue::Minimum(value) = prop_value {
                 let worker_props = &mut self.platform_properties.properties;

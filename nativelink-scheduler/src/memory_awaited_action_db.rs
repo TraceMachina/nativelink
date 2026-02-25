@@ -417,14 +417,19 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     debug!(%operation_id, "Clearing operation from state manager");
                     let awaited_action = tx.borrow().clone();
                     // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
+                    // Only remove the entry if it still points to THIS operation.
+                    // A newer operation may have claimed this key slot if the
+                    // action completed and was re-requested before this cleanup ran.
                     match &awaited_action.action_info().unique_qualifier {
                         ActionUniqueQualifier::Cacheable(action_key) => {
-                            let maybe_awaited_action = self
+                            let dominated_by_self = self
                                 .action_info_hash_key_to_awaited_action
-                                .remove(action_key);
-                            if !awaited_action.state().stage.is_finished()
-                                && maybe_awaited_action.is_none()
-                            {
+                                .get(action_key)
+                                .map_or(false, |mapped_op_id| *mapped_op_id == operation_id);
+                            if dominated_by_self {
+                                self.action_info_hash_key_to_awaited_action
+                                    .remove(action_key);
+                            } else if !awaited_action.state().stage.is_finished() {
                                 error!(
                                     %operation_id,
                                     ?awaited_action,
@@ -552,18 +557,22 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         }
         match &new_awaited_action.action_info().unique_qualifier {
             ActionUniqueQualifier::Cacheable(action_key) => {
-                let maybe_awaited_action =
-                    action_info_hash_key_to_awaited_action.remove(action_key);
-                match maybe_awaited_action {
-                    Some(removed_operation_id) => {
-                        if &removed_operation_id != new_awaited_action.operation_id() {
-                            error!(
-                                ?removed_operation_id,
-                                ?new_awaited_action,
-                                ?action_key,
-                                "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
-                            );
-                        }
+                // Only remove the entry if it belongs to this operation.
+                // A newer operation may have claimed this key slot if the
+                // original was cleaned up and re-requested.
+                match action_info_hash_key_to_awaited_action.get(action_key) {
+                    Some(mapped_operation_id)
+                        if mapped_operation_id == new_awaited_action.operation_id() =>
+                    {
+                        action_info_hash_key_to_awaited_action.remove(action_key);
+                    }
+                    Some(mapped_operation_id) => {
+                        error!(
+                            ?mapped_operation_id,
+                            ?new_awaited_action,
+                            ?action_key,
+                            "action_info_hash_key_to_awaited_action points to a different operation_id",
+                        );
                     }
                     None => {
                         error!(

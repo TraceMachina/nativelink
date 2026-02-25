@@ -16,7 +16,7 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::sync::Arc;
-use std::time::{Instant, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_lock::RwLock;
 use lru::LruCache;
@@ -175,6 +175,14 @@ impl ApiWorkerSchedulerImpl {
         );
         worker.last_update_timestamp = timestamp;
 
+        // If the worker was in quarantine, clear it now that it has checked in.
+        if worker.quarantined_at.take().is_some() {
+            info!(
+                ?worker_id,
+                "Worker exited quarantine after sending keepalive"
+            );
+        }
+
         trace!(
             ?worker_id,
             running_operations = worker.running_action_infos.len(),
@@ -288,6 +296,16 @@ impl ApiWorkerSchedulerImpl {
         // The index only does presence checks for Minimum properties since their
         // values change dynamically as jobs are assigned to workers.
         let worker_matches = |(worker_id, w): &(&WorkerId, &Worker)| -> bool {
+            // Quarantined workers must not receive new actions.
+            if w.quarantined_at.is_some() {
+                if full_worker_logging {
+                    info!(
+                        "Worker {worker_id} is quarantined, skipping for new work"
+                    );
+                }
+                return false;
+            }
+
             if !w.can_accept_work() {
                 if full_worker_logging {
                     info!(
@@ -341,6 +359,49 @@ impl ApiWorkerSchedulerImpl {
             warn!("No workers matched!");
         }
         worker_id
+    }
+
+    /// Atomically finds a suitable worker AND reserves it for the given
+    /// operation by mutating the worker's state (reducing platform properties,
+    /// inserting into `running_action_infos`). Returns the worker ID, the
+    /// channel sender, and pre-built protobuf message so the caller can
+    /// send the notification after releasing the lock.
+    ///
+    /// This prevents two concurrent match operations from selecting the
+    /// same worker, which is the key enabler for `MATCH_CONCURRENCY > 1`.
+    fn inner_find_and_reserve_worker(
+        &mut self,
+        platform_properties: &PlatformProperties,
+        operation_id: &OperationId,
+        action_info: &ActionInfoWithProps,
+        full_worker_logging: bool,
+    ) -> Option<(WorkerId, UnboundedSender<UpdateForWorker>, UpdateForWorker)> {
+        let worker_id = self.inner_find_worker_for_action(platform_properties, full_worker_logging)?;
+
+        // Atomically reserve the worker by mutating its state under the same lock.
+        let (tx, msg) =
+            self.prepare_worker_run_action(&worker_id, operation_id, action_info)?;
+
+        Some((worker_id, tx, msg))
+    }
+
+    /// Undoes a reservation made by `inner_find_and_reserve_worker`.
+    /// This removes the operation from the worker's `running_action_infos`
+    /// and restores the reduced platform properties.
+    fn inner_unreserve_worker(
+        &mut self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) {
+        if let Some(worker) = self.workers.get_mut(worker_id) {
+            if let Some(pending) = worker.running_action_infos.remove(operation_id) {
+                if !worker.restored_platform_properties.remove(operation_id) {
+                    worker.restore_platform_properties(
+                        &pending.action_info.platform_properties,
+                    );
+                }
+            }
+        }
     }
 
     async fn update_action(
@@ -604,6 +665,42 @@ impl ApiWorkerScheduler {
         Ok(())
     }
 
+    /// Sends the start-execution notification for a worker that was already
+    /// reserved by `find_and_reserve_worker`. The worker's state has already
+    /// been mutated (platform properties reduced, action recorded in
+    /// `running_action_infos`), so this method only sends the pre-built
+    /// message over the channel and handles disconnection errors.
+    pub async fn send_reserved_worker_notification(
+        &self,
+        worker_id: &WorkerId,
+        tx: UnboundedSender<UpdateForWorker>,
+        msg: UpdateForWorker,
+    ) -> Result<(), Error> {
+        self.metrics
+            .actions_dispatched
+            .fetch_add(1, Ordering::Relaxed);
+
+        if let Err(_send_err) = tx.send(msg) {
+            // Worker disconnected. Re-acquire lock to evict.
+            warn!(
+                ?worker_id,
+                "Worker command failed (disconnected) after reservation, removing worker",
+            );
+            let err = make_err!(
+                Code::Internal,
+                "Worker command failed, removing worker {worker_id} -- Worker Disconnected",
+            );
+            let mut inner = self.inner.write().await;
+            return Result::<(), _>::Err(err.clone()).merge(
+                inner
+                    .immediate_evict_worker(worker_id, err, true)
+                    .await,
+            );
+        }
+
+        Ok(())
+    }
+
     /// Returns the scheduler metrics for observability.
     #[must_use]
     pub const fn get_metrics(&self) -> &Arc<SchedulerMetrics> {
@@ -648,6 +745,73 @@ impl ApiWorkerScheduler {
             .find_worker_time_ns
             .fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
         result
+    }
+
+    /// Atomically finds a suitable worker AND reserves it for the given
+    /// operation. This combines the find and reservation into a single lock
+    /// acquisition, preventing two concurrent match operations from selecting
+    /// the same worker.
+    ///
+    /// Returns `(worker_id, tx, msg)` where `tx` and `msg` can be used to
+    /// send the start-execution notification to the worker outside the lock.
+    /// Returns `None` if no suitable worker was found.
+    ///
+    /// If the caller later decides not to use this reservation (e.g., because
+    /// `assign_operation` fails), it MUST call `unreserve_worker` to undo
+    /// the reservation.
+    pub async fn find_and_reserve_worker(
+        &self,
+        platform_properties: &PlatformProperties,
+        operation_id: &OperationId,
+        action_info: &ActionInfoWithProps,
+        full_worker_logging: bool,
+    ) -> Option<(WorkerId, UnboundedSender<UpdateForWorker>, UpdateForWorker)> {
+        let start = Instant::now();
+        self.metrics
+            .find_worker_calls
+            .fetch_add(1, Ordering::Relaxed);
+
+        let mut inner = self.inner.write().await;
+        let worker_count = inner.workers.len() as u64;
+        let result = inner.inner_find_and_reserve_worker(
+            platform_properties,
+            operation_id,
+            action_info,
+            full_worker_logging,
+        );
+
+        // Track workers iterated (worst case is all workers)
+        self.metrics
+            .workers_iterated
+            .fetch_add(worker_count, Ordering::Relaxed);
+
+        if result.is_some() {
+            self.metrics
+                .find_worker_hits
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.metrics
+                .find_worker_misses
+                .fetch_add(1, Ordering::Relaxed);
+        }
+
+        #[allow(clippy::cast_possible_truncation)]
+        self.metrics
+            .find_worker_time_ns
+            .fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        result
+    }
+
+    /// Undoes a reservation made by `find_and_reserve_worker`. This must
+    /// be called if the match is abandoned after reservation (e.g., if
+    /// `assign_operation` returns an error).
+    pub async fn unreserve_worker(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) {
+        let mut inner = self.inner.write().await;
+        inner.inner_unreserve_worker(worker_id, operation_id);
     }
 
     /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
@@ -768,54 +932,100 @@ impl WorkerScheduler for ApiWorkerScheduler {
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
         // Check worker liveness using both the local timestamp (from LRU)
         // and the worker registry. A worker is alive if either source says it's alive.
+        //
+        // Quarantine phase: workers that miss keepalive for > worker_timeout but
+        // < 2*worker_timeout are quarantined (stop receiving new work) rather than
+        // immediately evicted. Workers that miss keepalive for >= 2*worker_timeout
+        // are fully evicted.
         let timeout = Duration::from_secs(self.worker_timeout_s);
         let now = UNIX_EPOCH + Duration::from_secs(now_timestamp);
         let timeout_threshold = now_timestamp.saturating_sub(self.worker_timeout_s);
+        let evict_threshold = now_timestamp.saturating_sub(self.worker_timeout_s * 2);
 
-        let workers_to_check: Vec<(WorkerId, bool)> = {
+        // Collect (worker_id, local_alive, already_quarantined) for workers that
+        // have not responded within the base timeout window.
+        let workers_to_check: Vec<(WorkerId, bool, bool)> = {
             let inner = self.inner.read().await;
             inner
                 .workers
                 .iter()
-                .map(|(worker_id, worker)| {
+                .filter_map(|(worker_id, worker)| {
                     let local_alive = worker.last_update_timestamp > timeout_threshold;
-                    (worker_id.clone(), local_alive)
+                    if local_alive {
+                        None
+                    } else {
+                        let already_quarantined = worker.quarantined_at.is_some();
+                        // Check if past the eviction threshold (2x timeout)
+                        let past_evict_threshold =
+                            worker.last_update_timestamp <= evict_threshold;
+                        Some((worker_id.clone(), past_evict_threshold, already_quarantined))
+                    }
                 })
                 .collect()
         };
 
-        let mut worker_ids_to_remove = Vec::new();
-        for (worker_id, local_alive) in workers_to_check {
-            if local_alive {
-                continue;
-            }
+        if workers_to_check.is_empty() {
+            return Ok(());
+        }
 
+        // For each candidate, consult the registry to determine actual liveness.
+        let mut workers_to_quarantine = Vec::new();
+        let mut worker_ids_to_remove = Vec::new();
+        for (worker_id, past_evict_threshold, already_quarantined) in workers_to_check {
             let registry_alive = self
                 .worker_registry
                 .is_worker_alive(&worker_id, timeout, now)
                 .await;
 
-            if !registry_alive {
+            if registry_alive {
+                // Registry says alive — no action needed.
+                continue;
+            }
+
+            if past_evict_threshold {
+                // Has been unresponsive for >= 2x the timeout — evict.
                 trace!(
                     ?worker_id,
-                    local_alive,
-                    registry_alive,
-                    timeout_threshold,
-                    "Worker timed out - neither local nor registry shows alive"
+                    past_evict_threshold,
+                    "Worker exceeded double-timeout, evicting from pool"
                 );
                 worker_ids_to_remove.push(worker_id);
+            } else if !already_quarantined {
+                // Has been unresponsive for > timeout but < 2x timeout — quarantine.
+                trace!(
+                    ?worker_id,
+                    "Worker missed keepalive, entering quarantine (stops receiving work)"
+                );
+                workers_to_quarantine.push(worker_id);
             }
+            // If already_quarantined && !past_evict_threshold: still waiting, no action.
         }
 
-        if worker_ids_to_remove.is_empty() {
+        if workers_to_quarantine.is_empty() && worker_ids_to_remove.is_empty() {
             return Ok(());
         }
 
         let mut inner = self.inner.write().await;
-        let mut result = Ok(());
 
+        // Apply quarantine to workers that just crossed the first timeout.
+        let quarantine_time = SystemTime::now();
+        for worker_id in &workers_to_quarantine {
+            if let Some(worker) = inner.workers.peek_mut(worker_id) {
+                warn!(
+                    ?worker_id,
+                    "Worker missed keepalive, quarantining (will not receive new work)"
+                );
+                worker.quarantined_at = Some(quarantine_time);
+            }
+        }
+        // Notify the matching engine so it skips quarantined workers on next cycle.
+        if !workers_to_quarantine.is_empty() {
+            inner.worker_change_notify.notify_one();
+        }
+
+        let mut result = Ok(());
         for worker_id in &worker_ids_to_remove {
-            warn!(?worker_id, "Worker timed out, removing from pool");
+            warn!(?worker_id, "Worker timed out (2x timeout), removing from pool");
             result = result.merge(
                 inner
                     .immediate_evict_worker(
