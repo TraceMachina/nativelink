@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nativelink_config::stores::{EvictionPolicy, ExistenceCacheSpec};
-use nativelink_error::{Code, Error, ResultExt, error_if};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
@@ -32,7 +32,7 @@ use nativelink_util::store_trait::{
     RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -78,7 +78,7 @@ impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheStore<I> {
         Box::pin(async move {
             let deleted_key = self.existence_cache.remove(&digest).await;
             if !deleted_key {
-                info!(?store_key, "Failed to delete key from cache on callback");
+                debug!(?store_key, "Failed to delete key from cache on callback");
             }
         })
     }
@@ -108,6 +108,13 @@ impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
             debug!("Cache dropped, so not doing callback");
         }
         Box::pin(async {})
+    }
+
+    fn on_remove(&self, store_key: &StoreKey<'_>) {
+        if let Some(local_cache) = self.cache.upgrade() {
+            let digest = store_key.borrow().into_digest();
+            local_cache.existence_cache.remove_sync(&digest);
+        }
     }
 }
 
@@ -149,62 +156,15 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
         keys: &[DigestInfo],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        self.existence_cache
-            .sizes_for_keys(keys, results, true /* peek */)
-            .await;
-
-        let not_cached_keys: Vec<_> = keys
-            .iter()
-            .zip(results.iter())
-            .filter_map(|(digest, result)| result.map_or_else(|| Some(digest.into()), |_| None))
-            .collect();
-
-        // Hot path optimization when all keys are cached.
-        if not_cached_keys.is_empty() {
-            return Ok(());
-        }
-
-        // Now query only the items not found in the cache.
-        let mut inner_results = vec![None; not_cached_keys.len()];
+        // Always query the inner store. This:
+        // 1. Returns ground-truth results (no stale positives)
+        // 2. Promotes items in the inner store's LRU (peek=false),
+        //    protecting them from eviction between FindMissingBlobs and Execute
+        let store_keys: Vec<StoreKey<'_>> = keys.iter().map(|k| (*k).into()).collect();
         self.inner_store
-            .has_with_results(&not_cached_keys, &mut inner_results)
+            .has_with_results(&store_keys, results)
             .await
-            .err_tip(|| "In ExistenceCacheStore::inner_has_with_results")?;
-
-        // Insert found from previous query into our cache.
-        {
-            // Note: Sadly due to some weird lifetime issues we need to collect here, but
-            // in theory we don't actually need to collect.
-            let inserts = not_cached_keys
-                .iter()
-                .zip(inner_results.iter())
-                .filter_map(|(key, result)| {
-                    result.map(|size| (key.borrow().into_digest(), ExistenceItem(size)))
-                })
-                .collect::<Vec<_>>();
-            drop(self.existence_cache.insert_many(inserts).await);
-        }
-
-        // Merge the results from the cache and the query.
-        {
-            let mut inner_results_iter = inner_results.into_iter();
-            // We know at this point that any None in results was queried and will have
-            // a result in inner_results_iter, so use this knowledge to fill in the results.
-            for result in results.iter_mut() {
-                if result.is_none() {
-                    *result = inner_results_iter
-                        .next()
-                        .expect("has_with_results returned less results than expected");
-                }
-            }
-            // Ensure that there was no logic error by ensuring our iterator is not empty.
-            error_if!(
-                inner_results_iter.next().is_some(),
-                "has_with_results returned more results than expected"
-            );
-        }
-
-        Ok(())
+            .err_tip(|| "In ExistenceCacheStore::inner_has_with_results")
     }
 }
 

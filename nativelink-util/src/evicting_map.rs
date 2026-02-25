@@ -94,6 +94,11 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
 // whatever key type the EvictingMap uses.
 pub trait RemoveItemCallback<Q>: Debug + Send + Sync {
     fn callback(&self, store_key: &Q) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    /// Synchronous hook called while the EvictingMap lock is still held,
+    /// *before* the async `callback`. Use this to invalidate caches that
+    /// must see the removal atomically (e.g. ExistenceCacheStore).
+    fn on_remove(&self, _key: &Q) {}
 }
 
 #[derive(Debug, MetricsComponent)]
@@ -154,6 +159,11 @@ impl<
         } else {
             self.evicted_items.inc();
             self.evicted_bytes.add(eviction_item.data.len());
+        }
+
+        // Sync pre-eviction hook: called while still holding the lock.
+        for callback in &self.remove_callbacks {
+            callback.on_remove(key);
         }
 
         let callbacks = self
@@ -620,6 +630,25 @@ where
         }
 
         false
+    }
+
+    /// Synchronous removal that pops a key from the LRU and updates
+    /// bookkeeping (sum_store_size, counters, btree). Does NOT call
+    /// async callbacks or `unref`. Safe for EvictingMaps whose entries
+    /// use `NoopRemove` / no-op `unref` (e.g. existence-cache entries).
+    pub fn remove_sync(&self, key: &Q) -> bool {
+        let mut state = self.state.lock();
+        if let Some(entry) = state.lru.pop(key) {
+            if let Some(btree) = &mut state.btree {
+                btree.remove(key);
+            }
+            state.sum_store_size -= entry.data.len();
+            state.evicted_items.inc();
+            state.evicted_bytes.add(entry.data.len());
+            true
+        } else {
+            false
+        }
     }
 
     /// Same as `remove()`, but allows for a conditional to be applied to the
