@@ -396,7 +396,7 @@ impl StoreDriver for FastSlowStore {
             return self.slow_store.update(key, reader, size_info).await;
         }
 
-        let (mut fast_tx, fast_rx) = make_buf_channel_pair();
+        let (fast_tx, fast_rx) = make_buf_channel_pair();
         let (mut slow_tx, slow_rx) = make_buf_channel_pair();
 
         let key_debug = format!("{key:?}");
@@ -408,6 +408,7 @@ impl StoreDriver for FastSlowStore {
         let mut bytes_sent: u64 = 0;
 
         let data_stream_fut = async move {
+            let mut fast_tx = Some(fast_tx);
             loop {
                 let buffer = reader
                     .recv()
@@ -415,9 +416,9 @@ impl StoreDriver for FastSlowStore {
                     .err_tip(|| "Failed to read buffer in fastslow store")?;
                 if buffer.is_empty() {
                     // EOF received.
-                    fast_tx.send_eof().err_tip(
-                        || "Failed to write eof to fast store in fast_slow store update",
-                    )?;
+                    if let Some(mut ftx) = fast_tx.take() {
+                        drop(ftx.send_eof());
+                    }
                     slow_tx
                         .send_eof()
                         .err_tip(|| "Failed to write eof to writer in fast_slow store update")?;
@@ -429,34 +430,43 @@ impl StoreDriver for FastSlowStore {
                 }
 
                 let chunk_len = buffer.len();
-                let send_start = std::time::Instant::now();
-                let (fast_result, slow_result) =
-                    join!(fast_tx.send(buffer.clone()), slow_tx.send(buffer));
-                let send_elapsed = send_start.elapsed();
-                if send_elapsed.as_secs() >= 5 {
-                    warn!(
-                        chunk_len,
-                        send_elapsed_ms = send_elapsed.as_millis(),
-                        total_bytes = bytes_sent,
-                        "FastSlowStore::update: channel send stalled (>5s). A downstream store may be hanging",
-                    );
-                }
-                bytes_sent += u64::try_from(chunk_len).unwrap_or(u64::MAX);
-                fast_result
-                    .map_err(|e| {
-                        make_err!(
-                            Code::Internal,
-                            "Failed to send message to fast_store in fast_slow_store {:?}",
-                            e
-                        )
-                    })
-                    .merge(slow_result.map_err(|e| {
+                if let Some(ref mut ftx) = fast_tx {
+                    let send_start = std::time::Instant::now();
+                    let (fast_result, slow_result) =
+                        join!(ftx.send(buffer.clone()), slow_tx.send(buffer));
+                    let send_elapsed = send_start.elapsed();
+                    if send_elapsed.as_secs() >= 5 {
+                        warn!(
+                            chunk_len,
+                            send_elapsed_ms = send_elapsed.as_millis(),
+                            total_bytes = bytes_sent,
+                            "FastSlowStore::update: channel send stalled (>5s). A downstream store may be hanging",
+                        );
+                    }
+                    if fast_result.is_err() {
+                        warn!(
+                            total_bytes = bytes_sent,
+                            "FastSlowStore::update: fast store channel failed, continuing with slow store only",
+                        );
+                        fast_tx = None;
+                    }
+                    slow_result.map_err(|e| {
                         make_err!(
                             Code::Internal,
                             "Failed to send message to slow_store in fast_slow store {:?}",
                             e
                         )
-                    }))?;
+                    })?;
+                } else {
+                    slow_tx.send(buffer).await.map_err(|e| {
+                        make_err!(
+                            Code::Internal,
+                            "Failed to send message to slow_store in fast_slow store {:?}",
+                            e
+                        )
+                    })?;
+                }
+                bytes_sent += u64::try_from(chunk_len).unwrap_or(u64::MAX);
             }
         };
 
@@ -483,7 +493,15 @@ impl StoreDriver for FastSlowStore {
                 "FastSlowStore::update: completed successfully",
             );
         }
-        data_stream_res.merge(fast_res).merge(slow_res)?;
+        // Slow store success is required; fast store failure is tolerated since it's a cache.
+        data_stream_res.merge(slow_res)?;
+        if let Err(err) = fast_res {
+            warn!(
+                ?err,
+                key = %key_debug,
+                "FastSlowStore::update: fast store failed during upload; data stored in slow store",
+            );
+        }
         Ok(())
     }
 
@@ -591,16 +609,23 @@ impl StoreDriver for FastSlowStore {
         // TODO(palfrey) Investigate if we should maybe ignore errors here instead of
         // forwarding them up.
         if self.fast_store.has(key.borrow()).await?.is_some() {
-            self.metrics
-                .fast_store_hit_count
-                .fetch_add(1, Ordering::Acquire);
-            self.fast_store
-                .get_part(key, writer.borrow_mut(), offset, length)
-                .await?;
-            self.metrics
-                .fast_store_downloaded_bytes
-                .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
-            return Ok(());
+            match self
+                .fast_store
+                .get_part(key.borrow(), writer.borrow_mut(), offset, length)
+                .await
+            {
+                Ok(()) => {
+                    self.metrics
+                        .fast_store_hit_count
+                        .fetch_add(1, Ordering::Acquire);
+                    self.metrics
+                        .fast_store_downloaded_bytes
+                        .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+                    return Ok(());
+                }
+                Err(err) if err.code == Code::NotFound => {}
+                Err(err) => return Err(err),
+            }
         }
 
         // If the fast store is noop or read only or update only then bypass it.
