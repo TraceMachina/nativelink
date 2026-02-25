@@ -535,9 +535,11 @@ async fn inner_main(
         if let Some(value) = http_config.experimental_http2_adaptive_window {
             http.http2().adaptive_window(value);
         }
-        if let Some(value) = http_config.experimental_http2_max_frame_size {
-            http.http2().max_frame_size(value);
-        }
+        http.http2().max_frame_size(
+            http_config
+                .experimental_http2_max_frame_size
+                .unwrap_or(64 * 1024),
+        );
         if let Some(value) = http_config.experimental_http2_max_concurrent_streams {
             http.http2().max_concurrent_streams(value);
         }
@@ -545,11 +547,14 @@ async fn inner_main(
             http.http2()
                 .keep_alive_timeout(Duration::from_secs(u64::from(value)));
         }
-        if let Some(value) = http_config.experimental_http2_max_send_buf_size {
-            http.http2().max_send_buf_size(
-                usize::try_from(value).err_tip(|| "Could not convert http2_max_send_buf_size")?,
-            );
-        }
+        http.http2().max_send_buf_size(
+            usize::try_from(
+                http_config
+                    .experimental_http2_max_send_buf_size
+                    .unwrap_or(256 * 1024),
+            )
+            .err_tip(|| "Could not convert http2_max_send_buf_size")?,
+        );
         if http_config.experimental_http2_enable_connect_protocol == Some(true) {
             http.http2().enable_connect_protocol();
         }

@@ -27,17 +27,37 @@ use tracing::warn;
 
 const ZERO_DATA: Bytes = Bytes::new();
 
+/// Default channel capacity: 64 slots. At 256KiB chunks this gives 16MiB of
+/// buffered data, which is sufficient for most workloads.
+const DEFAULT_BUF_CHANNEL_CAPACITY: usize = 64;
+
 /// Create a channel pair that can be used to transport buffer objects around to
 /// different components. This wrapper is used because the streams give some
 /// utility like managing EOF in a more friendly way, ensure if no EOF is received
 /// it will send an error to the receiver channel before shutting down and count
 /// the number of bytes sent.
+///
+/// Uses the default capacity of 64 slots. For high-throughput or
+/// latency-sensitive paths, use [`make_buf_channel_pair_with_size`] instead.
 #[must_use]
 pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
-    // We allow up to 64 items in the buffer at any given time. At 10Gbps with
-    // 256KiB chunks (default read_buffer_size), 64 slots = 16MiB of buffer —
-    // enough to absorb scheduling jitter without stalling the producer.
-    let (tx, rx) = mpsc::channel(64);
+    make_buf_channel_pair_with_size(DEFAULT_BUF_CHANNEL_CAPACITY)
+}
+
+/// Like [`make_buf_channel_pair`], but with a caller-specified channel capacity.
+///
+/// The `capacity` parameter controls how many chunks can be buffered before the
+/// producer is forced to wait. At 256KiB chunks (the default `read_buffer_size`),
+/// each slot represents ~256KiB of buffered data, so:
+///
+/// -  64 slots = ~16MiB (default, good for most workloads)
+/// - 128 slots = ~32MiB (suitable for dual-store writes in FastSlowStore)
+/// - 256 slots = ~64MiB (suitable for high-throughput streaming at 10Gbps+)
+#[must_use]
+pub fn make_buf_channel_pair_with_size(
+    capacity: usize,
+) -> (DropCloserWriteHalf, DropCloserReadHalf) {
+    let (tx, rx) = mpsc::channel(capacity);
     let eof_sent = Arc::new(AtomicBool::new(false));
     (
         DropCloserWriteHalf {
