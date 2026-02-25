@@ -60,9 +60,11 @@ async fn simple_exist_cache_test() -> Result<(), Error> {
         "Expected digest to exist in store"
     );
 
+    // has() always queries the inner store and no longer populates the
+    // existence cache (to guarantee LRU promotion and avoid stale positives).
     assert!(
-        store.exists_in_cache(&digest).await,
-        "Expected digest to exist in cache in direct check"
+        !store.exists_in_cache(&digest).await,
+        "Expected digest to not be in cache after has() (cache only populated by update/get)"
     );
     Ok(())
 }
@@ -144,11 +146,10 @@ async fn ensure_has_requests_do_let_evictions_happen() -> Result<(), Error> {
     assert_eq!(store.has(digest).await, Ok(Some(VALUE.len() as u64)));
     MockClock::advance(Duration::from_secs(3));
 
-    // Now that our existence cache has been populated, remove
-    // it from the inner store.
+    // Remove from the inner store.
     inner_store.remove_entry(digest.into()).await;
 
-    // It should be immediately evicted from the existence cache.
+    // has() always queries the inner store, so it reflects the removal.
     assert_eq!(store.has(digest).await, Ok(None));
 
     Ok(())
