@@ -342,19 +342,31 @@ impl SimpleScheduler {
             .await
             .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
 
-        // Fair scheduling: check if this client has already hit its per-cycle limit.
-        if max_per_client > 0 {
-            let count = per_client_matches
-                .lock()
-                .unwrap()
-                .get(action_info.instance_name())
-                .copied()
-                .unwrap_or(0);
-            if count >= max_per_client {
+        // Fair scheduling: atomically check and optimistically increment the
+        // per-client counter. If the client has hit its limit, skip the action.
+        // If the match later fails, we decrement to undo the reservation.
+        let client_name = action_info.instance_name().clone();
+        let claimed_slot = if max_per_client > 0 {
+            let mut map = per_client_matches.lock().unwrap_or_else(|e| e.into_inner());
+            let count = map.entry(client_name.clone()).or_insert(0);
+            if *count >= max_per_client {
                 // Skip — action stays queued for next cycle.
                 return Ok(());
             }
-        }
+            *count += 1;
+            true
+        } else {
+            false
+        };
+
+        // Helper to undo the optimistic increment on failure paths.
+        let undo_claim = |per_client_matches: &std::sync::Mutex<HashMap<String, usize>>,
+                          client_name: &str| {
+            let mut map = per_client_matches.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(count) = map.get_mut(client_name) {
+                *count = count.saturating_sub(1);
+            }
+        };
 
         // Build a deterministic cache key from the raw platform
         // properties (sorted key-value pairs).
@@ -364,7 +376,7 @@ impl SimpleScheduler {
 
         // Look up or compute and cache the platform properties.
         let platform_properties = {
-            let mut cache = props_cache.lock().unwrap();
+            let mut cache = props_cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(cached) = cache.get(&cache_key) {
                 cached.clone()
             } else {
@@ -409,9 +421,13 @@ impl SimpleScheduler {
             .await
         {
             Some(result) => result,
-            // If we could not find a worker for the action,
-            // we have nothing to do.
-            None => return Ok(()),
+            // No worker found — undo the optimistic increment.
+            None => {
+                if claimed_slot {
+                    undo_claim(per_client_matches, &client_name);
+                }
+                return Ok(());
+            }
         };
 
         // Tell the matching engine that the operation is being assigned to a worker.
@@ -422,6 +438,9 @@ impl SimpleScheduler {
         if let Err(err) = assign_result {
             // Undo the worker reservation since the assignment failed.
             workers.unreserve_worker(&worker_id, &operation_id).await;
+            if claimed_slot {
+                undo_claim(per_client_matches, &client_name);
+            }
             if err.code == Code::Aborted {
                 // The operation was cancelled due to another operation
                 // being assigned to the worker.
@@ -429,15 +448,6 @@ impl SimpleScheduler {
             }
             // Any other error is a real error.
             return Err(err);
-        }
-
-        // Fair scheduling: record this successful match for the client.
-        if max_per_client > 0 {
-            *per_client_matches
-                .lock()
-                .unwrap()
-                .entry(action_info_with_props.inner.instance_name().clone())
-                .or_insert(0) += 1;
         }
 
         let origin_metadata = maybe_origin_metadata.unwrap_or_default();
