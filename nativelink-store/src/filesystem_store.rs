@@ -142,7 +142,12 @@ impl Drop for EncodedFilePath {
                 .await
                 .err_tip(|| format!("Failed to remove file {}", file_path.display()));
             if let Err(err) = result {
-                error!(?file_path, ?err, "Failed to delete file",);
+                if err.code == Code::NotFound {
+                    // File already deleted (e.g. race between eviction paths).
+                    debug!(?file_path, "File already deleted, ignoring");
+                } else {
+                    error!(?file_path, ?err, "Failed to delete file");
+                }
             } else {
                 debug!(?file_path, "File deleted",);
             }
