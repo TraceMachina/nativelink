@@ -63,7 +63,7 @@ hyper = { version = "1.6.0", default-features = false }
 hyper-rustls = { version = "0.27.5", default-features = false, features = [
   "http1",
   "http2",
-  "ring",
+  "aws-lc-rs",
   "rustls-native-certs",
   "rustls-platform-verifier",
 ] }
@@ -93,8 +93,8 @@ redis = { version = "1.0.0", default-features = false, features = [
   "tokio-comp",
 ] }
 regex = { version = "1.11.1", default-features = false }
-reqwest = { version = "0.12", default-features = false }
-reqwest-middleware = { version = "0.4.2", default-features = false }
+reqwest = { version = "0.13.2", default-features = false }
+reqwest-middleware = { version = "0.5.1", default-features = false }
 rustls = { version = "0.23.27", default-features = false, features = [] }
 rustls-pki-types = { version = "1.13.1", default-features = false }
 serde = { version = "1.0.219", default-features = false }
@@ -111,7 +111,7 @@ tokio-stream = { version = "0.1.17", features = [
 ], default-features = false }
 tokio-util = { version = "0.7.14", default-features = false }
 tonic = { version = "0.14.5", features = [
-  "tls-ring",
+  "tls-aws-lc",
   "transport",
 ], default-features = false }
 tracing = { version = "0.1.41", default-features = false }
