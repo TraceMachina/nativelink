@@ -609,23 +609,16 @@ impl StoreDriver for FastSlowStore {
         // TODO(palfrey) Investigate if we should maybe ignore errors here instead of
         // forwarding them up.
         if self.fast_store.has(key.borrow()).await?.is_some() {
-            match self
-                .fast_store
-                .get_part(key.borrow(), writer.borrow_mut(), offset, length)
-                .await
-            {
-                Ok(()) => {
-                    self.metrics
-                        .fast_store_hit_count
-                        .fetch_add(1, Ordering::Acquire);
-                    self.metrics
-                        .fast_store_downloaded_bytes
-                        .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
-                    return Ok(());
-                }
-                Err(err) if err.code == Code::NotFound => {}
-                Err(err) => return Err(err),
-            }
+            self.metrics
+                .fast_store_hit_count
+                .fetch_add(1, Ordering::Acquire);
+            self.fast_store
+                .get_part(key, writer.borrow_mut(), offset, length)
+                .await?;
+            self.metrics
+                .fast_store_downloaded_bytes
+                .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+            return Ok(());
         }
 
         // If the fast store is noop or read only or update only then bypass it.
