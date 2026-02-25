@@ -88,7 +88,7 @@ impl InstantWrapper for MockInstantWrapped {
         let baseline = self.0.elapsed();
         loop {
             tokio::task::yield_now().await;
-            if self.0.elapsed() - baseline >= duration {
+            if self.0.elapsed().saturating_sub(baseline) >= duration {
                 break;
             }
         }

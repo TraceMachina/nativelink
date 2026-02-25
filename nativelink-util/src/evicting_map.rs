@@ -438,7 +438,7 @@ where
         let (result, items_to_unref, removal_futures) = {
             let mut state = self.state.lock();
             // Check if the requested item is expired before promoting it.
-            let result = if let Some(entry) = state.lru.peek(key.borrow()) {
+            if let Some(entry) = state.lru.peek(key.borrow()) {
                 if self.should_evict(state.lru.len(), entry, 0, u64::MAX) {
                     // Item is expired, remove it.
                     if let Some((k, eviction_item)) = state.lru.pop_entry(key.borrow()) {
@@ -446,28 +446,27 @@ where
                         let (mut items, mut removals) = self.evict_items(&mut *state);
                         items.push(data);
                         removals.extend(futures);
-                        return {
-                            Self::unref_items(items, removals).await;
-                            None
-                        };
+                        (None, items, removals)
+                    } else {
+                        let (items, removals) = self.evict_items(&mut *state);
+                        (None, items, removals)
                     }
-                    None
                 } else {
                     // Item is valid. Promote it in LRU so it's safe from eviction.
-                    state.lru.get_mut(key.borrow()).map(|entry| {
+                    let data = state.lru.get_mut(key.borrow()).map(|entry| {
                         entry.seconds_since_anchor =
                             i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
                         entry.data.clone()
-                    })
+                    });
+                    let (items, removals) = self.evict_items(&mut *state);
+                    (data, items, removals)
                 }
             } else {
-                None
-            };
-            // Evict other items if needed
-            let (items_to_unref, removal_futures) = self.evict_items(&mut *state);
-            (result, items_to_unref, removal_futures)
+                let (items, removals) = self.evict_items(&mut *state);
+                (None, items, removals)
+            }
         };
-        // Unref items outside of lock
+        // Unref items outside of lock — lock is guaranteed dropped here.
         Self::unref_items(items_to_unref, removal_futures).await;
         result
     }
