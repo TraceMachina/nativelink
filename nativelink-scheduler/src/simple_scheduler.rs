@@ -153,7 +153,7 @@ pub struct SimpleScheduler {
     /// Maximum number of actions that can be matched per client
     /// (identified by `instance_name`) in one matching cycle.
     /// 0 means unlimited (fair scheduling disabled).
-    _max_matches_per_client_per_cycle: usize,
+    max_matches_per_client_per_cycle: usize,
 }
 
 impl core::fmt::Debug for SimpleScheduler {
@@ -238,6 +238,14 @@ impl SimpleScheduler {
             HashMap<Vec<(String, String)>, Arc<PlatformProperties>>,
         > = std::sync::Mutex::new(HashMap::new());
 
+        // Per-client match counter for fair scheduling. When
+        // max_matches_per_client_per_cycle > 0, limits how many actions
+        // from the same instance_name can be matched in one cycle,
+        // preventing a single client from monopolizing all workers.
+        let per_client_matches: std::sync::Mutex<HashMap<String, usize>> =
+            std::sync::Mutex::new(HashMap::new());
+        let max_per_client = self.max_matches_per_client_per_cycle;
+
         let start = Instant::now();
 
         let stream = self
@@ -274,6 +282,8 @@ impl SimpleScheduler {
                 self.matching_engine_state_manager.as_ref(),
                 self.platform_property_manager.as_ref(),
                 &props_cache,
+                &per_client_matches,
+                max_per_client,
                 full_worker_logging,
             )));
         }
@@ -289,6 +299,8 @@ impl SimpleScheduler {
                     self.matching_engine_state_manager.as_ref(),
                     self.platform_property_manager.as_ref(),
                     &props_cache,
+                    &per_client_matches,
+                    max_per_client,
                     full_worker_logging,
                 )));
             }
@@ -309,6 +321,10 @@ impl SimpleScheduler {
     /// Matches a single action to a worker, using a shared cache for computed
     /// platform properties to avoid redundant recomputation across actions
     /// with identical platform requirements.
+    ///
+    /// When `max_per_client > 0`, enforces fair scheduling by limiting how
+    /// many actions from the same `instance_name` can be matched per cycle.
+    /// Actions that exceed the limit are skipped (left in queue for next cycle).
     async fn match_action_to_worker_cached(
         action_state_result: Box<dyn ActionStateResult>,
         workers: &ApiWorkerScheduler,
@@ -317,12 +333,28 @@ impl SimpleScheduler {
         props_cache: &std::sync::Mutex<
             HashMap<Vec<(String, String)>, Arc<PlatformProperties>>,
         >,
+        per_client_matches: &std::sync::Mutex<HashMap<String, usize>>,
+        max_per_client: usize,
         full_worker_logging: bool,
     ) -> Result<(), Error> {
         let (action_info, maybe_origin_metadata) = action_state_result
             .as_action_info()
             .await
             .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
+
+        // Fair scheduling: check if this client has already hit its per-cycle limit.
+        if max_per_client > 0 {
+            let count = per_client_matches
+                .lock()
+                .unwrap()
+                .get(action_info.instance_name())
+                .copied()
+                .unwrap_or(0);
+            if count >= max_per_client {
+                // Skip — action stays queued for next cycle.
+                return Ok(());
+            }
+        }
 
         // Build a deterministic cache key from the raw platform
         // properties (sorted key-value pairs).
@@ -397,6 +429,15 @@ impl SimpleScheduler {
             }
             // Any other error is a real error.
             return Err(err);
+        }
+
+        // Fair scheduling: record this successful match for the client.
+        if max_per_client > 0 {
+            *per_client_matches
+                .lock()
+                .unwrap()
+                .entry(action_info_with_props.inner.instance_name().clone())
+                .or_insert(0) += 1;
         }
 
         let origin_metadata = maybe_origin_metadata.unwrap_or_default();
@@ -664,7 +705,7 @@ impl SimpleScheduler {
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
                 worker_match_logging_interval,
-                _max_matches_per_client_per_cycle: spec.max_matches_per_client_per_cycle,
+                max_matches_per_client_per_cycle: spec.max_matches_per_client_per_cycle,
             }
         });
         (action_scheduler, worker_scheduler_clone)
