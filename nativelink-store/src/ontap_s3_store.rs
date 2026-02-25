@@ -167,7 +167,7 @@ where
             .app_name(aws_config::AppName::new("nativelink").expect("valid app name"))
             .http_client(http_client)
             .force_path_style(true)
-            .behavior_version(BehaviorVersion::v2025_08_07())
+            .behavior_version(BehaviorVersion::v2026_01_12())
             .timeout_config(
                 aws_config::timeout::TimeoutConfig::builder()
                     .connect_timeout(Duration::from_secs(30))
