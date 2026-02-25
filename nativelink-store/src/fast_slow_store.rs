@@ -556,10 +556,20 @@ impl StoreDriver for FastSlowStore {
             {
                 return Ok(Some(file));
             }
-            return self
+            return match self
                 .fast_store
                 .update_with_whole_file(key, path, file, upload_size)
-                .await;
+                .await
+            {
+                Ok(file_slot) => Ok(file_slot),
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        "FastSlowStore::update_with_whole_file: fast store failed; data stored in slow store",
+                    );
+                    Ok(None)
+                }
+            };
         }
 
         if self
@@ -573,14 +583,19 @@ impl StoreDriver for FastSlowStore {
                 || self.fast_direction == StoreDirection::ReadOnly
                 || self.fast_direction == StoreDirection::Get;
             if !ignore_fast {
-                slow_update_store_with_file(
+                if let Err(err) = slow_update_store_with_file(
                     self.fast_store.as_store_driver_pin(),
                     key.borrow(),
                     &mut file,
                     upload_size,
                 )
                 .await
-                .err_tip(|| "In FastSlowStore::update_with_whole_file fast_store")?;
+                {
+                    warn!(
+                        ?err,
+                        "FastSlowStore::update_with_whole_file: fast store failed; continuing with slow store",
+                    );
+                }
             }
             let ignore_slow = self.slow_direction == StoreDirection::ReadOnly
                 || self.slow_direction == StoreDirection::Get;
