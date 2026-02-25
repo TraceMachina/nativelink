@@ -7,7 +7,7 @@ module(
 bazel_dep(name = "platforms", version = "1.0.0")
 
 # C++
-bazel_dep(name = "rules_cc", version = "0.1.5")
+bazel_dep(name = "rules_cc", version = "0.2.14")
 
 # Java
 bazel_dep(name = "rules_java", version = "9.6.1")
@@ -16,7 +16,7 @@ java = use_extension("//java:extensions.bzl", "toolchains")
 use_repo(java, "local_jdk")
 
 # Python
-bazel_dep(name = "rules_python", version = "1.2.0")
+bazel_dep(name = "rules_python", version = "1.6.3")
 
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
 pip.parse(
