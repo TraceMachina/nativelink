@@ -45,7 +45,7 @@ tokio-stream = { version = "0.1.17", default-features = false, features = [
 ] }
 tonic = { version = "0.14.5", features = [
   "gzip",
-  "tls-ring",
+  "tls-aws-lc",
   "transport",
 ], default-features = false }
 tracing = { version = "0.1.41", default-features = false }
