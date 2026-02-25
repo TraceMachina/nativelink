@@ -145,7 +145,7 @@ impl RoutesExt for Routes {
 }
 
 /// If this value changes update the documentation in the config definition.
-const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
 macro_rules! service_setup {
     ($service: expr, $http_config: ident) => {{
