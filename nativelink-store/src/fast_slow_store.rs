@@ -27,7 +27,7 @@ use nativelink_config::stores::{FastSlowSpec, StoreDirection};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
-    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair_with_size,
 };
 use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
@@ -205,8 +205,10 @@ impl FastSlowStore {
         let mut bytes_received: u64 = 0;
         let mut counted_hit = false;
 
-        let (mut fast_tx, fast_rx) = make_buf_channel_pair();
-        let (slow_tx, mut slow_rx) = make_buf_channel_pair();
+        // Use 128 slots (~32MiB at 256KiB chunks) for dual-store
+        // read-through to reduce backpressure between fast and slow stores.
+        let (mut fast_tx, fast_rx) = make_buf_channel_pair_with_size(128);
+        let (slow_tx, mut slow_rx) = make_buf_channel_pair_with_size(128);
         let data_stream_fut = async move {
             let mut maybe_writer_pin = maybe_writer.map(Pin::new);
             loop {
@@ -400,8 +402,10 @@ impl StoreDriver for FastSlowStore {
             return self.slow_store.update(key, reader, size_info).await;
         }
 
-        let (mut fast_tx, fast_rx) = make_buf_channel_pair();
-        let (mut slow_tx, slow_rx) = make_buf_channel_pair();
+        // Use 128 slots (~32MiB at 256KiB chunks) for dual-store
+        // update to reduce backpressure between fast and slow stores.
+        let (mut fast_tx, fast_rx) = make_buf_channel_pair_with_size(128);
+        let (mut slow_tx, slow_rx) = make_buf_channel_pair_with_size(128);
 
         let key_debug = format!("{key:?}");
         trace!(

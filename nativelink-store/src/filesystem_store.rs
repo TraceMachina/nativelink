@@ -650,8 +650,6 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     read_buffer_size: usize,
     weak_self: Weak<Self>,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
-    /// Whether to use sync_data() instead of sync_all().
-    sync_data_only: bool,
     /// Limits concurrent write operations to prevent disk I/O saturation.
     write_semaphore: Option<Semaphore>,
 }
@@ -723,7 +721,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             read_buffer_size,
             weak_self: weak_self.clone(),
             rename_fn,
-            sync_data_only: spec.sync_data_only,
             write_semaphore,
         }))
     }
@@ -790,21 +787,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             None
         };
 
-        if self.sync_data_only {
-            temp_file
-                .as_ref()
-                .sync_data()
-                .await
-                .err_tip(|| "Failed to sync_data in filesystem store")?;
-        } else {
-            temp_file
-                .as_ref()
-                .sync_all()
-                .await
-                .err_tip(|| "Failed to sync_all in filesystem store")?;
-        }
-
-        drop(permit);
+        drop(_permit);
 
         temp_file.advise_dontneed();
         trace!(?temp_file, "Dropping file to update_file");
@@ -857,23 +840,24 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 &key,
             );
 
-            let from_path = encoded_file_path.get_file_path();
-            // Internally tokio spawns fs commands onto a blocking thread anyways.
-            // Since we are already on a blocking thread, we just need the `fs` wrapper to manage
-            // an open-file permit (ensure we don't open too many files at once).
-            let result = (rename_fn)(&from_path, &final_path).err_tip(|| {
-                format!(
-                    "Failed to rename temp file to final path {}",
-                    final_path.display()
-                )
-            });
+            let from_path: OsString = encoded_file_path.get_file_path().into_owned();
+            let final_path_owned: OsString = final_path.into_owned();
+            // Run rename on a blocking thread to avoid stalling the async runtime.
+            let from_clone = from_path.clone();
+            let to_clone = final_path_owned.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                (rename_fn)(&from_clone, &to_clone)
+            })
+            .await
+            .map_err(|e| make_err!(Code::Internal, "Rename task join error: {e:?}"))
+            .and_then(|r| r.err_tip(|| "Failed to rename temp file to final path"));
 
             // In the event our move from temp file to final file fails we need to ensure we remove
             // the entry from our map.
             // Remember: At this point it is possible for another thread to have a reference to
             // `entry`, so we can't delete the file, only drop() should ever delete files.
             if let Err(err) = result {
-                error!(?err, ?from_path, ?final_path, "Failed to rename file",);
+                error!(?err, ?from_path, ?final_path_owned, "Failed to rename file",);
                 // Warning: To prevent deadlock we need to release our lock or during `remove_if()`
                 // it will call `unref()`, which triggers a write-lock on `encoded_file_path`.
                 drop(encoded_file_path);
@@ -1012,20 +996,6 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         } else {
             None
         };
-
-        if self.sync_data_only {
-            temp_file
-                .as_ref()
-                .sync_data()
-                .await
-                .err_tip(|| "Failed to sync_data in filesystem store update_oneshot")?;
-        } else {
-            temp_file
-                .as_ref()
-                .sync_all()
-                .await
-                .err_tip(|| "Failed to sync_all in filesystem store update_oneshot")?;
-        }
 
         drop(_permit);
 

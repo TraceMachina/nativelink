@@ -209,7 +209,7 @@ pub struct ByteStreamConfig {
     /// 16KiB - 64KiB is optimal.
     ///
     ///
-    /// Default: 64KiB
+    /// Default: 64MiB
     #[serde(
         default,
         deserialize_with = "convert_data_size_with_shellexpand",
