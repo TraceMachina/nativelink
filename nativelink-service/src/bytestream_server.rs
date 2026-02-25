@@ -41,7 +41,7 @@ use nativelink_proto::google::bytestream::{
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::{
-    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair_with_size,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{
@@ -62,7 +62,7 @@ use tracing::{Instrument, Level, debug, error, error_span, info, instrument, tra
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// If this value changes update the documentation in the config definition.
-const DEFAULT_MAX_BYTES_PER_STREAM: usize = 2 * 1024 * 1024;
+const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024 * 1024;
 
 /// Metrics for `ByteStream` server operations.
 /// Tracks upload/download activity, throughput, and latency.
@@ -572,7 +572,9 @@ impl ByteStreamServer {
         // removing the entry from the map, otherwise that UUID becomes
         // unusable.
 
-        let (tx, rx) = make_buf_channel_pair();
+        // Use a larger buffer (256 slots = ~64MiB at 256KiB chunks) to sustain
+        // high-throughput streaming at 10Gbps+ without backpressure stalls.
+        let (tx, rx) = make_buf_channel_pair_with_size(256);
         let store = instance.store.clone();
         let store_update_fut = Box::pin(async move {
             // We need to wrap `Store::update()` in a another future because we need to capture
@@ -610,7 +612,9 @@ impl ByteStreamServer {
         let read_limit = u64::try_from(read_request.read_limit)
             .err_tip(|| "Could not convert read_limit to u64")?;
 
-        let (tx, rx) = make_buf_channel_pair();
+        // Use a larger buffer (256 slots = ~64MiB at 256KiB chunks) to sustain
+        // high-throughput streaming at 10Gbps+ without backpressure stalls.
+        let (tx, rx) = make_buf_channel_pair_with_size(256);
 
         let read_limit = if read_limit != 0 {
             Some(read_limit)
@@ -779,8 +783,14 @@ impl ByteStreamServer {
                     )
                 } else {
                     if write_offset != tx.get_bytes_written() {
-                        return Err(make_input_err!(
-                            "Received out of order data. Got {}, expected {}",
+                        // The client is trying to resume at an offset we
+                        // don't have (e.g. the idle stream was swept).
+                        // Return UNAVAILABLE so the client retries with
+                        // QueryWriteStatus → committed_size=0 → restart.
+                        return Err(make_err!(
+                            Code::Unavailable,
+                            "Received out of order data (write_offset {} but server has {}). \
+                             Partial upload state was lost; retry from committed offset.",
                             write_offset,
                             tx.get_bytes_written()
                         ));
@@ -907,8 +917,10 @@ impl ByteStreamServer {
                     .slice(usize::try_from(bytes_received - write_offset).unwrap_or(usize::MAX)..)
             } else {
                 if write_offset != bytes_received {
-                    return Err(make_input_err!(
-                        "Received out of order data. Got {}, expected {}",
+                    return Err(make_err!(
+                        Code::Unavailable,
+                        "Received out of order data (write_offset {} but server has {}). \
+                         Partial upload state was lost; retry from committed offset.",
                         write_offset,
                         bytes_received
                     ));
