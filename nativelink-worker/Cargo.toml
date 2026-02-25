@@ -22,9 +22,9 @@ bytes = { version = "1.10.1", default-features = false }
 filetime = { version = "0.2.25", default-features = false }
 formatx = { version = "0.2.3", default-features = false }
 futures = { version = "0.3.31", default-features = false }
-opentelemetry = { version = "0.29.1", default-features = false }
+opentelemetry = { version = "0.31.0", default-features = false }
 parking_lot = { version = "0.12.3", default-features = false }
-prost = { version = "0.13.5", default-features = false }
+prost = { version = "0.14.3", default-features = false }
 relative-path = { version = "2.0.0", default-features = false, features = [
   "alloc",
   "std",
@@ -43,7 +43,7 @@ tokio = { version = "1.44.1", features = [
 tokio-stream = { version = "0.1.17", default-features = false, features = [
   "fs",
 ] }
-tonic = { version = "0.13.0", features = [
+tonic = { version = "0.14.5", features = [
   "gzip",
   "tls-ring",
   "transport",
@@ -61,7 +61,7 @@ hyper = { version = "1.6.0", default-features = false }
 pretty_assertions = { version = "1.4.1", features = [
   "std",
 ], default-features = false }
-prost-types = { version = "0.13.5", default-features = false }
+prost-types = { version = "0.14.3", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }

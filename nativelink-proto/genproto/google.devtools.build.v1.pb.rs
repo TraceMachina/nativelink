@@ -633,7 +633,7 @@ pub mod publish_build_event_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/google.devtools.build.v1.PublishBuildEvent/PublishLifecycleEvent",
             );
@@ -668,7 +668,7 @@ pub mod publish_build_event_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/google.devtools.build.v1.PublishBuildEvent/PublishBuildToolEventStream",
             );
@@ -857,7 +857,7 @@ pub mod publish_build_event_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = PublishLifecycleEventSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -912,7 +912,7 @@ pub mod publish_build_event_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = PublishBuildToolEventStreamSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,

@@ -14,6 +14,7 @@ version = "1.0.0-rc2"
 
 [profile.release]
 lto = true
+codegen-units = 1
 
 # Prefer this profile in CI, for instance via `cargo test --all --profile=smol`.
 # It reduces the size of the `target` directory from ~12GB to ~1GB.
@@ -65,13 +66,14 @@ rustls-pki-types = { version = "1.13.1", features = [
 tokio = { version = "1.44.1", features = [
   "fs",
   "io-util",
+  "parking_lot",
   "rt-multi-thread",
   "signal",
 ], default-features = false }
 tokio-rustls = { version = "0.26.2", default-features = false, features = [
   "ring",
 ] }
-tonic = { version = "0.13.0", features = [
+tonic = { version = "0.14.5", features = [
   "gzip",
   "tls-ring",
   "transport",
@@ -85,14 +87,14 @@ async-lock = ["std"]
 aws-sdk-s3 = ["rt-tokio"]
 aws-smithy-runtime = ["test-util"]
 # This causes blake3 to detect SIMD capabilities at runtime.
-blake3 = ["std"]
+blake3 = ["std", "rayon"]
 pretty_assertions = ["std"]
 redis-test = ["aio"]
 serial_test = ["async"]
-tokio = ["fs", "io-util", "rt-multi-thread", "signal"]
+tokio = ["fs", "io-util", "parking_lot", "rt-multi-thread", "signal"]
 tokio-stream = ["fs"]
 tonic = ["gzip", "tls", "transport", "zstd"]
-tonic-build = ["prost"]
+tonic-build = []
 uuid = ["serde", "v4"]
 
 [workspace.lints.rust]
