@@ -57,6 +57,12 @@ use tracing::{error, trace, warn};
 use uuid::Uuid;
 
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
+/// Maximum gRPC message decoding size. Must be larger than the biggest
+/// possible response (e.g. batch_read_blobs, get_tree, or a single
+/// ByteStream ReadResponse chunk). 256 MiB is generous while still
+/// providing an OOM safety net.
+const MAX_GRPC_DECODING_SIZE: usize = 256 * 1024 * 1024;
+
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
 #[derive(Debug, MetricsComponent)]
@@ -153,7 +159,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in find_missing_blobs")?;
             ContentAddressableStorageClient::new(channel)
-                .max_decoding_message_size(usize::MAX)
+                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                 .find_missing_blobs(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::find_missing_blobs")
@@ -179,7 +185,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in batch_update_blobs")?;
             ContentAddressableStorageClient::new(channel)
-                .max_decoding_message_size(usize::MAX)
+                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                 .batch_update_blobs(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::batch_update_blobs")
@@ -205,7 +211,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in batch_read_blobs")?;
             ContentAddressableStorageClient::new(channel)
-                .max_decoding_message_size(usize::MAX)
+                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                 .batch_read_blobs(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::batch_read_blobs")
@@ -231,7 +237,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in get_tree")?;
             ContentAddressableStorageClient::new(channel)
-                .max_decoding_message_size(usize::MAX)
+                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                 .get_tree(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::get_tree")
@@ -259,7 +265,7 @@ impl GrpcStore {
             .await
             .err_tip(|| "in read_internal")?;
         let mut response = ByteStreamClient::new(channel)
-            .max_decoding_message_size(usize::MAX)
+            .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
             .read(Request::new(request))
             .await
             .err_tip(|| "in GrpcStore::read")?
@@ -348,7 +354,7 @@ impl GrpcStore {
                         let local_state_for_rpc = local_state.clone();
                         async move {
                             let res = ByteStreamClient::new(channel)
-                                .max_decoding_message_size(usize::MAX)
+                                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                                 .write(WriteStateWrapper::new(local_state_for_rpc))
                                 .await
                                 .err_tip(|| "in GrpcStore::write");
@@ -458,7 +464,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in query_write_status")?;
             ByteStreamClient::new(channel)
-                .max_decoding_message_size(usize::MAX)
+                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                 .query_write_status(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::query_write_status")
@@ -479,7 +485,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in get_action_result")?;
             ActionCacheClient::new(channel)
-                .max_decoding_message_size(usize::MAX)
+                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                 .get_action_result(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::get_action_result")
@@ -500,7 +506,7 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in update_action_result")?;
             ActionCacheClient::new(channel)
-                .max_decoding_message_size(usize::MAX)
+                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                 .update_action_result(Request::new(request))
                 .await
                 .err_tip(|| "in GrpcStore::update_action_result")
