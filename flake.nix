@@ -156,7 +156,7 @@
 
         # Additional target for external dependencies to simplify caching.
         cargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
-        nightlyCargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
+        nightlyCargoArtifactsFor = p: (nightlyCraneLibFor p).buildDepsOnly (commonArgsFor p);
 
         nativelinkFor = p:
           (craneLibFor p).buildPackage ((commonArgsFor p)
