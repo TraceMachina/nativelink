@@ -39,7 +39,7 @@ use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use tonic::{Request, Response, Status};
-use tracing::{Instrument, Level, debug, error, error_span, info, instrument};
+use tracing::{Instrument, Level, debug, error, error_span, instrument};
 
 #[derive(Debug)]
 pub struct CasServer {
@@ -135,7 +135,7 @@ impl CasServer {
                     size_bytes,
                     request_data.len()
                 );
-                info!(
+                debug!(
                     %digest_info,
                     size_bytes,
                     "BatchUpdateBlobs: starting upload",
@@ -146,7 +146,7 @@ impl CasServer {
                     .err_tip(|| "Error writing to store");
                 match &result {
                     Ok(()) => {
-                        info!(
+                        debug!(
                             %digest_info,
                             size_bytes,
                             "BatchUpdateBlobs: upload succeeded",

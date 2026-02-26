@@ -1208,7 +1208,7 @@ impl ByteStream for ByteStreamServer {
         };
 
         let oneshot = use_oneshot;
-        info!(
+        debug!(
             %digest,
             expected_size,
             oneshot,
@@ -1245,7 +1245,7 @@ impl ByteStream for ByteStreamServer {
 
         match &result {
             Ok(_) => {
-                info!(
+                debug!(
                     %digest,
                     expected_size,
                     elapsed_ms = start_time.elapsed().as_millis() as u64,

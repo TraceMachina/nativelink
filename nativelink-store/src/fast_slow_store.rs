@@ -37,7 +37,7 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -491,7 +491,7 @@ impl StoreDriver for FastSlowStore {
                 "FastSlowStore::update: completed with error(s)",
             );
         } else {
-            info!(
+            debug!(
                 key = %key_debug,
                 elapsed_ms = total_elapsed.as_millis(),
                 total_bytes = bytes_sent,
@@ -624,7 +624,7 @@ impl StoreDriver for FastSlowStore {
                 Err(err) if err.code == Code::NotFound && writer.get_bytes_written() == 0 => {
                     // Item was evicted between has() and get_part().
                     // Only safe to fall through if no bytes were written yet.
-                    info!(
+                    debug!(
                         ?key,
                         "Fast store item evicted between has() and get_part(), falling through to slow store"
                     );

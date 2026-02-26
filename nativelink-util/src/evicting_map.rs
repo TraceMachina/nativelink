@@ -30,7 +30,7 @@ use nativelink_config::stores::EvictionPolicy;
 use nativelink_metric::MetricsComponent;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics_utils::{Counter, CounterWithTime};
@@ -414,7 +414,7 @@ where
                         if self.should_evict(lru_len, entry, 0, u64::MAX) {
                             *result = None;
                             if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
-                                info!(?key, "Item expired, evicting");
+                                debug!(?key, "Item expired, evicting");
                                 let (data, futures) =
                                     state.remove(key.borrow(), &eviction_item, false);
                                 // Store data for later unref - we can't drop state here as we're still iterating
