@@ -718,6 +718,20 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             }
         }
 
+        // Log orphaned completed actions (no active WaitExecution subscriber).
+        // These are typically from Bazel dynamic execution where the local leg
+        // won and the client dropped the remote stream.
+        if matches!(
+            new_awaited_action.state().stage,
+            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_)
+        ) && tx.receiver_count() == 0
+        {
+            debug!(
+                operation_id = ?new_awaited_action.operation_id(),
+                "Completed action has no subscribers (likely orphaned dynamic execution)",
+            );
+        }
+
         // Notify all listeners of the new state and ignore if no one is listening.
         // Note: Do not use `.send()` as it will not update the state if all listeners
         // are dropped.

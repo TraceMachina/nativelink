@@ -664,8 +664,11 @@ pub fn download_to_directory<'a>(
     current_directory: &'a str,
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
+        let phase_start = std::time::Instant::now();
+
         // Step 1: Resolve the full directory tree.
         let tree = resolve_directory_tree(cas_store, digest).await?;
+        let tree_resolve_ms = phase_start.elapsed().as_millis();
 
         // Step 2: Walk the tree, creating all directories and collecting files.
         let (files, symlinks) = collect_files_from_tree(&tree, digest, current_directory)?;
@@ -741,7 +744,9 @@ pub fn download_to_directory<'a>(
             .filter_map(|(digest, result)| if result.is_none() { Some(*digest) } else { None })
             .collect();
 
-        debug!(
+        let has_check_ms = phase_start.elapsed().as_millis();
+
+        info!(
             total_files = files.len(),
             unique_digests = unique_digests.len(),
             cached = cached_set.len(),
@@ -797,6 +802,8 @@ pub fn download_to_directory<'a>(
                 .await?;
         }
 
+        let fetch_ms = phase_start.elapsed().as_millis();
+
         // Step 5: Hardlink all files from the fast store to the work directory.
         // By this point, all non-zero digests have been populated into the fast
         // store (via cache hit, BatchReadBlobs, or ByteStream). Pass
@@ -823,6 +830,17 @@ pub fn download_to_directory<'a>(
         hardlink_futures
             .try_for_each(|()| futures::future::ready(Ok(())))
             .await?;
+
+        let total_ms = phase_start.elapsed().as_millis();
+        info!(
+            tree_resolve_ms,
+            has_check_ms = has_check_ms - tree_resolve_ms,
+            fetch_ms = fetch_ms - has_check_ms,
+            hardlink_ms = total_ms - fetch_ms,
+            total_ms,
+            num_files = unique_digests.len(),
+            "download_to_directory phase timing",
+        );
 
         Ok(())
     }
@@ -2006,6 +2024,25 @@ impl RunningActionImpl {
             let mut state = self.state.lock();
             execution_metadata.worker_completed_timestamp =
                 (self.running_actions_manager.callbacks.now_fn)();
+
+            // Log phase durations for every action so we can diagnose latency.
+            let duration_ms = |start: SystemTime, end: SystemTime| -> i64 {
+                end.duration_since(start)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or_else(|e| -(e.duration().as_millis() as i64))
+            };
+            let em = &execution_metadata;
+            info!(
+                operation_id = ?self.operation_id,
+                queue_ms = duration_ms(em.queued_timestamp, em.worker_start_timestamp),
+                input_fetch_ms = duration_ms(em.input_fetch_start_timestamp, em.input_fetch_completed_timestamp),
+                execution_ms = duration_ms(em.execution_start_timestamp, em.execution_completed_timestamp),
+                output_upload_ms = duration_ms(em.output_upload_start_timestamp, em.output_upload_completed_timestamp),
+                worker_overhead_ms = duration_ms(em.worker_start_timestamp, em.input_fetch_start_timestamp),
+                total_worker_ms = duration_ms(em.worker_start_timestamp, em.worker_completed_timestamp),
+                "Action phase timing",
+            );
+
             state.action_result = Some(ActionResult {
                 output_files,
                 output_folders,
