@@ -24,7 +24,7 @@ use tokio::fs;
 ///
 /// # Arguments
 /// * `src_dir` - Source directory path (must exist)
-/// * `dst_dir` - Destination directory path (will be created)
+/// * `dst_dir` - Destination directory path (will be created if it doesn't exist)
 ///
 /// # Returns
 /// * `Ok(())` on success
@@ -37,7 +37,6 @@ use tokio::fs;
 ///
 /// # Errors
 /// - Source directory doesn't exist
-/// - Destination already exists
 /// - Cross-filesystem hardlinking attempted
 /// - Filesystem doesn't support hardlinks
 /// - Permission denied
@@ -48,13 +47,7 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(
         src_dir.display()
     );
 
-    error_if!(
-        dst_dir.exists(),
-        "Destination directory already exists: {}",
-        dst_dir.display()
-    );
-
-    // Create the root destination directory
+    // Create the root destination directory (idempotent — ok if it already exists)
     fs::create_dir_all(dst_dir).await.err_tip(|| {
         format!(
             "Failed to create destination directory: {}",
@@ -370,14 +363,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hardlink_existing_destination() -> Result<(), Error> {
-        let (_temp_dir, src_dir) = create_test_directory().await?;
-        let dst_dir = _temp_dir.path().join("existing");
+    async fn test_hardlink_into_existing_destination() -> Result<(), Error> {
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        let dst_dir = temp_dir.path().join("existing");
 
+        // Pre-create the destination directory (simulates work_directory already existing)
         fs::create_dir(&dst_dir).await?;
 
-        let result = hardlink_directory_tree(&src_dir, &dst_dir).await;
-        assert!(result.is_err());
+        // Should succeed — hardlink contents into existing directory
+        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        // Verify structure
+        assert!(dst_dir.join("file1.txt").exists());
+        assert!(dst_dir.join("subdir").is_dir());
+        assert!(dst_dir.join("subdir/file2.txt").exists());
+
+        // Verify contents
+        let content1 = fs::read_to_string(dst_dir.join("file1.txt")).await?;
+        assert_eq!(content1, "Hello, World!");
 
         Ok(())
     }
