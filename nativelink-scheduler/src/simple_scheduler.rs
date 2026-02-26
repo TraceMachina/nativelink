@@ -579,6 +579,7 @@ impl SimpleScheduler {
                 spawn!("simple_scheduler_task_worker_matching", async move {
                     let mut last_match_successful = true;
                     let mut worker_match_logging_last: Option<Instant> = None;
+                    let mut last_stall_check: Option<Instant> = None;
                     // Break out of the loop only when the inner is dropped.
                     loop {
                         let task_change_fut = task_change_notify.notified();
@@ -676,6 +677,71 @@ impl SimpleScheduler {
 
                                     worker_match_logging_last.replace(now);
                                 }
+
+                                // Stall detection: every 30s, check for actions stuck
+                                // in Queued state for >60s. Only fires as an error when
+                                // no actions are executing (true deadlock). If workers are
+                                // busy executing, queued stalls are just capacity limits.
+                                let should_check_stalls = match last_stall_check {
+                                    None => true,
+                                    Some(when) => now.duration_since(when) >= Duration::from_secs(30),
+                                };
+                                if should_check_stalls {
+                                    last_stall_check = Some(now);
+                                    let stall_threshold = Duration::from_secs(60);
+                                    if let Ok(queued_stream) = scheduler
+                                        .matching_engine_state_manager
+                                        .filter_operations(OperationFilter {
+                                            stages: OperationStageFlags::Queued,
+                                            order_by_priority_direction: Some(OrderDirection::Desc),
+                                            ..Default::default()
+                                        })
+                                        .await
+                                    {
+                                        let queued_actions: Vec<_> = queued_stream.collect().await;
+                                        let mut stalled_count: usize = 0;
+                                        for action_state_result in &queued_actions {
+                                            if let Ok((state, _)) = action_state_result.as_state().await {
+                                                if let Ok(elapsed) = state.last_transition_timestamp.elapsed() {
+                                                    if elapsed > stall_threshold {
+                                                        stalled_count += 1;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if stalled_count > 0 {
+                                            // Check if workers are actively executing. If so,
+                                            // the queue backlog is just capacity pressure.
+                                            let executing_count = match scheduler
+                                                .matching_engine_state_manager
+                                                .filter_operations(OperationFilter {
+                                                    stages: OperationStageFlags::Executing,
+                                                    ..Default::default()
+                                                })
+                                                .await
+                                            {
+                                                Ok(s) => s.count().await,
+                                                Err(_) => 0,
+                                            };
+
+                                            if executing_count > 0 {
+                                                debug!(
+                                                    stalled_count,
+                                                    total_queued = queued_actions.len(),
+                                                    executing_count,
+                                                    "Actions waiting in queue >60s (workers at capacity)"
+                                                );
+                                            } else {
+                                                error!(
+                                                    stalled_count,
+                                                    total_queued = queued_actions.len(),
+                                                    "Actions stalled in Queued state >60s with NO executing actions (possible scheduling deadlock)"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+
                                 res
                             }
                             // If the inner went away it means the scheduler is shutting
