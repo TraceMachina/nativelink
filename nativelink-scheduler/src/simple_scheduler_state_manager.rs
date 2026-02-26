@@ -784,11 +784,13 @@ where
                 UpdateOperationType::UpdateWithError(err) => {
                     // Don't count a backpressure failure as an attempt for an action.
                     let due_to_backpressure = err.code == Code::ResourceExhausted;
+                    // Missing inputs can only be fixed by the client re-uploading.
+                    let missing_inputs = err.code == Code::FailedPrecondition;
                     if !due_to_backpressure {
                         awaited_action.attempts += 1;
                     }
 
-                    if awaited_action.attempts > self.max_job_retries {
+                    if missing_inputs || awaited_action.attempts > self.max_job_retries {
                         ActionStage::Completed(ActionResult {
                             execution_metadata: ExecutionMetadata {
                                 worker: maybe_worker_id.map_or_else(String::default, ToString::to_string),

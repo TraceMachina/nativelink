@@ -2455,3 +2455,119 @@ async fn logs_when_no_workers_match() -> Result<(), Error> {
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn worker_fails_precondition_completes_immediately_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            max_job_retries: 5,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    let operation_id = {
+        // Other tests check full data. We only care if we got StartAction.
+        let operation_id = match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(exec)) => exec.operation_id,
+            v => panic!("Expected StartAction, got : {v:?}"),
+        };
+        // Other tests check full data. We only care if client thinks we are Executing.
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Executing
+        );
+        OperationId::from(operation_id.as_str())
+    };
+
+    let err = make_err!(Code::FailedPrecondition, "Missing input blobs");
+    // Send FailedPrecondition error from worker. This should NOT be retried
+    // even though max_job_retries is 5.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(err.clone()),
+            )
+            .await,
+    );
+
+    {
+        // Client should get notification saying the action completed (not re-queued).
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+        let expected_action_state = ActionState {
+            // Name is a random string, so we ignore it and just make it the same.
+            client_operation_id: action_state.client_operation_id.clone(),
+            stage: ActionStage::Completed(ActionResult {
+                output_files: Vec::default(),
+                output_folders: Vec::default(),
+                output_file_symlinks: Vec::default(),
+                output_directory_symlinks: Vec::default(),
+                exit_code: INTERNAL_ERROR_EXIT_CODE,
+                stdout_digest: DigestInfo::zero_digest(),
+                stderr_digest: DigestInfo::zero_digest(),
+                execution_metadata: ExecutionMetadata {
+                    worker: worker_id.to_string(),
+                    queued_timestamp: SystemTime::UNIX_EPOCH,
+                    worker_start_timestamp: SystemTime::UNIX_EPOCH,
+                    worker_completed_timestamp: SystemTime::UNIX_EPOCH,
+                    input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
+                    input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
+                    execution_start_timestamp: SystemTime::UNIX_EPOCH,
+                    execution_completed_timestamp: SystemTime::UNIX_EPOCH,
+                    output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
+                    output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+                },
+                server_logs: HashMap::default(),
+                error: Some(err.clone()),
+                message: String::new(),
+            }),
+            action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
+        };
+        let mut received_state = action_state.as_ref().clone();
+        if let ActionStage::Completed(stage) = &mut received_state.stage {
+            if let Some(real_err) = &mut stage.error {
+                // Verify the error contains the FailedPrecondition message.
+                assert!(
+                    real_err.to_string().contains("Missing input blobs"),
+                    "{real_err} did not contain 'Missing input blobs'",
+                );
+                assert!(
+                    real_err
+                        .to_string()
+                        .contains("Job cancelled because it attempted to execute too many times"),
+                    "{real_err} did not contain 'Job cancelled because it attempted to execute too many times'",
+                );
+                *real_err = err;
+            }
+        } else {
+            panic!(
+                "Expected Completed (not re-queued), got : {:?}",
+                action_state.stage
+            );
+        }
+        assert_eq!(received_state, expected_action_state);
+    }
+
+    Ok(())
+}
