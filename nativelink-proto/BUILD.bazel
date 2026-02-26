@@ -119,14 +119,14 @@ genrule(
         for file in $(RULEDIR)/*.rs; do
             mv -- "$$file" "$${{file%.rs}}.pb.rs"
         done
-        '''.format(platform)
+        '''.format(platform)  # buildifier: disable=canonical-repository
         for platform in PLATFORM_NAMES
     }),
     tools = [
         ":gen_protos_tool",
     ] + select({
         platform: [
-            "@@toolchains_protoc++protoc+toolchains_protoc_hub.{}//:bin/protoc".format(platform),
+            "@@toolchains_protoc++protoc+toolchains_protoc_hub.{}//:bin/protoc".format(platform),  # buildifier: disable=canonical-repository
         ]
         for platform in PLATFORM_NAMES
     }),
