@@ -139,6 +139,8 @@ in {
     enable = true;
     packageOverrides.cargo = nightly-rust.cargo;
     packageOverrides.rustfmt = nightly-rust.rustfmt;
+    pass_filenames = true;
+    inherit excludes;
   };
 
   # Taplo fmt

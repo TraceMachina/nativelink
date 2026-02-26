@@ -465,6 +465,7 @@
               pkgs.pre-commit
               pkgs.git-cliff
               pkgs.buck2
+              packages.update-module-hashes
 
               # Rust
               bazel
