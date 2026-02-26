@@ -3,7 +3,7 @@
   writeShellScriptBin,
 }:
 writeShellScriptBin "is-executable-test" ''
-  set -xuo pipefail
+  set -uo pipefail
 
   nativelink_output="$(${nativelink}/bin/nativelink 2>&1)"
 
@@ -14,7 +14,8 @@ writeShellScriptBin "is-executable-test" ''
   Usage: nativelink <CONFIG_FILE>
 
   For more information, try '--help'.
-  EOF)
+  EOF
+  )
 
   if [ "$nativelink_output" = "$print_error_output" ]; then
     echo "The output of nativelink matches the print_error output."

@@ -150,12 +150,13 @@
           }
           // (pkgs.lib.optionalAttrs isLinuxTarget {
             CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+            TARGET_CC = "${pkgs.lre.clang}/bin/customClang";
             ${linkerEnvVar} = linkerPath;
           });
 
         # Additional target for external dependencies to simplify caching.
         cargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
-        nightlyCargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
+        nightlyCargoArtifactsFor = p: (nightlyCraneLibFor p).buildDepsOnly (commonArgsFor p);
 
         nativelinkFor = p:
           (craneLibFor p).buildPackage ((commonArgsFor p)
@@ -291,16 +292,7 @@
 
         nativelinkCoverageFor = p: let
           coverageArgs =
-            (commonArgsFor p)
-            // {
-              # TODO(palfrey): For some reason we're triggering an edgecase where
-              #                    mimalloc builds against glibc headers in coverage
-              #                    builds. This leads to nonexistend __memcpy_chk and
-              #                    __memset_chk symbols if fortification is enabled.
-              #                    Our regular builds also have this issue, but we
-              #                    should investigate further.
-              hardeningDisable = ["fortify"];
-            };
+            commonArgsFor p;
         in
           (nightlyCraneLibFor p).cargoLlvmCov (coverageArgs
             // {
@@ -381,7 +373,12 @@
             buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
               inherit nativelink buck2;
             };
-
+            update-module-hashes = pkgs.callPackage tools/updaters/rewrite-module.nix {
+              python-with-requests = pkgs.python3.withPackages (ps:
+                with ps; [
+                  ps.requests
+                ]);
+            };
             generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
             generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
           }
@@ -466,6 +463,7 @@
               pkgs.pre-commit
               pkgs.git-cliff
               pkgs.buck2
+              packages.update-module-hashes
 
               # Rust
               bazel
