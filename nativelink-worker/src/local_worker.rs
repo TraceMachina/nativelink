@@ -369,7 +369,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .err_tip(|| "Error while calling execution_response")?;
                                         },
                                         Err(e) => {
-                                            if e.code == Code::NotFound {
+                                            let is_cas_blob_missing = e.code == Code::NotFound
+                                                && e.message_string().contains("not found in either fast or slow store");
+                                            if is_cas_blob_missing {
                                                 warn!(
                                                     ?e,
                                                     "Missing CAS inputs during prepare_action, returning FAILED_PRECONDITION"
