@@ -149,7 +149,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection("find_missing_blobs".into())
+                .connection(format!("find_missing_blobs: {:?}", request.blob_digests))
                 .await
                 .err_tip(|| "in find_missing_blobs")?;
             ContentAddressableStorageClient::new(channel)
