@@ -136,7 +136,7 @@ impl ConnectionManager {
             .collect();
 
         if max_concurrent_requests == 0 {
-            max_concurrent_requests = usize::MAX;
+            max_concurrent_requests = 100;
         }
         if connections_per_endpoint == 0 {
             connections_per_endpoint = 1;
@@ -313,6 +313,7 @@ impl ConnectionManagerWorker {
             .then_some(())
             .and_then(|()| self.available_channels.pop_front())
         {
+            debug!(reason, "ConnectionManager: request running");
             self.provide_channel(channel, tx);
         } else {
             debug!(
