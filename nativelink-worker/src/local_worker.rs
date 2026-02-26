@@ -369,11 +369,32 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .err_tip(|| "Error while calling execution_response")?;
                                         },
                                         Err(e) => {
-                                            grpc_client.execution_response(ExecuteResult{
-                                                instance_name,
-                                                operation_id,
-                                                result: Some(execute_result::Result::InternalError(e.into())),
-                                            }).await.err_tip(|| "Error calling execution_response with error")?;
+                                            if e.code == Code::NotFound {
+                                                warn!(
+                                                    ?e,
+                                                    "Missing CAS inputs during prepare_action, returning FAILED_PRECONDITION"
+                                                );
+                                                let action_result = ActionResult {
+                                                    error: Some(make_err!(
+                                                        Code::FailedPrecondition,
+                                                        "{}",
+                                                        e.message_string()
+                                                    )),
+                                                    ..ActionResult::default()
+                                                };
+                                                let action_stage = ActionStage::Completed(action_result);
+                                                grpc_client.execution_response(ExecuteResult{
+                                                    instance_name,
+                                                    operation_id,
+                                                    result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
+                                                }).await.err_tip(|| "Error calling execution_response with missing inputs")?;
+                                            } else {
+                                                grpc_client.execution_response(ExecuteResult{
+                                                    instance_name,
+                                                    operation_id,
+                                                    result: Some(execute_result::Result::InternalError(e.into())),
+                                                }).await.err_tip(|| "Error calling execution_response with error")?;
+                                            }
                                         },
                                     }
                                     Ok(())
