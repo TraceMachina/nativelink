@@ -32,7 +32,7 @@ use nativelink_util::store_trait::{
     RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -206,6 +206,11 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             .err_tip(|| "In ExistenceCacheStore::update")?;
         if exists[0].is_some() {
             // Blob genuinely exists in the inner store. Safe to skip.
+            debug!(
+                ?digest,
+                size = exists[0].unwrap(),
+                "ExistenceCacheStore: skipping upload, blob verified in inner store"
+            );
             reader
                 .drain()
                 .await
@@ -279,6 +284,10 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 // has() calls go to the inner store and get an accurate
                 // result. Without this, CompletenessCheckingStore would
                 // keep returning stale AC entries whose CAS blobs are gone.
+                info!(
+                    ?digest,
+                    "Blob not found in inner store, removing stale existence cache entry"
+                );
                 self.existence_cache.remove(&digest).await;
             }
             Err(_) => {}
