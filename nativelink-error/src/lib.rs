@@ -56,6 +56,8 @@ pub struct Error {
     #[serde(with = "CodeDef")]
     pub code: Code,
     pub messages: Vec<String>,
+    #[serde(skip)]
+    pub details: Vec<prost_types::Any>,
 }
 
 impl MetricsComponent for Error {
@@ -71,7 +73,11 @@ impl MetricsComponent for Error {
 impl Error {
     #[must_use]
     pub const fn new_with_messages(code: Code, messages: Vec<String>) -> Self {
-        Self { code, messages }
+        Self {
+            code,
+            messages,
+            details: Vec::new(),
+        }
     }
 
     #[must_use]
@@ -142,7 +148,7 @@ impl From<Error> for nativelink_proto::google::rpc::Status {
         Self {
             code: val.code as i32,
             message: val.message_string(),
-            details: vec![],
+            details: val.details,
         }
     }
 }
@@ -152,6 +158,7 @@ impl From<nativelink_proto::google::rpc::Status> for Error {
         Self {
             code: val.code.into(),
             messages: vec![val.message],
+            details: val.details,
         }
     }
 }
@@ -165,6 +172,10 @@ impl core::fmt::Display for Error {
 
         if !self.messages.is_empty() {
             builder.field("messages", &self.messages);
+        }
+
+        if !self.details.is_empty() {
+            builder.field("details", &self.details);
         }
 
         builder.finish()
@@ -263,6 +274,7 @@ impl From<std::io::Error> for Error {
         Self {
             code: err.kind().into_code(),
             messages: vec![err.to_string()],
+            details: Vec::new(),
         }
     }
 }
@@ -434,6 +446,7 @@ impl<T> ResultExt<T> for Option<T> {
             let mut error = Error {
                 code: Code::Internal,
                 messages: vec![],
+                details: Vec::new(),
             };
             let (code, message) = tip_fn(&error);
             error.code = code;
@@ -514,4 +527,70 @@ pub enum CodeDef {
     Unauthenticated = 16,
     // NOTE: Additional codes must be added to stores.rs in ErrorCodes and also
     // in both match statements in retry.rs.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_to_rpc_status_preserves_details() {
+        let detail = prost_types::Any {
+            type_url: "type.googleapis.com/google.rpc.PreconditionFailure".into(),
+            value: vec![1, 2, 3], // Dummy bytes
+        };
+        let err = Error {
+            code: Code::FailedPrecondition,
+            messages: vec!["missing blob".into()],
+            details: vec![detail.clone()],
+        };
+        let status: nativelink_proto::google::rpc::Status = err.into();
+        assert_eq!(status.code, Code::FailedPrecondition as i32);
+        assert_eq!(status.details.len(), 1);
+        assert_eq!(status.details[0].type_url, detail.type_url);
+        assert_eq!(status.details[0].value, detail.value);
+    }
+
+    #[test]
+    fn rpc_status_to_error_preserves_details() {
+        let detail = prost_types::Any {
+            type_url: "type.googleapis.com/google.rpc.PreconditionFailure".into(),
+            value: vec![4, 5, 6],
+        };
+        let status = nativelink_proto::google::rpc::Status {
+            code: Code::FailedPrecondition as i32,
+            message: "test".into(),
+            details: vec![detail.clone()],
+        };
+        let err: Error = status.into();
+        assert_eq!(err.code, Code::FailedPrecondition);
+        assert_eq!(err.details.len(), 1);
+        assert_eq!(err.details[0].type_url, detail.type_url);
+        assert_eq!(err.details[0].value, detail.value);
+    }
+
+    #[test]
+    fn error_details_roundtrip_through_rpc_status() {
+        let detail = prost_types::Any {
+            type_url: "type.googleapis.com/google.rpc.PreconditionFailure".into(),
+            value: vec![10, 20, 30],
+        };
+        let original = Error {
+            code: Code::FailedPrecondition,
+            messages: vec!["missing".into()],
+            details: vec![detail],
+        };
+        let status: nativelink_proto::google::rpc::Status = original.clone().into();
+        let roundtripped: Error = status.into();
+        assert_eq!(roundtripped.code, original.code);
+        assert_eq!(roundtripped.details.len(), original.details.len());
+        assert_eq!(roundtripped.details[0].type_url, original.details[0].type_url);
+        assert_eq!(roundtripped.details[0].value, original.details[0].value);
+    }
+
+    #[test]
+    fn make_err_macro_has_empty_details() {
+        let err = make_err!(Code::Internal, "something failed");
+        assert!(err.details.is_empty());
+    }
 }
