@@ -370,6 +370,19 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .err_tip(|| "Error while calling execution_response")?;
                                         },
                                         Err(e) => {
+                                            let e = if e.code == Code::NotFound {
+                                                // Per REAPI spec, missing inputs should return
+                                                // FAILED_PRECONDITION so the client re-uploads.
+                                                let mut err = make_err!(
+                                                    Code::FailedPrecondition,
+                                                    "One or more input blobs missing: {}",
+                                                    e.message_string()
+                                                );
+                                                err.details = e.details;
+                                                err
+                                            } else {
+                                                e
+                                            };
                                             grpc_client.execution_response(ExecuteResult{
                                                 instance_name,
                                                 operation_id,

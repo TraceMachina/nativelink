@@ -32,13 +32,10 @@ use nativelink_worker::local_worker::LocalWorker;
 use nativelink_worker::worker_api_client_wrapper::WorkerApiClientTrait;
 use tokio::sync::{broadcast, mpsc};
 use tonic::Status;
-use tonic::{
-    Response,
-    Streaming,
-    codec::Codec, // Needed for .decoder().
-    codec::CompressionEncoding,
-    codec::ProstCodec,
-};
+use tonic::{Response, Streaming, codec::CompressionEncoding};
+use tonic_prost::ProstCodec;
+// Needed for .decoder().
+use tonic::codec::Codec;
 
 use super::mock_running_actions_manager::MockRunningActionsManager;
 
