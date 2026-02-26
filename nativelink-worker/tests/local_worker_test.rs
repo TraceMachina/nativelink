@@ -974,3 +974,110 @@ async fn preconditions_met_extra_envs() -> Result<(), Error> {
     assert!(logs_contain("test_value_for_demo_env"));
     Ok(())
 }
+
+#[nativelink_test]
+async fn worker_translates_not_found_to_failed_precondition_test() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    {
+        // Ensure our worker connects and properties were sent.
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(props, ConnectWorkerRequest::default());
+    }
+
+    let expected_worker_id = "foobar".to_string();
+
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    {
+        // First initialize our worker by sending the response to the connection request.
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let action_digest = DigestInfo::new([3u8; 32], 10);
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    };
+
+    {
+        // Send execution request.
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let running_action = Arc::new(MockRunningAction::new());
+
+    // Send and wait for response from create_and_add_action to RunningActionsManager.
+    test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(running_action.clone()))
+        .await;
+
+    // Make the action fail with a NotFound error during get_finished_result.
+    // This simulates a missing input blob scenario.
+    running_action
+        .simple_expect_get_finished_result(Err(make_err!(Code::NotFound, "Object not found")))
+        .await?;
+
+    // Now our client should be notified that our runner finished.
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
+
+    // The worker should have translated NotFound into FailedPrecondition per the REAPI spec.
+    let error_status = match execution_response.result {
+        Some(execute_result::Result::InternalError(status)) => status,
+        other => panic!(
+            "Expected InternalError result, got: {:?}",
+            other
+        ),
+    };
+
+    assert_eq!(
+        error_status.code,
+        Code::FailedPrecondition as i32,
+        "Expected NotFound to be translated to FailedPrecondition"
+    );
+    assert!(
+        error_status.message.contains("One or more input blobs missing"),
+        "Expected error message to contain 'One or more input blobs missing', got: {}",
+        error_status.message
+    );
+
+    Ok(())
+}

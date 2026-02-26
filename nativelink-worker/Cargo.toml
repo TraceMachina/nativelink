@@ -25,6 +25,7 @@ futures = { version = "0.3.31", default-features = false }
 opentelemetry = { version = "0.31.0", default-features = false }
 parking_lot = { version = "0.12.3", default-features = false }
 prost = { version = "0.14.3", default-features = false }
+prost-types = { version = "0.14.3", default-features = false }
 relative-path = { version = "2.0.0", default-features = false, features = [
   "alloc",
   "std",
@@ -61,7 +62,6 @@ hyper = { version = "1.6.0", default-features = false }
 pretty_assertions = { version = "1.4.1", features = [
   "std",
 ], default-features = false }
-prost-types = { version = "0.14.3", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
@@ -69,6 +69,7 @@ serial_test = { version = "3.2.0", features = [
   "async",
 ], default-features = false }
 tempfile = { version = "3.15.0", default-features = false }
+tonic-prost = { version = "0.14.5", default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",
 ] }

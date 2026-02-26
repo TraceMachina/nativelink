@@ -110,6 +110,36 @@ struct SideChannelInfo {
     failure: Option<SideChannelFailureReason>,
 }
 
+#[derive(prost::Message)]
+struct PreconditionFailure {
+    #[prost(message, repeated, tag = "1")]
+    violations: Vec<Violation>,
+}
+
+#[derive(prost::Message)]
+struct Violation {
+    #[prost(string, tag = "1")]
+    r#type: String,
+    #[prost(string, tag = "2")]
+    subject: String,
+    #[prost(string, tag = "3")]
+    description: String,
+}
+
+fn make_precondition_failure_any(digest: DigestInfo) -> prost_types::Any {
+    let failure = PreconditionFailure {
+        violations: vec![Violation {
+            r#type: "MISSING".into(),
+            subject: format!("blobs/{}/{}", digest.packed_hash(), digest.size_bytes()),
+            description: String::new(),
+        }],
+    };
+    prost_types::Any {
+        type_url: "type.googleapis.com/google.rpc.PreconditionFailure".into(),
+        value: failure.encode_to_vec(),
+    }
+}
+
 /// Aggressively download the digests of files and make a local folder from it. This function
 /// will spawn unbounded number of futures to try and get these downloaded. The store itself
 /// should be rate limited if spawning too many requests at once is an issue.
@@ -264,7 +294,13 @@ pub fn download_to_directory<'a>(
                     }
                     Ok(())
                 }
-                    .map_err(move |e| e.append(format!("for digest {digest}")))
+                    .map_err(move |e| {
+                        let mut e = e.append(format!("for digest {digest}"));
+                        if e.code == Code::NotFound {
+                            e.details.push(make_precondition_failure_any(digest));
+                        }
+                        e
+                    })
                     .boxed(),
             );
         }
