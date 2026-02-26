@@ -302,7 +302,7 @@
                 "--all"
                 "--locked"
                 "--features nix"
-                "--branch"
+                # "--branch" # FIXME(palfrey): because of https://github.com/llvm/llvm-project/issues/119558
                 "--ignore-filename-regex '.*(genproto|vendor-cargo-deps|crates).*'"
               ];
               cargoLlvmCovExtraArgs = "--html --output-dir $out";
