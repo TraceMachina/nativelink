@@ -147,10 +147,11 @@ impl RoutesExt for Routes {
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
-/// Server-side encoding (response) limit. Must be ≤ the smallest client's
-/// max inbound message size.  Bazel's Java gRPC client defaults to 4 MiB,
-/// so we cap at 4 MiB to avoid RESOURCE_EXHAUSTED on the client.
-const DEFAULT_MAX_ENCODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+/// Server-side encoding (response) limit.  Match the server decoding limit
+/// so that `batch_read_blobs` and similar RPCs are not artificially capped.
+/// Individual clients enforce their own inbound limit via
+/// `max_decoding_message_size`.
+const DEFAULT_MAX_ENCODING_MESSAGE_SIZE: usize = DEFAULT_MAX_DECODING_MESSAGE_SIZE;
 
 macro_rules! service_setup {
     ($v: tt, $http_config: tt) => {{
