@@ -344,7 +344,8 @@ impl ConnectionManagerWorker {
             && !self.available_channels.is_empty()
         {
             if let Some(channel) = self.available_channels.pop_front() {
-                if let Some((_reason, tx)) = self.waiting_connections.pop_front() {
+                if let Some((reason, tx)) = self.waiting_connections.pop_front() {
+                    debug!(reason, "ConnectionManager: channel available, running");
                     self.provide_channel(channel, tx);
                 } else {
                     // This should never happen, but better than an unwrap.
