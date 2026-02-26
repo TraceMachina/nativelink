@@ -400,11 +400,11 @@ impl LenEntry for FileEntryImpl {
                 "Failed to rename file",
             );
         } else {
-            debug!(
+            info!(
                 key = ?encoded_file_path.key,
                 ?from_path,
                 ?to_path,
-                "Renamed file (unref)",
+                "Evicted blob from filesystem cache (unref)",
             );
             encoded_file_path.path_type = PathType::Temp;
             encoded_file_path.key = new_key;
@@ -1079,10 +1079,11 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         let mut temp_file = entry.read_file_part(offset, read_limit).or_else(|err| async move {
             // If the file is not found, we need to remove it from the eviction map.
             if err.code == Code::NotFound {
-                error!(
+                warn!(
                     ?err,
                     key = ?owned_key,
-                    "Entry was in our map, but not found on disk. Removing from map as a precaution, but process probably need restarted."
+                    "Stale filesystem cache entry: file not found on disk. \
+                     Removed from map; upper store layer will re-fetch from remote."
                 );
                 self.evicting_map.remove(&owned_key).await;
             }

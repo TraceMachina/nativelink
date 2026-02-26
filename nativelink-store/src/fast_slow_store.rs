@@ -37,7 +37,7 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -191,6 +191,11 @@ impl FastSlowStore {
                     .await
                     .err_tip(|| "Failed to run has() on slow store")?
                     .ok_or_else(|| {
+                        warn!(
+                            %key,
+                            slow_store = %self.slow_store.inner_store(Some(key.borrow())).get_name(),
+                            "CAS read miss: blob not found in slow store"
+                        );
                         make_err!(
                             Code::NotFound,
                             "Object {} not found in either fast or slow store. \
@@ -479,15 +484,17 @@ impl StoreDriver for FastSlowStore {
             warn!(
                 key = %key_debug,
                 elapsed_ms = total_elapsed.as_millis(),
+                total_bytes = bytes_sent,
                 data_stream_ok = data_stream_res.is_ok(),
                 fast_store_ok = fast_res.is_ok(),
                 slow_store_ok = slow_res.is_ok(),
                 "FastSlowStore::update: completed with error(s)",
             );
         } else {
-            trace!(
+            info!(
                 key = %key_debug,
                 elapsed_ms = total_elapsed.as_millis(),
+                total_bytes = bytes_sent,
                 "FastSlowStore::update: completed successfully",
             );
         }
@@ -617,7 +624,7 @@ impl StoreDriver for FastSlowStore {
                 Err(err) if err.code == Code::NotFound && writer.get_bytes_written() == 0 => {
                     // Item was evicted between has() and get_part().
                     // Only safe to fall through if no bytes were written yet.
-                    debug!(
+                    info!(
                         ?key,
                         "Fast store item evicted between has() and get_part(), falling through to slow store"
                     );
