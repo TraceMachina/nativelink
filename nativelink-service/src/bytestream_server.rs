@@ -1207,6 +1207,14 @@ impl ByteStream for ByteStreamServer {
             false
         };
 
+        let oneshot = use_oneshot;
+        info!(
+            %digest,
+            expected_size,
+            oneshot,
+            "ByteStream::write: starting upload",
+        );
+
         let result = if use_oneshot {
             self.inner_write_oneshot(instance, digest, stream)
                 .instrument(error_span!("bytestream_write_oneshot"))
@@ -1237,6 +1245,13 @@ impl ByteStream for ByteStreamServer {
 
         match &result {
             Ok(_) => {
+                info!(
+                    %digest,
+                    expected_size,
+                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    oneshot,
+                    "ByteStream::write: upload succeeded",
+                );
                 instance
                     .metrics
                     .write_requests_success
@@ -1246,7 +1261,15 @@ impl ByteStream for ByteStreamServer {
                     .bytes_written_total
                     .fetch_add(expected_size, Ordering::Relaxed);
             }
-            Err(_) => {
+            Err(e) => {
+                error!(
+                    %digest,
+                    expected_size,
+                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    oneshot,
+                    ?e,
+                    "ByteStream::write: upload failed",
+                );
                 instance
                     .metrics
                     .write_requests_failure

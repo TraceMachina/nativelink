@@ -70,7 +70,6 @@ use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
-use relative_path::RelativePath;
 use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -508,13 +507,18 @@ async fn upload_symlink(
     // Detect if our symlink is inside our work directory, if it is find the
     // relative path otherwise use the absolute path.
     let target = if full_target_path.starts_with(full_work_directory_path.as_ref()) {
-        let full_target_path = RelativePath::from_path(&full_target_path)
-            .map_err(|v| make_err!(Code::Internal, "Could not convert {} to RelativePath", v))?;
-        RelativePath::from_path(full_work_directory_path.as_ref())
-            .map_err(|v| make_err!(Code::Internal, "Could not convert {} to RelativePath", v))?
-            .relative(full_target_path)
-            .normalize()
-            .into_string()
+        full_target_path
+            .strip_prefix(full_work_directory_path.as_ref())
+            .map_err(|e| make_err!(Code::Internal, "Could not strip work dir prefix: {}", e))?
+            .to_str()
+            .err_tip(|| {
+                make_err!(
+                    Code::Internal,
+                    "Could not convert '{:?}' to string",
+                    full_target_path
+                )
+            })?
+            .to_string()
     } else {
         full_target_path
             .to_str()

@@ -580,6 +580,7 @@ impl SimpleScheduler {
                     let mut last_match_successful = true;
                     let mut worker_match_logging_last: Option<Instant> = None;
                     let mut last_stall_check: Option<Instant> = None;
+                    let mut consecutive_match_errors: u32 = 0;
                     // Break out of the loop only when the inner is dropped.
                     loop {
                         let task_change_fut = task_change_notify.notified();
@@ -689,7 +690,7 @@ impl SimpleScheduler {
                                 if should_check_stalls {
                                     last_stall_check = Some(now);
                                     let stall_threshold = Duration::from_secs(60);
-                                    if let Ok(queued_stream) = scheduler
+                                    match scheduler
                                         .matching_engine_state_manager
                                         .filter_operations(OperationFilter {
                                             stages: OperationStageFlags::Queued,
@@ -698,51 +699,99 @@ impl SimpleScheduler {
                                         })
                                         .await
                                     {
-                                        let queued_actions: Vec<_> = queued_stream.collect().await;
-                                        let mut stalled_count: usize = 0;
-                                        for action_state_result in &queued_actions {
-                                            if let Ok((state, _)) = action_state_result.as_state().await {
-                                                if let Ok(elapsed) = state.last_transition_timestamp.elapsed() {
-                                                    if elapsed > stall_threshold {
-                                                        stalled_count += 1;
+                                        Ok(queued_stream) => {
+                                            let queued_actions: Vec<_> = queued_stream.collect().await;
+                                            let mut stalled_count: usize = 0;
+                                            let mut unmatchable_count: usize = 0;
+                                            let prop_manager = scheduler.worker_scheduler.get_platform_property_manager();
+                                            for action_state_result in &queued_actions {
+                                                if let Ok((state, _)) = action_state_result.as_state().await {
+                                                    if let Ok(elapsed) = state.last_transition_timestamp.elapsed() {
+                                                        if elapsed > stall_threshold {
+                                                            stalled_count += 1;
+                                                            // Check if any worker could ever match this action.
+                                                            match action_state_result.as_action_info().await {
+                                                                Ok((action_info, _)) => {
+                                                                    match prop_manager.make_platform_properties(
+                                                                        action_info.platform_properties.clone(),
+                                                                    ) {
+                                                                        Ok(props) => {
+                                                                            if !scheduler.worker_scheduler.has_matching_workers(&props).await {
+                                                                                error!(
+                                                                                    operation_id = %state.client_operation_id,
+                                                                                    action_digest = %state.action_digest,
+                                                                                    properties = ?action_info.platform_properties,
+                                                                                    "Action queued >60s with NO matching workers — \
+                                                                                     no registered worker can satisfy its platform requirements"
+                                                                                );
+                                                                                unmatchable_count += 1;
+                                                                            }
+                                                                        }
+                                                                        Err(e) => {
+                                                                            warn!(
+                                                                                operation_id = %state.client_operation_id,
+                                                                                ?e,
+                                                                                "Failed to parse platform properties for stalled action — cannot check matchability"
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!(
+                                                                        operation_id = %state.client_operation_id,
+                                                                        ?e,
+                                                                        "Failed to get action_info for stalled action — cannot check matchability"
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                        if stalled_count > 0 {
-                                            // Check if workers are actively executing. If so,
-                                            // the queue backlog is just capacity pressure.
-                                            let executing_count = match scheduler
-                                                .matching_engine_state_manager
-                                                .filter_operations(OperationFilter {
-                                                    stages: OperationStageFlags::Executing,
-                                                    ..Default::default()
-                                                })
-                                                .await
-                                            {
-                                                Ok(s) => s.count().await,
-                                                Err(e) => {
-                                                    // Query failed — assume workers are busy
-                                                    // rather than raising a false deadlock alarm.
-                                                    warn!(?e, "Failed to query executing actions for stall check");
-                                                    usize::MAX
-                                                }
-                                            };
+                                            let matchable_stalled = stalled_count - unmatchable_count;
+                                            if matchable_stalled > 0 {
+                                                // Check if workers are actively executing. If so,
+                                                // the queue backlog is just capacity pressure.
+                                                let executing_count = match scheduler
+                                                    .matching_engine_state_manager
+                                                    .filter_operations(OperationFilter {
+                                                        stages: OperationStageFlags::Executing,
+                                                        ..Default::default()
+                                                    })
+                                                    .await
+                                                {
+                                                    Ok(s) => s.count().await,
+                                                    Err(e) => {
+                                                        // Query failed — assume workers are busy
+                                                        // rather than raising a false deadlock alarm.
+                                                        warn!(?e, "Failed to query executing actions for stall check");
+                                                        usize::MAX
+                                                    }
+                                                };
 
-                                            if executing_count > 0 {
-                                                debug!(
-                                                    stalled_count,
-                                                    total_queued = queued_actions.len(),
-                                                    executing_count,
-                                                    "Actions waiting in queue >60s (workers at capacity)"
-                                                );
-                                            } else {
-                                                error!(
-                                                    stalled_count,
-                                                    total_queued = queued_actions.len(),
-                                                    "Actions stalled in Queued state >60s with NO executing actions (possible scheduling deadlock)"
-                                                );
+                                                if executing_count > 0 {
+                                                    warn!(
+                                                        stalled_count = matchable_stalled,
+                                                        total_queued = queued_actions.len(),
+                                                        executing_count,
+                                                        unmatchable_count,
+                                                        "Actions waiting in queue >60s (workers at capacity)"
+                                                    );
+                                                } else {
+                                                    error!(
+                                                        stalled_count = matchable_stalled,
+                                                        total_queued = queued_actions.len(),
+                                                        unmatchable_count,
+                                                        "Actions stalled in Queued state >60s with NO executing actions (possible scheduling deadlock)"
+                                                    );
+                                                }
                                             }
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                ?e,
+                                                "Failed to query queued actions for stall check — scheduler state may be corrupted"
+                                            );
                                         }
                                     }
                                 }
@@ -754,8 +803,21 @@ impl SimpleScheduler {
                             None => return,
                         };
                         last_match_successful = result.is_ok();
-                        if let Err(err) = result {
-                            error!(?err, "Error while running do_try_match");
+                        if let Err(err) = &result {
+                            consecutive_match_errors += 1;
+                            if consecutive_match_errors >= 10 {
+                                error!(
+                                    consecutive_match_errors,
+                                    ?err,
+                                    "do_try_match failing consecutively — \
+                                     possible scheduler data structure corruption. \
+                                     A server restart may be required to recover.",
+                                );
+                            } else {
+                                error!(?err, "Error while running do_try_match");
+                            }
+                        } else {
+                            consecutive_match_errors = 0;
                         }
 
                         on_matching_engine_run().await;
