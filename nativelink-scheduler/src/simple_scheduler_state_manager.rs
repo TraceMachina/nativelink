@@ -751,7 +751,35 @@ where
                         warn!(state = ?awaited_action.state(), "Action already assigned");
                         return Err(make_err!(Code::Aborted, "Action already assigned"));
                     }
-                    stage.clone()
+                    // Exit code 9 = SIGKILL, typically from the OOM killer.
+                    // Treat as a retryable infrastructure error rather than
+                    // a permanent action failure.
+                    if let ActionStage::Completed(result) = stage {
+                        if result.exit_code == 9 {
+                            awaited_action.attempts += 1;
+                            if awaited_action.attempts <= self.max_job_retries {
+                                warn!(
+                                    %operation_id,
+                                    attempts = awaited_action.attempts,
+                                    max_retries = self.max_job_retries,
+                                    "Action killed by SIGKILL (OOM?), re-queuing with max priority"
+                                );
+                                awaited_action.boost_priority();
+                                ActionStage::Queued
+                            } else {
+                                warn!(
+                                    %operation_id,
+                                    attempts = awaited_action.attempts,
+                                    "Action killed by SIGKILL (OOM?) and exceeded max retries"
+                                );
+                                stage.clone()
+                            }
+                        } else {
+                            stage.clone()
+                        }
+                    } else {
+                        stage.clone()
+                    }
                 }
                 UpdateOperationType::UpdateWithError(err) => {
                     // Don't count a backpressure failure as an attempt for an action.
