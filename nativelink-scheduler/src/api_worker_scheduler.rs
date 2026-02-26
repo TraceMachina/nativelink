@@ -36,7 +36,7 @@ use nativelink_util::shutdown_guard::ShutdownGuard;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedSender;
 use tonic::async_trait;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Metrics for tracking scheduler performance.
 #[derive(Debug, Default)]
@@ -270,7 +270,7 @@ impl ApiWorkerSchedulerImpl {
 
         if candidates.is_empty() {
             if full_worker_logging {
-                info!("No workers in capability index match required properties");
+                debug!("No workers in capability index match required properties");
             }
             return None;
         }
@@ -299,7 +299,7 @@ impl ApiWorkerSchedulerImpl {
             // Quarantined workers must not receive new actions.
             if w.quarantined_at.is_some() {
                 if full_worker_logging {
-                    info!(
+                    debug!(
                         "Worker {worker_id} is quarantined, skipping for new work"
                     );
                 }
@@ -308,7 +308,7 @@ impl ApiWorkerSchedulerImpl {
 
             if !w.can_accept_work() {
                 if full_worker_logging {
-                    info!(
+                    debug!(
                         "Worker {worker_id} cannot accept work: is_paused={}, is_draining={}, inflight={}/{}",
                         w.is_paused,
                         w.is_draining,
@@ -356,7 +356,7 @@ impl ApiWorkerSchedulerImpl {
         }
 
         if full_worker_logging && worker_id.is_none() {
-            warn!("No workers matched!");
+            debug!("No workers matched!");
         }
         worker_id
     }
