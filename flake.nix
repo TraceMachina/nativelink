@@ -373,7 +373,12 @@
             buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
               inherit nativelink buck2;
             };
-
+            update-module-hashes = pkgs.callPackage tools/updaters/rewrite-module.nix {
+              python-with-requests = pkgs.python3.withPackages (ps:
+                with ps; [
+                  ps.requests
+                ]);
+            };
             generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
             generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
           }
@@ -458,6 +463,7 @@
               pkgs.pre-commit
               pkgs.git-cliff
               pkgs.buck2
+              packages.update-module-hashes
 
               # Rust
               bazel
