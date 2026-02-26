@@ -15,9 +15,9 @@
 use std::collections::HashMap;
 
 use nativelink_error::{Error, ResultExt};
-use serde::{Deserialize, Serialize};
 #[cfg(feature = "dev-schema")]
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::schedulers::SchedulerSpec;
 use crate::serde_utils::{
@@ -36,6 +36,7 @@ pub type SchedulerRefName = String;
 pub type InstanceName = String;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct WithInstanceName<T> {
     #[serde(default)]
     pub instance_name: InstanceName,
@@ -52,6 +53,7 @@ impl<T> core::ops::Deref for WithInstanceName<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct NamedConfig<Spec> {
     pub name: String,
     #[serde(flatten)]
@@ -164,6 +166,7 @@ pub struct ExecutionConfig {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct FetchConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
@@ -173,6 +176,7 @@ pub struct FetchConfig {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct PushConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
@@ -186,7 +190,7 @@ pub struct PushConfig {
 }
 
 // From https://github.com/serde-rs/serde/issues/818#issuecomment-287438544
-fn default<T: Default + PartialEq>(t: &T) -> bool {
+fn is_default<T: Default + PartialEq>(t: &T) -> bool {
     *t == Default::default()
 }
 
@@ -206,7 +210,7 @@ pub struct ByteStreamConfig {
     #[serde(
         default,
         deserialize_with = "convert_data_size_with_shellexpand",
-        skip_serializing_if = "default"
+        skip_serializing_if = "is_default"
     )]
     pub max_bytes_per_stream: usize,
 
@@ -219,7 +223,7 @@ pub struct ByteStreamConfig {
     #[serde(
         default,
         deserialize_with = "convert_duration_with_shellexpand",
-        skip_serializing_if = "default"
+        skip_serializing_if = "is_default"
     )]
     pub persist_stream_on_disconnect_timeout: usize,
 }
@@ -234,19 +238,19 @@ pub struct OldByteStreamConfig {
     #[serde(
         default,
         deserialize_with = "convert_data_size_with_shellexpand",
-        skip_serializing_if = "default"
+        skip_serializing_if = "is_default"
     )]
     pub max_bytes_per_stream: usize,
     #[serde(
         default,
         deserialize_with = "convert_data_size_with_shellexpand",
-        skip_serializing_if = "default"
+        skip_serializing_if = "is_default"
     )]
     pub max_decoding_message_size: usize,
     #[serde(
         default,
         deserialize_with = "convert_duration_with_shellexpand",
-        skip_serializing_if = "default"
+        skip_serializing_if = "is_default"
     )]
     pub persist_stream_on_disconnect_timeout: usize,
 }
@@ -260,20 +264,7 @@ pub struct WorkerApiConfig {
     pub scheduler: SchedulerRefName,
 }
 
-#[derive(Deserialize, Debug, Default)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
-pub struct PrometheusConfig {
-    /// Path to register prometheus metrics. If path is "/metrics", and your
-    /// domain is "example.com", you can reach the endpoint with:
-    /// <http://example.com/metrics>.
-    ///
-    /// Default: "/metrics"
-    #[serde(default)]
-    pub path: String,
-}
-
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct AdminConfig {
@@ -866,6 +857,7 @@ pub struct LocalWorkerConfig {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct DirectoryCacheConfig {
     /// Maximum number of cached directories.
     /// Default: 1000

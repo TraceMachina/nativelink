@@ -24,8 +24,8 @@ use crate::serde_utils::{
 };
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
-#[allow(non_camel_case_types)]
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum SchedulerSpec {
     Simple(SimpleSpec),
@@ -239,6 +239,7 @@ pub struct PlatformPropertyAddition {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct PlatformPropertyReplacement {
     /// The name of the property to replace.
     pub name: String,
@@ -254,6 +255,7 @@ pub struct PlatformPropertyReplacement {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum PropertyModification {
     /// Add a property to the action properties.
     Add(PlatformPropertyAddition),
