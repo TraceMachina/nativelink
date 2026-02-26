@@ -638,6 +638,7 @@ pub struct FilesystemSpec {
 // NetApp ONTAP S3 Spec
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalOntapS3Spec {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub endpoint: String,
@@ -655,6 +656,7 @@ pub struct ExperimentalOntapS3Spec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct OntapS3ExistenceCacheSpec {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub index_path: String,
@@ -665,6 +667,7 @@ pub struct OntapS3ExistenceCacheSpec {
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum StoreDirection {
     /// The store operates normally and all get and put operations are
     /// handled by it.
@@ -915,6 +918,7 @@ pub struct EvictionPolicy {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "provider", rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum ExperimentalCloudObjectSpec {
     Aws(ExperimentalAwsSpec),
     Gcs(ExperimentalGcsSpec),
@@ -929,6 +933,7 @@ impl Default for ExperimentalCloudObjectSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalAwsSpec {
     /// S3 region. Usually us-east-1, us-west-2, af-south-1, exc...
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
@@ -945,6 +950,7 @@ pub struct ExperimentalAwsSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalGcsSpec {
     /// Bucket name to use as the backend.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
@@ -979,6 +985,7 @@ pub struct ExperimentalGcsSpec {
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CommonObjectSpec {
     /// If you wish to prefix the location in the bucket. If None, no prefix will be used.
     #[serde(default)]
@@ -1396,6 +1403,7 @@ pub struct Retry {
 /// Configuration for `ExperimentalMongoDB` store.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalMongoSpec {
     /// `ExperimentalMongoDB` connection string.
     /// Example: <mongodb://localhost:27017> or <mongodb+srv://cluster.mongodb.net>
