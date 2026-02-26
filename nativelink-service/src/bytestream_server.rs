@@ -402,6 +402,15 @@ impl ByteStreamServer {
         let max_bytes_per_stream = if config.max_bytes_per_stream == 0 {
             DEFAULT_MAX_BYTES_PER_STREAM
         } else {
+            if config.max_bytes_per_stream > 4 * 1024 * 1024 {
+                warn!(
+                    configured = config.max_bytes_per_stream,
+                    default = DEFAULT_MAX_BYTES_PER_STREAM,
+                    "max_bytes_per_stream exceeds 4 MiB; Bazel and other REAPI clients \
+                     typically have a 4 MiB gRPC inbound message limit and will reject \
+                     oversized ByteStream.Read chunks with RESOURCE_EXHAUSTED"
+                );
+            }
             config.max_bytes_per_stream
         };
 
