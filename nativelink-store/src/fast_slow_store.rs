@@ -191,7 +191,7 @@ impl FastSlowStore {
                     .await
                     .err_tip(|| "Failed to run has() on slow store")?
                     .ok_or_else(|| {
-                        warn!(
+                        debug!(
                             %key,
                             slow_store = %self.slow_store.inner_store(Some(key.borrow())).get_name(),
                             "CAS read miss: blob not found in slow store"

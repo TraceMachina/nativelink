@@ -1467,6 +1467,7 @@ async fn safe_small_safe_eviction() -> Result<(), Error> {
             messages: vec![format!(
                 "{VALID_HASH}-{bytes} not found in filesystem store here"
             )],
+            details: vec![],
         }),
         "Expected data to not exist in store, because eviction"
     );

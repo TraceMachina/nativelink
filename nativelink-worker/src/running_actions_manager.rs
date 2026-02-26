@@ -45,9 +45,9 @@ use nativelink_config::cas_server::{
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    Action, ActionResult as ProtoActionResult, Command as ProtoCommand,
-    Directory as ProtoDirectory, Directory, DirectoryNode, ExecuteResponse, FileNode, SymlinkNode,
-    Tree as ProtoTree, UpdateActionResultRequest,
+    Action, ActionResult as ProtoActionResult, BatchReadBlobsRequest, Command as ProtoCommand,
+    Directory as ProtoDirectory, Directory, DirectoryNode, ExecuteResponse, FileNode,
+    GetTreeRequest, SymlinkNode, Tree as ProtoTree, UpdateActionResultRequest,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     HistoricalExecuteResponse, StartExecute,
@@ -64,9 +64,10 @@ use nativelink_util::action_messages::{
     SymlinkInfo, to_execute_response,
 };
 use nativelink_util::common::{DigestInfo, fs};
-use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
@@ -77,6 +78,7 @@ use tokio::process;
 use tokio::sync::{Notify, oneshot, watch};
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReadDirStream;
+use opentelemetry::context::Context;
 use tonic::Request;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
@@ -140,16 +142,521 @@ fn make_precondition_failure_any(digest: DigestInfo) -> prost_types::Any {
     }
 }
 
-/// Aggressively download the digests of files and make a local folder from it. This function
-/// will spawn unbounded number of futures to try and get these downloaded. The store itself
-/// should be rate limited if spawning too many requests at once is an issue.
-/// We require the `FilesystemStore` to be the `fast` store of `FastSlowStore`. This is for
-/// efficiency reasons. We will request the `FastSlowStore` to populate the entry then we will
+/// Metadata about a file to be materialized from CAS to disk.
+struct FileToMaterialize {
+    digest: DigestInfo,
+    dest: String,
+    #[cfg(target_family = "unix")]
+    unix_mode: Option<u32>,
+    mtime: Option<prost_types::Timestamp>,
+}
+
+/// Maximum size for a blob to be eligible for BatchReadBlobs (1 MiB).
+/// Blobs larger than this use the existing ByteStream path.
+const BATCH_READ_MAX_BLOB_SIZE: u64 = 1024 * 1024;
+
+/// Maximum total payload per BatchReadBlobs request (4 MiB), per REAPI recommendation.
+const BATCH_READ_MAX_REQUEST_SIZE: u64 = 4 * 1024 * 1024;
+
+/// Resolve the full directory tree starting from `root_digest`.
+///
+/// Tries the `GetTree` RPC (single streaming call) if the slow store is a `GrpcStore`.
+/// Falls back to recursive `get_and_decode_digest` calls otherwise.
+///
+/// Returns a map from digest to Directory proto for every directory in the tree.
+async fn resolve_directory_tree(
+    cas_store: &FastSlowStore,
+    root_digest: &DigestInfo,
+) -> Result<HashMap<DigestInfo, ProtoDirectory>, Error> {
+    // Try the fast path: GetTree RPC via the underlying GrpcStore.
+    if let Some(grpc_store) = cas_store.slow_store().downcast_ref::<GrpcStore>(None) {
+        let request = GetTreeRequest {
+            instance_name: String::new(), // GrpcStore fills this in
+            root_digest: Some((*root_digest).into()),
+            page_size: 0, // server decides
+            page_token: String::new(),
+            digest_function: Context::current()
+                .get::<DigestHasherFunc>()
+                .map_or_else(default_digest_hasher_func, |v| *v)
+                .proto_digest_func()
+                .into(),
+        };
+
+        match grpc_store.get_tree(Request::new(request)).await {
+            Ok(response) => {
+                let mut stream = response.into_inner();
+                let mut tree = HashMap::new();
+                let hasher_func = Context::current()
+                    .get::<DigestHasherFunc>()
+                    .copied()
+                    .unwrap_or_else(default_digest_hasher_func);
+                while let Some(resp) = stream.message().await.err_tip(|| "In GetTree stream")? {
+                    for dir in resp.directories {
+                        let encoded = dir.encode_to_vec();
+                        let dir_digest =
+                            compute_buf_digest(&encoded, &mut hasher_func.hasher());
+                        tree.insert(dir_digest, dir);
+                    }
+                }
+                // Validate that the root and ALL referenced child digests
+                // are present in the map. Protobuf serialization is not
+                // guaranteed deterministic across implementations, so the
+                // recomputed digest may differ from the server's stored
+                // digest for non-nativelink servers.
+                let tree_valid = tree.contains_key(root_digest) && {
+                    tree.values().all(|dir| {
+                        dir.directories.iter().all(|node| {
+                            node.digest
+                                .as_ref()
+                                .and_then(|d| DigestInfo::try_from(d).ok())
+                                .is_some_and(|d| tree.contains_key(&d))
+                        })
+                    })
+                };
+                if tree_valid {
+                    debug!(
+                        root = ?root_digest,
+                        dir_count = tree.len(),
+                        "Resolved directory tree via GetTree RPC"
+                    );
+                    return Ok(tree);
+                }
+                // Server returned an incomplete or digest-mismatched tree; fall through.
+                warn!(
+                    root = ?root_digest,
+                    tree_has_root = tree.contains_key(root_digest),
+                    tree_size = tree.len(),
+                    "GetTree response failed validation, falling back to recursive fetch"
+                );
+            }
+            Err(e) => {
+                debug!(
+                    root = ?root_digest,
+                    err = ?e,
+                    "GetTree RPC failed, falling back to recursive fetch"
+                );
+            }
+        }
+    }
+
+    // Fallback: recursive fetch (original behavior).
+    let mut tree = HashMap::new();
+    resolve_directory_tree_recursive(cas_store, root_digest, &mut tree).await?;
+    Ok(tree)
+}
+
+/// Recursively fetch directories via individual `get_and_decode_digest` calls.
+fn resolve_directory_tree_recursive<'a>(
+    cas_store: &'a FastSlowStore,
+    digest: &'a DigestInfo,
+    tree: &'a mut HashMap<DigestInfo, ProtoDirectory>,
+) -> BoxFuture<'a, Result<(), Error>> {
+    async move {
+        if tree.contains_key(digest) {
+            return Ok(());
+        }
+        let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
+            .await
+            .err_tip(|| "Converting digest to Directory in recursive tree fetch")?;
+        let child_digests: Vec<DigestInfo> = directory
+            .directories
+            .iter()
+            .map(|d| {
+                d.digest
+                    .as_ref()
+                    .err_tip(|| "Expected Digest in DirectoryNode")?
+                    .try_into()
+                    .err_tip(|| "Parsing child directory digest in recursive tree fetch")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        tree.insert(*digest, directory);
+        for child in &child_digests {
+            resolve_directory_tree_recursive(cas_store, child, tree).await?;
+        }
+        Ok(())
+    }
+    .boxed()
+}
+
+/// Walk the resolved directory tree, creating all directories and collecting
+/// all files that need to be materialized. Returns the flat list of files.
+fn collect_files_from_tree(
+    tree: &HashMap<DigestInfo, ProtoDirectory>,
+    root_digest: &DigestInfo,
+    root_path: &str,
+) -> Result<(Vec<FileToMaterialize>, Vec<(String, String)>), Error> {
+    let mut files = Vec::new();
+    // (symlink_target, dest_path)
+    let mut symlinks: Vec<(String, String)> = Vec::new();
+    // BFS to create directories in order and collect files.
+    let mut queue = VecDeque::new();
+    queue.push_back((*root_digest, root_path.to_string()));
+
+    while let Some((dir_digest, dir_path)) = queue.pop_front() {
+        let directory = tree.get(&dir_digest).ok_or_else(|| {
+            make_err!(
+                Code::Internal,
+                "Directory {dir_digest:?} not found in resolved tree"
+            )
+        })?;
+
+        for file in &directory.files {
+            let digest: DigestInfo = file
+                .digest
+                .as_ref()
+                .err_tip(|| "Expected Digest in Directory::file::digest")?
+                .try_into()
+                .err_tip(|| "In Directory::file::digest")?;
+            let dest = format!("{}/{}", dir_path, file.name);
+
+            #[cfg(target_family = "unix")]
+            let unix_mode = {
+                let (_, mut mode) = match &file.node_properties {
+                    Some(properties) => (properties.mtime.clone(), properties.unix_mode),
+                    None => (None, None),
+                };
+                if file.is_executable {
+                    mode = Some(mode.unwrap_or(0o444) | 0o111);
+                }
+                mode
+            };
+
+            let mtime = file.node_properties.as_ref().and_then(|p| p.mtime.clone());
+
+            files.push(FileToMaterialize {
+                digest,
+                dest,
+                #[cfg(target_family = "unix")]
+                unix_mode,
+                mtime,
+            });
+        }
+
+        for subdir in &directory.directories {
+            let child_digest: DigestInfo = subdir
+                .digest
+                .as_ref()
+                .err_tip(|| "Expected Digest in Directory::directories::digest")?
+                .try_into()
+                .err_tip(|| "In Directory::directories::digest")?;
+            let child_path = format!("{}/{}", dir_path, subdir.name);
+            queue.push_back((child_digest, child_path));
+        }
+
+        #[cfg(target_family = "unix")]
+        for symlink_node in &directory.symlinks {
+            let dest = format!("{}/{}", dir_path, symlink_node.name);
+            symlinks.push((symlink_node.target.clone(), dest));
+        }
+    }
+
+    Ok((files, symlinks))
+}
+
+/// Maximum number of concurrent BatchReadBlobs RPCs in flight.
+const BATCH_READ_CONCURRENCY: usize = 8;
+
+/// Batch-download small blobs via `BatchReadBlobs` and write them into the fast store.
+/// Returns the set of digests that were successfully fetched.
+///
+/// Batches are sent concurrently (up to `BATCH_READ_CONCURRENCY`) to pipeline
+/// RPCs and hide per-batch round-trip latency.
+async fn batch_read_small_blobs(
+    cas_store: &FastSlowStore,
+    small_digests: &[DigestInfo],
+) -> Result<HashSet<DigestInfo>, Error> {
+    let grpc_store = match cas_store.slow_store().downcast_ref::<GrpcStore>(None) {
+        Some(store) => store,
+        None => return Ok(HashSet::new()), // Can't batch, caller will use populate_fast_store
+    };
+
+    // Partition digests into 4 MiB batches.
+    let mut batches: Vec<Vec<DigestInfo>> = Vec::new();
+    let mut current_batch: Vec<DigestInfo> = Vec::new();
+    let mut current_size: u64 = 0;
+
+    for &digest in small_digests {
+        let blob_size = digest.size_bytes();
+        if !current_batch.is_empty() && current_size + blob_size > BATCH_READ_MAX_REQUEST_SIZE {
+            batches.push(std::mem::take(&mut current_batch));
+            current_size = 0;
+        }
+        current_batch.push(digest);
+        current_size += blob_size;
+    }
+    if !current_batch.is_empty() {
+        batches.push(current_batch);
+    }
+
+    // Execute batches concurrently with bounded concurrency.
+    let fetched: HashSet<DigestInfo> = futures::stream::iter(batches)
+        .map(|batch| async move {
+            execute_batch_read(grpc_store, cas_store, &batch).await
+        })
+        .buffer_unordered(BATCH_READ_CONCURRENCY)
+        .try_fold(HashSet::new(), |mut acc, completed| async move {
+            acc.extend(completed);
+            Ok(acc)
+        })
+        .await?;
+
+    Ok(fetched)
+}
+
+/// Execute a single BatchReadBlobs request and write results to fast store.
+async fn execute_batch_read(
+    grpc_store: &GrpcStore,
+    cas_store: &FastSlowStore,
+    digests: &[DigestInfo],
+) -> Result<Vec<DigestInfo>, Error> {
+    let request = BatchReadBlobsRequest {
+        instance_name: String::new(), // GrpcStore fills this in
+        digests: digests.iter().map(|d| (*d).into()).collect(),
+        acceptable_compressors: vec![],
+        digest_function: Context::current()
+            .get::<DigestHasherFunc>()
+            .map_or_else(default_digest_hasher_func, |v| *v)
+            .proto_digest_func()
+            .into(),
+    };
+
+    let response = grpc_store
+        .batch_read_blobs(Request::new(request))
+        .await
+        .err_tip(|| "In execute_batch_read")?
+        .into_inner();
+
+    let mut completed = Vec::with_capacity(response.responses.len());
+    let fast_store = cas_store.fast_store();
+
+    for blob_resp in response.responses {
+        let status_code = blob_resp
+            .status
+            .as_ref()
+            .map_or(0, |s| s.code);
+        if status_code != 0 {
+            // Non-OK status for this blob — skip it, caller will fall back.
+            continue;
+        }
+        let Some(proto_digest) = blob_resp.digest else {
+            continue;
+        };
+        let digest = DigestInfo::try_from(proto_digest)
+            .err_tip(|| "Parsing digest from BatchReadBlobs response")?;
+        let data = Bytes::from(blob_resp.data);
+        let data_len = data.len() as u64;
+
+        // Write to fast store.
+        let (mut tx, rx) = make_buf_channel_pair();
+        let store_key: StoreKey<'_> = digest.into();
+        let update_fut = fast_store.update(
+            store_key,
+            rx,
+            UploadSizeInfo::ExactSize(data_len),
+        );
+        let send_fut = async {
+            tx.send(data).await.err_tip(|| "Sending batch blob to fast store")?;
+            tx.send_eof().err_tip(|| "Sending EOF for batch blob")?;
+            Ok::<_, Error>(())
+        };
+        let (update_res, send_res) = futures::join!(update_fut, send_fut);
+        update_res
+            .merge(send_res)
+            .err_tip(|| format!("Writing batch-read blob {digest:?} to fast store"))?;
+        completed.push(digest);
+    }
+
+    Ok(completed)
+}
+
+/// Populate the fast store for a single digest and hardlink it to `dest`.
+/// Contains the retry loop for cache eviction races.
+async fn populate_and_hardlink(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    digest: DigestInfo,
+    dest: &str,
+) -> Result<(), Error> {
+    if is_zero_digest(digest) {
+        cas_store.populate_fast_store(digest.into()).await?;
+        let mut file_slot = fs::create_file(dest).await?;
+        file_slot.write_all(&[]).await?;
+        return Ok(());
+    }
+
+    const MAX_RETRIES: u32 = 3;
+    let mut last_err = None;
+    for attempt in 0..MAX_RETRIES {
+        if attempt > 0 {
+            filesystem_store.remove_entry_for_digest(&digest).await;
+        }
+        cas_store.populate_fast_store(digest.into()).await?;
+
+        let result = async {
+            let file_entry = filesystem_store
+                .get_file_entry_for_digest(&digest)
+                .await
+                .err_tip(|| "Getting file entry for hardlink")?;
+            let dest_clone = dest.to_string();
+            file_entry
+                .get_file_path_locked(move |src| async move {
+                    let src_exists = Path::new(&src).exists();
+                    let result = fs::hard_link(&src, &dest_clone).await;
+                    if result.is_err() {
+                        warn!(
+                            src = %src.to_string_lossy(),
+                            src_exists = src_exists,
+                            dest = %dest_clone,
+                            "hard_link failed while holding read lock"
+                        );
+                    }
+                    result
+                })
+                .await
+        }
+        .await;
+
+        match result {
+            Ok(()) => {
+                last_err = None;
+                break;
+            }
+            Err(e) if e.code == Code::NotFound => {
+                warn!(
+                    attempt = attempt + 1,
+                    max_retries = MAX_RETRIES,
+                    ?digest,
+                    dest = %dest,
+                    err = ?e,
+                    "File evicted from cache during hardlink. Retrying."
+                );
+                last_err = Some(e);
+            }
+            Err(e) => {
+                return Err(make_err!(
+                    Code::Internal,
+                    "Could not make hardlink, {e:?} : {dest}"
+                ));
+            }
+        }
+    }
+    if let Some(e) = last_err {
+        return Err(make_err!(
+            Code::Internal,
+            "Could not make hardlink after {MAX_RETRIES} attempts, \
+            file was repeatedly evicted from cache. {e:?} : {dest}\n\
+            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+            To fix this issue:\n\
+            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+            3. The setting is typically found in your nativelink.json config under:\n\
+            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+            4. Restart NativeLink after making the change\n\n\
+            If this error persists after increasing max_bytes several times, please report at:\n\
+            https://github.com/TraceMachina/nativelink/issues\n\
+            Include your config file and both server and client logs to help us assist you."
+        ));
+    }
+    Ok(())
+}
+
+/// Hardlink a file from the filesystem store to the destination, then apply
+/// permissions and mtime.
+async fn hardlink_and_set_metadata(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    file: FileToMaterialize,
+    already_in_cache: bool,
+) -> Result<(), Error> {
+    let digest = file.digest;
+    let dest = file.dest;
+
+    if already_in_cache && !is_zero_digest(digest) {
+        // Already in fast store — just hardlink directly (with retry for eviction).
+        const MAX_RETRIES: u32 = 3;
+        let mut last_err = None;
+        for attempt in 0..MAX_RETRIES {
+            if attempt > 0 {
+                // Re-populate if evicted between cache check and hardlink.
+                filesystem_store.remove_entry_for_digest(&digest).await;
+                cas_store.populate_fast_store(digest.into()).await?;
+            }
+            let result = async {
+                let file_entry = filesystem_store
+                    .get_file_entry_for_digest(&digest)
+                    .await
+                    .err_tip(|| "Getting file entry for hardlink (cached)")?;
+                let dest_clone = dest.clone();
+                file_entry
+                    .get_file_path_locked(move |src| async move {
+                        fs::hard_link(&src, &dest_clone).await
+                    })
+                    .await
+            }
+            .await;
+            match result {
+                Ok(()) => {
+                    last_err = None;
+                    break;
+                }
+                Err(e) if e.code == Code::NotFound => {
+                    last_err = Some(e);
+                }
+                Err(e) => {
+                    return Err(make_err!(
+                        Code::Internal,
+                        "Could not make hardlink (cached), {e:?} : {dest}"
+                    ));
+                }
+            }
+        }
+        if let Some(_e) = last_err {
+            // Fall back to full populate+hardlink.
+            populate_and_hardlink(cas_store, filesystem_store, digest, &dest).await?;
+        }
+    } else {
+        populate_and_hardlink(cas_store, filesystem_store, digest, &dest).await?;
+    }
+
+    // Apply permissions.
+    #[cfg(target_family = "unix")]
+    if let Some(unix_mode) = file.unix_mode {
+        fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
+            .await
+            .err_tip(|| format!("Could not set unix mode in download_to_directory {dest}"))?;
+    }
+
+    // Apply mtime.
+    if let Some(mtime) = file.mtime {
+        let dest_owned = dest.clone();
+        spawn_blocking!("download_to_directory_set_mtime", move || {
+            set_file_mtime(
+                &dest_owned,
+                FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
+            )
+            .err_tip(|| format!("Failed to set mtime in download_to_directory {dest_owned}"))
+        })
+        .await
+        .err_tip(|| "Failed to launch spawn_blocking in download_to_directory")??;
+    }
+
+    Ok(())
+}
+
+/// Aggressively download the digests of files and make a local folder from it.
+///
+/// This optimized version:
+/// 1. Resolves the full directory tree via `GetTree` RPC (single streaming call)
+///    instead of issuing recursive individual `get_and_decode_digest` calls.
+/// 2. Batch-checks which blobs are already in the fast store via `has_with_results`
+///    (maps to `FindMissingBlobs` on GrpcStore), avoiding per-file existence RPCs.
+/// 3. Fetches small missing blobs (<1 MiB) via `BatchReadBlobs` in 4 MiB batches,
+///    with large blobs using the existing ByteStream path.
+///
+/// We require the `FilesystemStore` to be the `fast` store of `FastSlowStore`.
+/// We will request the `FastSlowStore` to populate the entry then we will
 /// assume the `FilesystemStore` has the file available immediately after and hardlink the file
 /// to a new location.
-// Sadly we cannot use `async fn` here because the rust compiler cannot determine the auto traits
-// of the future. So we need to force this function to return a dynamic future instead.
-// see: https://github.com/rust-lang/rust/issues/78649
 pub fn download_to_directory<'a>(
     cas_store: &'a FastSlowStore,
     filesystem_store: Pin<&'a FilesystemStore>,
@@ -157,198 +664,166 @@ pub fn download_to_directory<'a>(
     current_directory: &'a str,
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
-        let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
-            .await
-            .err_tip(|| "Converting digest to Directory")?;
-        let mut futures = FuturesUnordered::new();
+        // Step 1: Resolve the full directory tree.
+        let tree = resolve_directory_tree(cas_store, digest).await?;
 
-        for file in directory.files {
-            let digest: DigestInfo = file
-                .digest
-                .err_tip(|| "Expected Digest to exist in Directory::file::digest")?
-                .try_into()
-                .err_tip(|| "In Directory::file::digest")?;
-            let dest = format!("{}/{}", current_directory, file.name);
-            let (mtime, mut unix_mode) = match file.node_properties {
-                Some(properties) => (properties.mtime, properties.unix_mode),
-                None => (None, None),
-            };
-            #[cfg_attr(target_family = "windows", allow(unused_assignments))]
-            if file.is_executable {
-                unix_mode = Some(unix_mode.unwrap_or(0o444) | 0o111);
-            }
-            futures.push(
-                async move {
-                    if is_zero_digest(digest) {
-                        cas_store.populate_fast_store(digest.into()).await?;
-                        let mut file_slot = fs::create_file(&dest).await?;
-                        file_slot.write_all(&[]).await?;
-                    } else {
-                        // Retry loop: if the file is evicted between populate and
-                        // hardlink, re-populate from the slow store and try again.
-                        const MAX_RETRIES: u32 = 3;
-                        let mut last_err = None;
-                        for attempt in 0..MAX_RETRIES {
-                            if attempt > 0 {
-                                // Invalidate the stale evicting_map entry so
-                                // populate_fast_store's `has()` check won't
-                                // short-circuit and skip re-downloading.
-                                filesystem_store.remove_entry_for_digest(&digest).await;
-                            }
-                            cas_store.populate_fast_store(digest.into()).await?;
+        // Step 2: Walk the tree, creating all directories and collecting files.
+        let (files, symlinks) = collect_files_from_tree(&tree, digest, current_directory)?;
 
-                            // Both get_file_entry_for_digest (entry evicted from
-                            // map) and hard_link (file moved on disk) can fail with
-                            // NotFound under cache pressure.  Catch either as
-                            // retryable.
-                            let result = async {
-                                let file_entry = filesystem_store
-                                    .get_file_entry_for_digest(&digest)
-                                    .await
-                                    .err_tip(|| "Getting file entry for hardlink")?;
-                                let dest_clone = dest.clone();
-                                file_entry
-                                    .get_file_path_locked(move |src| async move {
-                                        let src_exists = Path::new(&src).exists();
-                                        let result = fs::hard_link(&src, &dest_clone).await;
-                                        if result.is_err() {
-                                            warn!(
-                                                src = %src.to_string_lossy(),
-                                                src_exists = src_exists,
-                                                dest = %dest_clone,
-                                                "hard_link failed while holding read lock"
-                                            );
-                                        }
-                                        result
-                                    })
-                                    .await
-                            }
-                            .await;
-
-                            match result {
-                                Ok(()) => {
-                                    last_err = None;
-                                    break;
-                                }
-                                Err(e) if e.code == Code::NotFound => {
-                                    warn!(
-                                        attempt = attempt + 1,
-                                        max_retries = MAX_RETRIES,
-                                        ?digest,
-                                        dest = %dest,
-                                        err = ?e,
-                                        "File evicted from cache during hardlink. Retrying."
-                                    );
-                                    last_err = Some(e);
-                                }
-                                Err(e) => {
-                                    return Err(make_err!(
-                                        Code::Internal,
-                                        "Could not make hardlink, {e:?} : {dest}"
-                                    ));
-                                }
-                            }
-                        }
-                        if let Some(e) = last_err {
-                            return Err(make_err!(
-                                Code::Internal,
-                                "Could not make hardlink after {MAX_RETRIES} attempts, \
-                                file was repeatedly evicted from cache. {e:?} : {dest}\n\
-                                This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
-                                To fix this issue:\n\
-                                1. Increase the 'max_bytes' value in your filesystem store configuration\n\
-                                2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
-                                3. The setting is typically found in your nativelink.json config under:\n\
-                                stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
-                                4. Restart NativeLink after making the change\n\n\
-                                If this error persists after increasing max_bytes several times, please report at:\n\
-                                https://github.com/TraceMachina/nativelink/issues\n\
-                                Include your config file and both server and client logs to help us assist you."
-                            ));
-                        }
-                    }
-                    #[cfg(target_family = "unix")]
-                    if let Some(unix_mode) = unix_mode {
-                        fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
+        // Create all subdirectories (BFS order ensures parents are created first).
+        {
+            let mut dir_queue = VecDeque::new();
+            dir_queue.push_back((*digest, current_directory.to_string()));
+            while let Some((dir_digest, dir_path)) = dir_queue.pop_front() {
+                if let Some(directory) = tree.get(&dir_digest) {
+                    for subdir in &directory.directories {
+                        let child_digest: DigestInfo = subdir
+                            .digest
+                            .as_ref()
+                            .err_tip(|| "Expected Digest")?
+                            .try_into()
+                            .err_tip(|| "In Directory::directories::digest")?;
+                        let child_path = format!("{}/{}", dir_path, subdir.name);
+                        fs::create_dir(&child_path)
                             .await
-                            .err_tip(|| {
-                                format!(
-                                    "Could not set unix mode in download_to_directory {dest}"
-                                )
-                            })?;
+                            .err_tip(|| format!("Could not create directory {child_path}"))?;
+                        dir_queue.push_back((child_digest, child_path));
                     }
-                    if let Some(mtime) = mtime {
-                        spawn_blocking!("download_to_directory_set_mtime", move || {
-                            set_file_mtime(
-                                &dest,
-                                FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
-                            )
-                            .err_tip(|| {
-                                format!("Failed to set mtime in download_to_directory {dest}")
-                            })
-                        })
-                        .await
-                        .err_tip(
-                            || "Failed to launch spawn_blocking in download_to_directory",
-                        )??;
-                    }
-                    Ok(())
                 }
-                    .map_err(move |e| {
-                        let mut e = e.append(format!("for digest {digest}"));
-                        if e.code == Code::NotFound {
-                            e.details.push(make_precondition_failure_any(digest));
-                        }
-                        e
-                    })
-                    .boxed(),
-            );
+            }
         }
 
-        for directory in directory.directories {
-            let digest: DigestInfo = directory
-                .digest
-                .err_tip(|| "Expected Digest to exist in Directory::directories::digest")?
-                .try_into()
-                .err_tip(|| "In Directory::file::digest")?;
-            let new_directory_path = format!("{}/{}", current_directory, directory.name);
-            futures.push(
-                async move {
-                    fs::create_dir(&new_directory_path)
-                        .await
-                        .err_tip(|| format!("Could not create directory {new_directory_path}"))?;
-                    download_to_directory(
-                        cas_store,
-                        filesystem_store,
-                        &digest,
-                        &new_directory_path,
-                    )
-                    .await
-                    .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
-                    Ok(())
-                }
-                .boxed(),
-            );
-        }
-
+        // Create symlinks.
         #[cfg(target_family = "unix")]
-        for symlink_node in directory.symlinks {
-            let dest = format!("{}/{}", current_directory, symlink_node.name);
-            futures.push(
-                async move {
-                    fs::symlink(&symlink_node.target, &dest).await.err_tip(|| {
-                        format!(
-                            "Could not create symlink {} -> {}",
-                            symlink_node.target, dest
-                        )
-                    })?;
-                    Ok(())
-                }
-                .boxed(),
-            );
+        for (target, dest) in &symlinks {
+            fs::symlink(target, dest)
+                .await
+                .err_tip(|| format!("Could not create symlink {target} -> {dest}"))?;
         }
 
-        while futures.try_next().await?.is_some() {}
+        if files.is_empty() {
+            return Ok(());
+        }
+
+        // Step 3: Batch-check which blobs are already in the fast store.
+        // Deduplicate digests first to avoid redundant checks.
+        let unique_digests: Vec<DigestInfo> = {
+            let mut seen = HashSet::with_capacity(files.len());
+            files
+                .iter()
+                .filter_map(|f| {
+                    if seen.insert(f.digest) {
+                        Some(f.digest)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        let store_keys: Vec<StoreKey<'_>> =
+            unique_digests.iter().map(|d| (*d).into()).collect();
+        let mut has_results = vec![None; store_keys.len()];
+        Pin::new(cas_store.fast_store())
+            .has_with_results(&store_keys, &mut has_results)
+            .await
+            .err_tip(|| "Batch has_with_results on fast store")?;
+
+        let cached_set: HashSet<DigestInfo> = unique_digests
+            .iter()
+            .zip(has_results.iter())
+            .filter_map(|(digest, result)| result.map(|_| *digest))
+            .collect();
+
+        let missing_digests: Vec<DigestInfo> = unique_digests
+            .iter()
+            .zip(has_results.iter())
+            .filter_map(|(digest, result)| if result.is_none() { Some(*digest) } else { None })
+            .collect();
+
+        debug!(
+            total_files = files.len(),
+            unique_digests = unique_digests.len(),
+            cached = cached_set.len(),
+            missing = missing_digests.len(),
+            "Batch existence check complete"
+        );
+
+        // Step 4: Fetch missing blobs.
+        // Partition into small (BatchReadBlobs-eligible) and large (ByteStream).
+        let mut small_missing = Vec::new();
+        let mut large_missing = Vec::new();
+        for &digest in &missing_digests {
+            if is_zero_digest(digest) {
+                // Zero digests are handled inline during materialization.
+                continue;
+            }
+            if digest.size_bytes() <= BATCH_READ_MAX_BLOB_SIZE {
+                small_missing.push(digest);
+            } else {
+                large_missing.push(digest);
+            }
+        }
+
+        // Fetch small blobs via BatchReadBlobs.
+        let batch_fetched = if !small_missing.is_empty() {
+            debug!(count = small_missing.len(), "Fetching small blobs via BatchReadBlobs");
+            batch_read_small_blobs(cas_store, &small_missing).await?
+        } else {
+            HashSet::new()
+        };
+
+        // Fetch large blobs + any small blobs that BatchReadBlobs didn't cover
+        // via the existing ByteStream populate_fast_store path.
+        let remaining: Vec<DigestInfo> = large_missing
+            .iter()
+            .chain(small_missing.iter().filter(|d| !batch_fetched.contains(d)))
+            .copied()
+            .collect();
+
+        if !remaining.is_empty() {
+            debug!(count = remaining.len(), "Fetching remaining blobs via ByteStream");
+            let populate_futures: FuturesUnordered<_> = remaining
+                .into_iter()
+                .map(|digest| async move {
+                    cas_store
+                        .populate_fast_store(digest.into())
+                        .await
+                        .err_tip(|| format!("Populating fast store for {digest:?}"))
+                })
+                .collect();
+            populate_futures
+                .try_for_each(|()| futures::future::ready(Ok(())))
+                .await?;
+        }
+
+        // Step 5: Hardlink all files from the fast store to the work directory.
+        // By this point, all non-zero digests have been populated into the fast
+        // store (via cache hit, BatchReadBlobs, or ByteStream). Pass
+        // already_in_cache=true so hardlink_and_set_metadata skips the redundant
+        // populate_fast_store call on the first attempt.
+        let hardlink_futures: FuturesUnordered<_> = files
+            .into_iter()
+            .map(|file| {
+                let in_cache = !is_zero_digest(file.digest);
+                async move {
+                    let digest = file.digest;
+                    hardlink_and_set_metadata(cas_store, filesystem_store, file, in_cache)
+                        .await
+                        .map_err(move |e| {
+                            let mut e = e.append(format!("for digest {digest}"));
+                            if e.code == Code::NotFound {
+                                e.details.push(make_precondition_failure_any(digest));
+                            }
+                            e
+                        })
+                }
+            })
+            .collect();
+        hardlink_futures
+            .try_for_each(|()| futures::future::ready(Ok(())))
+            .await?;
+
         Ok(())
     }
     .boxed()
@@ -442,7 +917,7 @@ async fn upload_file(
             // Only upload if the digest doesn't already exist, this should be
             // a much cheaper operation than an upload.
             let cas_store = cas_store.as_store_driver_pin();
-            let store_key: nativelink_util::store_trait::StoreKey<'_> = digest.into();
+            let store_key: StoreKey<'_> = digest.into();
             let has_start = std::time::Instant::now();
             if cas_store
                 .has(store_key.borrow())
