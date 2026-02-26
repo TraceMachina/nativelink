@@ -525,8 +525,17 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
         }
     }
 
-    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
-    let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
+    // Use a large value so the producer is still blocked mid-stream when we
+    // check the temp directory. With read_buffer_size=1 and channel capacity 64,
+    // the producer sends 1-byte chunks. It needs well over 64 bytes to ensure
+    // it can't finish before the test inspects temp_path. With a small value
+    // (e.g. 10 bytes), all chunks fit in the channel buffer, the get task
+    // completes immediately, and the background delete can race ahead of the
+    // temp directory inspection.
+    let large_value1: String = "abcdefghij".repeat(10); // 100 bytes
+    let large_value2: String = "ABCDEFGHIJ".repeat(10); // 100 bytes
+    let digest1 = DigestInfo::try_new(HASH1, large_value1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, large_value2.len())?;
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
 
@@ -546,23 +555,36 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
     );
 
     // Insert data into store.
-    store.update_oneshot(digest1, VALUE1.into()).await.unwrap();
+    store
+        .update_oneshot(digest1, large_value1.clone().into())
+        .await
+        .unwrap();
 
-    let mut reader = {
-        let (writer, reader) = make_buf_channel_pair();
-        let store_clone = store.clone();
-        background_spawn!(
-            "file_gets_cleans_up_on_cache_eviction_store_get",
-            async move { store_clone.get(digest1, writer).await.unwrap() },
+    let (writer, mut reader) = make_buf_channel_pair();
+    let store_clone = store.clone();
+    background_spawn!(
+        "file_gets_cleans_up_on_cache_eviction_store_get",
+        async move { store_clone.get(digest1, writer).await.unwrap() },
+    );
+
+    {
+        // Check to ensure our first byte has been received. The future should be stalled
+        // here because the large value exceeds the channel capacity with read_buffer_size=1.
+        let first_byte = reader
+            .consume(Some(1))
+            .await
+            .err_tip(|| "Error reading first byte")?;
+        assert_eq!(
+            first_byte[0],
+            large_value1.as_bytes()[0],
+            "Expected first byte to match"
         );
-        reader
-    };
-    // Ensure we have received 1 byte in our buffer. This will ensure we have a reference to
-    // our file open.
-    assert!(reader.peek().await.is_ok(), "Could not peek into reader");
+    }
 
     // Insert new content. This will evict the old item.
-    store.update_oneshot(digest2, VALUE2.into()).await?;
+    store
+        .update_oneshot(digest2, large_value2.into())
+        .await?;
 
     // Ensure we let any background tasks finish.
     tokio::task::yield_now().await;
@@ -581,7 +603,7 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
             let data = read_file_contents(path.as_os_str()).await?;
             assert_eq!(
                 &data[..],
-                VALUE1.as_bytes(),
+                large_value1.as_bytes(),
                 "Expected file content to match"
             );
         }
@@ -591,12 +613,16 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
         );
     }
 
-    let reader_data = reader
+    let remaining_file_data = reader
         .consume(Some(1024))
         .await
         .err_tip(|| "Error reading remaining bytes")?;
 
-    assert_eq!(&reader_data, VALUE1, "Expected file content to match");
+    assert_eq!(
+        &remaining_file_data,
+        &large_value1.as_bytes()[1..],
+        "Expected file content to match"
+    );
 
     loop {
         if DELETES_FINISHED.load(Ordering::Relaxed) == 1 {
