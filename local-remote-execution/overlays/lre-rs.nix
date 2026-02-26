@@ -56,9 +56,9 @@
       ${" "}           "bin/*.so",
       ${" "}           "lib/*.so",
       ${" "}           "lib/rustlib/${target}/codegen-backends/*.so",
-      ${" "}           "lib/rustlib/${target}/bin/rust-lld",
       ${" "}           "lib/rustlib/${target}/lib/*.so",
-      ${" "}       ], allow_empty = True),'';
+      ${" "}       ] + ["lib/rustlib/${target}/bin/rust-lld"],
+      ${" "}       allow_empty = True),'';
 
     # Generate stdlib select entry for a target
     mkStdlibSelectEntry = target:
