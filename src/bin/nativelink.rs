@@ -161,7 +161,6 @@ macro_rules! service_setup {
             $http_config.max_decoding_message_size
         };
         service = service.max_decoding_message_size(max_decoding_message_size);
-        service = service.max_encoding_message_size(DEFAULT_MAX_ENCODING_MESSAGE_SIZE);
         let send_algo = &$http_config.compression.send_compression_algorithm;
         if let Some(encoding) = into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None)) {
             service = service.send_compressed(encoding);
@@ -283,8 +282,15 @@ async fn inner_main(
                 services
                     .cas
                     .map_or(Ok(None), |cfg| {
-                        CasServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                        CasServer::new(&cfg, &store_manager).map(|v| {
+                            // CAS BatchReadBlobs can produce large responses;
+                            // cap encoding to 4 MiB to stay within Bazel's
+                            // client-side gRPC inbound limit.
+                            Some(
+                                service_setup!(v.into_service(), http_config)
+                                    .max_encoding_message_size(DEFAULT_MAX_ENCODING_MESSAGE_SIZE),
+                            )
+                        })
                     })
                     .err_tip(|| "Could not create CAS service")?,
             )

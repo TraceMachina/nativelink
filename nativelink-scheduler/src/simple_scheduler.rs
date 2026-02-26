@@ -721,7 +721,12 @@ impl SimpleScheduler {
                                                 .await
                                             {
                                                 Ok(s) => s.count().await,
-                                                Err(_) => 0,
+                                                Err(e) => {
+                                                    // Query failed — assume workers are busy
+                                                    // rather than raising a false deadlock alarm.
+                                                    warn!(?e, "Failed to query executing actions for stall check");
+                                                    usize::MAX
+                                                }
                                             };
 
                                             if executing_count > 0 {
