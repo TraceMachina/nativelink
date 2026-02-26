@@ -521,10 +521,17 @@ pub struct HttpListener {
     #[serde(default)]
     pub advanced_http: HttpServerConfig,
 
-    /// Maximum number of bytes to decode on each grpc stream chunk.
+    /// Maximum number of bytes to decode on each inbound gRPC message.
     /// Default: 4 MiB
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_decoding_message_size: usize,
+
+    /// Maximum number of bytes to encode on each outbound gRPC message.
+    /// Default: 4 MiB (matches Bazel's Java gRPC client inbound limit).
+    /// Workers with a higher `max_decoding_message_size` should use a
+    /// separate listener with this value raised accordingly.
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_encoding_message_size: usize,
 
     /// Tls Configuration for this server.
     /// If not set, the server will not use TLS.
