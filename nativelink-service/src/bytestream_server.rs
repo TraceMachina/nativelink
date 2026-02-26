@@ -62,7 +62,7 @@ use tracing::{Instrument, Level, debug, error, error_span, info, instrument, tra
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// If this value changes update the documentation in the config definition.
-const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024 * 1024;
+const DEFAULT_MAX_BYTES_PER_STREAM: usize = 3 * 1024 * 1024;
 
 /// Metrics for `ByteStream` server operations.
 /// Tracks upload/download activity, throughput, and latency.

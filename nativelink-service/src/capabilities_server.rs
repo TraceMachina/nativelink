@@ -33,7 +33,9 @@ use nativelink_util::operation_state_manager::ClientStateManager;
 use tonic::{Request, Response, Status};
 use tracing::{Level, instrument, warn};
 
-const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
+// Must leave headroom below Bazel's 4 MiB client-side gRPC inbound limit
+// so that BatchReadBlobs responses (blob data + protobuf framing) fit.
+const MAX_BATCH_TOTAL_SIZE: i64 = 3 * 1024 * 1024 + 512 * 1024; // 3.5 MiB
 
 #[derive(Debug, Default)]
 pub struct CapabilitiesServer {
