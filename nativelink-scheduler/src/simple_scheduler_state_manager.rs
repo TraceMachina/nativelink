@@ -676,7 +676,7 @@ where
                 // No action found. It is ok if the action was not found. It
                 // probably means that the action was dropped, but worker was
                 // still processing it.
-                warn!(
+                debug!(
                     %operation_id,
                     "Unable to update action due to it being missing, probably dropped"
                 );
