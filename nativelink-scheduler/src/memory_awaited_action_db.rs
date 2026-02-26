@@ -286,7 +286,7 @@ impl SortedAwaitedActions {
             operation_id: new_awaited_action.operation_id().clone(),
         });
 
-        let Some(sorted_awaited_action) = maybe_sorted_awaited_action else {
+        let Some(mut sorted_awaited_action) = maybe_sorted_awaited_action else {
             return Err(make_err!(
                 Code::Internal,
                 "sorted_action_info_hash_keys and action_info_hash_key_to_awaited_action are out of sync - {} - {:?}",
@@ -294,6 +294,13 @@ impl SortedAwaitedActions {
                 new_awaited_action,
             ));
         };
+
+        // Update sort_key to match the new awaited action. Without this,
+        // boost_priority() (used during SIGKILL retry) changes the sort_key
+        // on the AwaitedAction stored in the watch channel, but the BTree
+        // entry retains the old sort_key, causing all subsequent lookups to
+        // fail with "out of sync".
+        sorted_awaited_action.sort_key = new_awaited_action.sort_key();
 
         self.insert_sort_map_for_stage(&new_awaited_action.state().stage, &sorted_awaited_action)
             .err_tip(|| "In AwaitedActionDb::update_awaited_action")?;

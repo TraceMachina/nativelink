@@ -814,6 +814,17 @@ impl ApiWorkerScheduler {
         inner.inner_unreserve_worker(worker_id, operation_id);
     }
 
+    /// Returns true if any registered worker could match the given platform
+    /// properties (static check only — does not consider dynamic resource
+    /// availability like current cpu_count).
+    pub async fn has_matching_workers(&self, platform_properties: &PlatformProperties) -> bool {
+        let inner = self.inner.read().await;
+        !inner
+            .capability_index
+            .find_matching_workers(platform_properties, false)
+            .is_empty()
+    }
+
     /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
     #[must_use]
     pub async fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
