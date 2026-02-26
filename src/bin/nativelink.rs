@@ -147,11 +147,11 @@ impl RoutesExt for Routes {
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
-/// Server-side encoding (response) limit.  Match the server decoding limit
-/// so that `batch_read_blobs` and similar RPCs are not artificially capped.
-/// Individual clients enforce their own inbound limit via
-/// `max_decoding_message_size`.
-const DEFAULT_MAX_ENCODING_MESSAGE_SIZE: usize = DEFAULT_MAX_DECODING_MESSAGE_SIZE;
+/// Server-side encoding (response) limit.  Bazel's Java gRPC client defaults
+/// to 4 MiB max inbound message size, so we default to 4 MiB.  Workers that
+/// need larger responses should use a separate listener with a higher
+/// `max_encoding_message_size` in the config.
+const DEFAULT_MAX_ENCODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 macro_rules! service_setup {
     ($service: expr, $http_config: ident) => {{
@@ -162,6 +162,12 @@ macro_rules! service_setup {
             $http_config.max_decoding_message_size
         };
         service = service.max_decoding_message_size(max_decoding_message_size);
+        let max_encoding_message_size = if $http_config.max_encoding_message_size == 0 {
+            DEFAULT_MAX_ENCODING_MESSAGE_SIZE
+        } else {
+            $http_config.max_encoding_message_size
+        };
+        service = service.max_encoding_message_size(max_encoding_message_size);
         let send_algo = &$http_config.compression.send_compression_algorithm;
         if let Some(encoding) = into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None)) {
             service = service.send_compressed(encoding);
@@ -283,15 +289,8 @@ async fn inner_main(
                 services
                     .cas
                     .map_or(Ok(None), |cfg| {
-                        CasServer::new(&cfg, &store_manager).map(|v| {
-                            // CAS BatchReadBlobs can produce large responses;
-                            // cap encoding to 4 MiB to stay within Bazel's
-                            // client-side gRPC inbound limit.
-                            Some(
-                                service_setup!(v.into_service(), http_config)
-                                    .max_encoding_message_size(DEFAULT_MAX_ENCODING_MESSAGE_SIZE),
-                            )
-                        })
+                        CasServer::new(&cfg, &store_manager)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create CAS service")?,
             )
