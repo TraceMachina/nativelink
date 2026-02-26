@@ -163,6 +163,12 @@ impl AwaitedAction {
         self.sort_key
     }
 
+    /// Boost this action to maximum priority so it is scheduled next.
+    /// Used for retrying infrastructure failures (e.g. OOM/SIGKILL).
+    pub(crate) fn boost_priority(&mut self) {
+        self.sort_key = AwaitedActionSortKey::new(i32::MAX, 0);
+    }
+
     pub const fn state(&self) -> &Arc<ActionState> {
         &self.state
     }
