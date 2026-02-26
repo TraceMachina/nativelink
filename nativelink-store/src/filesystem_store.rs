@@ -399,7 +399,7 @@ impl LenEntry for FileEntryImpl {
                 "Failed to rename file",
             );
         } else {
-            info!(
+            debug!(
                 key = ?encoded_file_path.key,
                 ?from_path,
                 ?to_path,

@@ -32,7 +32,7 @@ use nativelink_util::store_trait::{
     RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -284,7 +284,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 // has() calls go to the inner store and get an accurate
                 // result. Without this, CompletenessCheckingStore would
                 // keep returning stale AC entries whose CAS blobs are gone.
-                info!(
+                debug!(
                     ?digest,
                     "Blob not found in inner store, removing stale existence cache entry"
                 );
