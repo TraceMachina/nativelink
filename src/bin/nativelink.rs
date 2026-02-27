@@ -565,7 +565,7 @@ async fn inner_main(
             usize::try_from(
                 http_config
                     .experimental_http2_max_send_buf_size
-                    .unwrap_or(256 * 1024),
+                    .unwrap_or(2 * 1024 * 1024),
             )
             .err_tip(|| "Could not convert http2_max_send_buf_size")?,
         );
