@@ -25,14 +25,13 @@ use std::ffi::OsString;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures::{Future, FutureExt, Stream, join, try_join};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tracing::warn;
 
 use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair};
@@ -81,11 +80,12 @@ pub enum UploadSizeInfo {
 pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
     store: Pin<&S>,
     digest: impl Into<StoreKey<'_>>,
-    file: &mut fs::FileSlot,
+    mut file: fs::FileSlot,
     upload_size: UploadSizeInfo,
-) -> Result<(), Error> {
-    file.rewind()
-        .await
+) -> Result<fs::FileSlot, Error> {
+    use std::io::Seek;
+    file.as_std_mut()
+        .seek(std::io::SeekFrom::Start(0))
         .err_tip(|| "Failed to rewind in upload_file_to_store")?;
     let (mut tx, rx) = make_buf_channel_pair();
 
@@ -93,25 +93,17 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
         .update(digest.into(), rx, upload_size)
         .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
     let read_data_fut = async move {
-        loop {
-            let mut buf = BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE);
-            let read = file
-                .read_buf(&mut buf)
-                .await
-                .err_tip(|| "Failed to read in upload_file_to_store")?;
-            if read == 0 {
-                break;
-            }
-            tx.send(buf.freeze())
-                .await
-                .err_tip(|| "Failed to send in upload_file_to_store")?;
-        }
+        let file = fs::read_file_to_channel(file, &mut tx, u64::MAX, fs::DEFAULT_READ_BUFF_SIZE)
+            .await
+            .err_tip(|| "Failed to read in upload_file_to_store")?;
         tx.send_eof()
-            .err_tip(|| "Could not send EOF to store in upload_file_to_store")
+            .err_tip(|| "Could not send EOF to store in upload_file_to_store")?;
+        Ok::<_, Error>(file)
     };
-    tokio::pin!(read_data_fut);
     let (update_res, read_res) = tokio::join!(update_fut, read_data_fut);
-    update_res.merge(read_res)
+    update_res?;
+    let file = read_res?;
+    Ok(file)
 }
 
 /// Optimizations that stores may want to expose to the callers.
@@ -661,7 +653,7 @@ pub trait StoreDriver:
         self: Pin<&Self>,
         key: StoreKey<'_>,
         path: OsString,
-        mut file: fs::FileSlot,
+        file: fs::FileSlot,
         upload_size: UploadSizeInfo,
     ) -> Result<Option<fs::FileSlot>, Error> {
         let inner_store = self.inner_store(Some(key.borrow()));
@@ -674,7 +666,7 @@ pub trait StoreDriver:
                 .update_with_whole_file(key, path, file, upload_size)
                 .await;
         }
-        slow_update_store_with_file(self, key, &mut file, upload_size).await?;
+        let file = slow_update_store_with_file(self, key, file, upload_size).await?;
         Ok(Some(file))
     }
 

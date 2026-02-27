@@ -587,10 +587,10 @@ impl StoreDriver for FastSlowStore {
             {
                 trace!("FastSlowStore::update_with_whole_file: uploading to slow_store");
                 let slow_start = std::time::Instant::now();
-                slow_update_store_with_file(
+                file = slow_update_store_with_file(
                     self.slow_store.as_store_driver_pin(),
                     key.borrow(),
-                    &mut file,
+                    file,
                     upload_size,
                 )
                 .await
@@ -622,10 +622,10 @@ impl StoreDriver for FastSlowStore {
                 || self.fast_direction == StoreDirection::ReadOnly
                 || self.fast_direction == StoreDirection::Get;
             if !ignore_fast {
-                slow_update_store_with_file(
+                file = slow_update_store_with_file(
                     self.fast_store.as_store_driver_pin(),
                     key.borrow(),
-                    &mut file,
+                    file,
                     upload_size,
                 )
                 .await
@@ -642,7 +642,7 @@ impl StoreDriver for FastSlowStore {
                 .await;
         }
 
-        slow_update_store_with_file(self, key, &mut file, upload_size)
+        let file = slow_update_store_with_file(self, key, file, upload_size)
             .await
             .err_tip(|| "In FastSlowStore::update_with_whole_file")?;
         Ok(Some(file))

@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime};
 
 use async_lock::RwLock;
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
@@ -38,7 +38,6 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::store_trait::{
     RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio::sync::Semaphore;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{debug, error, info, trace, warn};
@@ -209,8 +208,7 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     fn read_file_part(
         &self,
         offset: u64,
-        length: u64,
-    ) -> impl Future<Output = Result<Take<fs::FileSlot>, Error>> + Send;
+    ) -> impl Future<Output = Result<fs::FileSlot, Error>> + Send;
 
     /// This function is a safe way to extract the file name of the underlying file. To protect users from
     /// accidentally creating undefined behavior we encourage users to do the logic they need to do with
@@ -305,10 +303,9 @@ impl FileEntry for FileEntryImpl {
     fn read_file_part(
         &self,
         offset: u64,
-        length: u64,
-    ) -> impl Future<Output = Result<Take<fs::FileSlot>, Error>> + Send {
+    ) -> impl Future<Output = Result<fs::FileSlot, Error>> + Send {
         self.get_file_path_locked(move |full_content_path| async move {
-            let file = fs::open_file(&full_content_path, offset, length)
+            let file = fs::open_file(&full_content_path, offset)
                 .await
                 .err_tip(|| {
                     format!(
@@ -754,26 +751,13 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     async fn update_file(
         self: Pin<&Self>,
         mut entry: Fe,
-        mut temp_file: fs::FileSlot,
+        temp_file: fs::FileSlot,
         final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
-        let mut data_size = 0;
-        loop {
-            let mut data = reader
-                .recv()
-                .await
-                .err_tip(|| "Failed to receive data in filesystem store")?;
-            let data_len = data.len();
-            if data_len == 0 {
-                break; // EOF.
-            }
-            temp_file
-                .write_all_buf(&mut data)
-                .await
-                .err_tip(|| "Failed to write data into filesystem store")?;
-            data_size += data_len as u64;
-        }
+        let (data_size, temp_file) = fs::write_file_from_channel(temp_file, &mut reader)
+            .await
+            .err_tip(|| "Failed to write data into filesystem store")?;
 
         let _permit = if let Some(sem) = &self.write_semaphore {
             Some(
@@ -988,11 +972,22 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         .err_tip(|| "Failed to create temp file in filesystem store update_oneshot")?;
 
         // Write directly without channel overhead
+        let data_len = data.len() as u64;
         if !data.is_empty() {
-            temp_file
-                .write_all(&data)
-                .await
-                .err_tip(|| format!("Failed to write data to {}", temp_full_path.display()))?;
+            let temp_full_path_clone = temp_full_path.clone();
+            temp_file = nativelink_util::spawn_blocking!("fs_write_oneshot", move || {
+                use std::io::Write;
+                temp_file
+                    .as_std_mut()
+                    .write_all(&data)
+                    .map_err(|e| Into::<Error>::into(e))
+                    .err_tip(|| {
+                        format!("Failed to write data to {}", temp_full_path_clone.display())
+                    })?;
+                Ok::<_, Error>(temp_file)
+            })
+            .await
+            .map_err(|e| make_err!(Code::Internal, "write oneshot join failed: {e:?}"))??;
         }
 
         let _permit = if let Some(sem) = &self.write_semaphore {
@@ -1009,7 +1004,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
         drop(temp_file);
 
-        *entry.data_size_mut() = data.len() as u64;
+        *entry.data_size_mut() = data_len;
         self.emplace_file(key.into_owned(), Arc::new(entry)).await
     }
 
@@ -1023,9 +1018,8 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         let file_size = match upload_size {
             UploadSizeInfo::ExactSize(size) => size,
             UploadSizeInfo::MaxSize(_) => file
-                .as_ref()
+                .as_std()
                 .metadata()
-                .await
                 .err_tip(|| format!("While reading metadata for {}", path.display()))?
                 .len(),
         };
@@ -1077,7 +1071,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             )
         })?;
         let read_limit = length.unwrap_or(u64::MAX);
-        let mut temp_file = entry.read_file_part(offset, read_limit).or_else(|err| async move {
+        let temp_file = entry.read_file_part(offset).or_else(|err| async move {
             // If the file is not found, we need to remove it from the eviction map.
             if err.code == Code::NotFound {
                 warn!(
@@ -1093,31 +1087,15 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
         // Hint to the kernel that we'll read sequentially — enables more
         // aggressive readahead (typically 2-4x the default 128 KiB).
-        temp_file.get_ref().advise_sequential();
+        temp_file.advise_sequential();
 
-        // Allocate once and reuse: split() takes the written data while
-        // leaving the underlying allocation for reuse, avoiding per-iteration
-        // allocator pressure (~4,900 iterations/sec/stream at 256KiB reads).
-        let mut buf = BytesMut::with_capacity(self.read_buffer_size);
-        loop {
-            buf.reserve(self.read_buffer_size);
-            temp_file
-                .read_buf(&mut buf)
-                .await
-                .err_tip(|| "Failed to read data in filesystem store")?;
-            if buf.is_empty() {
-                break; // EOF.
-            }
-            let chunk = buf.split().freeze();
-            writer
-                .send(chunk)
-                .await
-                .err_tip(|| "Failed to send chunk in filesystem store get_part")?;
-        }
-        // NOTE: We intentionally do NOT call advise_dontneed() here.
+        // NOTE: We intentionally do NOT call advise_dontneed() after reading.
         // The same blobs are frequently read by multiple workers within
         // seconds of each other — keeping them in page cache avoids
         // redundant disk I/O (measured: 76% of read I/O is re-reads).
+        fs::read_file_to_channel(temp_file, writer, read_limit, self.read_buffer_size)
+            .await
+            .err_tip(|| "Failed to read data in filesystem store")?;
         writer
             .send_eof()
             .err_tip(|| "Filed to send EOF in filesystem store get_part")?;

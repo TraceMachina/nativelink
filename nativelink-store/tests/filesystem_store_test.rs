@@ -44,7 +44,6 @@ use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Take};
 use tokio::sync::{Barrier, Semaphore};
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
@@ -124,11 +123,11 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         self.inner.as_ref().unwrap().get_encoded_file_path()
     }
 
-    async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot>, Error> {
+    async fn read_file_part(&self, offset: u64) -> Result<fs::FileSlot, Error> {
         self.inner
             .as_ref()
             .unwrap()
-            .read_file_part(offset, length)
+            .read_file_part(offset)
             .await
     }
 
@@ -211,14 +210,7 @@ fn make_temp_path(data: &str) -> String {
 }
 
 async fn read_file_contents(file_name: &OsStr) -> Result<Vec<u8>, Error> {
-    let mut file = fs::open_file(file_name, 0, u64::MAX)
-        .await
-        .err_tip(|| format!("Failed to open file: {}", file_name.display()))?;
-    let mut data = vec![];
-    file.read_to_end(&mut data)
-        .await
-        .err_tip(|| "Error reading file to end")?;
-    Ok(data)
+    fs::read(Path::new(file_name)).await
 }
 
 async fn wait_for_no_open_files() -> Result<(), Error> {
@@ -655,9 +647,9 @@ async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error
     let file_entry = store.get_file_entry_for_digest(&digest).await?;
     {
         // The file contents should equal our initial data.
-        let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
+        let mut reader = file_entry.read_file_part(0).await?;
         let mut file_contents = String::new();
-        reader.read_to_string(&mut file_contents).await?;
+        std::io::Read::read_to_string(reader.as_std_mut(), &mut file_contents)?;
         assert_eq!(file_contents, VALUE1);
     }
 
@@ -666,9 +658,9 @@ async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error
 
     {
         // The file contents still equal our old data.
-        let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
+        let mut reader = file_entry.read_file_part(0).await?;
         let mut file_contents = String::new();
-        reader.read_to_string(&mut file_contents).await?;
+        std::io::Read::read_to_string(reader.as_std_mut(), &mut file_contents)?;
         assert_eq!(file_contents, VALUE1);
     }
 
@@ -759,11 +751,11 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
                 let dir_entry = dir_entry?;
                 {
                     // Some filesystems won't sync automatically, so force it.
-                    let file_handle = fs::open_file(dir_entry.path().into_os_string(), 0, u64::MAX)
+                    let file_handle = fs::open_file(dir_entry.path().into_os_string(), 0)
                         .await
                         .err_tip(|| "Failed to open temp file")?;
                     // We don't care if it fails, this is only best attempt.
-                    drop(file_handle.get_ref().as_ref().sync_all().await);
+                    drop(file_handle.as_std().sync_all());
                 }
                 // Ensure we have written to the file too. This ensures we have an open file handle.
                 // Failing to do this may result in the file existing, but the `update_fut` not actually
@@ -1019,7 +1011,7 @@ async fn update_whole_file_with_zero_digest() -> Result<(), Error> {
         let temp_file_path = Path::new(&temp_file_dir).join("zero-length-file");
         std::fs::write(&temp_file_path, b"")
             .err_tip(|| format!("Writing to {temp_file_path:?}"))?;
-        let file_slot = fs::open_file(&temp_file_path, 0, 0).await?.into_inner();
+        let file_slot = fs::open_file(&temp_file_path, 0).await?;
         store
             .update_with_whole_file(
                 digest,
@@ -1280,9 +1272,13 @@ async fn update_with_whole_file_closes_file() -> Result<(), Error> {
     let file_path = OsString::from(format!("{temp_path}/dummy_file"));
     let mut file = fs::create_file(&file_path).await?;
     {
-        file.write_all(value.as_bytes()).await?;
-        file.as_mut().sync_all().await?;
-        file.seek(tokio::io::SeekFrom::Start(0)).await?;
+        use std::io::{Seek, Write};
+        file.as_std_mut().write_all(value.as_bytes())
+            .err_tip(|| "Could not write to file")?;
+        file.as_std().sync_all()
+            .err_tip(|| "Could not sync file")?;
+        file.as_std_mut().seek(std::io::SeekFrom::Start(0))
+            .err_tip(|| "Could not seek file")?;
     }
 
     store
@@ -1324,7 +1320,8 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
     let file_path = OsString::from(format!("{temp_path}/dummy_file"));
     let original_inode = {
         let file = fs::create_file(&file_path).await?;
-        let original_inode = file.as_ref().metadata().await?.ino();
+        let original_inode = file.as_std().metadata()
+            .err_tip(|| "Could not get metadata")?.ino();
 
         let result = store
             .update_with_whole_file(

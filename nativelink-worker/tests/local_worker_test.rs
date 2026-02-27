@@ -58,7 +58,6 @@ use nativelink_worker::local_worker::preconditions_met;
 use pretty_assertions::assert_eq;
 use prost::Message;
 use rand::Rng;
-use tokio::io::AsyncWriteExt;
 use utils::local_worker_test_utils::{
     setup_grpc_stream, setup_local_worker, setup_local_worker_with_config,
 };
@@ -490,8 +489,10 @@ async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(
     fs::create_dir_all(format!("{}/{}", work_directory, "another_dir")).await?;
     let mut file =
         fs::create_file(OsString::from(format!("{}/{}", work_directory, "foo.txt"))).await?;
-    file.write_all(b"Hello, world!").await?;
-    file.as_mut().sync_all().await?;
+    std::io::Write::write_all(file.as_std_mut(), b"Hello, world!")
+        .map_err(|e| Into::<Error>::into(e))?;
+    file.as_std().sync_all()
+        .map_err(|e| Into::<Error>::into(e))?;
     drop(file);
     new_local_worker(
         Arc::new(LocalWorkerConfig {
