@@ -16,6 +16,7 @@ use core::net::SocketAddr;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
@@ -63,6 +64,7 @@ use nativelink_util::{background_spawn, fs, spawn};
 use nativelink_worker::local_worker::new_local_worker;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateRevocationListDer, PrivateKeyDer};
+use socket2::SockRef;
 use tokio::net::TcpListener;
 use tokio::select;
 #[cfg(target_family = "unix")]
@@ -589,6 +591,16 @@ async fn inner_main(
                                         "Failed to set TCP_NODELAY"
                                     );
                                 }
+                                // Enable TCP keepalive to detect dead connections.
+                                // Uses system defaults (tcp_keepalive_time/intvl/probes).
+                                let sock_ref = SockRef::from(&tcp_stream);
+                                if let Err(err) = sock_ref.set_keepalive(true) {
+                                    error!(
+                                        target: "nativelink::services",
+                                        ?err,
+                                        "Failed to set SO_KEEPALIVE"
+                                    );
+                                }
                                 info!(
                                     target: "nativelink::services",
                                     ?remote_addr,
@@ -744,6 +756,81 @@ fn get_config() -> Result<CasConfig, Error> {
     CasConfig::try_from_json5_file(&args.config_file)
 }
 
+/// Dump all thread stacks to a timestamped file for post-mortem analysis.
+/// Reads /proc/self/task/*/comm, status, wchan, and stack (if permitted).
+fn dump_thread_stacks() {
+    use std::fmt::Write as _;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let path = format!("/tmp/nativelink-stall-{timestamp}.txt");
+    let mut output = String::new();
+
+    let _ = writeln!(output, "=== RUNTIME STALL THREAD DUMP ===");
+    let _ = writeln!(output, "Timestamp: {timestamp}");
+    let _ = writeln!(output, "PID: {}", std::process::id());
+    let _ = writeln!(output);
+
+    let task_dir = "/proc/self/task";
+    let entries = match std::fs::read_dir(task_dir) {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!("Failed to read {task_dir}: {err}");
+            return;
+        }
+    };
+
+    let mut tids: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
+    tids.sort();
+
+    let _ = writeln!(output, "Thread count: {}", tids.len());
+    let _ = writeln!(output);
+
+    for tid in &tids {
+        let _ = writeln!(output, "--- TID {tid} ---");
+        let base = format!("{task_dir}/{tid}");
+
+        // Thread name
+        if let Ok(comm) = std::fs::read_to_string(format!("{base}/comm")) {
+            let _ = write!(output, "  comm: {comm}");
+        }
+        // Wait channel (kernel function the thread is sleeping in)
+        if let Ok(wchan) = std::fs::read_to_string(format!("{base}/wchan")) {
+            let _ = writeln!(output, "  wchan: {wchan}");
+        }
+        // Status (state, voluntary/involuntary context switches)
+        if let Ok(status) = std::fs::read_to_string(format!("{base}/status")) {
+            for line in status.lines() {
+                if line.starts_with("State:")
+                    || line.starts_with("voluntary_ctxt_switches:")
+                    || line.starts_with("nonvoluntary_ctxt_switches:")
+                {
+                    let _ = writeln!(output, "  {line}");
+                }
+            }
+        }
+        // Kernel stack (requires CAP_SYS_PTRACE or permissive ptrace_scope)
+        if let Ok(stack) = std::fs::read_to_string(format!("{base}/stack")) {
+            if !stack.trim().is_empty() {
+                let _ = writeln!(output, "  kernel stack:");
+                for line in stack.lines() {
+                    let _ = writeln!(output, "    {line}");
+                }
+            }
+        }
+        let _ = writeln!(output);
+    }
+
+    match std::fs::write(&path, &output) {
+        Ok(()) => eprintln!("Thread dump written to {path}"),
+        Err(err) => eprintln!("Failed to write thread dump to {path}: {err}"),
+    }
+}
+
 fn main() -> Result<(), Box<dyn core::error::Error>> {
     #[expect(clippy::disallowed_methods, reason = "starting main runtime")]
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -818,6 +905,57 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         warn!("Successfully shut down nativelink.",);
         std::process::exit(143);
     });
+
+    // Spawn a heartbeat task inside the tokio runtime and an external
+    // watchdog OS thread that detects when the runtime stalls.
+    let heartbeat_counter = Arc::new(AtomicU64::new(0));
+    let heartbeat_counter_task = heartbeat_counter.clone();
+    #[expect(clippy::disallowed_methods, reason = "runtime watchdog heartbeat")]
+    runtime.spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_millis(500));
+        loop {
+            ticker.tick().await;
+            heartbeat_counter_task.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    std::thread::Builder::new()
+        .name("runtime-watchdog".to_string())
+        .spawn(move || {
+            let stall_threshold = Duration::from_secs(2);
+            let check_interval = Duration::from_secs(1);
+            loop {
+                let before = heartbeat_counter.load(Ordering::Relaxed);
+                std::thread::sleep(check_interval);
+                let after = heartbeat_counter.load(Ordering::Relaxed);
+                if before == after {
+                    let stall_start = std::time::Instant::now();
+                    let mut stall_logged = false;
+                    // Confirmed stall — wait until it resolves to measure duration.
+                    loop {
+                        std::thread::sleep(Duration::from_millis(100));
+                        let now = heartbeat_counter.load(Ordering::Relaxed);
+                        if now != after {
+                            let stall_duration = stall_start.elapsed();
+                            eprintln!(
+                                "RUNTIME STALL RESOLVED: tokio runtime was unresponsive for {:.1}s (heartbeat stuck at {after})",
+                                stall_duration.as_secs_f64() + check_interval.as_secs_f64(),
+                            );
+                            break;
+                        }
+                        if !stall_logged && stall_start.elapsed() > stall_threshold {
+                            stall_logged = true;
+                            let total = stall_threshold.as_secs_f64()
+                                + check_interval.as_secs_f64();
+                            eprintln!(
+                                "RUNTIME STALL IN PROGRESS: tokio runtime unresponsive for >{total:.1}s (heartbeat stuck at {after})",
+                            );
+                            dump_thread_stacks();
+                        }
+                    }
+                }
+            }
+        })
+        .expect("Failed to spawn runtime watchdog thread");
 
     #[expect(clippy::disallowed_methods, reason = "waiting on everything to finish")]
     runtime
