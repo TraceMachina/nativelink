@@ -234,19 +234,31 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
+        // Check the inner store directly, bypassing the existence cache.
+        // The existence cache may have a stale positive for a blob that was
+        // evicted from the inner store (the async eviction callback may not
+        // have fired yet). Trusting the cache here would skip the upload,
+        // causing Bazel's "Lost inputs no longer available remotely" error.
         let mut exists = [None];
-        self.inner_has_with_results(&[digest], &mut exists)
+        self.inner_store
+            .has_with_results(&[digest.into()], &mut exists)
             .await
             .err_tip(|| "In ExistenceCacheStore::update")?;
         if exists[0].is_some() {
-            // We need to drain the reader to avoid the writer complaining that we dropped
-            // the connection prematurely.
+            // Blob genuinely exists in the inner store — safe to skip.
             reader
                 .drain()
                 .await
                 .err_tip(|| "In ExistenceCacheStore::update")?;
+            // Refresh the existence cache since we verified it exists.
+            let _ = self
+                .existence_cache
+                .insert(digest, ExistenceItem(exists[0].unwrap()))
+                .await;
             return Ok(());
         }
+        // If the existence cache had a stale entry, remove it now.
+        self.existence_cache.remove(&digest).await;
         {
             let mut locked_callbacks = self.pause_remove_callbacks.lock();
             if locked_callbacks.is_none() {
@@ -257,12 +269,16 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         let result = self.inner_store.update(digest, reader, size_info).await;
         if result.is_ok() {
             trace!(?digest, "Inserting into existence cache");
-            if let UploadSizeInfo::ExactSize(size) = size_info {
-                let _ = self
-                    .existence_cache
-                    .insert(digest, ExistenceItem(size))
-                    .await;
-            }
+            // Cache on both ExactSize and MaxSize — the digest carries the
+            // authoritative size for content-addressed blobs.
+            let size = match size_info {
+                UploadSizeInfo::ExactSize(size) => size,
+                UploadSizeInfo::MaxSize(_) => digest.size_bytes(),
+            };
+            let _ = self
+                .existence_cache
+                .insert(digest, ExistenceItem(size))
+                .await;
         }
         {
             let maybe_keys = self.pause_remove_callbacks.lock().take();
@@ -289,11 +305,20 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             .inner_store
             .get_part(digest, writer, offset, length)
             .await;
-        if result.is_ok() {
-            let _ = self
-                .existence_cache
-                .insert(digest, ExistenceItem(digest.size_bytes()))
-                .await;
+        match &result {
+            Ok(()) => {
+                let _ = self
+                    .existence_cache
+                    .insert(digest, ExistenceItem(digest.size_bytes()))
+                    .await;
+            }
+            Err(err) if err.code == nativelink_error::Code::NotFound => {
+                // Blob was evicted from the inner store — remove the stale
+                // existence cache entry so subsequent has() calls get an
+                // accurate result.
+                self.existence_cache.remove(&digest).await;
+            }
+            Err(_) => {}
         }
         result
     }
