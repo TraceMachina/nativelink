@@ -787,7 +787,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
         drop(_permit);
 
-        temp_file.advise_dontneed();
         trace!(?temp_file, "Dropping file to update_file");
         drop(temp_file);
 
@@ -1008,7 +1007,6 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
         drop(_permit);
 
-        temp_file.advise_dontneed();
         drop(temp_file);
 
         *entry.data_size_mut() = data.len() as u64;
@@ -1047,7 +1045,6 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // We are done with the file, if we hold a reference to the file here, it could
         // result in a deadlock if `emplace_file()` also needs file descriptors.
         trace!(?file, "Dropping file to to update_with_whole_file");
-        file.advise_dontneed();
         drop(file);
         self.emplace_file(key.into_owned(), Arc::new(entry))
             .await
