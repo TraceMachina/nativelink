@@ -2154,13 +2154,13 @@ impl RunningAction for RunningActionImpl {
             .upload_results
             .wrap(Self::inner_upload_results(self));
 
-        let stall_warned = std::sync::atomic::AtomicBool::new(false);
+        let stall_warned = AtomicBool::new(false);
         let stall_warn_fut = async {
             let mut elapsed_secs = 0u64;
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 elapsed_secs += 60;
-                stall_warned.store(true, std::sync::atomic::Ordering::Relaxed);
+                stall_warned.store(true, Ordering::Relaxed);
                 warn!(
                     ?operation_id,
                     elapsed_s = elapsed_secs,
@@ -2170,7 +2170,7 @@ impl RunningAction for RunningActionImpl {
             }
         };
 
-        let upload_start = tokio::time::Instant::now();
+        let upload_start = Instant::now();
         let res = tokio::time::timeout(upload_timeout, async {
             tokio::pin!(upload_fut);
             tokio::pin!(stall_warn_fut);
@@ -2189,7 +2189,7 @@ impl RunningAction for RunningActionImpl {
             )
         })?;
         match &res {
-            Ok(_) if stall_warned.load(std::sync::atomic::Ordering::Relaxed) => {
+            Ok(_) if stall_warned.load(Ordering::Relaxed) => {
                 info!(
                     ?operation_id,
                     elapsed_s = upload_start.elapsed().as_secs(),

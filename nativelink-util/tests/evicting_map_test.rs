@@ -592,7 +592,7 @@ async fn range_multiple_items_test() -> Result<(), Error> {
         evicting_map.range(range, |k, v: &BytesWrapper| {
             found_values.push((k.clone(), v.0.clone()));
             true
-        });
+        }).await;
         found_values
     }
 

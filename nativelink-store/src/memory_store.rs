@@ -81,8 +81,8 @@ impl MemoryStore {
 
     /// Returns the number of key-value pairs that are currently in the the cache.
     /// Function is not for production code paths.
-    pub fn len_for_test(&self) -> usize {
-        self.evicting_map.len_for_test()
+    pub async fn len_for_test(&self) -> usize {
+        self.evicting_map.len_for_test().await
     }
 
     pub async fn remove_entry(&self, key: StoreKey<'_>) -> bool {
@@ -126,7 +126,8 @@ impl StoreDriver for MemoryStore {
         );
         let iterations = self
             .evicting_map
-            .range(range, move |key, _value| handler(key.borrow()));
+            .range(range, move |key, _value| handler(key.borrow()))
+            .await;
         Ok(iterations)
     }
 
