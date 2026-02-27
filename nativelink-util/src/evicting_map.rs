@@ -23,12 +23,12 @@ use core::pin::Pin;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use async_lock::Mutex;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_metric::MetricsComponent;
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -261,7 +261,7 @@ where
     }
 
     pub async fn enable_filtering(&self) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock().await;
         if state.btree.is_none() {
             Self::rebuild_btree_index(&mut state);
         }
@@ -275,12 +275,12 @@ where
     /// and return the number of items that were processed.
     /// The `handler` function should return `true` to continue processing the next item
     /// or `false` to stop processing.
-    pub fn range<F>(&self, prefix_range: impl RangeBounds<Q> + Send, mut handler: F) -> u64
+    pub async fn range<F>(&self, prefix_range: impl RangeBounds<Q> + Send, mut handler: F) -> u64
     where
         F: FnMut(&K, &T) -> bool + Send,
         K: Ord,
     {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock().await;
         let btree = if let Some(ref btree) = state.btree {
             btree
         } else {
@@ -301,8 +301,8 @@ where
 
     /// Returns the number of key-value pairs that are currently in the the cache.
     /// Function is not for production code paths.
-    pub fn len_for_test(&self) -> usize {
-        self.state.lock().lru.len()
+    pub async fn len_for_test(&self) -> usize {
+        self.state.lock().await.lru.len()
     }
 
     fn should_evict(
@@ -395,7 +395,7 @@ where
         R: Borrow<Q> + Send,
     {
         let (removal_futures, data_to_unref) = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock().await;
 
             let lru_len = state.lru.len();
             let mut data_to_unref = Vec::new();
@@ -447,7 +447,7 @@ where
     pub async fn get(&self, key: &Q) -> Option<T> {
         // Fast path: Check if we need eviction before acquiring lock for eviction
         let needs_eviction = {
-            let state = self.state.lock();
+            let state = self.state.lock().await;
             if let Some((_, peek_entry)) = state.lru.peek_lru() {
                 self.should_evict(
                     state.lru.len(),
@@ -463,7 +463,7 @@ where
         // Perform eviction if needed
         if needs_eviction {
             let (items_to_unref, removal_futures) = {
-                let mut state = self.state.lock();
+                let mut state = self.state.lock().await;
                 self.evict_items(&mut *state)
             };
             // Unref items outside of lock
@@ -475,7 +475,7 @@ where
         }
 
         // Now get the item
-        let mut state = self.state.lock();
+        let mut state = self.state.lock().await;
         let entry = state.lru.get_mut(key.borrow())?;
         entry.seconds_since_anchor =
             i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
@@ -498,7 +498,7 @@ where
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
         let (items_to_unref, removal_futures) = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock().await;
             self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
         };
 
@@ -533,7 +533,7 @@ where
         }
 
         let (items_to_unref, removal_futures) = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock().await;
             self.inner_insert_many(
                 &mut state,
                 inserts,
@@ -598,7 +598,7 @@ where
 
     pub async fn remove(&self, key: &Q) -> bool {
         let (items_to_unref, removed_item, removal_futures) = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock().await;
 
             // First perform eviction
             let (evicted_items, mut removal_futures) = self.evict_items(&mut *state);
@@ -637,7 +637,7 @@ where
     /// async callbacks or `unref`. Safe for EvictingMaps whose entries
     /// use `NoopRemove` / no-op `unref` (e.g. existence-cache entries).
     pub fn remove_sync(&self, key: &Q) -> bool {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_blocking();
         if let Some(entry) = state.lru.pop(key) {
             if let Some(btree) = &mut state.btree {
                 btree.remove(key);
@@ -658,7 +658,7 @@ where
         F: FnOnce(&T) -> bool + Send,
     {
         let (evicted_items, removal_futures, removed_item) = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock().await;
             if let Some(entry) = state.lru.get(key.borrow()) {
                 if !cond(&entry.data) {
                     return false;
@@ -700,6 +700,6 @@ where
     }
 
     pub fn add_remove_callback(&self, callback: C) {
-        self.state.lock().add_remove_callback(callback);
+        self.state.lock_blocking().add_remove_callback(callback);
     }
 }
