@@ -182,7 +182,10 @@ impl GrpcStore {
             .proto_digest_func()
             .into();
 
-        let requests: Vec<_> = entries
+        // Deduplicate entries by digest — multiple callers may submit the
+        // same blob in the same batch (e.g., identical stdout/stderr).
+        let deduped: HashMap<DigestInfo, Bytes> = entries.into_iter().collect();
+        let requests: Vec<_> = deduped
             .into_iter()
             .map(|(digest, data)| batch_update_blobs_request::Request {
                 digest: Some(digest.into()),
@@ -303,11 +306,14 @@ impl GrpcStore {
                 .map(|e| ((e.digest, e.result_tx), (e.digest, e.data)))
                 .unzip();
 
-            let mut results = store.do_batch_update(&digests, entries).await;
+            let results = store.do_batch_update(&digests, entries).await;
 
             for (digest, sender) in senders_with_digests {
-                let result = results.remove(&digest).unwrap_or_else(|| {
-                    Err(make_input_err!("BatchUpdateBlobs: missing result"))
+                // Use .get().cloned() instead of .remove() because multiple
+                // senders may reference the same digest (e.g., stdout and stderr
+                // with identical content in the same batch).
+                let result = results.get(&digest).cloned().unwrap_or_else(|| {
+                    Err(make_input_err!("BatchUpdateBlobs: missing result for {digest:?}"))
                 });
                 drop(sender.send(result));
             }
