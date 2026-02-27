@@ -12,23 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use core::task::{Context, Poll};
 use std::fs::{Metadata, Permissions};
-use std::io::{IoSlice, Seek};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
+use bytes::{Bytes, BytesMut};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use rlimit::increase_nofile_limit;
 /// We wrap all `tokio::fs` items in our own wrapper so we can limit the number of outstanding
 /// open files at any given time. This will greatly reduce the chance we'll hit open file limit
 /// issues.
 pub use tokio::fs::DirEntry;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncWrite, ReadBuf, SeekFrom, Take};
+use tokio::io::SeekFrom;
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tracing::{error, info, trace, warn};
 
+use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use crate::spawn_blocking;
 
 /// Default read buffer size when reading to/from disk.
@@ -38,10 +38,22 @@ pub const DEFAULT_READ_BUFF_SIZE: usize = 64 * 1024;
 pub struct FileSlot {
     // We hold the permit because once it is dropped it goes back into the queue.
     _permit: SemaphorePermit<'static>,
-    inner: tokio::fs::File,
+    inner: std::fs::File,
 }
 
 impl FileSlot {
+    /// Returns a reference to the underlying `std::fs::File`.
+    #[inline]
+    pub fn as_std(&self) -> &std::fs::File {
+        &self.inner
+    }
+
+    /// Returns a mutable reference to the underlying `std::fs::File`.
+    #[inline]
+    pub fn as_std_mut(&mut self) -> &mut std::fs::File {
+        &mut self.inner
+    }
+
     /// Advise the kernel to drop page cache for this file's contents.
     /// Only available on Linux;
     #[cfg(target_os = "linux")]
@@ -81,77 +93,6 @@ impl FileSlot {
 
     #[cfg(not(target_os = "linux"))]
     pub const fn advise_sequential(&self) {}
-}
-
-impl AsRef<tokio::fs::File> for FileSlot {
-    fn as_ref(&self) -> &tokio::fs::File {
-        &self.inner
-    }
-}
-
-impl AsMut<tokio::fs::File> for FileSlot {
-    fn as_mut(&mut self) -> &mut tokio::fs::File {
-        &mut self.inner
-    }
-}
-
-impl AsyncRead for FileSlot {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<Result<(), tokio::io::Error>> {
-        Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
-}
-
-impl AsyncSeek for FileSlot {
-    fn start_seek(mut self: Pin<&mut Self>, position: SeekFrom) -> Result<(), tokio::io::Error> {
-        Pin::new(&mut self.inner).start_seek(position)
-    }
-
-    fn poll_complete(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<u64, tokio::io::Error>> {
-        Pin::new(&mut self.inner).poll_complete(cx)
-    }
-}
-
-impl AsyncWrite for FileSlot {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, tokio::io::Error>> {
-        Pin::new(&mut self.inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), tokio::io::Error>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), tokio::io::Error>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
-
-    fn poll_write_vectored(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[IoSlice<'_>],
-    ) -> Poll<Result<usize, tokio::io::Error>> {
-        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        self.inner.is_write_vectored()
-    }
 }
 
 // Note: If the default changes make sure you update the documentation in
@@ -257,11 +198,7 @@ pub fn get_open_files_for_test() -> usize {
     OPEN_FILE_LIMIT.load(Ordering::Acquire) - OPEN_FILE_SEMAPHORE.available_permits()
 }
 
-pub async fn open_file(
-    path: impl AsRef<Path>,
-    start: u64,
-    limit: u64,
-) -> Result<Take<FileSlot>, Error> {
+pub async fn open_file(path: impl AsRef<Path>, start: u64) -> Result<FileSlot, Error> {
     let path = path.as_ref().to_owned();
     let (permit, os_file) = call_with_permit(move |permit| {
         let mut os_file =
@@ -276,9 +213,8 @@ pub async fn open_file(
     .await?;
     Ok(FileSlot {
         _permit: permit,
-        inner: tokio::fs::File::from_std(os_file),
-    }
-    .take(limit))
+        inner: os_file,
+    })
 }
 
 pub async fn create_file(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
@@ -298,8 +234,109 @@ pub async fn create_file(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
     .await?;
     Ok(FileSlot {
         _permit: permit,
-        inner: tokio::fs::File::from_std(os_file),
+        inner: os_file,
     })
+}
+
+/// Read from `file` in a blocking thread, sending chunks to `writer`.
+/// Reads up to `limit` bytes starting from the current file position.
+/// `read_buffer_size` controls the chunk size (typically 256 KiB).
+/// Returns the `FileSlot` so the caller can reuse or drop it.
+pub async fn read_file_to_channel(
+    file: FileSlot,
+    writer: &mut DropCloserWriteHalf,
+    limit: u64,
+    read_buffer_size: usize,
+) -> Result<FileSlot, Error> {
+    let (sync_tx, mut async_rx) = tokio::sync::mpsc::channel::<Result<Bytes, Error>>(4);
+
+    let read_task = spawn_blocking!("fs_read_file", move || {
+        let mut f = file;
+        let mut remaining = limit;
+        loop {
+            let to_read = read_buffer_size.min(remaining as usize);
+            if to_read == 0 {
+                break;
+            }
+            let mut buf = BytesMut::zeroed(to_read);
+            match f.as_std_mut().read(&mut buf[..]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.truncate(n);
+                    remaining -= n as u64;
+                    if sync_tx.blocking_send(Ok(buf.freeze())).is_err() {
+                        break; // reader dropped
+                    }
+                }
+                Err(e) => {
+                    drop(sync_tx.blocking_send(Err(e.into())));
+                    break;
+                }
+            }
+        }
+        f
+    });
+
+    // Receive chunks and forward to the async writer.
+    while let Some(result) = async_rx.recv().await {
+        let chunk = result?;
+        writer
+            .send(chunk)
+            .await
+            .err_tip(|| "Failed to send chunk from file reader")?;
+    }
+    // Ensure the blocking task completed successfully.
+    read_task
+        .await
+        .map_err(|e| make_err!(Code::Internal, "read task join failed: {e:?}"))
+}
+
+/// Write to `file` from a blocking thread, receiving chunks from `reader`.
+/// Returns total bytes written and the `FileSlot`.
+pub async fn write_file_from_channel(
+    file: FileSlot,
+    reader: &mut DropCloserReadHalf,
+) -> Result<(u64, FileSlot), Error> {
+    let (async_tx, mut sync_rx) = tokio::sync::mpsc::channel::<Bytes>(4);
+
+    let write_task = spawn_blocking!("fs_write_file", move || {
+        let mut f = file;
+        let mut total: u64 = 0;
+        while let Some(data) = sync_rx.blocking_recv() {
+            f.as_std_mut()
+                .write_all(&data)
+                .map_err(|e| Into::<Error>::into(e))?;
+            total += data.len() as u64;
+        }
+        Ok::<_, Error>((total, f))
+    });
+
+    // Async side: recv from channel, send to blocking writer.
+    let send_result: Result<(), Error> = async {
+        loop {
+            let data = reader
+                .recv()
+                .await
+                .err_tip(|| "Failed to recv in write_file_from_channel")?;
+            if data.is_empty() {
+                break; // EOF
+            }
+            if async_tx.send(data).await.is_err() {
+                // Writer task died — we'll get the error from write_task.
+                break;
+            }
+        }
+        Ok(())
+    }
+    .await;
+    drop(async_tx); // Signal EOF to writer.
+
+    let (total, file) = write_task
+        .await
+        .map_err(|e| make_err!(Code::Internal, "write task join failed: {e:?}"))??;
+
+    send_result?;
+    Ok((total, file))
 }
 
 pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {

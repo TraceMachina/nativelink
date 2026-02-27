@@ -137,17 +137,12 @@ impl StoreDriver for MemoryStore {
         mut reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        // Internally Bytes might hold a reference to more data than just our data. To prevent
-        // this potential case, we make a full copy of our data for long-term storage.
-        let final_buffer = {
-            let buffer = reader
-                .consume(None)
-                .await
-                .err_tip(|| "Failed to collect all bytes from reader in memory_store::update")?;
-            let mut new_buffer = BytesMut::with_capacity(buffer.len());
-            new_buffer.extend_from_slice(&buffer[..]);
-            new_buffer.freeze()
-        };
+        // consume() returns a standalone Bytes from a frozen BytesMut inside
+        // buf_channel — no shared parent buffer, so no need to copy.
+        let final_buffer = reader
+            .consume(None)
+            .await
+            .err_tip(|| "Failed to collect all bytes from reader in memory_store::update")?;
 
         self.evicting_map
             .insert(key.into_owned().into(), BytesWrapper(final_buffer))

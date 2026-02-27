@@ -26,7 +26,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Valu
 use opentelemetry::context::Context;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::common::DigestInfo;
 use crate::fs;
@@ -229,15 +229,27 @@ pub struct DigestHasherImpl {
 }
 
 impl DigestHasherImpl {
-    #[inline]
     async fn hash_file(
-        &mut self,
-        mut file: fs::FileSlot,
+        self,
+        file: fs::FileSlot,
     ) -> Result<(DigestInfo, fs::FileSlot), Error> {
-        let digest = self
-            .compute_from_reader(&mut file)
-            .await
-            .err_tip(|| "In digest_for_file")?;
+        let (mut hasher, file) = crate::spawn_blocking!("hash_file", move || {
+            let mut f = file;
+            let mut hasher = self;
+            let mut buf = vec![0u8; fs::DEFAULT_READ_BUFF_SIZE];
+            loop {
+                let n = std::io::Read::read(f.as_std_mut(), &mut buf)
+                    .err_tip(|| "Read error in hash_file")?;
+                if n == 0 {
+                    break;
+                }
+                DigestHasher::update(&mut hasher, &buf[..n]);
+            }
+            Ok::<_, Error>((hasher, f))
+        })
+        .await
+        .map_err(|e| make_err!(Code::Internal, "hash_file spawn failed: {e:?}"))??;
+        let digest = hasher.finalize_digest();
         Ok((digest, file))
     }
 }
@@ -264,14 +276,12 @@ impl DigestHasher for DigestHasherImpl {
     }
 
     async fn digest_for_file(
-        mut self,
+        self,
         file_path: impl AsRef<std::path::Path>,
         mut file: fs::FileSlot,
         size_hint: Option<u64>,
     ) -> Result<(DigestInfo, fs::FileSlot), Error> {
-        let file_position = file
-            .stream_position()
-            .await
+        let file_position = std::io::Seek::stream_position(file.as_std_mut())
             .err_tip(|| "Couldn't get stream position in digest_for_file")?;
         if file_position != 0 {
             return self.hash_file(file).await;

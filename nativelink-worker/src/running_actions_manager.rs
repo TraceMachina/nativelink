@@ -74,7 +74,7 @@ use parking_lot::Mutex;
 use prost::Message;
 use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::process;
 use tokio::sync::{Notify, oneshot, watch};
 use tokio::time::Instant;
@@ -495,7 +495,8 @@ async fn populate_and_hardlink(
     if is_zero_digest(digest) {
         cas_store.populate_fast_store(digest.into()).await?;
         let mut file_slot = fs::create_file(dest).await?;
-        file_slot.write_all(&[]).await?;
+        std::io::Write::write_all(file_slot.as_std_mut(), &[])
+            .err_tip(|| "Could not write to file")?;
         return Ok(());
     }
 
@@ -932,13 +933,13 @@ async fn upload_file(
 ) -> Result<FileInfo, Error> {
     let is_executable = is_executable(&metadata, &full_path);
     let file_size = metadata.len();
-    let file = fs::open_file(&full_path, 0, u64::MAX)
+    let file = fs::open_file(&full_path, 0)
         .await
         .err_tip(|| format!("Could not open file {full_path:?}"))?;
 
     let (digest, mut file) = hasher
         .hasher()
-        .digest_for_file(&full_path, file.into_inner(), Some(file_size))
+        .digest_for_file(&full_path, file, Some(file_size))
         .await
         .err_tip(|| format!("Failed to hash file in digest_for_file failed for {full_path:?}"))?;
 
@@ -977,7 +978,8 @@ async fn upload_file(
                 "upload_file: digest not in CAS, starting upload",
             );
 
-            file.rewind().await.err_tip(|| "Could not rewind file")?;
+            std::io::Seek::seek(file.as_std_mut(), std::io::SeekFrom::Start(0))
+                .err_tip(|| "Could not rewind file")?;
 
             // Note: For unknown reasons we appear to be hitting:
             // https://github.com/rust-lang/rust/issues/92096
@@ -1249,7 +1251,7 @@ async fn process_side_channel_file(
     let mut json_contents = String::new();
     {
         // Note: Scoping `file_slot` allows the file_slot semaphore to be released faster.
-        let mut file_slot = match fs::open_file(side_channel_file, 0, u64::MAX).await {
+        let mut file_slot = match fs::open_file(side_channel_file, 0).await {
             Ok(file_slot) => file_slot,
             Err(e) => {
                 if e.code != Code::NotFound {
@@ -1259,9 +1261,7 @@ async fn process_side_channel_file(
                 return Ok(None);
             }
         };
-        file_slot
-            .read_to_string(&mut json_contents)
-            .await
+        std::io::Read::read_to_string(file_slot.as_std_mut(), &mut json_contents)
             .err_tip(|| "Error reading side channel file")?;
     }
 
