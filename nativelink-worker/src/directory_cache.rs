@@ -17,6 +17,7 @@ use core::pin::Pin;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::SystemTime;
 
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -52,17 +53,30 @@ impl Default for DirectoryCacheConfig {
     }
 }
 
-/// Metadata for a cached directory
-#[derive(Debug, Clone)]
+/// Metadata for a cached directory.
+///
+/// `ref_count` and `last_access` use atomics so that the cache hit fast path
+/// only needs a *read* lock on the cache HashMap (no write lock contention).
+#[derive(Debug)]
 struct CachedDirectoryMetadata {
     /// Path to the cached directory
     path: PathBuf,
     /// Size in bytes
     size: u64,
-    /// Last access time for LRU eviction
-    last_access: SystemTime,
-    /// Reference count (number of active users)
-    ref_count: usize,
+    /// Last access time as duration-since-EPOCH in millis (atomic for read-lock access)
+    last_access_millis: AtomicU64,
+    /// Reference count (number of active hardlink operations in flight)
+    ref_count: AtomicUsize,
+}
+
+impl CachedDirectoryMetadata {
+    fn touch(&self) {
+        let millis = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.last_access_millis.store(millis, Ordering::Relaxed);
+    }
 }
 
 /// High-performance directory cache that uses hardlinks to avoid repeated
@@ -75,13 +89,30 @@ struct CachedDirectoryMetadata {
 /// 3. If no, construct it once and cache for future use
 ///
 /// This dramatically reduces I/O and improves action startup time.
+///
+/// ## Security Note
+///
+/// Hardlinked files share inodes. If an action process has elevated privileges
+/// (e.g. root, `CAP_DAC_OVERRIDE`), it can bypass read-only permissions and
+/// modify cached files through the workspace hardlink, poisoning the cache for
+/// subsequent actions. For multi-tenant clusters, consider running actions in
+/// user namespaces or using copy-on-write (reflink) instead of hardlinks.
 #[derive(Debug)]
 pub struct DirectoryCache {
     /// Configuration
     config: DirectoryCacheConfig,
     /// Cache mapping digest -> metadata
     cache: Arc<RwLock<HashMap<DigestInfo, CachedDirectoryMetadata>>>,
-    /// Lock for cache construction to prevent stampedes
+    /// Per-digest construction locks to prevent stampedes.
+    ///
+    /// Protocol:
+    /// 1. A task entering construction clones the `Arc<Mutex<()>>`, incrementing
+    ///    strong_count to >= 2 (HashMap entry + task clone).
+    /// 2. On completion, if strong_count == 2 and the entry is still *our* Arc
+    ///    (checked via `Arc::ptr_eq`), no other task is waiting, so we remove it.
+    /// 3. If another task is waiting (strong_count > 2), we leave cleanup to the
+    ///    last finisher. The worst case of a missed cleanup is a stale empty Mutex
+    ///    in the HashMap, which is harmless.
     construction_locks: Arc<Mutex<HashMap<DigestInfo, Arc<Mutex<()>>>>>,
     /// CAS store for fetching directories
     cas_store: Store,
@@ -117,44 +148,14 @@ impl DirectoryCache {
     /// * `Ok(false)` - Cache miss (directory was constructed and cached)
     /// * `Err` - Error during construction or hardlinking
     pub async fn get_or_create(&self, digest: DigestInfo, dest_path: &Path) -> Result<bool, Error> {
-        // Fast path: check if already in cache
-        {
-            let mut cache = self.cache.write().await;
-            if let Some(metadata) = cache.get_mut(&digest) {
-                // Bump ref_count to prevent eviction during hardlink
-                metadata.last_access = SystemTime::now();
-                metadata.ref_count += 1;
-                let src_path = metadata.path.clone();
-                drop(cache);
-
-                debug!(?digest, path = ?src_path, "Directory cache HIT");
-
-                let result = hardlink_directory_tree(&src_path, dest_path).await;
-
-                // Always decrement ref_count
-                let mut cache = self.cache.write().await;
-                if let Some(metadata) = cache.get_mut(&digest) {
-                    metadata.ref_count -= 1;
-                }
-                drop(cache);
-
-                match result {
-                    Ok(()) => return Ok(true),
-                    Err(e) => {
-                        warn!(
-                            ?digest,
-                            error = ?e,
-                            "Failed to hardlink from cache, will reconstruct"
-                        );
-                        // Fall through to reconstruction
-                    }
-                }
-            }
+        // Fast path: check if already in cache (read lock only for the lookup)
+        if self.try_hardlink_cached(&digest, dest_path).await? {
+            return Ok(true);
         }
 
         debug!(?digest, "Directory cache MISS");
 
-        // Get or create construction lock to prevent stampede (Bug 3: we clean up below)
+        // Get or create construction lock to prevent stampede
         let construction_lock = {
             let mut locks = self.construction_locks.lock().await;
             locks
@@ -167,103 +168,77 @@ impl DirectoryCache {
         let _guard = construction_lock.lock().await;
 
         // Double-check after acquiring lock — another task may have just constructed it
-        {
-            let mut cache = self.cache.write().await;
-            if let Some(metadata) = cache.get_mut(&digest) {
-                metadata.last_access = SystemTime::now();
-                metadata.ref_count += 1;
-                let src_path = metadata.path.clone();
-                drop(cache);
-
-                let result = hardlink_directory_tree(&src_path, dest_path).await;
-
-                let mut cache = self.cache.write().await;
-                if let Some(metadata) = cache.get_mut(&digest) {
-                    metadata.ref_count -= 1;
-                }
-                drop(cache);
-
-                match result {
-                    Ok(()) => {
-                        self.cleanup_construction_lock(&digest, &construction_lock);
-                        return Ok(true);
-                    }
-                    Err(e) => {
-                        warn!(
-                            ?digest,
-                            error = ?e,
-                            "Failed to hardlink after construction lock acquire"
-                        );
-                        // Fall through to reconstruct
-                    }
-                }
-            }
+        if self.try_hardlink_cached(&digest, dest_path).await? {
+            self.cleanup_construction_lock(&digest, &construction_lock);
+            return Ok(true);
         }
 
-        // Bug 2: Construct in a temp path, rename to final path on success.
+        // Construct in a temp path, rename to final path on success.
         // This prevents orphaned partial directories on failure.
         let cache_path = self.get_cache_path(&digest);
         let temp_path = self.config.cache_root.join(format!(
-            ".tmp-{digest}-{}",
-            std::process::id()
+            ".tmp-{digest}-{}-{}",
+            std::process::id(),
+            self.next_temp_id(),
         ));
 
         // Clean up any stale temp path from a previous crashed attempt
         drop(fs::remove_dir_all(&temp_path).await);
 
-        match self.construct_directory(digest, &temp_path).await {
-            Ok(()) => {}
-            Err(e) => {
-                // Clean up partial construction (best-effort)
-                drop(fs::remove_dir_all(&temp_path).await);
-                self.cleanup_construction_lock(&digest, &construction_lock);
-                return Err(e).err_tip(|| "Failed to construct directory for cache");
-            }
-        }
-
-        // Make it read-only to prevent modifications
-        if let Err(e) = set_readonly_recursive(&temp_path).await {
-            drop(fs::remove_dir_all(&temp_path).await);
-            self.cleanup_construction_lock(&digest, &construction_lock);
-            return Err(e).err_tip(|| "Failed to set cache directory to readonly");
-        }
-
-        // Calculate size
-        let size = match nativelink_util::fs_util::calculate_directory_size(&temp_path).await {
-            Ok(s) => s,
-            Err(e) => {
-                drop(fs::remove_dir_all(&temp_path).await);
-                self.cleanup_construction_lock(&digest, &construction_lock);
-                return Err(e).err_tip(|| "Failed to calculate directory size");
-            }
-        };
-
-        // Atomic rename from temp to final cache path
-        if let Err(e) = fs::rename(&temp_path, &cache_path).await {
-            drop(fs::remove_dir_all(&temp_path).await);
-            self.cleanup_construction_lock(&digest, &construction_lock);
-            return Err(e).err_tip(|| {
+        let construction_result: Result<u64, Error> = async {
+            self.construct_directory(digest, &temp_path).await
+                .err_tip(|| "Failed to construct directory for cache")?;
+            set_readonly_recursive(&temp_path).await
+                .err_tip(|| "Failed to set cache directory to readonly")?;
+            let size = nativelink_util::fs_util::calculate_directory_size(&temp_path).await
+                .err_tip(|| "Failed to calculate directory size")?;
+            fs::rename(&temp_path, &cache_path).await.err_tip(|| {
                 format!(
                     "Failed to rename temp dir {} to cache path {}",
                     temp_path.display(),
                     cache_path.display()
                 )
-            });
+            })?;
+            Ok(size)
         }
+        .await;
 
-        // Bug 5: Insert with ref_count=1 to prevent eviction during hardlink
-        {
+        let size = match construction_result {
+            Ok(s) => s,
+            Err(e) => {
+                Self::remove_readonly_dir(&temp_path).await;
+                self.cleanup_construction_lock(&digest, &construction_lock);
+                return Err(e);
+            }
+        };
+
+        // Insert with ref_count=1 to prevent eviction during hardlink.
+        // Collect eviction candidates while holding the lock, then delete outside.
+        let evicted_paths = {
             let mut cache = self.cache.write().await;
-            self.evict_if_needed(size, &mut cache).await?;
+            let evicted = self.collect_evictions(size, &mut cache);
             cache.insert(
                 digest,
                 CachedDirectoryMetadata {
                     path: cache_path.clone(),
                     size,
-                    last_access: SystemTime::now(),
-                    ref_count: 1,
+                    last_access_millis: AtomicU64::new(
+                        SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                    ),
+                    ref_count: AtomicUsize::new(1),
                 },
             );
+            evicted
+        };
+
+        // Delete evicted directories outside the lock.
+        // Cached directories are read-only (0o555/0o444), so we must make them
+        // writable before removal.
+        for path in evicted_paths {
+            Self::remove_readonly_dir(&path).await;
         }
 
         // Hardlink to destination (safe — ref_count=1 prevents eviction)
@@ -271,38 +246,187 @@ impl DirectoryCache {
 
         // Decrement ref_count regardless of hardlink result
         {
-            let mut cache = self.cache.write().await;
-            if let Some(metadata) = cache.get_mut(&digest) {
-                metadata.ref_count -= 1;
+            let cache = self.cache.read().await;
+            if let Some(metadata) = cache.get(&digest) {
+                metadata.ref_count.fetch_sub(1, Ordering::Relaxed);
             }
         }
 
-        hardlink_result.err_tip(|| "Failed to hardlink newly cached directory")?;
-
-        // Bug 3: Clean up construction lock if no other waiters
+        // Drop the construction lock guard before cleanup
+        drop(_guard);
         self.cleanup_construction_lock(&digest, &construction_lock);
+
+        hardlink_result.err_tip(|| "Failed to hardlink newly cached directory")?;
 
         Ok(false)
     }
 
-    /// Removes the construction lock entry if no other task is waiting on it.
-    fn cleanup_construction_lock(&self, digest: &DigestInfo, lock: &Arc<Mutex<()>>) {
-        // Arc::strong_count == 2 means: our `lock` clone + the one in the HashMap.
-        // No other task is holding a clone, so it's safe to remove.
-        if Arc::strong_count(lock) <= 2 {
-            // Use try_lock to avoid blocking — if we can't get it, another task
-            // will clean up.
-            if let Ok(mut locks) = self.construction_locks.try_lock() {
-                locks.remove(digest);
+    /// Attempts to hardlink a cached directory to dest, guarding eviction with ref_count.
+    /// Returns `Ok(true)` on cache hit + successful hardlink, `Ok(false)` on cache miss
+    /// or failed hardlink (caller should fall through to reconstruction).
+    async fn try_hardlink_cached(
+        &self,
+        digest: &DigestInfo,
+        dest_path: &Path,
+    ) -> Result<bool, Error> {
+        let src_path = {
+            // Read lock is sufficient — ref_count and last_access are atomic.
+            let cache = self.cache.read().await;
+            let Some(metadata) = cache.get(digest) else {
+                return Ok(false);
+            };
+            metadata.touch();
+            metadata.ref_count.fetch_add(1, Ordering::Relaxed);
+            metadata.path.clone()
+        };
+
+        debug!(?digest, path = ?src_path, "Directory cache HIT");
+
+        let result = hardlink_directory_tree(&src_path, dest_path).await;
+
+        // Always decrement ref_count
+        {
+            let cache = self.cache.read().await;
+            if let Some(metadata) = cache.get(digest) {
+                metadata.ref_count.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+
+        match result {
+            Ok(()) => Ok(true),
+            Err(e) => {
+                warn!(?digest, error = ?e, "Failed to hardlink from cache, will reconstruct");
+                Ok(false)
             }
         }
     }
 
-    /// Constructs a directory from the CAS at the given path
-    fn construct_directory<'a>(
+    /// Removes the construction lock entry if no other task is waiting on it.
+    fn cleanup_construction_lock(&self, digest: &DigestInfo, lock: &Arc<Mutex<()>>) {
+        // Acquire the outer mutex to make the check+remove atomic with respect
+        // to new tasks cloning from the HashMap.
+        if let Ok(mut locks) = self.construction_locks.try_lock() {
+            // Only remove if the entry is still *our* lock (not a replacement)
+            // and no other task is holding a clone.
+            if let Some(existing) = locks.get(digest) {
+                if Arc::ptr_eq(existing, lock) && Arc::strong_count(lock) <= 2 {
+                    locks.remove(digest);
+                }
+            }
+        }
+    }
+
+    /// Recursively removes a read-only directory by first restoring write permissions.
+    async fn remove_readonly_dir(path: &Path) {
+        // Make writable so remove_dir_all can delete contents
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = fs::symlink_metadata(path).await {
+                if metadata.is_dir() {
+                    drop(fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).await);
+                    if let Ok(mut entries) = fs::read_dir(path).await {
+                        while let Ok(Some(entry)) = entries.next_entry().await {
+                            if let Ok(meta) = fs::symlink_metadata(entry.path()).await {
+                                if meta.is_dir() {
+                                    Box::pin(Self::remove_readonly_dir(&entry.path())).await;
+                                } else if meta.is_file() {
+                                    drop(fs::set_permissions(
+                                        entry.path(),
+                                        std::fs::Permissions::from_mode(0o644),
+                                    )
+                                    .await);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Err(e) = fs::remove_dir_all(path).await {
+            warn!(path = ?path, error = ?e, "Failed to remove evicted directory from disk");
+        }
+    }
+
+    /// Monotonically increasing counter for unique temp paths.
+    fn next_temp_id(&self) -> u64 {
+        use std::sync::atomic::AtomicU64 as StaticAtomicU64;
+        static COUNTER: StaticAtomicU64 = StaticAtomicU64::new(0);
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Validates that a node name is a single safe path component.
+    /// Rejects path separators, traversal components, empty names, and null bytes.
+    fn validate_node_name(name: &str) -> Result<(), Error> {
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.contains('/')
+            || name.contains('\\')
+            || name.contains('\0')
+        {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "Invalid node name in Directory proto: {:?}",
+                name
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validates that a symlink target does not escape the workspace root.
+    /// Rejects absolute paths. For relative paths, verifies the resolved path
+    /// stays within the workspace by counting `..` components.
+    fn validate_symlink_target(target: &str, depth: usize) -> Result<(), Error> {
+        if target.is_empty() || target.contains('\0') {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "Invalid symlink target: {:?}",
+                target
+            ));
+        }
+
+        // Reject absolute symlink targets
+        if target.starts_with('/') || target.starts_with('\\') {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "Absolute symlink target not allowed: {:?}",
+                target
+            ));
+        }
+
+        // Count net upward traversals. `depth` is how deep we are in the tree.
+        let mut net_up: usize = 0;
+        for component in target.split('/') {
+            match component {
+                ".." => {
+                    net_up += 1;
+                    if net_up > depth {
+                        return Err(make_err!(
+                            Code::InvalidArgument,
+                            "Symlink target escapes workspace root: {:?}",
+                            target
+                        ));
+                    }
+                }
+                "" | "." => {}
+                _ => {
+                    net_up = net_up.saturating_sub(1);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Constructs a directory from the CAS at the given path.
+    /// `depth` tracks nesting depth for symlink target validation.
+    fn construct_directory_impl<'a>(
         &'a self,
         digest: DigestInfo,
         dest_path: &'a Path,
+        depth: usize,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
         Box::pin(async move {
             debug!(?digest, ?dest_path, "Constructing directory");
@@ -319,21 +443,35 @@ impl DirectoryCache {
 
             // Process files
             for file in &directory.files {
+                Self::validate_node_name(&file.name)?;
                 self.create_file(dest_path, file).await?;
             }
 
             // Process subdirectories recursively
             for dir_node in &directory.directories {
-                self.create_subdirectory(dest_path, dir_node).await?;
+                Self::validate_node_name(&dir_node.name)?;
+                self.create_subdirectory(dest_path, dir_node, depth + 1)
+                    .await?;
             }
 
             // Process symlinks
             for symlink in &directory.symlinks {
+                Self::validate_node_name(&symlink.name)?;
+                Self::validate_symlink_target(&symlink.target, depth)?;
                 self.create_symlink(dest_path, symlink).await?;
             }
 
             Ok(())
         })
+    }
+
+    /// Constructs a directory from the CAS at the given path
+    fn construct_directory<'a>(
+        &'a self,
+        digest: DigestInfo,
+        dest_path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+        self.construct_directory_impl(digest, dest_path, 0)
     }
 
     /// Creates a file from a `FileNode`
@@ -342,8 +480,9 @@ impl DirectoryCache {
         let digest = DigestInfo::try_from(
             file_node
                 .digest
-                .clone()
-                .ok_or_else(|| make_err!(Code::InvalidArgument, "File node missing digest"))?,
+                .as_ref()
+                .ok_or_else(|| make_err!(Code::InvalidArgument, "File node missing digest"))?
+                .clone(),
         )
         .err_tip(|| "Invalid file digest")?;
 
@@ -383,18 +522,25 @@ impl DirectoryCache {
         &self,
         parent: &Path,
         dir_node: &DirectoryNode,
+        depth: usize,
     ) -> Result<(), Error> {
         let dir_path = parent.join(&dir_node.name);
-        let digest =
-            DigestInfo::try_from(dir_node.digest.clone().ok_or_else(|| {
-                make_err!(Code::InvalidArgument, "Directory node missing digest")
-            })?)
-            .err_tip(|| "Invalid directory digest")?;
+        let digest = DigestInfo::try_from(
+            dir_node
+                .digest
+                .as_ref()
+                .ok_or_else(|| {
+                    make_err!(Code::InvalidArgument, "Directory node missing digest")
+                })?
+                .clone(),
+        )
+        .err_tip(|| "Invalid directory digest")?;
 
         trace!(?dir_path, ?digest, "Creating subdirectory");
 
         // Recursively construct subdirectory
-        self.construct_directory(digest, &dir_path).await
+        self.construct_directory_impl(digest, &dir_path, depth)
+            .await
     }
 
     /// Creates a symlink from a `SymlinkNode`
@@ -421,17 +567,22 @@ impl DirectoryCache {
         Ok(())
     }
 
-    /// Evicts entries if cache is too full.
-    /// Returns `Ok(())` on success. Logs a warning if the cache is over capacity
-    /// but all entries are in use and cannot be evicted.
-    async fn evict_if_needed(
+    /// Collects entries to evict to make room for `incoming_size` bytes.
+    /// Removes them from the HashMap and returns their paths for disk cleanup.
+    /// This is called while holding the write lock; actual disk I/O happens after
+    /// the lock is released.
+    fn collect_evictions(
         &self,
         incoming_size: u64,
         cache: &mut HashMap<DigestInfo, CachedDirectoryMetadata>,
-    ) -> Result<(), Error> {
-        // Check entry count
+    ) -> Vec<PathBuf> {
+        let mut evicted_paths = Vec::new();
+
+        // Evict by entry count
         while cache.len() >= self.config.max_entries {
-            if self.evict_lru(cache).await?.is_none() {
+            if let Some(path) = self.evict_lru_entry(cache) {
+                evicted_paths.push(path);
+            } else {
                 warn!(
                     entries = cache.len(),
                     max = self.config.max_entries,
@@ -441,17 +592,18 @@ impl DirectoryCache {
             }
         }
 
-        // Check total size
+        // Evict by size
         if self.config.max_size_bytes > 0 {
-            let current_size: u64 = cache.values().map(|m| m.size).sum();
-            let mut size_after = current_size + incoming_size;
-
-            while size_after > self.config.max_size_bytes {
-                if let Some(evicted_size) = self.evict_lru(cache).await? {
-                    size_after -= evicted_size;
+            loop {
+                let current_size: u64 = cache.values().map(|m| m.size).sum();
+                if current_size + incoming_size <= self.config.max_size_bytes {
+                    break;
+                }
+                if let Some(path) = self.evict_lru_entry(cache) {
+                    evicted_paths.push(path);
                 } else {
                     warn!(
-                        size_after,
+                        current_size = current_size + incoming_size,
                         max = self.config.max_size_bytes,
                         "Directory cache over size limit but all entries are in use"
                     );
@@ -460,54 +612,45 @@ impl DirectoryCache {
             }
         }
 
-        Ok(())
+        evicted_paths
     }
 
-    /// Evicts the least recently used entry with ref_count == 0.
-    /// Returns `Ok(Some(size))` if an entry was evicted, `Ok(None)` if no
+    /// Removes the LRU entry with ref_count == 0 from the cache HashMap.
+    /// Returns the evicted entry's path for disk cleanup, or `None` if no
     /// evictable entry exists.
-    async fn evict_lru(
+    fn evict_lru_entry(
         &self,
         cache: &mut HashMap<DigestInfo, CachedDirectoryMetadata>,
-    ) -> Result<Option<u64>, Error> {
-        // Find LRU entry that isn't currently in use
+    ) -> Option<PathBuf> {
         let to_evict = cache
             .iter()
-            .filter(|(_, m)| m.ref_count == 0)
-            .min_by_key(|(_, m)| m.last_access)
+            .filter(|(_, m)| m.ref_count.load(Ordering::Relaxed) == 0)
+            .min_by_key(|(_, m)| m.last_access_millis.load(Ordering::Relaxed))
             .map(|(digest, _)| *digest);
 
         if let Some(digest) = to_evict {
             if let Some(metadata) = cache.remove(&digest) {
                 debug!(?digest, size = metadata.size, "Evicting cached directory");
-
-                // Remove from disk
-                if let Err(e) = fs::remove_dir_all(&metadata.path).await {
-                    warn!(
-                        ?digest,
-                        path = ?metadata.path,
-                        error = ?e,
-                        "Failed to remove evicted directory from disk"
-                    );
-                }
-
-                return Ok(Some(metadata.size));
+                return Some(metadata.path);
             }
         }
 
-        Ok(None)
+        None
     }
 
     /// Gets the cache path for a digest
     fn get_cache_path(&self, digest: &DigestInfo) -> PathBuf {
-        self.config.cache_root.join(format!("{digest}"))
+        self.config.cache_root.join(digest.to_string())
     }
 
     /// Returns cache statistics
     pub async fn stats(&self) -> CacheStats {
         let cache = self.cache.read().await;
         let total_size: u64 = cache.values().map(|m| m.size).sum();
-        let in_use = cache.values().filter(|m| m.ref_count > 0).count();
+        let in_use = cache
+            .values()
+            .filter(|m| m.ref_count.load(Ordering::Relaxed) > 0)
+            .count();
 
         CacheStats {
             entries: cache.len(),
@@ -584,6 +727,83 @@ mod tests {
             .unwrap();
 
         (store, dir_digest)
+    }
+
+    /// Creates a store with two different directory digests for eviction testing.
+    async fn setup_two_digest_store() -> (Store, DigestInfo, DigestInfo) {
+        let store = Store::new(MemoryStore::new(&Default::default()));
+
+        // File A
+        let content_a = b"File A content";
+        let digest_a = DigestInfo::try_new(
+            "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+            content_a.len() as i64,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(digest_a.into(), content_a.to_vec().into())
+            .await
+            .unwrap();
+
+        // Directory A
+        let dir_a = ProtoDirectory {
+            files: vec![FileNode {
+                name: "a.txt".to_string(),
+                digest: Some(digest_a.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut dir_a_data = Vec::new();
+        dir_a.encode(&mut dir_a_data).unwrap();
+        let dir_digest_a = DigestInfo::try_new(
+            "aaaa567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            dir_a_data.len() as i64,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(dir_digest_a.into(), dir_a_data.into())
+            .await
+            .unwrap();
+
+        // File B
+        let content_b = b"File B content!!";
+        let digest_b = DigestInfo::try_new(
+            "b1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6b1b2",
+            content_b.len() as i64,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(digest_b.into(), content_b.to_vec().into())
+            .await
+            .unwrap();
+
+        // Directory B
+        let dir_b = ProtoDirectory {
+            files: vec![FileNode {
+                name: "b.txt".to_string(),
+                digest: Some(digest_b.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut dir_b_data = Vec::new();
+        dir_b.encode(&mut dir_b_data).unwrap();
+        let dir_digest_b = DigestInfo::try_new(
+            "bbbb567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            dir_b_data.len() as i64,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(dir_digest_b.into(), dir_b_data.into())
+            .await
+            .unwrap();
+
+        (store, dir_digest_a, dir_digest_b)
     }
 
     #[tokio::test]
@@ -706,8 +926,8 @@ mod tests {
         let (store, dir_digest) = setup_test_store().await;
 
         let config = DirectoryCacheConfig {
-            max_entries: 1, // Only 1 entry allowed
-            max_size_bytes: 0, // No size limit
+            max_entries: 1,
+            max_size_bytes: 0,
             cache_root,
         };
 
@@ -717,42 +937,34 @@ mod tests {
         let dest1 = temp_dir.path().join("dest1");
         cache.get_or_create(dir_digest, &dest1).await?;
 
-        // Simulate all entries being in-use by bumping ref_count
+        // Simulate all entries being in-use
         {
-            let mut cache_map = cache.cache.write().await;
-            if let Some(metadata) = cache_map.get_mut(&dir_digest) {
-                metadata.ref_count = 1;
+            let cache_map = cache.cache.read().await;
+            if let Some(metadata) = cache_map.get(&dir_digest) {
+                metadata.ref_count.store(1, Ordering::Relaxed);
             }
         }
 
-        // Bug 4 fix: evict_if_needed should not loop infinitely.
-        // We can't insert a new entry (max_entries=1, existing has ref_count>0),
-        // but evict_if_needed should return Ok without looping forever.
-        // Test this by directly calling evict_if_needed.
+        // Bug 4 fix: collect_evictions should not loop infinitely.
         {
             let mut cache_map = cache.cache.write().await;
-            // This should NOT hang — it should break out of the loop
-            let result = cache.evict_if_needed(100, &mut cache_map).await;
-            assert!(result.is_ok(), "evict_if_needed should not fail");
-            assert_eq!(
-                cache_map.len(),
-                1,
-                "Entry should still be present (not evictable)"
-            );
+            let evicted = cache.collect_evictions(100, &mut cache_map);
+            assert!(evicted.is_empty(), "Nothing should be evictable");
+            assert_eq!(cache_map.len(), 1, "Entry should still be present");
         }
 
-        // Clean up ref_count so test teardown works
+        // Clean up ref_count
         {
-            let mut cache_map = cache.cache.write().await;
-            if let Some(metadata) = cache_map.get_mut(&dir_digest) {
-                metadata.ref_count = 0;
+            let cache_map = cache.cache.read().await;
+            if let Some(metadata) = cache_map.get(&dir_digest) {
+                metadata.ref_count.store(0, Ordering::Relaxed);
             }
         }
 
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_concurrent_same_digest() -> Result<(), Error> {
         let temp_dir = TempDir::new().unwrap();
         let cache_root = temp_dir.path().join("cache");
@@ -821,15 +1033,271 @@ mod tests {
 
         let cache = DirectoryCache::new(config, store).await?;
 
-        // Access the cache
         let dest = temp_dir.path().join("dest");
         cache.get_or_create(dir_digest, &dest).await?;
 
-        // Bug 3 fix: construction lock should be cleaned up
         let locks = cache.construction_locks.lock().await;
         assert!(
             locks.is_empty(),
             "Construction lock should be removed after get_or_create completes"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_eviction_removes_oldest_entry() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, digest_a, digest_b) = setup_two_digest_store().await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 1, // Only 1 entry allowed
+            max_size_bytes: 0,
+            cache_root: cache_root.clone(),
+        };
+
+        let cache = DirectoryCache::new(config, store).await?;
+
+        // Insert entry A
+        let dest_a = temp_dir.path().join("dest_a");
+        cache.get_or_create(digest_a, &dest_a).await?;
+        assert_eq!(cache.stats().await.entries, 1);
+
+        // Insert entry B — should evict A
+        let dest_b = temp_dir.path().join("dest_b");
+        cache.get_or_create(digest_b, &dest_b).await?;
+        assert_eq!(cache.stats().await.entries, 1);
+
+        // A's cache directory should be gone from disk
+        let cache_path_a = cache_root.join(digest_a.to_string());
+        assert!(
+            !cache_path_a.exists(),
+            "Evicted entry A should be removed from disk"
+        );
+
+        // B should be in cache
+        let cache_path_b = cache_root.join(digest_b.to_string());
+        assert!(cache_path_b.exists(), "Entry B should be on disk");
+
+        // Requesting A again should be a miss (reconstruct)
+        let dest_a2 = temp_dir.path().join("dest_a2");
+        let hit = cache.get_or_create(digest_a, &dest_a2).await?;
+        assert!(!hit, "A should be a cache miss after eviction");
+        assert!(dest_a2.join("a.txt").exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_path_traversal_rejected() -> Result<(), Error> {
+        // Test validate_node_name directly
+        assert!(DirectoryCache::validate_node_name("good_file.txt").is_ok());
+        assert!(DirectoryCache::validate_node_name("subdir").is_ok());
+
+        // These should all be rejected
+        assert!(DirectoryCache::validate_node_name("").is_err());
+        assert!(DirectoryCache::validate_node_name(".").is_err());
+        assert!(DirectoryCache::validate_node_name("..").is_err());
+        assert!(DirectoryCache::validate_node_name("../etc/passwd").is_err());
+        assert!(DirectoryCache::validate_node_name("/etc/passwd").is_err());
+        assert!(DirectoryCache::validate_node_name("foo/bar").is_err());
+        assert!(DirectoryCache::validate_node_name("foo\\bar").is_err());
+        assert!(DirectoryCache::validate_node_name("foo\0bar").is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_symlink_target_validation() -> Result<(), Error> {
+        // Valid relative targets
+        assert!(DirectoryCache::validate_symlink_target("file.txt", 0).is_ok());
+        assert!(DirectoryCache::validate_symlink_target("subdir/file.txt", 0).is_ok());
+        assert!(DirectoryCache::validate_symlink_target("../sibling", 1).is_ok());
+
+        // Absolute targets rejected
+        assert!(DirectoryCache::validate_symlink_target("/etc/shadow", 0).is_err());
+        assert!(DirectoryCache::validate_symlink_target("\\windows\\system32", 0).is_err());
+
+        // Traversal beyond root rejected
+        assert!(DirectoryCache::validate_symlink_target("..", 0).is_err());
+        assert!(DirectoryCache::validate_symlink_target("../..", 1).is_err());
+        assert!(DirectoryCache::validate_symlink_target("../../escape", 1).is_err());
+
+        // Deep enough to allow traversal
+        assert!(DirectoryCache::validate_symlink_target("../..", 2).is_ok());
+
+        // Empty and null rejected
+        assert!(DirectoryCache::validate_symlink_target("", 0).is_err());
+        assert!(DirectoryCache::validate_symlink_target("foo\0bar", 0).is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_path_traversal_in_directory_proto() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let store = Store::new(MemoryStore::new(&Default::default()));
+
+        // Create a malicious directory proto with a path-traversal file name
+        let file_content = b"malicious";
+        let file_digest = DigestInfo::try_new(
+            "c0535e4be2b79ffd93291305436bf889314e4a3faec05ecffcbb7df31ad9e51a",
+            9,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(file_digest.into(), file_content.to_vec().into())
+            .await
+            .unwrap();
+
+        let malicious_dir = ProtoDirectory {
+            files: vec![FileNode {
+                name: "../escape.txt".to_string(),
+                digest: Some(file_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut dir_data = Vec::new();
+        malicious_dir.encode(&mut dir_data).unwrap();
+        let dir_digest = DigestInfo::try_new(
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            dir_data.len() as i64,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(dir_digest.into(), dir_data.into())
+            .await
+            .unwrap();
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root,
+        };
+        let cache = DirectoryCache::new(config, store).await?;
+
+        let dest = temp_dir.path().join("dest");
+        let result = cache.get_or_create(dir_digest, &dest).await;
+        assert!(result.is_err(), "Path traversal should be rejected");
+
+        // The escape file should NOT exist in the parent directory
+        assert!(
+            !temp_dir.path().join("escape.txt").exists(),
+            "Path traversal should not create files outside dest"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_absolute_symlink_rejected() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let store = Store::new(MemoryStore::new(&Default::default()));
+
+        let malicious_dir = ProtoDirectory {
+            symlinks: vec![SymlinkNode {
+                name: "evil_link".to_string(),
+                target: "/etc/shadow".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut dir_data = Vec::new();
+        malicious_dir.encode(&mut dir_data).unwrap();
+        let dir_digest = DigestInfo::try_new(
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            dir_data.len() as i64,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(dir_digest.into(), dir_data.into())
+            .await
+            .unwrap();
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root,
+        };
+        let cache = DirectoryCache::new(config, store).await?;
+
+        let dest = temp_dir.path().join("dest");
+        let result = cache.get_or_create(dir_digest, &dest).await;
+        assert!(result.is_err(), "Absolute symlink target should be rejected");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_ref_count_returns_to_zero_after_operations() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, dir_digest) = setup_test_store().await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root,
+        };
+
+        let cache = DirectoryCache::new(config, store).await?;
+
+        // Cache miss
+        let dest1 = temp_dir.path().join("dest1");
+        cache.get_or_create(dir_digest, &dest1).await?;
+
+        // Cache hit
+        let dest2 = temp_dir.path().join("dest2");
+        cache.get_or_create(dir_digest, &dest2).await?;
+
+        // ref_count should be 0 after both operations
+        let stats = cache.stats().await;
+        assert_eq!(stats.in_use_entries, 0, "ref_count should be 0 after all operations");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_size_based_eviction() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, digest_a, digest_b) = setup_two_digest_store().await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 100,       // High entry limit
+            max_size_bytes: 20,     // Very small — forces size-based eviction
+            cache_root: cache_root.clone(),
+        };
+
+        let cache = DirectoryCache::new(config, store).await?;
+
+        // Insert entry A (14 bytes for "File A content")
+        let dest_a = temp_dir.path().join("dest_a");
+        cache.get_or_create(digest_a, &dest_a).await?;
+        assert_eq!(cache.stats().await.entries, 1);
+
+        // Insert entry B (16 bytes for "File B content!!") — total would be 30 > 20,
+        // so A should be evicted
+        let dest_b = temp_dir.path().join("dest_b");
+        cache.get_or_create(digest_b, &dest_b).await?;
+        assert_eq!(cache.stats().await.entries, 1);
+
+        // A should have been evicted
+        let cache_map = cache.cache.read().await;
+        assert!(
+            !cache_map.contains_key(&digest_a),
+            "Digest A should have been evicted due to size limit"
+        );
+        assert!(
+            cache_map.contains_key(&digest_b),
+            "Digest B should be present"
         );
 
         Ok(())

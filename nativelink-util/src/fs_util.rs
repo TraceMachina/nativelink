@@ -156,9 +156,16 @@ fn set_readonly_recursive_impl<'a>(
     path: &'a Path,
 ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
     Box::pin(async move {
-        let metadata = fs::metadata(path)
+        // Use symlink_metadata to avoid following symlinks (security: prevents
+        // changing permissions on external paths via crafted symlinks).
+        let metadata = fs::symlink_metadata(path)
             .await
             .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
+
+        // Skip symlinks — do not follow them or change their target's permissions.
+        if metadata.is_symlink() {
+            return Ok(());
+        }
 
         if metadata.is_dir() {
             let mut entries = fs::read_dir(path)
@@ -222,9 +229,16 @@ fn calculate_directory_size_impl<'a>(
     path: &'a Path,
 ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
     Box::pin(async move {
-        let metadata = fs::metadata(path)
+        // Use symlink_metadata to avoid following symlinks (security: prevents
+        // counting external files reachable via crafted symlinks).
+        let metadata = fs::symlink_metadata(path)
             .await
             .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
+
+        // Symlinks count as 0 bytes — do not follow them.
+        if metadata.is_symlink() {
+            return Ok(0);
+        }
 
         if metadata.is_file() {
             return Ok(metadata.len());
