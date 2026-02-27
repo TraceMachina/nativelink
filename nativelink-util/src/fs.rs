@@ -62,6 +62,25 @@ impl FileSlot {
     pub const fn advise_dontneed(&self) {
         // No-op: posix_fadvise is not available on Mac or Windows.
     }
+
+    /// Advise the kernel that this file will be read sequentially,
+    /// enabling more aggressive readahead (typically 2-4x default).
+    #[cfg(target_os = "linux")]
+    pub fn advise_sequential(&self) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.inner.as_raw_fd();
+        let ret = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL) };
+        if ret != 0 {
+            tracing::debug!(
+                fd,
+                ret,
+                "posix_fadvise(SEQUENTIAL) returned non-zero (best-effort, ignoring)",
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub const fn advise_sequential(&self) {}
 }
 
 impl AsRef<tokio::fs::File> for FileSlot {
