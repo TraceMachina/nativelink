@@ -68,6 +68,7 @@ use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_dig
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
@@ -168,6 +169,7 @@ async fn resolve_directory_tree(
     cas_store: &FastSlowStore,
     root_digest: &DigestInfo,
 ) -> Result<HashMap<DigestInfo, ProtoDirectory>, Error> {
+    let tree_start = std::time::Instant::now();
     // Try the fast path: GetTree RPC via the underlying GrpcStore.
     if let Some(grpc_store) = cas_store.slow_store().downcast_ref::<GrpcStore>(None) {
         let request = GetTreeRequest {
@@ -214,9 +216,13 @@ async fn resolve_directory_tree(
                     })
                 };
                 if tree_valid {
-                    debug!(
+                    let elapsed = tree_start.elapsed();
+                    let total_bytes: u64 = tree.keys().map(|d| d.size_bytes()).sum();
+                    info!(
                         root = ?root_digest,
                         dir_count = tree.len(),
+                        total_bytes,
+                        elapsed_ms = elapsed.as_millis() as u64,
                         "Resolved directory tree via GetTree RPC"
                     );
                     return Ok(tree);
@@ -242,6 +248,15 @@ async fn resolve_directory_tree(
     // Fallback: recursive fetch (original behavior).
     let mut tree = HashMap::new();
     resolve_directory_tree_recursive(cas_store, root_digest, &mut tree).await?;
+    let elapsed = tree_start.elapsed();
+    let total_bytes: u64 = tree.keys().map(|d| d.size_bytes()).sum();
+    info!(
+        root = ?root_digest,
+        dir_count = tree.len(),
+        total_bytes,
+        elapsed_ms = elapsed.as_millis() as u64,
+        "Resolved directory tree via recursive fetch"
+    );
     Ok(tree)
 }
 
@@ -831,6 +846,7 @@ pub fn download_to_directory<'a>(
             .try_for_each(|()| futures::future::ready(Ok(())))
             .await?;
 
+        let total_bytes: u64 = unique_digests.iter().map(|d| d.size_bytes()).sum();
         let total_ms = phase_start.elapsed().as_millis();
         info!(
             tree_resolve_ms,
@@ -839,7 +855,9 @@ pub fn download_to_directory<'a>(
             hardlink_ms = total_ms - fetch_ms,
             total_ms,
             num_files = unique_digests.len(),
-            "download_to_directory phase timing",
+            total_bytes,
+            throughput_mbps = format!("{:.1}", throughput_mbps(total_bytes, phase_start.elapsed())),
+            "download_to_directory completed",
         );
 
         Ok(())
@@ -973,12 +991,28 @@ async fn upload_file(
                 )
                 .await
                 .map(|_slot| ());
-            trace!(
-                ?digest,
-                upload_elapsed_ms = file_upload_start.elapsed().as_millis(),
-                success = upload_result.is_ok(),
-                "upload_file: update_with_whole_file completed",
-            );
+            let upload_elapsed = file_upload_start.elapsed();
+
+            match &upload_result {
+                Ok(()) => {
+                    info!(
+                        ?digest,
+                        size_bytes = digest.size_bytes(),
+                        elapsed_ms = upload_elapsed.as_millis() as u64,
+                        throughput_mbps = format!("{:.1}", throughput_mbps(digest.size_bytes(), upload_elapsed)),
+                        "upload_file: CAS write completed",
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        ?digest,
+                        size_bytes = digest.size_bytes(),
+                        elapsed_ms = upload_elapsed.as_millis() as u64,
+                        ?e,
+                        "upload_file: CAS write failed",
+                    );
+                }
+            }
 
             match upload_result {
                 Ok(()) => Ok(()),
@@ -1952,10 +1986,12 @@ impl RunningActionImpl {
                 .update_oneshot(digest, data)
                 .await
                 .err_tip(|| "Uploading stdout")?;
-            debug!(
+            let elapsed = start.elapsed();
+            info!(
                 ?digest,
-                data_len,
-                elapsed_ms = start.elapsed().as_millis(),
+                size_bytes = data_len,
+                elapsed_ms = elapsed.as_millis() as u64,
+                throughput_mbps = format!("{:.1}", throughput_mbps(data_len as u64, elapsed)),
                 "upload_results: stdout upload completed",
             );
             Result::<DigestInfo, Error>::Ok(digest)
@@ -1969,10 +2005,12 @@ impl RunningActionImpl {
                 .update_oneshot(digest, data)
                 .await
                 .err_tip(|| "Uploading  stderr")?;
-            debug!(
+            let elapsed = start.elapsed();
+            info!(
                 ?digest,
-                data_len,
-                elapsed_ms = start.elapsed().as_millis(),
+                size_bytes = data_len,
+                elapsed_ms = elapsed.as_millis() as u64,
+                throughput_mbps = format!("{:.1}", throughput_mbps(data_len as u64, elapsed)),
                 "upload_results: stderr upload completed",
             );
             Result::<DigestInfo, Error>::Ok(digest)
@@ -2428,11 +2466,22 @@ impl UploadActionResults {
                 results_cache_policy: None,
                 digest_function: hasher.proto_digest_func().into(),
             };
-            return grpc_store
+            let size_bytes = update_action_request.encoded_len() as u64;
+            let start = std::time::Instant::now();
+            grpc_store
                 .update_action_result(Request::new(update_action_request))
                 .await
                 .map(|_| ())
-                .err_tip(|| "Caching ActionResult");
+                .err_tip(|| "Caching ActionResult")?;
+            let elapsed = start.elapsed();
+            info!(
+                ?action_digest,
+                size_bytes,
+                elapsed_ms = elapsed.as_millis() as u64,
+                throughput_mbps = format!("{:.1}", throughput_mbps(size_bytes, elapsed)),
+                "AC write completed (grpc)",
+            );
+            return Ok(());
         }
 
         let mut store_data = BytesMut::with_capacity(ESTIMATED_DIGEST_SIZE);
@@ -2440,10 +2489,21 @@ impl UploadActionResults {
             .encode(&mut store_data)
             .err_tip(|| "Encoding ActionResult for caching")?;
 
+        let size_bytes = store_data.len() as u64;
+        let start = std::time::Instant::now();
         ac_store
             .update_oneshot(action_digest, store_data.split().freeze())
             .await
-            .err_tip(|| "Caching ActionResult")
+            .err_tip(|| "Caching ActionResult")?;
+        let elapsed = start.elapsed();
+        info!(
+            ?action_digest,
+            size_bytes,
+            elapsed_ms = elapsed.as_millis() as u64,
+            throughput_mbps = format!("{:.1}", throughput_mbps(size_bytes, elapsed)),
+            "AC write completed",
+        );
+        Ok(())
     }
 
     async fn upload_historical_results_with_message(

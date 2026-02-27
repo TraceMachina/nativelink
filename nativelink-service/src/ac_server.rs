@@ -30,11 +30,12 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
+use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use prost::Message;
 use tonic::{Request, Response, Status};
-use tracing::{Instrument, Level, error, error_span, instrument};
+use tracing::{Instrument, Level, error, error_span, info, instrument};
 
 #[derive(Debug, Clone)]
 pub struct AcStoreInfo {
@@ -104,9 +105,21 @@ impl AcServer {
             return grpc_store.get_action_result(Request::new(request)).await;
         }
 
+        let get_start = std::time::Instant::now();
         let res = get_and_decode_digest::<ActionResult>(&store_info.store, digest.into()).await;
         match res {
-            Ok(action_result) => Ok(Response::new(action_result)),
+            Ok(action_result) => {
+                let elapsed = get_start.elapsed();
+                let size_bytes = action_result.encoded_len() as u64;
+                info!(
+                    ?digest,
+                    size_bytes,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    throughput_mbps = format!("{:.1}", throughput_mbps(size_bytes, elapsed)),
+                    "AC read completed",
+                );
+                Ok(Response::new(action_result))
+            }
             Err(mut e) => {
                 if e.code == Code::NotFound {
                     // `get_action_result` is frequent to get NotFound errors, so remove all
@@ -158,11 +171,35 @@ impl AcServer {
             .encode(&mut store_data)
             .err_tip(|| "Provided ActionResult could not be serialized")?;
 
-        store_info
+        let size_bytes = store_data.len() as u64;
+        let start = std::time::Instant::now();
+        let result = store_info
             .store
             .update_oneshot(digest, store_data.freeze())
             .await
-            .err_tip(|| "Failed to update in action cache")?;
+            .err_tip(|| "Failed to update in action cache");
+        let elapsed = start.elapsed();
+        match &result {
+            Ok(()) => {
+                info!(
+                    ?digest,
+                    size_bytes,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    throughput_mbps = format!("{:.1}", throughput_mbps(size_bytes, elapsed)),
+                    "AC write completed",
+                );
+            }
+            Err(e) => {
+                error!(
+                    ?digest,
+                    size_bytes,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    ?e,
+                    "AC write failed",
+                );
+            }
+        }
+        result?;
         Ok(Response::new(action_result))
     }
 }
