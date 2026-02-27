@@ -633,6 +633,17 @@ pub struct FilesystemSpec {
     /// Default: true
     #[serde(default = "default_sync_data_only")]
     pub sync_data_only: bool,
+
+    /// If true, skip writes when a blob with the same key already exists
+    /// in the store. This is safe for content-addressed storage (CAS) where
+    /// identical keys guarantee identical content. Do NOT enable this for
+    /// stores where the same key can hold different content (e.g. action
+    /// cache).
+    /// When a duplicate write is skipped, the existing entry's access time
+    /// is updated in the LRU to prevent premature eviction.
+    /// Default: false
+    #[serde(default)]
+    pub content_is_immutable: bool,
 }
 
 impl Default for FilesystemSpec {
@@ -645,6 +656,7 @@ impl Default for FilesystemSpec {
             block_size: 0,
             max_concurrent_writes: 0,
             sync_data_only: true,
+            content_is_immutable: false,
         }
     }
 }

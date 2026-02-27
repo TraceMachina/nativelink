@@ -32,6 +32,7 @@ use nativelink_metric::MetricsComponent;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
+use crate::background_spawn;
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics_utils::{Counter, CounterWithTime};
 
@@ -426,50 +427,65 @@ where
             (removal_futures, data_to_unref)
         };
 
-        // Perform the async callbacks outside of the lock
-        let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
-        while callbacks.next().await.is_some() {}
-        let mut callbacks: FuturesUnordered<_> =
-            data_to_unref.iter().map(LenEntry::unref).collect();
-        while callbacks.next().await.is_some() {}
+        // Fire-and-forget eviction cleanup in background.
+        if !removal_futures.is_empty() || !data_to_unref.is_empty() {
+            drop(background_spawn!("evicting_map_sizes_cleanup", async move {
+                let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while callbacks.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> =
+                    data_to_unref.iter().map(LenEntry::unref).collect();
+                while callbacks.next().await.is_some() {}
+            }));
+        }
     }
 
     pub async fn get(&self, key: &Q) -> Option<T> {
-        // Fast path: Check if we need eviction before acquiring lock for eviction
-        let needs_eviction = {
-            let state = self.state.lock();
+        let mut state = self.state.lock();
+
+        // Perform eviction if needed, collecting items for background cleanup.
+        let eviction_cleanup = {
             if let Some((_, peek_entry)) = state.lru.peek_lru() {
-                self.should_evict(
+                if self.should_evict(
                     state.lru.len(),
                     peek_entry,
                     state.sum_store_size,
                     self.max_bytes,
-                )
+                ) {
+                    let (items_to_unref, removal_futures) = self.evict_items(&mut *state);
+                    if !removal_futures.is_empty() || !items_to_unref.is_empty() {
+                        Some((items_to_unref, removal_futures))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             } else {
-                false
+                None
             }
         };
 
-        // Perform eviction if needed
-        if needs_eviction {
-            let (items_to_unref, removal_futures) = {
-                let mut state = self.state.lock();
-                self.evict_items(&mut *state)
-            };
-            // Unref items outside of lock
-            let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
-            while callbacks.next().await.is_some() {}
-            let mut callbacks: FuturesUnordered<_> =
-                items_to_unref.iter().map(LenEntry::unref).collect();
-            while callbacks.next().await.is_some() {}
+        // Get the item while still holding the lock.
+        let result = state.lru.get_mut(key.borrow()).map(|entry| {
+            entry.seconds_since_anchor =
+                i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+            entry.data.clone()
+        });
+
+        drop(state);
+
+        // Fire-and-forget eviction cleanup in background.
+        if let Some((items_to_unref, removal_futures)) = eviction_cleanup {
+            drop(background_spawn!("evicting_map_get_cleanup", async move {
+                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while futures.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> =
+                    items_to_unref.iter().map(LenEntry::unref).collect();
+                while callbacks.next().await.is_some() {}
+            }));
         }
 
-        // Now get the item
-        let mut state = self.state.lock();
-        let entry = state.lru.get_mut(key.borrow())?;
-        entry.seconds_since_anchor =
-            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
-        Some(entry.data.clone())
+        result
     }
 
     /// Returns the replaced item if any.
@@ -487,23 +503,40 @@ where
 
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
-        let (items_to_unref, removal_futures) = {
+        let (replaced_items, evicted_items, removal_futures) = {
             let mut state = self.state.lock();
             self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
         };
 
-        let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
-        while futures.next().await.is_some() {}
+        // Replaced items share the same key (and thus content path) as the
+        // new insert. Their unrefs MUST complete before the caller continues
+        // to rename the new file into the same path.
+        let result = if !replaced_items.is_empty() {
+            let futures: FuturesUnordered<_> = replaced_items
+                .into_iter()
+                .map(|item| async move {
+                    item.unref().await;
+                    item
+                })
+                .collect();
+            futures.collect::<Vec<_>>().await.into_iter().next()
+        } else {
+            None
+        };
 
-        // Unref items outside of lock
-        let futures: FuturesUnordered<_> = items_to_unref
-            .into_iter()
-            .map(|item| async move {
-                item.unref().await;
-                item
-            })
-            .collect();
-        futures.collect::<Vec<_>>().await.into_iter().next()
+        // Fire-and-forget eviction cleanup (different keys, no path conflict)
+        // and removal callbacks (cache invalidation, protected by stale-positive handling).
+        if !removal_futures.is_empty() || !evicted_items.is_empty() {
+            drop(background_spawn!("evicting_map_insert_cleanup", async move {
+                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while futures.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> =
+                    evicted_items.iter().map(LenEntry::unref).collect();
+                while callbacks.next().await.is_some() {}
+            }));
+        }
+
+        result
     }
 
     /// Same as `insert()`, but optimized for multiple inserts.
@@ -522,7 +555,7 @@ where
             return Vec::new();
         }
 
-        let (items_to_unref, removal_futures) = {
+        let (replaced_items, evicted_items, removal_futures) = {
             let mut state = self.state.lock();
             self.inner_insert_many(
                 &mut state,
@@ -531,11 +564,8 @@ where
             )
         };
 
-        let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
-        while futures.next().await.is_some() {}
-
-        // Unref items outside of lock
-        items_to_unref
+        // Replaced items share the same key/path — must await their unrefs.
+        let result: Vec<T> = replaced_items
             .into_iter()
             .map(|item| async move {
                 item.unref().await;
@@ -543,15 +573,35 @@ where
             })
             .collect::<FuturesUnordered<_>>()
             .collect::<Vec<_>>()
-            .await
+            .await;
+
+        // Fire-and-forget eviction cleanup (different keys, no path conflict).
+        if !removal_futures.is_empty() || !evicted_items.is_empty() {
+            drop(background_spawn!("evicting_map_insert_many_cleanup", async move {
+                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while futures.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> =
+                    evicted_items.iter().map(LenEntry::unref).collect();
+                while callbacks.next().await.is_some() {}
+            }));
+        }
+
+        result
     }
 
+    /// Returns `(replaced_items, evicted_items, removal_futures)`.
+    /// - `replaced_items`: items that were replaced by new inserts (same key).
+    /// - `evicted_items`: items evicted due to size/age/count limits.
+    /// - `removal_futures`: callbacks from remove_callbacks for all removed items.
+    ///
+    /// Callers should fire-and-forget the eviction cleanup (evicted_items unrefs
+    /// + removal_futures) via `background_spawn!` to avoid blocking the caller.
     fn inner_insert_many<It>(
         &self,
         state: &mut State<K, Q, T, C>,
         inserts: It,
         seconds_since_anchor: i32,
-    ) -> (Vec<T>, Vec<RemoveFuture>)
+    ) -> (Vec<T>, Vec<T>, Vec<RemoveFuture>)
     where
         It: IntoIterator<Item = (K, T)> + Send,
         // Note: It's not enough to have the inserts themselves be Send. The
@@ -576,18 +626,14 @@ where
         }
 
         // Perform eviction after all insertions
-        let (items_to_unref, futures) = self.evict_items(state);
+        let (evicted_items, futures) = self.evict_items(state);
         removal_futures.extend(futures);
 
-        // Note: We cannot drop the state lock here since we're borrowing it,
-        // but the caller will handle unreffing these items after releasing the lock
-        replaced_items.extend(items_to_unref);
-
-        (replaced_items, removal_futures)
+        (replaced_items, evicted_items, removal_futures)
     }
 
     pub async fn remove(&self, key: &Q) -> bool {
-        let (items_to_unref, removed_item, removal_futures) = {
+        let (evicted_items, removed_item, removal_futures) = {
             let mut state = self.state.lock();
 
             // First perform eviction
@@ -605,21 +651,25 @@ where
             (evicted_items, removed, removal_futures)
         };
 
-        let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
-        while callbacks.next().await.is_some() {}
+        let was_removed = removed_item.is_some();
 
-        // Unref evicted items outside of lock
-        let mut callbacks: FuturesUnordered<_> =
-            items_to_unref.iter().map(LenEntry::unref).collect();
-        while callbacks.next().await.is_some() {}
-
-        // Unref removed item if any
-        if let Some(item) = removed_item {
-            item.unref().await;
-            return true;
+        // Fire-and-forget all cleanup (evicted + removed + callbacks) in background.
+        let has_cleanup =
+            !removal_futures.is_empty() || !evicted_items.is_empty() || removed_item.is_some();
+        if has_cleanup {
+            drop(background_spawn!("evicting_map_remove_cleanup", async move {
+                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while futures.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> = evicted_items
+                    .iter()
+                    .chain(removed_item.iter())
+                    .map(LenEntry::unref)
+                    .collect();
+                while callbacks.next().await.is_some() {}
+            }));
         }
 
-        false
+        was_removed
     }
 
     /// Same as `remove()`, but allows for a conditional to be applied to the
@@ -648,26 +698,29 @@ where
 
                 (evicted_items, removal_futures, removed_item)
             } else {
-                (vec![], vec![].into_iter().collect(), None)
+                return false;
             }
         };
 
-        // Perform the async callbacks outside of the lock
-        let mut removal_futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
-        while removal_futures.next().await.is_some() {}
+        let was_removed = removed_item.is_some();
 
-        // Unref evicted items
-        let mut callbacks: FuturesUnordered<_> =
-            evicted_items.iter().map(LenEntry::unref).collect();
-        while callbacks.next().await.is_some() {}
-
-        // Unref removed item if any
-        if let Some(item) = removed_item {
-            item.unref().await;
-            true
-        } else {
-            false
+        // Fire-and-forget all cleanup in background.
+        let has_cleanup =
+            !removal_futures.is_empty() || !evicted_items.is_empty() || removed_item.is_some();
+        if has_cleanup {
+            drop(background_spawn!("evicting_map_remove_if_cleanup", async move {
+                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while futures.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> = evicted_items
+                    .iter()
+                    .chain(removed_item.iter())
+                    .map(LenEntry::unref)
+                    .collect();
+                while callbacks.next().await.is_some() {}
+            }));
         }
+
+        was_removed
     }
 
     pub fn add_remove_callback(&self, callback: C) {
