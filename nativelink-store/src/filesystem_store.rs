@@ -654,6 +654,8 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     /// Limits concurrent write operations to prevent disk I/O saturation.
     write_semaphore: Option<Semaphore>,
+    /// Skip writes when a blob with the same key already exists (CAS dedup).
+    content_is_immutable: bool,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
@@ -724,6 +726,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             weak_self: weak_self.clone(),
             rename_fn,
             write_semaphore,
+            content_is_immutable: spec.content_is_immutable,
         }))
     }
 
@@ -830,11 +833,24 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
             let from_path: OsString = encoded_file_path.get_file_path().into_owned();
             let final_path_owned: OsString = final_path.into_owned();
-            // Run rename on a blocking thread to avoid stalling the async runtime.
+            // Run rename + set_permissions on a blocking thread to avoid
+            // stalling the async runtime with syscalls.
             let from_clone = from_path.clone();
             let to_clone = final_path_owned.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                (rename_fn)(&from_clone, &to_clone)
+            let result = tokio::task::spawn_blocking(move || -> Result<(), Error> {
+                (rename_fn)(&from_clone, &to_clone)?;
+                // Pre-set CAS file permissions to read+execute (0o555) so that
+                // hardlinked copies already have correct permissions without
+                // needing a per-file chmod during input materialization.
+                #[cfg(target_family = "unix")]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = std::fs::Permissions::from_mode(0o555);
+                    if let Err(err) = std::fs::set_permissions(&to_clone, perms) {
+                        tracing::warn!(?err, path = ?to_clone, "Failed to set CAS file permissions to 0o555");
+                    }
+                }
+                Ok(())
             })
             .await
             .map_err(|e| make_err!(Code::Internal, "Rename task join error: {e:?}"))
@@ -858,17 +874,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 return Err(err);
             }
             encoded_file_path.path_type = PathType::Content;
-            // Pre-set CAS file permissions to read+execute (0o555) so that
-            // hardlinked copies already have correct permissions without
-            // needing a per-file chmod during input materialization.
-            #[cfg(target_family = "unix")]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let perms = std::fs::Permissions::from_mode(0o555);
-                if let Err(err) = std::fs::set_permissions(&final_path_owned, perms) {
-                    warn!(?err, ?final_path_owned, "Failed to set CAS file permissions to 0o555");
-                }
-            }
             encoded_file_path.key = key;
             Ok(())
         })
@@ -924,6 +929,24 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             return Ok(());
         }
 
+        // CAS dedup: skip write if blob already exists (same digest = same content).
+        // sizes_for_keys with peek=false promotes the key in the LRU, updating
+        // its access time so it won't be evicted prematurely.
+        if self.content_is_immutable {
+            let owned_key = key.borrow().into_owned();
+            let mut exists = [None];
+            self.evicting_map
+                .sizes_for_keys(core::iter::once(&owned_key), &mut exists, false)
+                .await;
+            if exists[0].is_some() {
+                reader
+                    .drain()
+                    .await
+                    .err_tip(|| "Failed to drain reader for existing blob")?;
+                return Ok(());
+            }
+        }
+
         let temp_key = make_temp_key(&key);
 
         // There's a possibility of deadlock here where we take all of the
@@ -964,6 +987,18 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
         if is_zero_digest(key.borrow()) {
             return Ok(());
+        }
+
+        // CAS dedup: skip write if blob already exists (same digest = same content).
+        if self.content_is_immutable {
+            let owned_key = key.borrow().into_owned();
+            let mut exists = [None];
+            self.evicting_map
+                .sizes_for_keys(core::iter::once(&owned_key), &mut exists, false)
+                .await;
+            if exists[0].is_some() {
+                return Ok(());
+            }
         }
 
         let temp_key = make_temp_key(&key);
