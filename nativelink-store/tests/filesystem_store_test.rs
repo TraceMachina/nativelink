@@ -1341,14 +1341,8 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         original_inode
     };
 
-    let expected_file_name = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
-    let new_inode = fs::create_file(expected_file_name)
-        .await
-        .unwrap()
-        .as_ref()
-        .metadata()
-        .await?
-        .ino();
+    let expected_file_name = format!("{content_path}/{DIGEST_FOLDER}/{digest}");
+    let new_inode = tokio::fs::metadata(&expected_file_name).await?.ino();
     assert_eq!(
         original_inode, new_inode,
         "Expected the same inode for the file"

@@ -31,6 +31,7 @@ use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::log_utils::throughput_mbps;
+use nativelink_util::stall_detector::StallGuard;
 use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use prost::Message;
@@ -218,6 +219,10 @@ impl ActionCache for AcServer {
     ) -> Result<Response<ActionResult>, Status> {
         let request = grpc_request.into_inner();
         let digest_function = request.digest_function;
+        let _stall_guard = StallGuard::new(
+            nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
+            "AC::get_action_result",
+        );
         let result = self
             .inner_get_action_result(request)
             .instrument(error_span!("ac_server_get_action_result"))
@@ -249,6 +254,10 @@ impl ActionCache for AcServer {
     ) -> Result<Response<ActionResult>, Status> {
         let request = grpc_request.into_inner();
         let digest_function = request.digest_function;
+        let _stall_guard = StallGuard::new(
+            nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
+            "AC::update_action_result",
+        );
         self.inner_update_action_result(request)
             .instrument(error_span!("ac_server_update_action_result"))
             .with_context(

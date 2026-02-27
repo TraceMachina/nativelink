@@ -2884,7 +2884,6 @@ dependencies = [
 name = "nativelink-util"
 version = "1.0.0-rc2"
 dependencies = [
- "async-lock",
  "async-trait",
  "base64",
  "bitflags",

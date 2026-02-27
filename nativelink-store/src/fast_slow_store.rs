@@ -22,6 +22,7 @@ use std::ffi::OsString;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::{FutureExt, join};
 use nativelink_config::stores::{FastSlowSpec, StoreDirection};
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -287,20 +288,10 @@ impl FastSlowStore {
         }
     }
 
-    /// Ensure our fast store is populated. This should be kept as a low
-    /// cost function. Since the data itself is shared and not copied it should be fairly
-    /// low cost to just discard the data, but does cost a few mutex locks while
-    /// streaming.
-    pub async fn populate_fast_store(&self, key: StoreKey<'_>) -> Result<(), Error> {
-        let maybe_size_info = self
-            .fast_store
-            .has(key.borrow())
-            .await
-            .err_tip(|| "While querying in populate_fast_store")?;
-        if maybe_size_info.is_some() {
-            return Ok(());
-        }
-
+    /// Internal helper: copy a blob from the slow store into the fast store,
+    /// using the de-duplicating loader. Assumes the caller has already verified
+    /// the blob is not in the fast store (or does not care).
+    async fn copy_slow_to_fast(&self, key: StoreKey<'_>) -> Result<(), Error> {
         // If the fast store is noop or read only or update only then this is an error.
         if self
             .fast_store
@@ -321,6 +312,31 @@ impl FastSlowStore {
             })
             .await
             .err_tip(|| "Failed to populate()")
+    }
+
+    /// Ensure our fast store is populated. This should be kept as a low
+    /// cost function. Since the data itself is shared and not copied it should be fairly
+    /// low cost to just discard the data, but does cost a few mutex locks while
+    /// streaming.
+    pub async fn populate_fast_store(&self, key: StoreKey<'_>) -> Result<(), Error> {
+        let maybe_size_info = self
+            .fast_store
+            .has(key.borrow())
+            .await
+            .err_tip(|| "While querying in populate_fast_store")?;
+        if maybe_size_info.is_some() {
+            return Ok(());
+        }
+
+        self.copy_slow_to_fast(key).await
+    }
+
+    /// Like [`populate_fast_store`](Self::populate_fast_store) but skips the
+    /// `has()` check on the fast store. Use this when the caller has already
+    /// verified that the blob is missing from the fast store (e.g. via a prior
+    /// batch `has_with_results` call) to avoid a redundant existence check.
+    pub async fn populate_fast_store_unchecked(&self, key: StoreKey<'_>) -> Result<(), Error> {
+        self.copy_slow_to_fast(key).await
     }
 
     /// Returns the range of bytes that should be sent given a slice bounds
@@ -499,6 +515,42 @@ impl StoreDriver for FastSlowStore {
             );
         }
         data_stream_res.merge(fast_res).merge(slow_res)?;
+        Ok(())
+    }
+
+    async fn update_oneshot(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        data: Bytes,
+    ) -> Result<(), Error> {
+        let ignore_slow = self
+            .slow_store
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.slow_direction == StoreDirection::ReadOnly
+            || self.slow_direction == StoreDirection::Get;
+        let ignore_fast = self
+            .fast_store
+            .inner_store(Some(key.borrow()))
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.fast_direction == StoreDirection::ReadOnly
+            || self.fast_direction == StoreDirection::Get;
+
+        if ignore_slow && ignore_fast {
+            return Ok(());
+        }
+        if ignore_slow {
+            return self.fast_store.update_oneshot(key, data).await;
+        }
+        if ignore_fast {
+            return self.slow_store.update_oneshot(key, data).await;
+        }
+
+        let (fast_res, slow_res) = join!(
+            self.fast_store.update_oneshot(key.borrow(), data.clone()),
+            self.slow_store.update_oneshot(key.borrow(), data),
+        );
+        fast_res.merge(slow_res)?;
         Ok(())
     }
 

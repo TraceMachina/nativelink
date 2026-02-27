@@ -60,11 +60,9 @@ async fn simple_exist_cache_test() -> Result<(), Error> {
         "Expected digest to exist in store"
     );
 
-    // has() always queries the inner store and no longer populates the
-    // existence cache (to guarantee LRU promotion and avoid stale positives).
     assert!(
-        !store.exists_in_cache(&digest).await,
-        "Expected digest to not be in cache after has() (cache only populated by update/get)"
+        store.exists_in_cache(&digest).await,
+        "Expected digest to exist in cache in direct check"
     );
     Ok(())
 }

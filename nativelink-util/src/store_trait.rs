@@ -857,9 +857,6 @@ pub trait RemoveItemCallback: Debug + Send + Sync {
         &'a self,
         store_key: StoreKey<'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
-
-    /// Synchronous hook called while the EvictingMap lock is still held.
-    fn on_remove(&self, _store_key: &StoreKey<'_>) {}
 }
 
 /// The instructions on how to decode a value from a Bytes & version into

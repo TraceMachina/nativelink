@@ -43,8 +43,4 @@ where
         Box::pin(async move { callback.callback(store_key).await })
     }
 
-    fn on_remove(&self, store_key: &Q) {
-        let store_key: &StoreKey<'_> = Borrow::<StoreKey<'_>>::borrow(store_key);
-        self.callback.on_remove(store_key);
-    }
 }

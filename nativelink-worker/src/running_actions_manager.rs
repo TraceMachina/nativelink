@@ -633,12 +633,15 @@ async fn hardlink_and_set_metadata(
         populate_and_hardlink(cas_store, filesystem_store, digest, &dest).await?;
     }
 
-    // Apply permissions.
+    // Default CAS file permissions — files in the CAS store are pre-set to 0o555
+    // (read+execute for all). Skip chmod when the requested mode matches.
     #[cfg(target_family = "unix")]
     if let Some(unix_mode) = file.unix_mode {
-        fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
-            .await
-            .err_tip(|| format!("Could not set unix mode in download_to_directory {dest}"))?;
+        if unix_mode != 0o555 {
+            fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
+                .await
+                .err_tip(|| format!("Could not set unix mode in download_to_directory {dest}"))?;
+        }
     }
 
     // Apply mtime.
@@ -807,7 +810,7 @@ pub fn download_to_directory<'a>(
                 .into_iter()
                 .map(|digest| async move {
                     cas_store
-                        .populate_fast_store(digest.into())
+                        .populate_fast_store_unchecked(digest.into())
                         .await
                         .err_tip(|| format!("Populating fast store for {digest:?}"))
                 })
