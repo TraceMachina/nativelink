@@ -125,6 +125,14 @@ pub fn endpoint_from(
     // harmful for gRPC's many small HTTP/2 frames.
     let endpoint_transport = endpoint_transport.tcp_nodelay(true);
 
+    // Set HTTP/2 flow-control windows to match the server defaults (16 MiB
+    // stream, 32 MiB connection).  Tonic/h2 defaults to 64 KiB for both,
+    // which caps aggregate throughput per connection to ~128 MB/s at 0.5 ms
+    // RTT — far below 10 GbE capacity when many streams share a connection.
+    let endpoint_transport = endpoint_transport
+        .initial_stream_window_size(16 * 1024 * 1024)
+        .initial_connection_window_size(32 * 1024 * 1024);
+
     Ok(endpoint_transport)
 }
 

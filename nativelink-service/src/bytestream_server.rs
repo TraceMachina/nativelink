@@ -16,6 +16,7 @@ use core::convert::Into;
 use core::fmt::{Debug, Formatter};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::task::{Context, Poll};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -272,6 +273,75 @@ impl Debug for InstanceInfo {
 
 type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + 'static>>;
 type StoreUpdateFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
+
+/// Wrapper around a `ReadStream` that logs total bytes and elapsed time when
+/// the stream completes (yields `None`) or is dropped before completion.
+struct LoggingReadStream {
+    inner: ReadStream,
+    start_time: Instant,
+    digest: DigestInfo,
+    expected_size: u64,
+    bytes_sent: u64,
+    completed: bool,
+}
+
+impl LoggingReadStream {
+    fn new(inner: ReadStream, start_time: Instant, digest: DigestInfo, expected_size: u64) -> Self {
+        Self {
+            inner,
+            start_time,
+            digest,
+            expected_size,
+            bytes_sent: 0,
+            completed: false,
+        }
+    }
+
+    fn log_completion(&self, status: &str) {
+        let elapsed = self.start_time.elapsed();
+        let elapsed_ms = elapsed.as_millis() as u64;
+        info!(
+            digest = %self.digest,
+            expected_size = self.expected_size,
+            bytes_sent = self.bytes_sent,
+            elapsed_ms,
+            throughput_mbps = %throughput_mbps(self.bytes_sent, elapsed),
+            status,
+            "ByteStream::read: CAS read completed",
+        );
+    }
+}
+
+impl Stream for LoggingReadStream {
+    type Item = Result<ReadResponse, Status>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let result = self.inner.as_mut().poll_next(cx);
+        match &result {
+            Poll::Ready(Some(Ok(response))) => {
+                self.bytes_sent += response.data.len() as u64;
+            }
+            Poll::Ready(None) => {
+                self.completed = true;
+                self.log_completion("ok");
+            }
+            Poll::Ready(Some(Err(_))) => {
+                self.completed = true;
+                self.log_completion("error");
+            }
+            Poll::Pending => {}
+        }
+        result
+    }
+}
+
+impl Drop for LoggingReadStream {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.log_completion("dropped");
+        }
+    }
+}
 
 struct StreamState {
     uuid: UuidKey,
@@ -1098,7 +1168,17 @@ impl ByteStream for ByteStreamServer {
             )
             .await
             .err_tip(|| "In ByteStreamServer::read")
-            .map(|stream| -> Response<Self::ReadStream> { Response::new(Box::pin(stream)) });
+            .map(|stream| -> Response<Self::ReadStream> {
+                // Wrap in LoggingReadStream to log when the client finishes
+                // consuming all data (or drops the stream early).
+                let logging = LoggingReadStream::new(
+                    Box::pin(stream),
+                    start_time,
+                    digest,
+                    expected_size,
+                );
+                Response::new(Box::pin(logging))
+            });
 
         // Track metrics based on result
         #[allow(clippy::cast_possible_truncation)]

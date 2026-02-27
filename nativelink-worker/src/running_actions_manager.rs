@@ -369,7 +369,10 @@ fn collect_files_from_tree(
 }
 
 /// Maximum number of concurrent BatchReadBlobs RPCs in flight.
-const BATCH_READ_CONCURRENCY: usize = 8;
+const BATCH_READ_CONCURRENCY: usize = 16;
+
+/// Maximum number of concurrent ByteStream fetches in flight.
+const BYTESTREAM_CONCURRENCY: usize = 16;
 
 /// Batch-download small blobs via `BatchReadBlobs` and write them into the fast store.
 /// Returns the set of digests that were successfully fetched.
@@ -441,45 +444,53 @@ async fn execute_batch_read(
         .err_tip(|| "In execute_batch_read")?
         .into_inner();
 
-    let mut completed = Vec::with_capacity(response.responses.len());
     let fast_store = cas_store.fast_store();
 
-    for blob_resp in response.responses {
-        let status_code = blob_resp
-            .status
-            .as_ref()
-            .map_or(0, |s| s.code);
-        if status_code != 0 {
-            // Non-OK status for this blob — skip it, caller will fall back.
-            continue;
-        }
-        let Some(proto_digest) = blob_resp.digest else {
-            continue;
-        };
-        let digest = DigestInfo::try_from(proto_digest)
-            .err_tip(|| "Parsing digest from BatchReadBlobs response")?;
-        let data = Bytes::from(blob_resp.data);
-        let data_len = data.len() as u64;
+    // Parse all valid responses first, then write to fast store concurrently.
+    let valid_blobs: Vec<(DigestInfo, Bytes)> = response
+        .responses
+        .into_iter()
+        .filter_map(|blob_resp| {
+            let status_code = blob_resp.status.as_ref().map_or(0, |s| s.code);
+            if status_code != 0 {
+                return None;
+            }
+            let proto_digest = blob_resp.digest?;
+            let digest = DigestInfo::try_from(proto_digest).ok()?;
+            Some((digest, Bytes::from(blob_resp.data)))
+        })
+        .collect();
 
-        // Write to fast store.
-        let (mut tx, rx) = make_buf_channel_pair();
-        let store_key: StoreKey<'_> = digest.into();
-        let update_fut = fast_store.update(
-            store_key,
-            rx,
-            UploadSizeInfo::ExactSize(data_len),
-        );
-        let send_fut = async {
-            tx.send(data).await.err_tip(|| "Sending batch blob to fast store")?;
-            tx.send_eof().err_tip(|| "Sending EOF for batch blob")?;
-            Ok::<_, Error>(())
-        };
-        let (update_res, send_res) = futures::join!(update_fut, send_fut);
-        update_res
-            .merge(send_res)
-            .err_tip(|| format!("Writing batch-read blob {digest:?} to fast store"))?;
-        completed.push(digest);
-    }
+    // Write all blobs to fast store concurrently.
+    let write_futures: FuturesUnordered<_> = valid_blobs
+        .into_iter()
+        .map(|(digest, data)| {
+            let data_len = data.len() as u64;
+            async move {
+                let (mut tx, rx) = make_buf_channel_pair();
+                let store_key: StoreKey<'_> = digest.into();
+                let update_fut = fast_store.update(
+                    store_key,
+                    rx,
+                    UploadSizeInfo::ExactSize(data_len),
+                );
+                let send_fut = async {
+                    tx.send(data)
+                        .await
+                        .err_tip(|| "Sending batch blob to fast store")?;
+                    tx.send_eof().err_tip(|| "Sending EOF for batch blob")?;
+                    Ok::<_, Error>(())
+                };
+                let (update_res, send_res) = futures::join!(update_fut, send_fut);
+                update_res
+                    .merge(send_res)
+                    .err_tip(|| format!("Writing batch-read blob {digest:?} to fast store"))?;
+                Ok::<DigestInfo, Error>(digest)
+            }
+        })
+        .collect();
+
+    let completed: Vec<DigestInfo> = write_futures.try_collect().await?;
 
     Ok(completed)
 }
@@ -715,12 +726,20 @@ pub fn download_to_directory<'a>(
             }
         }
 
-        // Create symlinks.
+        // Create symlinks concurrently.
         #[cfg(target_family = "unix")]
-        for (target, dest) in &symlinks {
-            fs::symlink(target, dest)
-                .await
-                .err_tip(|| format!("Could not create symlink {target} -> {dest}"))?;
+        {
+            let symlink_futures: FuturesUnordered<_> = symlinks
+                .iter()
+                .map(|(target, dest)| async move {
+                    fs::symlink(target, dest)
+                        .await
+                        .err_tip(|| format!("Could not create symlink {target} -> {dest}"))
+                })
+                .collect();
+            symlink_futures
+                .try_for_each(|()| futures::future::ready(Ok(())))
+                .await?;
         }
 
         if files.is_empty() {
@@ -774,12 +793,13 @@ pub fn download_to_directory<'a>(
         );
 
         // Step 4: Fetch missing blobs.
-        // Partition into small (BatchReadBlobs-eligible) and large (ByteStream).
+        // Partition into small (BatchReadBlobs-eligible) and large (ByteStream),
+        // then fetch BOTH concurrently — BatchReadBlobs batches (16 concurrent)
+        // and ByteStream fetches (16 concurrent) run in parallel.
         let mut small_missing = Vec::new();
         let mut large_missing = Vec::new();
         for &digest in &missing_digests {
             if is_zero_digest(digest) {
-                // Zero digests are handled inline during materialization.
                 continue;
             }
             if digest.size_bytes() <= BATCH_READ_MAX_BLOB_SIZE {
@@ -789,35 +809,57 @@ pub fn download_to_directory<'a>(
             }
         }
 
-        // Fetch small blobs via BatchReadBlobs.
-        let batch_fetched = if !small_missing.is_empty() {
-            debug!(count = small_missing.len(), "Fetching small blobs via BatchReadBlobs");
-            batch_read_small_blobs(cas_store, &small_missing).await?
-        } else {
-            HashSet::new()
+        debug!(
+            small = small_missing.len(),
+            large = large_missing.len(),
+            "Fetching missing blobs (BatchReadBlobs + ByteStream concurrent)"
+        );
+
+        // Launch BatchReadBlobs for small blobs (bounded at BATCH_READ_CONCURRENCY).
+        let batch_fut = async {
+            if small_missing.is_empty() {
+                return Ok::<HashSet<DigestInfo>, Error>(HashSet::new());
+            }
+            batch_read_small_blobs(cas_store, &small_missing).await
         };
 
-        // Fetch large blobs + any small blobs that BatchReadBlobs didn't cover
-        // via the existing ByteStream populate_fast_store path.
-        let remaining: Vec<DigestInfo> = large_missing
-            .iter()
-            .chain(small_missing.iter().filter(|d| !batch_fetched.contains(d)))
-            .copied()
-            .collect();
-
-        if !remaining.is_empty() {
-            debug!(count = remaining.len(), "Fetching remaining blobs via ByteStream");
-            let populate_futures: FuturesUnordered<_> = remaining
-                .into_iter()
-                .map(|digest| async move {
+        // Launch ByteStream for large blobs (bounded at BYTESTREAM_CONCURRENCY).
+        let bytestream_fut = async {
+            if large_missing.is_empty() {
+                return Ok::<(), Error>(());
+            }
+            futures::stream::iter(large_missing.iter().map(Ok::<_, Error>))
+                .try_for_each_concurrent(BYTESTREAM_CONCURRENCY, |&digest| async move {
                     cas_store
                         .populate_fast_store_unchecked(digest.into())
                         .await
                         .err_tip(|| format!("Populating fast store for {digest:?}"))
                 })
-                .collect();
-            populate_futures
-                .try_for_each(|()| futures::future::ready(Ok(())))
+                .await
+        };
+
+        // Run both concurrently.
+        let (batch_result, bytestream_result) =
+            futures::future::join(batch_fut, bytestream_fut).await;
+        let batch_fetched = batch_result?;
+        bytestream_result?;
+
+        // Any small blobs that BatchReadBlobs failed to fetch — fall back to
+        // ByteStream (still bounded at BYTESTREAM_CONCURRENCY).
+        let batch_fallback: Vec<DigestInfo> = small_missing
+            .iter()
+            .filter(|d| !batch_fetched.contains(d))
+            .copied()
+            .collect();
+        if !batch_fallback.is_empty() {
+            debug!(count = batch_fallback.len(), "Fetching BatchReadBlobs fallback via ByteStream");
+            futures::stream::iter(batch_fallback.iter().map(Ok::<_, Error>))
+                .try_for_each_concurrent(BYTESTREAM_CONCURRENCY, |&digest| async move {
+                    cas_store
+                        .populate_fast_store_unchecked(digest.into())
+                        .await
+                        .err_tip(|| format!("Populating fast store (fallback) for {digest:?}"))
+                })
                 .await?;
         }
 
@@ -2551,7 +2593,7 @@ impl UploadActionResults {
             return Ok(());
         }
 
-        let mut execute_response = to_execute_response(action_result.clone());
+        let execute_response = to_execute_response(action_result.clone());
 
         // In theory exit code should always be != 0 if there's an error, but for safety we
         // catch both.
@@ -2561,51 +2603,66 @@ impl UploadActionResults {
             self.failure_message_template.clone()
         };
 
-        let upload_historical_results_with_message_result = if should_upload_historical_results {
-            let maybe_message = self
-                .upload_historical_results_with_message(
-                    action_info,
-                    execute_response.clone(),
-                    message_template,
-                    hasher,
-                )
-                .await;
-            match maybe_message {
-                Ok(message) => {
-                    action_result.message.clone_from(&message);
-                    execute_response.message = message;
-                    Ok(())
-                }
-                Err(e) => Result::<(), Error>::Err(e),
-            }
+        // Extract AC result proto before concurrent uploads (independent of message).
+        let ac_result_proto = if should_upload_ac_results {
+            Some(
+                execute_response
+                    .result
+                    .clone()
+                    .err_tip(|| "No result set in cache_action_result")?,
+            )
         } else {
-            match Self::format_execute_response_message(message_template, action_info, None, hasher)
-            {
-                Ok(message) => {
-                    action_result.message.clone_from(&message);
-                    execute_response.message = message;
-                    Ok(())
+            None
+        };
+
+        // Run historical + AC uploads concurrently — they are independent.
+        let historical_fut = async {
+            if should_upload_historical_results {
+                match self
+                    .upload_historical_results_with_message(
+                        action_info,
+                        execute_response,
+                        message_template,
+                        hasher,
+                    )
+                    .await
+                {
+                    Ok(message) => Ok(Some(message)),
+                    Err(e) => Err(e),
                 }
-                Err(e) => Err(e).err_tip(|| "Could not format message in cache_action_result"),
+            } else {
+                match Self::format_execute_response_message(
+                    message_template,
+                    action_info,
+                    None,
+                    hasher,
+                ) {
+                    Ok(message) => Ok(Some(message)),
+                    Err(e) => {
+                        Err(e).err_tip(|| "Could not format message in cache_action_result")
+                    }
+                }
             }
         };
 
-        // Note: Done in this order because we assume most results will succeed and most configs will
-        // either always upload upload historical results or only upload on filure. In which case
-        // we can avoid an extra clone of the protos by doing this last with the above assumption.
-        let ac_upload_results = if should_upload_ac_results {
-            self.upload_ac_results(
-                action_info,
-                execute_response
-                    .result
-                    .err_tip(|| "No result set in cache_action_result")?,
-                hasher,
-            )
-            .await
-        } else {
-            Ok(())
+        let ac_fut = async {
+            if let Some(proto) = ac_result_proto {
+                self.upload_ac_results(action_info, proto, hasher).await
+            } else {
+                Ok(())
+            }
         };
-        upload_historical_results_with_message_result.merge(ac_upload_results)
+
+        let (historical_result, ac_result) = futures::future::join(historical_fut, ac_fut).await;
+
+        // Apply message from historical upload.
+        if let Ok(Some(message)) = &historical_result {
+            action_result.message.clone_from(message);
+        }
+
+        historical_result
+            .map(|_| ())
+            .merge(ac_result)
     }
 }
 
