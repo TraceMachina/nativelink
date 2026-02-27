@@ -44,6 +44,7 @@ use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair_with_size,
 };
 use nativelink_util::common::DigestInfo;
+use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::digest_hasher::{
     DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func,
 };
@@ -1102,6 +1103,12 @@ impl ByteStream for ByteStreamServer {
 
         match &resp {
             Ok(_) => {
+                info!(
+                    %digest,
+                    size_bytes = expected_size,
+                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    "ByteStream::read: CAS read stream created",
+                );
                 instance
                     .metrics
                     .read_requests_success
@@ -1110,9 +1117,15 @@ impl ByteStream for ByteStreamServer {
                     .metrics
                     .bytes_read_total
                     .fetch_add(expected_size, Ordering::Relaxed);
-                debug!(return = "Ok(<stream>)");
             }
-            Err(_) => {
+            Err(e) => {
+                error!(
+                    %digest,
+                    size_bytes = expected_size,
+                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    ?e,
+                    "ByteStream::read: failed",
+                );
                 instance
                     .metrics
                     .read_requests_failure
@@ -1245,12 +1258,14 @@ impl ByteStream for ByteStreamServer {
 
         match &result {
             Ok(_) => {
-                debug!(
+                let elapsed = start_time.elapsed();
+                info!(
                     %digest,
-                    expected_size,
-                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    size_bytes = expected_size,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    throughput_mbps = format!("{:.1}", throughput_mbps(expected_size, elapsed)),
                     oneshot,
-                    "ByteStream::write: upload succeeded",
+                    "ByteStream::write: CAS write completed",
                 );
                 instance
                     .metrics

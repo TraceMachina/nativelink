@@ -36,10 +36,12 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
+use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
+use prost::Message;
 use tonic::{Request, Response, Status};
-use tracing::{Instrument, Level, debug, error, error_span, instrument};
+use tracing::{Instrument, Level, debug, error, error_span, info, instrument};
 
 #[derive(Debug)]
 pub struct CasServer {
@@ -140,22 +142,28 @@ impl CasServer {
                     size_bytes,
                     "BatchUpdateBlobs: starting upload",
                 );
+                let upload_start = std::time::Instant::now();
                 let result = store_ref
                     .update_oneshot(digest_info, request_data)
                     .await
                     .err_tip(|| "Error writing to store");
                 match &result {
                     Ok(()) => {
-                        debug!(
+                        let elapsed = upload_start.elapsed();
+                        info!(
                             %digest_info,
                             size_bytes,
-                            "BatchUpdateBlobs: upload succeeded",
+                            elapsed_ms = elapsed.as_millis() as u64,
+                            throughput_mbps = format!("{:.1}", throughput_mbps(size_bytes as u64, elapsed)),
+                            "BatchUpdateBlobs: CAS write completed",
                         );
                     }
                     Err(e) => {
+                        let elapsed = upload_start.elapsed();
                         error!(
                             %digest_info,
                             size_bytes,
+                            elapsed_ms = elapsed.as_millis() as u64,
                             ?e,
                             "BatchUpdateBlobs: upload failed",
                         );
@@ -200,12 +208,22 @@ impl CasServer {
             .map(|digest| async move {
                 let digest_copy = DigestInfo::try_from(digest.clone())?;
                 // TODO(palfrey) There is a security risk here of someone taking all the memory on the instance.
+                let read_start = std::time::Instant::now();
                 let result = store_ref
                     .get_part_unchunked(digest_copy, 0, None)
                     .await
                     .err_tip(|| "Error reading from store");
                 let (status, data) = result.map_or_else(
                     |mut e| {
+                        let elapsed = read_start.elapsed();
+                        if e.code != Code::NotFound {
+                            error!(
+                                %digest_copy,
+                                elapsed_ms = elapsed.as_millis() as u64,
+                                ?e,
+                                "BatchReadBlobs: CAS read failed",
+                            );
+                        }
                         if e.code == Code::NotFound {
                             // Trim the error code. Not Found is quite common and we don't want to send a large
                             // error (debug) message for something that is common. We resize to just the last
@@ -214,7 +232,18 @@ impl CasServer {
                         }
                         (e.into(), Bytes::new())
                     },
-                    |v| (GrpcStatus::default(), v),
+                    |v| {
+                        let elapsed = read_start.elapsed();
+                        let size_bytes = v.len() as u64;
+                        info!(
+                            %digest_copy,
+                            size_bytes,
+                            elapsed_ms = elapsed.as_millis() as u64,
+                            throughput_mbps = format!("{:.1}", throughput_mbps(size_bytes, elapsed)),
+                            "BatchReadBlobs: CAS read completed",
+                        );
+                        (GrpcStatus::default(), v)
+                    },
                 );
                 Ok::<_, Error>(batch_read_blobs_response::Response {
                     status: Some(status),
@@ -253,6 +282,7 @@ impl CasServer {
                 .into_inner();
             return Ok(stream.left_stream());
         }
+        let tree_start = std::time::Instant::now();
         let root_digest: DigestInfo = request
             .root_digest
             .err_tip(|| "Expected root_digest to exist in GetTreeRequest")?
@@ -315,6 +345,16 @@ impl CasServer {
         let next_page_token: String = deque
             .front()
             .map_or_else(String::new, |value| format!("{value}"));
+
+        let elapsed = tree_start.elapsed();
+        let total_bytes: u64 = directories.iter().map(|d| d.encoded_len() as u64).sum();
+        info!(
+            ?root_digest,
+            dir_count = directories.len(),
+            total_bytes,
+            elapsed_ms = elapsed.as_millis() as u64,
+            "GetTree: resolved directory tree",
+        );
 
         Ok(futures::stream::once(async {
             Ok(GetTreeResponse {
