@@ -45,6 +45,7 @@ use nativelink_util::buf_channel::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::log_utils::throughput_mbps;
+use nativelink_util::stall_detector::StallGuard;
 use nativelink_util::digest_hasher::{
     DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func,
 };
@@ -1083,6 +1084,12 @@ impl ByteStream for ByteStreamServer {
             DigestHasherFunc::try_from,
         )?;
 
+        // Covers stream setup only (inner_read returns a Stream).
+        // Actual data transfer stalls are not covered by this guard.
+        let _stall_guard = StallGuard::new(
+            nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
+            "ByteStream::read",
+        );
         let resp = self
             .inner_read(instance, digest, read_request)
             .instrument(error_span!("bytestream_read"))
@@ -1228,6 +1235,10 @@ impl ByteStream for ByteStreamServer {
             "ByteStream::write: starting upload",
         );
 
+        let _stall_guard = StallGuard::new(
+            nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
+            "ByteStream::write",
+        );
         let result = if use_oneshot {
             self.inner_write_oneshot(instance, digest, stream)
                 .instrument(error_span!("bytestream_write_oneshot"))

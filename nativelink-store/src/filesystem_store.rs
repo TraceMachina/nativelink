@@ -875,6 +875,17 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 return Err(err);
             }
             encoded_file_path.path_type = PathType::Content;
+            // Pre-set CAS file permissions to read+execute (0o555) so that
+            // hardlinked copies already have correct permissions without
+            // needing a per-file chmod during input materialization.
+            #[cfg(target_family = "unix")]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o555);
+                if let Err(err) = std::fs::set_permissions(&final_path_owned, perms) {
+                    warn!(?err, ?final_path_owned, "Failed to set CAS file permissions to 0o555");
+                }
+            }
             encoded_file_path.key = key;
             Ok(())
         })

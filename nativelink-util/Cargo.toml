@@ -12,7 +12,6 @@ nativelink-error = { path = "../nativelink-error" }
 nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
 
-async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 async-trait = { version = "0.1.88", default-features = false }
 base64 = { version = "0.22.1", default-features = false, features = ["std"] }
 bitflags = { version = "2.9.0", default-features = false }

@@ -37,6 +37,7 @@ pub mod proto_stream_utils;
 pub mod resource_info;
 pub mod retry;
 pub mod shutdown_guard;
+pub mod stall_detector;
 pub mod store_trait;
 pub mod task;
 pub mod telemetry;

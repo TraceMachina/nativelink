@@ -15,10 +15,11 @@
 use core::pin::Pin;
 use core::time::Duration;
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::stream::{FuturesUnordered, unfold};
 use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
 use nativelink_config::stores::GrpcSpec;
@@ -30,13 +31,14 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse,
     GetActionResultRequest, GetTreeRequest, GetTreeResponse, UpdateActionResultRequest,
+    batch_update_blobs_request, compressor,
 };
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::{
     QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest,
     WriteResponse,
 };
-use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
 use nativelink_util::digest_hasher::{DigestHasherFunc, default_digest_hasher_func};
@@ -46,14 +48,16 @@ use nativelink_util::proto_stream_utils::{
 };
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+};
 use nativelink_util::{default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
 use parking_lot::Mutex;
 use prost::Message;
 use tokio::time::sleep;
 use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
-use tracing::{error, trace, warn};
+use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
@@ -65,6 +69,12 @@ const MAX_GRPC_DECODING_SIZE: usize = 256 * 1024 * 1024;
 
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
+struct PendingBatchEntry {
+    digest: DigestInfo,
+    data: Bytes,
+    result_tx: tokio::sync::oneshot::Sender<Result<(), Error>>,
+}
+
 #[derive(Debug, MetricsComponent)]
 pub struct GrpcStore {
     #[metric(help = "Instance name for the store")]
@@ -74,6 +84,12 @@ pub struct GrpcStore {
     connection_manager: ConnectionManager,
     /// Per-RPC timeout. `Duration::ZERO` means disabled.
     rpc_timeout: Duration,
+    /// Blobs at or below this size use BatchUpdateBlobs instead of
+    /// ByteStream.Write. 0 means disabled.
+    batch_update_threshold: u64,
+    /// Sender for coalescing batch entries. None when coalescing is
+    /// disabled (delay_ms == 0 or threshold == 0).
+    batch_tx: Option<tokio::sync::mpsc::UnboundedSender<PendingBatchEntry>>,
 }
 
 impl GrpcStore {
@@ -98,7 +114,18 @@ impl GrpcStore {
 
         let rpc_timeout = Duration::from_secs(spec.rpc_timeout_s);
 
-        Ok(Arc::new(Self {
+        let batch_update_threshold = spec.batch_update_threshold_bytes;
+        let coalesce_delay_ms = spec.batch_coalesce_delay_ms;
+
+        let (batch_tx, batch_rx) =
+            if batch_update_threshold > 0 && coalesce_delay_ms > 0 {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                (Some(tx), Some(rx))
+            } else {
+                (None, None)
+            };
+
+        let store = Arc::new(Self {
             instance_name: spec.instance_name.clone(),
             store_type: spec.store_type,
             retrier: Retrier::new(
@@ -114,7 +141,177 @@ impl GrpcStore {
                 jitter_fn,
             ),
             rpc_timeout,
-        }))
+            batch_update_threshold,
+            batch_tx,
+        });
+
+        if let Some(rx) = batch_rx {
+            let weak = Arc::downgrade(&store);
+            let delay = Duration::from_millis(coalesce_delay_ms);
+            tokio::spawn(Self::batch_flush_loop(weak, rx, delay));
+            info!(
+                batch_update_threshold,
+                coalesce_delay_ms,
+                "GrpcStore: BatchUpdateBlobs coalescing enabled",
+            );
+        } else if batch_update_threshold > 0 {
+            info!(
+                batch_update_threshold,
+                "GrpcStore: BatchUpdateBlobs enabled (no coalescing)",
+            );
+        }
+
+        Ok(store)
+    }
+
+    /// Maximum total payload size for a single BatchUpdateBlobs RPC.
+    /// The RE API spec recommends servers support at least 4 MiB.
+    const MAX_BATCH_TOTAL_SIZE: usize = 4 * 1024 * 1024;
+
+    /// Send one or more blobs via a single BatchUpdateBlobs RPC.
+    /// Returns per-entry results keyed by digest. The RE API does not
+    /// guarantee response ordering, so we match by digest, not index.
+    async fn do_batch_update(
+        &self,
+        digests: &[DigestInfo],
+        entries: Vec<(DigestInfo, Bytes)>,
+    ) -> HashMap<DigestInfo, Result<(), Error>> {
+        let digest_function = Context::current()
+            .get::<DigestHasherFunc>()
+            .map_or_else(default_digest_hasher_func, |v| *v)
+            .proto_digest_func()
+            .into();
+
+        let requests: Vec<_> = entries
+            .into_iter()
+            .map(|(digest, data)| batch_update_blobs_request::Request {
+                digest: Some(digest.into()),
+                data,
+                compressor: compressor::Value::Identity.into(),
+            })
+            .collect();
+
+        let response = match self
+            .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+                instance_name: String::new(), // Overwritten by batch_update_blobs()
+                requests,
+                digest_function,
+            }))
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                let err = e.append("In GrpcStore::do_batch_update");
+                return digests
+                    .iter()
+                    .map(|d| (*d, Err(err.clone())))
+                    .collect();
+            }
+        };
+
+        // Build result map keyed by digest (RE API does not guarantee ordering).
+        let mut results: HashMap<DigestInfo, Result<(), Error>> = response
+            .into_inner()
+            .responses
+            .into_iter()
+            .filter_map(|resp| {
+                let digest = DigestInfo::try_from(resp.digest?).ok()?;
+                let result = match &resp.status {
+                    Some(status) if status.code != 0 => Err(make_input_err!(
+                        "BatchUpdateBlobs failed: code={}, message={}",
+                        status.code,
+                        status.message
+                    )),
+                    _ => Ok(()),
+                };
+                Some((digest, result))
+            })
+            .collect();
+
+        // Fill in missing responses as errors.
+        for d in digests {
+            results
+                .entry(*d)
+                .or_insert_with(|| Err(make_input_err!("BatchUpdateBlobs: no response for digest")));
+        }
+        results
+    }
+
+    /// Background task that accumulates small blob uploads and flushes
+    /// them as batched RPCs.
+    async fn batch_flush_loop(
+        weak: Weak<GrpcStore>,
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<PendingBatchEntry>,
+        delay: Duration,
+    ) {
+        // An entry that didn't fit in the previous batch, carried forward.
+        let mut held_entry: Option<PendingBatchEntry> = None;
+
+        loop {
+            // Use held entry from previous iteration, or wait for a new one.
+            let first = if let Some(entry) = held_entry.take() {
+                entry
+            } else {
+                match rx.recv().await {
+                    Some(entry) => entry,
+                    None => return, // Channel closed
+                }
+            };
+
+            let mut batch = vec![first];
+            let mut total_size = batch[0].data.len();
+
+            // Collect more entries within the delay window, up to size limit.
+            let deadline = tokio::time::Instant::now() + delay;
+            loop {
+                let remaining =
+                    deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                match tokio::time::timeout(remaining, rx.recv()).await {
+                    Ok(Some(entry)) => {
+                        let new_total = total_size + entry.data.len();
+                        if new_total > Self::MAX_BATCH_TOTAL_SIZE && !batch.is_empty()
+                        {
+                            // Would exceed limit — hold for next batch.
+                            held_entry = Some(entry);
+                            break;
+                        }
+                        total_size = new_total;
+                        batch.push(entry);
+                    }
+                    _ => break, // Timeout or channel closed
+                }
+            }
+
+            let store = match weak.upgrade() {
+                Some(s) => s,
+                None => return, // GrpcStore dropped
+            };
+
+            let num = batch.len();
+            trace!(
+                count = num,
+                total_size,
+                "GrpcStore: flushing coalesced batch",
+            );
+
+            let digests: Vec<_> = batch.iter().map(|e| e.digest).collect();
+            let (senders_with_digests, entries): (Vec<_>, Vec<_>) = batch
+                .into_iter()
+                .map(|e| ((e.digest, e.result_tx), (e.digest, e.data)))
+                .unzip();
+
+            let mut results = store.do_batch_update(&digests, entries).await;
+
+            for (digest, sender) in senders_with_digests {
+                let result = results.remove(&digest).unwrap_or_else(|| {
+                    Err(make_input_err!("BatchUpdateBlobs: missing result"))
+                });
+                drop(sender.send(result));
+            }
+        }
     }
 
     async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
@@ -761,6 +958,71 @@ impl StoreDriver for GrpcStore {
         Ok(())
     }
 
+    async fn update_oneshot(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        data: Bytes,
+    ) -> Result<(), Error> {
+        // Route small CAS blobs through BatchUpdateBlobs.
+        if !matches!(self.store_type, nativelink_config::stores::StoreType::Ac)
+            && self.batch_update_threshold > 0
+            && (data.len() as u64) <= self.batch_update_threshold
+        {
+            let digest = key.into_digest();
+
+            if let Some(tx) = &self.batch_tx {
+                // Approach B: coalescing — queue for the background flush loop.
+                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                tx.send(PendingBatchEntry {
+                    digest,
+                    data,
+                    result_tx,
+                })
+                .map_err(|_| make_input_err!("Batch coalescer channel closed"))?;
+                return result_rx
+                    .await
+                    .map_err(|_| make_input_err!("Batch coalescer dropped"))?;
+            }
+
+            // Approach A: immediate single-element BatchUpdateBlobs.
+            let digests = [digest];
+            let mut results =
+                self.do_batch_update(&digests, vec![(digest, data)]).await;
+            return results.remove(&digest).unwrap_or_else(|| {
+                Err(make_input_err!("BatchUpdateBlobs: no response for digest"))
+            });
+        }
+
+        // Fallback: standard ByteStream.Write via channel pair.
+        let (mut tx, rx) = make_buf_channel_pair();
+        let data_len =
+            u64::try_from(data.len()).err_tip(|| "Could not convert data.len() to u64")?;
+        let send_fut = async move {
+            if !data.is_empty() {
+                tx.send(data)
+                    .await
+                    .err_tip(|| "Failed to write data in update_oneshot")?;
+            }
+            tx.send_eof()
+                .err_tip(|| "Failed to write EOF in update_oneshot")?;
+            Ok(())
+        };
+        future::try_join(
+            send_fut,
+            self.update(key, rx, UploadSizeInfo::ExactSize(data_len)),
+        )
+        .await?;
+        Ok(())
+    }
+
+    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+        // Signal that update_oneshot is optimized when batch threshold is set
+        // on a CAS store. AC stores don't benefit from batching.
+        optimization == StoreOptimizations::SubscribesToUpdateOneshot
+            && self.batch_update_threshold > 0
+            && !matches!(self.store_type, nativelink_config::stores::StoreType::Ac)
+    }
+
     async fn get_part(
         self: Pin<&Self>,
         key: StoreKey<'_>,
@@ -834,7 +1096,7 @@ impl StoreDriver for GrpcStore {
                 loop {
                     let data = match stream.next().await {
                         // Create an empty response to represent EOF.
-                        None => bytes::Bytes::new(),
+                        None => Bytes::new(),
                         Some(Ok(message)) => message.data,
                         Some(Err(status)) => {
                             return Some((

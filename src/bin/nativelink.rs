@@ -766,76 +766,7 @@ fn get_config() -> Result<CasConfig, Error> {
 /// Dump all thread stacks to a timestamped file for post-mortem analysis.
 /// Reads /proc/self/task/*/comm, status, wchan, and stack (if permitted).
 fn dump_thread_stacks() {
-    use std::fmt::Write as _;
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let path = format!("/tmp/nativelink-stall-{timestamp}.txt");
-    let mut output = String::new();
-
-    let _ = writeln!(output, "=== RUNTIME STALL THREAD DUMP ===");
-    let _ = writeln!(output, "Timestamp: {timestamp}");
-    let _ = writeln!(output, "PID: {}", std::process::id());
-    let _ = writeln!(output);
-
-    let task_dir = "/proc/self/task";
-    let entries = match std::fs::read_dir(task_dir) {
-        Ok(e) => e,
-        Err(err) => {
-            eprintln!("Failed to read {task_dir}: {err}");
-            return;
-        }
-    };
-
-    let mut tids: Vec<_> = entries
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().to_str().map(String::from))
-        .collect();
-    tids.sort();
-
-    let _ = writeln!(output, "Thread count: {}", tids.len());
-    let _ = writeln!(output);
-
-    for tid in &tids {
-        let _ = writeln!(output, "--- TID {tid} ---");
-        let base = format!("{task_dir}/{tid}");
-
-        // Thread name
-        if let Ok(comm) = std::fs::read_to_string(format!("{base}/comm")) {
-            let _ = write!(output, "  comm: {comm}");
-        }
-        // Wait channel (kernel function the thread is sleeping in)
-        if let Ok(wchan) = std::fs::read_to_string(format!("{base}/wchan")) {
-            let _ = writeln!(output, "  wchan: {wchan}");
-        }
-        // Status (state, voluntary/involuntary context switches)
-        if let Ok(status) = std::fs::read_to_string(format!("{base}/status")) {
-            for line in status.lines() {
-                if line.starts_with("State:")
-                    || line.starts_with("voluntary_ctxt_switches:")
-                    || line.starts_with("nonvoluntary_ctxt_switches:")
-                {
-                    let _ = writeln!(output, "  {line}");
-                }
-            }
-        }
-        // Kernel stack (requires CAP_SYS_PTRACE or permissive ptrace_scope)
-        if let Ok(stack) = std::fs::read_to_string(format!("{base}/stack")) {
-            if !stack.trim().is_empty() {
-                let _ = writeln!(output, "  kernel stack:");
-                for line in stack.lines() {
-                    let _ = writeln!(output, "    {line}");
-                }
-            }
-        }
-        let _ = writeln!(output);
-    }
-
-    match std::fs::write(&path, &output) {
-        Ok(()) => eprintln!("Thread dump written to {path}"),
-        Err(err) => eprintln!("Failed to write thread dump to {path}: {err}"),
-    }
+    nativelink_util::stall_detector::dump_thread_stacks("runtime-watchdog");
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {

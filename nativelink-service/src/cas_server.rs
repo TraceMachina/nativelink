@@ -37,6 +37,7 @@ use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::log_utils::throughput_mbps;
+use nativelink_util::stall_detector::StallGuard;
 use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use prost::Message;
@@ -412,6 +413,10 @@ impl ContentAddressableStorage for CasServer {
         let request = grpc_request.into_inner();
         let digest_function = request.digest_function;
 
+        let _stall_guard = StallGuard::new(
+            nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
+            "BatchUpdateBlobs",
+        );
         self.inner_batch_update_blobs(request)
             .instrument(error_span!("cas_server_batch_update_blobs"))
             .with_context(
@@ -437,6 +442,10 @@ impl ContentAddressableStorage for CasServer {
         let request = grpc_request.into_inner();
         let digest_function = request.digest_function;
 
+        let _stall_guard = StallGuard::new(
+            nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
+            "BatchReadBlobs",
+        );
         self.inner_batch_read_blobs(request)
             .instrument(error_span!("cas_server_batch_read_blobs"))
             .with_context(

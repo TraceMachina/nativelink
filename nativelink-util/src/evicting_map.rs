@@ -23,7 +23,7 @@ use core::pin::Pin;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use async_lock::Mutex;
+use parking_lot::Mutex;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use lru::LruCache;
@@ -94,11 +94,6 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
 // whatever key type the EvictingMap uses.
 pub trait RemoveItemCallback<Q>: Debug + Send + Sync {
     fn callback(&self, store_key: &Q) -> Pin<Box<dyn Future<Output = ()> + Send>>;
-
-    /// Synchronous hook called while the EvictingMap lock is still held,
-    /// *before* the async `callback`. Use this to invalidate caches that
-    /// must see the removal atomically (e.g. ExistenceCacheStore).
-    fn on_remove(&self, _key: &Q) {}
 }
 
 #[derive(Debug, MetricsComponent)]
@@ -159,11 +154,6 @@ impl<
         } else {
             self.evicted_items.inc();
             self.evicted_bytes.add(eviction_item.data.len());
-        }
-
-        // Sync pre-eviction hook: called while still holding the lock.
-        for callback in &self.remove_callbacks {
-            callback.on_remove(key);
         }
 
         let callbacks = self
@@ -261,7 +251,7 @@ where
     }
 
     pub async fn enable_filtering(&self) {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock();
         if state.btree.is_none() {
             Self::rebuild_btree_index(&mut state);
         }
@@ -280,7 +270,7 @@ where
         F: FnMut(&K, &T) -> bool + Send,
         K: Ord,
     {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock();
         let btree = if let Some(ref btree) = state.btree {
             btree
         } else {
@@ -302,7 +292,7 @@ where
     /// Returns the number of key-value pairs that are currently in the the cache.
     /// Function is not for production code paths.
     pub async fn len_for_test(&self) -> usize {
-        self.state.lock().await.lru.len()
+        self.state.lock().lru.len()
     }
 
     fn should_evict(
@@ -395,7 +385,7 @@ where
         R: Borrow<Q> + Send,
     {
         let (removal_futures, data_to_unref) = {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock();
 
             let lru_len = state.lru.len();
             let mut data_to_unref = Vec::new();
@@ -447,7 +437,7 @@ where
     pub async fn get(&self, key: &Q) -> Option<T> {
         // Fast path: Check if we need eviction before acquiring lock for eviction
         let needs_eviction = {
-            let state = self.state.lock().await;
+            let state = self.state.lock();
             if let Some((_, peek_entry)) = state.lru.peek_lru() {
                 self.should_evict(
                     state.lru.len(),
@@ -463,7 +453,7 @@ where
         // Perform eviction if needed
         if needs_eviction {
             let (items_to_unref, removal_futures) = {
-                let mut state = self.state.lock().await;
+                let mut state = self.state.lock();
                 self.evict_items(&mut *state)
             };
             // Unref items outside of lock
@@ -475,7 +465,7 @@ where
         }
 
         // Now get the item
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock();
         let entry = state.lru.get_mut(key.borrow())?;
         entry.seconds_since_anchor =
             i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
@@ -498,7 +488,7 @@ where
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
         let (items_to_unref, removal_futures) = {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock();
             self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
         };
 
@@ -533,7 +523,7 @@ where
         }
 
         let (items_to_unref, removal_futures) = {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock();
             self.inner_insert_many(
                 &mut state,
                 inserts,
@@ -598,7 +588,7 @@ where
 
     pub async fn remove(&self, key: &Q) -> bool {
         let (items_to_unref, removed_item, removal_futures) = {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock();
 
             // First perform eviction
             let (evicted_items, mut removal_futures) = self.evict_items(&mut *state);
@@ -632,25 +622,6 @@ where
         false
     }
 
-    /// Synchronous removal that pops a key from the LRU and updates
-    /// bookkeeping (sum_store_size, counters, btree). Does NOT call
-    /// async callbacks or `unref`. Safe for EvictingMaps whose entries
-    /// use `NoopRemove` / no-op `unref` (e.g. existence-cache entries).
-    pub fn remove_sync(&self, key: &Q) -> bool {
-        let mut state = self.state.lock_blocking();
-        if let Some(entry) = state.lru.pop(key) {
-            if let Some(btree) = &mut state.btree {
-                btree.remove(key);
-            }
-            state.sum_store_size -= entry.data.len();
-            state.evicted_items.inc();
-            state.evicted_bytes.add(entry.data.len());
-            true
-        } else {
-            false
-        }
-    }
-
     /// Same as `remove()`, but allows for a conditional to be applied to the
     /// entry before removal in an atomic fashion.
     pub async fn remove_if<F>(&self, key: &Q, cond: F) -> bool
@@ -658,7 +629,7 @@ where
         F: FnOnce(&T) -> bool + Send,
     {
         let (evicted_items, removal_futures, removed_item) = {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock();
             if let Some(entry) = state.lru.get(key.borrow()) {
                 if !cond(&entry.data) {
                     return false;
@@ -700,6 +671,6 @@ where
     }
 
     pub fn add_remove_callback(&self, callback: C) {
-        self.state.lock_blocking().add_remove_callback(callback);
+        self.state.lock().add_remove_callback(callback);
     }
 }
