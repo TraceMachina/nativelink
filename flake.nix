@@ -17,7 +17,7 @@
     };
     nix2container = {
       # TODO(SchahinRohani): Use a specific commit hash until nix2container is stable.
-      url = "github:nlewo/nix2container/cc96df7c3747c61c584d757cfc083922b4f4b33e";
+      url = "github:nlewo/nix2container/66f4b8a47e92aa744ec43acbb5e9185078983909";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -118,7 +118,7 @@
           linkerPath =
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
-            else "${pkgs.llvmPackages_20.lld}/bin/ld.lld";
+            else "${pkgs.llvmPackages_22.lld}/bin/ld.lld";
 
           linkerEnvVar = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER";
         in
@@ -132,7 +132,7 @@
             buildInputs =
               [p.cacert]
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
-                p.darwin.apple_sdk.frameworks.Security
+                p.apple-sdk_15
                 p.libiconv
               ];
             nativeBuildInputs =
@@ -140,17 +140,19 @@
               ++ (
                 if isLinuxBuild
                 then [pkgs.mold]
-                else [pkgs.llvmPackages_20.lld]
+                else [pkgs.llvmPackages_22.lld]
               )
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
-                p.darwin.apple_sdk.frameworks.Security
+                p.apple-sdk_15
                 p.libiconv
               ];
             CARGO_BUILD_TARGET = targetArch;
           }
           // (pkgs.lib.optionalAttrs isLinuxTarget {
             CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
-            TARGET_CC = "${pkgs.lre.clang}/bin/customClang";
+            TARGET_CC = "${pkgs.lre.clang}/bin/customClang"; # So mimalloc gets the right compiler not defaulting to gcc
+            # FIXME(palfrey): Attempted workaround from https://github.com/llvm/llvm-project/issues/32849#issuecomment-2353071071 but doesn't work
+            # CFLAGS = "-femit-all-decls";
             ${linkerEnvVar} = linkerPath;
           });
 
@@ -243,14 +245,14 @@
               pkgs.diffutils
               pkgs.gnutar
               pkgs.gzip
-              pkgs.python3Full
+              pkgs.python3
               pkgs.unzip
               pkgs.zstd
               pkgs.cargo-bloat
               pkgs.mold-wrapped
               pkgs.reindeer
-              pkgs.lld_16
-              pkgs.clang_16
+              pkgs.lld_21
+              pkgs.clang_21
               buck2-rust
             ];
           };
@@ -291,8 +293,7 @@
         };
 
         nativelinkCoverageFor = p: let
-          coverageArgs =
-            commonArgsFor p;
+          coverageArgs = commonArgsFor p;
         in
           (nightlyCraneLibFor p).cargoLlvmCov (coverageArgs
             // {
@@ -301,7 +302,7 @@
                 "--all"
                 "--locked"
                 "--features nix"
-                "--branch"
+                # "--branch" # FIXME(palfrey): because of https://github.com/llvm/llvm-project/issues/119558
                 "--ignore-filename-regex '.*(genproto|vendor-cargo-deps|crates).*'"
               ];
               cargoLlvmCovExtraArgs = "--html --output-dir $out";
@@ -360,9 +361,9 @@
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
 
-            inherit (pkgs) buildstream buildbox buck2 mongodb wait4x bazelisk;
+            inherit (pkgs) buildstream buck2 mongodb wait4x bazelisk;
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
-              inherit nativelink buildstream buildbox;
+              inherit nativelink buildstream;
             };
             mongo-with-nativelink-test = pkgs.callPackage integration_tests/mongo/mongo-with-nativelink-test.nix {
               inherit nativelink mongodb wait4x bazelisk;
@@ -410,6 +411,7 @@
           hooks = import ./tools/pre-commit-hooks.nix {
             inherit pkgs;
             inherit (packages) generate-bazel-rc generate-stores-config;
+            renovate-patched = pkgs.callPackage ./tools/renovate.nix {};
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
@@ -510,8 +512,7 @@
               pkgs.nativelink-tools.create-local-image
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-              pkgs.darwin.apple_sdk.frameworks.CoreFoundation
-              pkgs.darwin.apple_sdk.frameworks.Security
+              pkgs.apple-sdk_15
               pkgs.libiconv
             ]
             ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [

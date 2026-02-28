@@ -384,22 +384,22 @@ impl DirectoryCache {
             .min_by_key(|(_, m)| m.last_access)
             .map(|(digest, _)| *digest);
 
-        if let Some(digest) = to_evict {
-            if let Some(metadata) = cache.remove(&digest) {
-                debug!(?digest, size = metadata.size, "Evicting cached directory");
+        if let Some(digest) = to_evict
+            && let Some(metadata) = cache.remove(&digest)
+        {
+            debug!(?digest, size = metadata.size, "Evicting cached directory");
 
-                // Remove from disk
-                if let Err(e) = fs::remove_dir_all(&metadata.path).await {
-                    warn!(
-                        ?digest,
-                        path = ?metadata.path,
-                        error = ?e,
-                        "Failed to remove evicted directory from disk"
-                    );
-                }
-
-                return Ok(metadata.size);
+            // Remove from disk
+            if let Err(e) = fs::remove_dir_all(&metadata.path).await {
+                warn!(
+                    ?digest,
+                    path = ?metadata.path,
+                    error = ?e,
+                    "Failed to remove evicted directory from disk"
+                );
             }
+
+            return Ok(metadata.size);
         }
 
         Ok(0)

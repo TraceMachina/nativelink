@@ -171,18 +171,15 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                                 .and_then(|s| s.strip_suffix(" }"))
                                 .unwrap_or(value);
                             for fields in self.table.lock().unwrap().values() {
-                                if let Some(key_value) = fields.get(field) {
-                                    if *key_value == Value::BulkString(value.as_bytes().to_vec()) {
-                                        results.push(Value::Array(vec![
-                                            Value::BulkString(b"data".to_vec()),
-                                            fields.get("data").expect("No data field").clone(),
-                                            Value::BulkString(b"version".to_vec()),
-                                            fields
-                                                .get("version")
-                                                .expect("No version field")
-                                                .clone(),
-                                        ]));
-                                    }
+                                if let Some(key_value) = fields.get(field)
+                                    && *key_value == Value::BulkString(value.as_bytes().to_vec())
+                                {
+                                    results.push(Value::Array(vec![
+                                        Value::BulkString(b"data".to_vec()),
+                                        fields.get("data").expect("No data field").clone(),
+                                        Value::BulkString(b"version".to_vec()),
+                                        fields.get("version").expect("No version field").clone(),
+                                    ]));
                                 }
                             }
                         }

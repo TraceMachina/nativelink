@@ -190,7 +190,7 @@ impl ExecutionServer {
                 .clone();
 
             instance_infos.insert(
-                config.instance_name.to_string(),
+                config.instance_name.clone(),
                 InstanceInfo {
                     scheduler,
                     cas_store,

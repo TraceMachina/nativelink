@@ -40,7 +40,7 @@ platform(
         "@bazel_tools//tools/cpp:clang",
     ],
     exec_properties = {
-        "container-image": "docker://lre-cc:1hspkkns3nlc3f1j6q4qd99sl5rk9n4w",
+        "container-image": "docker://lre-cc:4szv0w4i3nhgvgcdfbg5ckpjrxbf745v",
         "OSFamily": "Linux",
     },
     parents = ["@local_config_platform//:host"],

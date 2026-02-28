@@ -93,7 +93,7 @@ impl GrpcStore {
         let rpc_timeout = if spec.rpc_timeout_s > 0 {
             Duration::from_secs(spec.rpc_timeout_s)
         } else {
-            Duration::from_secs(120)
+            Duration::from_mins(2)
         };
 
         Ok(Arc::new(Self {

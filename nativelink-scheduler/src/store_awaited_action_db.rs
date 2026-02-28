@@ -134,9 +134,7 @@ where
 
         // Helper to convert SystemTime to unix timestamp
         let to_unix_ts = |t: std::time::SystemTime| -> u64 {
-            t.duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)
+            t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
         };
 
         // Check the separate keepalive key for the most recent timestamp.
@@ -231,10 +229,7 @@ where
             let last_known_keepalive_ts = self.last_known_keepalive_ts.load(Ordering::Acquire);
             if I::from_secs(last_known_keepalive_ts).elapsed() > CLIENT_KEEPALIVE_DURATION {
                 let now = (self.now_fn)().now();
-                let now_ts = now
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                let now_ts = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
 
                 if USE_SEPARATE_CLIENT_KEEPALIVE_KEY {
                     let operation_id = self.subscription_key.0.as_ref();

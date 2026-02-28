@@ -471,10 +471,10 @@ where
             .as_ref()
             .unwrap_or(awaited_action);
 
-        if let Some(operation_id) = &filter.operation_id {
-            if operation_id != awaited_action.operation_id() {
-                return false;
-            }
+        if let Some(operation_id) = &filter.operation_id
+            && operation_id != awaited_action.operation_id()
+        {
+            return false;
         }
 
         if filter.worker_id.is_some() && filter.worker_id.as_ref() != awaited_action.worker_id() {
@@ -494,26 +494,25 @@ where
                     }
                 }
             }
-            if let Some(action_digest) = filter.action_digest {
-                if action_digest != awaited_action.action_info().digest() {
-                    return false;
-                }
+            if let Some(action_digest) = filter.action_digest
+                && action_digest != awaited_action.action_info().digest()
+            {
+                return false;
             }
         }
 
         {
             let last_worker_update_timestamp = awaited_action.last_worker_updated_timestamp();
-            if let Some(worker_update_before) = filter.worker_update_before {
-                if worker_update_before < last_worker_update_timestamp {
-                    return false;
-                }
+            if let Some(worker_update_before) = filter.worker_update_before
+                && worker_update_before < last_worker_update_timestamp
+            {
+                return false;
             }
-            if let Some(completed_before) = filter.completed_before {
-                if awaited_action.state().stage.is_finished()
-                    && completed_before < last_worker_update_timestamp
-                {
-                    return false;
-                }
+            if let Some(completed_before) = filter.completed_before
+                && awaited_action.state().stage.is_finished()
+                && completed_before < last_worker_update_timestamp
+            {
+                return false;
             }
             if filter.stages != OperationStageFlags::Any {
                 let stage_flag = match awaited_action.state().stage {
@@ -652,8 +651,9 @@ where
                 let base_delay = BASE_RETRY_DELAY_MS * (1 << (retry_count - 2).min(4));
                 let jitter = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| u64::try_from(d.as_nanos()).expect("u64 error") % MAX_RETRY_JITTER_MS)
-                    .unwrap_or(0);
+                    .map_or(0, |d| {
+                        u64::try_from(d.as_nanos()).expect("u64 error") % MAX_RETRY_JITTER_MS
+                    });
                 let delay = Duration::from_millis(base_delay + jitter);
 
                 warn!(
@@ -1017,6 +1017,8 @@ where
                 .try_collect()
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
+
+            #[allow(clippy::unnecessary_sort_by)]
             match filter.order_by_priority_direction {
                 Some(OrderDirection::Asc) => all_items.sort_unstable_by(|(_, a), (_, b)| a.cmp(b)),
                 Some(OrderDirection::Desc) => all_items.sort_unstable_by(|(_, a), (_, b)| b.cmp(a)),

@@ -58,7 +58,7 @@ impl CasServer {
             let store = store_manager.get_store(&config.cas_store).ok_or_else(|| {
                 make_input_err!("'cas_store': '{}' does not exist", config.cas_store)
             })?;
-            stores.insert(config.instance_name.to_string(), store);
+            stores.insert(config.instance_name.clone(), store);
         }
         Ok(Self { stores })
     }

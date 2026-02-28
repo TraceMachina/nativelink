@@ -23,7 +23,6 @@
     nativelink,
     nixpkgs,
     rust-overlay,
-    self,
     ...
   }:
     flake-parts.lib.mkFlake {inherit inputs;} {
@@ -45,7 +44,7 @@
         system,
         ...
       }: {
-        _module.args.pkgs = import self.inputs.nixpkgs {
+        _module.args.pkgs = import nixpkgs {
           inherit system;
           overlays = [
             # Add `pkgs.lre` from NativeLink.

@@ -449,7 +449,7 @@ impl GcsOperations for MockGcsOperations {
         }
 
         // Update metadata if this is the final chunk
-        if total_size.map(|size| size == end_offset) == Some(true) {
+        if total_size.is_some_and(|size| size == end_offset) {
             mock_object.metadata.size = mock_object.content.len() as i64;
             mock_object.metadata.update_time = Some(Timestamp {
                 seconds: self.get_current_timestamp(),

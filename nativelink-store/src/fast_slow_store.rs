@@ -103,13 +103,12 @@ impl Drop for LoaderGuard<'_> {
         let mut guard = store.populating_digests.lock();
         if let std::collections::hash_map::Entry::Occupied(occupied_entry) =
             guard.entry(self.key.borrow().into_owned())
+            && Arc::ptr_eq(occupied_entry.get(), &loader)
         {
-            if Arc::ptr_eq(occupied_entry.get(), &loader) {
-                drop(loader);
-                if Arc::strong_count(occupied_entry.get()) == 1 {
-                    // This is the last loader, so remove it.
-                    occupied_entry.remove();
-                }
+            drop(loader);
+            if Arc::strong_count(occupied_entry.get()) == 1 {
+                // This is the last loader, so remove it.
+                occupied_entry.remove();
             }
         }
     }

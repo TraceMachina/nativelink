@@ -63,7 +63,7 @@ impl AcServer {
                 make_input_err!("'ac_store': '{}' does not exist", config.ac_store)
             })?;
             stores.insert(
-                config.instance_name.to_string(),
+                config.instance_name.clone(),
                 AcStoreInfo {
                     store,
                     read_only: config.read_only,
@@ -190,10 +190,10 @@ impl ActionCache for AcServer {
             )
             .await;
 
-        if let Err(ref err) = result {
-            if err.code != Code::NotFound {
-                error!(error = ?err, "Error in get_action_result");
-            }
+        if let Err(ref err) = result
+            && err.code != Code::NotFound
+        {
+            error!(error = ?err, "Error in get_action_result");
         }
 
         result.map_err(Into::into)

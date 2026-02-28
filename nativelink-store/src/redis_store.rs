@@ -1541,10 +1541,7 @@ impl<C: Clone + ConnectionLike + Sync + Send + 'static, P: RedisPatternSubscribe
             let mut redis_map_iter = redis_map.iter();
             let mut bytes_data: Option<Bytes> = None;
             let mut version: Option<i64> = None;
-            loop {
-                let Some(key) = redis_map_iter.next() else {
-                    break;
-                };
+            while let Some(key) = redis_map_iter.next() {
                 let value = redis_map_iter.next().unwrap();
                 let Value::BulkString(k) = key else {
                     return Some(Err(Error::new(

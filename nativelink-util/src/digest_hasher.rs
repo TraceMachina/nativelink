@@ -278,10 +278,10 @@ impl DigestHasher for DigestHasherImpl {
         }
         // If we are a small file, it's faster to just do it the "slow" way.
         // Great read: https://github.com/david-slatinek/c-read-vs.-mmap
-        if let Some(size_hint) = size_hint {
-            if size_hint <= fs::DEFAULT_READ_BUFF_SIZE as u64 {
-                return self.hash_file(file).await;
-            }
+        if let Some(size_hint) = size_hint
+            && size_hint <= fs::DEFAULT_READ_BUFF_SIZE as u64
+        {
+            return self.hash_file(file).await;
         }
         let file_path = file_path.as_ref().to_path_buf();
         match self.hash_func_impl {
