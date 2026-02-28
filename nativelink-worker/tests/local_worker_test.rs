@@ -752,6 +752,215 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
     Ok(())
 }
 
+#[nativelink_test]
+async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    {
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(props, ConnectWorkerRequest::default());
+    }
+
+    let expected_worker_id = "foobar".to_string();
+
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let action_digest = DigestInfo::new([3u8; 32], 10);
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    };
+
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let running_action = Arc::new(MockRunningAction::new());
+
+    // Send and wait for response from create_and_add_action.
+    test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(running_action.clone()))
+        .await;
+
+    // Simulate prepare_action failing with a CAS NotFound error containing the
+    // specific "not found in either fast or slow store" message. This is the exact
+    // condition that the code checks to decide whether to return FailedPrecondition.
+    running_action
+        .expect_prepare_action(Err(make_err!(
+            Code::NotFound,
+            "Hash 0123456789abcdef not found in either fast or slow store"
+        )))
+        .await?;
+
+    // Cleanup is still called even when prepare_action fails.
+    running_action.cleanup(Ok(())).await?;
+
+    // The worker should respond with FailedPrecondition wrapped in an ExecuteResponse,
+    // NOT an InternalError. This allows Bazel to re-upload the missing artifacts.
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
+
+    let expected_action_result = ActionResult {
+        error: Some(make_err!(
+            Code::FailedPrecondition,
+            "Hash 0123456789abcdef not found in either fast or slow store"
+        )),
+        ..ActionResult::default()
+    };
+    assert_eq!(
+        execution_response,
+        ExecuteResult {
+            instance_name: INSTANCE_NAME.to_string(),
+            operation_id: String::new(),
+            result: Some(execute_result::Result::ExecuteResponse(
+                ActionStage::Completed(expected_action_result).into()
+            )),
+        }
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    {
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(props, ConnectWorkerRequest::default());
+    }
+
+    let expected_worker_id = "foobar".to_string();
+
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let action_digest = DigestInfo::new([3u8; 32], 10);
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    };
+
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let running_action = Arc::new(MockRunningAction::new());
+
+    test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(running_action.clone()))
+        .await;
+
+    // Simulate prepare_action failing with a NotFound error that does NOT contain
+    // the CAS-specific message. This should result in an InternalError, not
+    // FailedPrecondition.
+    let other_not_found_error = make_err!(Code::NotFound, "Some other resource was not found");
+    running_action
+        .expect_prepare_action(Err(other_not_found_error.clone()))
+        .await?;
+
+    // Cleanup is still called even when prepare_action fails.
+    running_action.cleanup(Ok(())).await?;
+
+    // The worker should respond with InternalError since this is not a CAS blob miss.
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
+
+    assert_eq!(
+        execution_response,
+        ExecuteResult {
+            instance_name: INSTANCE_NAME.to_string(),
+            operation_id: String::new(),
+            result: Some(execute_result::Result::InternalError(
+                other_not_found_error.into()
+            )),
+        }
+    );
+
+    Ok(())
+}
+
 #[cfg(target_family = "unix")]
 #[nativelink_test]
 async fn preconditions_met_extra_envs() -> Result<(), Error> {
