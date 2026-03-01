@@ -1,0 +1,4 @@
+build --remote_cache=grpcs://TODO
+build --bes_backend=grpcs://TODO
+build --remote_timeout=600
+build --remote_executor=grpcs://TODO

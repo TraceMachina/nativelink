@@ -1,0 +1,12 @@
+{
+  stores: [],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        worker_match_logging_interval_s: -1,
+      },
+    },
+  ],
+  servers: [],
+}

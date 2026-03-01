@@ -1,0 +1,51 @@
+diff --git a/rust/private/rustc.bzl b/rust/private/rustc.bzl
+index eff542eb39..ad682f359e 100644
+--- a/rust/private/rustc.bzl
++++ b/rust/private/rustc.bzl
+@@ -1059,7 +1059,8 @@ def construct_arguments(
+         ))
+
+     # Ensure the sysroot is set for the target platform
+-    env["SYSROOT"] = toolchain.sysroot
++    if not toolchain._incompatible_no_rustc_sysroot_env:
++        env["SYSROOT"] = toolchain.sysroot
+     if toolchain._experimental_toolchain_generated_sysroot:
+         rustc_flags.add(toolchain.sysroot, format = "--sysroot=%s")
+
+diff --git a/rust/settings/BUILD.bazel b/rust/settings/BUILD.bazel
+index 1f23709fb7..faaa1489c0 100644
+--- a/rust/settings/BUILD.bazel
++++ b/rust/settings/BUILD.bazel
+@@ -98,3 +98,10 @@ incompatible_flag(
+     build_setting_default = True,
+     issue = "https://github.com/bazelbuild/rules_rust/issues/2324",
+ )
++
++# A flag to remove the SYSROOT environment variable from `Rustc` actions.
++incompatible_flag(
++    name = "incompatible_no_rustc_sysroot_env",
++    build_setting_default = True,
++    issue = "https://github.com/bazelbuild/rules_rust/issues/2429",
++)
+diff --git a/rust/toolchain.bzl b/rust/toolchain.bzl
+index a9b2e1f5af..9580d7cfc4 100644
+--- a/rust/toolchain.bzl
++++ b/rust/toolchain.bzl
+@@ -643,6 +643,7 @@ def _rust_toolchain_impl(ctx):
+         _experimental_use_global_allocator = experimental_use_global_allocator,
+         _experimental_use_coverage_metadata_files = ctx.attr._experimental_use_coverage_metadata_files[BuildSettingInfo].value,
+         _experimental_toolchain_generated_sysroot = ctx.attr._experimental_toolchain_generated_sysroot[IncompatibleFlagInfo].enabled,
++        _incompatible_no_rustc_sysroot_env = ctx.attr._incompatible_no_rustc_sysroot_env[IncompatibleFlagInfo].enabled,
+         _incompatible_test_attr_crate_and_srcs_mutually_exclusive = ctx.attr._incompatible_test_attr_crate_and_srcs_mutually_exclusive[IncompatibleFlagInfo].enabled,
+         _no_std = no_std,
+     )
+@@ -807,6 +808,9 @@ rust_toolchain = rule(
+                 "This flag is only relevant when used together with --@rules_rust//rust/settings:experimental_use_global_allocator."
+             ),
+         ),
++        "_incompatible_no_rustc_sysroot_env": attr.label(
++            default = Label("//rust/settings:incompatible_no_rustc_sysroot_env"),
++        ),
+         "_incompatible_test_attr_crate_and_srcs_mutually_exclusive": attr.label(
+             default = Label("//rust/settings:incompatible_test_attr_crate_and_srcs_mutually_exclusive"),
+         ),

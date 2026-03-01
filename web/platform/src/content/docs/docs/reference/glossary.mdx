@@ -1,0 +1,132 @@
+---
+title: 'Glossary'
+description: 'A glossary of key terms and their definitions to clarify concepts'
+---
+
+## Action Cache (AC)
+
+The Action Cache (AC) stores commands along with their input digests, ensuring
+that actions with the same inputs and commands produce identical outputs. This
+cache allows NativeLink to reuse outputs from previous executions without
+rerunning the actions.
+
+## Bazel
+
+Bazel is an open-source build and test tool developed by Google. In terms of
+NativeLink, Bazel is a client that communicates with the NativeLink scheduler to
+coordinate and execute various build tasks. As a client, Bazel is responsible
+for analyzing dependencies, scheduling tasks, and managing the build process. It
+interacts with the NativeLink to leverage features such as caching (CAS),
+distributed execution, and artifact management.
+
+## Buck2
+
+Buck2 is a build system developed by Meta. In the context of NativeLink, Buck2
+functions as a client, interacting with NativeLink's server to coordinate and
+execute build tasks. As a client, Buck2 is responsible for analyzing
+dependencies, scheduling tasks, and managing the build process efficiently. It
+interacts with the NativeLink's server to leverage features such as caching
+(CAS), distributed execution, and artifact management.
+
+## Content Addressable Storage (CAS)
+
+Content Addressable Storage (CAS) is a storage system in which data is
+identified and accessed based on its content rather than its location. Each
+piece of data (artifact) is hashed, generating a unique identifier (digest)
+based on the data content. In NativeLink, the CAS stores the binary artifacts
+resulting from build actions. It stores identical data pieces only once and
+reuses the data pieces as needed.
+
+## Reclient
+
+Reclient is an open source build tool created by Google as the successor to
+Goma. In terms of NativeLink, it's a client that interacts with NativeLink's
+server to leverage features such as caching (CAS), distributed execution, and
+artifact management. It's mostly used to compile and build Chromium, an open
+source project behind the Google Chrome browser.
+
+## Hermeticity
+
+For build systems, hermeticity refers to the property of creating isolated and
+self-contained environments for building and testing software. A hermetic build
+environment ensures that builds aren't influenced by the external state, such
+as your local environment or variations in system dependencies. This isolation
+is achieved by using precise, versioned dependencies and fully specifying the
+build configuration. In NativeLink, hermeticity is achieved using Nix.
+
+## Monorepo
+
+A monolithic repository, also referred to as a monorepo, contains the source
+code for multiple projects, often across different domains or areas of a single
+organization. They require unique tooling to handle multiple languages and
+technologies within the repository. A good example of a monorepo is the Chromium
+project.
+
+## NativeLink
+
+NativeLink is open source and designed to enhance the build processes of large,
+complex projects. It offers an out-of-the-box remote execution server that
+integrates with clients like Bazel, allowing build and test actions to be
+offloaded to more powerful remote machines. This lets you to optimize resource
+usage and reduce build times.
+
+## Nix
+
+Nix is an open source tool that builds packages in isolation from each other.
+It's how builds remain hermetic in NativeLink. Nix ensures that builds are
+reproducible and don't have undeclared dependencies, lets you share development
+and build environments for projects, and ensures that installing or upgrading
+packages can't break other packages.
+
+## Remote caching
+
+Remote caching optimizes the build and test processes by storing and reusing
+build artifacts on remote storage systems, like S3 or Redis. It reduces build
+times and improves compute resource usage by avoiding redundant computations.
+
+## Remote Execution Server
+
+Remote execution refers to the process of running computational tasks, such as
+building, compiling, and testing code, on remote servers rather than on a local
+machine. By using remote servers, tasks can be distributed across multiple
+servers (that is, parallel processing). This can speed up build and test
+processes faster than local machines.
+
+## Remote Build Execution
+
+The Remote Execution Protocol is a set of protocol buffers (As of V2) which act
+as standardized guidelines and API specifications that enable clients (such as
+build systems like Bazel) to distribute build and test action across multiple
+remote machines. This protocol facilitates the interaction between clients and
+remote execution services (like NativeLink), ensuring tasks are executed
+efficiently.
+
+## Rust
+
+Rust is a programming language that prioritizes and enforces memory and thread
+safety for improved reliability, unlike other languages like Java. NativeLink
+source code is written in Rust.
+
+## Scheduler
+
+The scheduler is a core component in NativeLink. It's responsible for managing
+and coordinating the execution of tasks on remote workers based on resource
+availability and dependencies. It leverages the DAG representation of task
+dependencies to ensure tasks are executed in the correct order and optimizes the
+build process through parallel execution and caching mechanisms.
+
+## Simulations
+
+A simulation is a computer-based model to replicate the behavior and
+interactions of robots within a virtual environment. People can test an analyze
+robotic systems without the need of physical robots in real-world environments.
+NativeLink executes high-fidelity simulations through its advanced caching
+system, distributed execution of design layouts (such as Verilog & VHDL), and
+continuous, real-time monitoring to detect anomalies.
+
+## Workers
+
+The workers are one of the core components of NativeLink. They're responsible
+for executing the build tasks assigned by the scheduler and create the build
+artifacts. The worker pool can consist of multiple workers running on powerful
+remote machines.

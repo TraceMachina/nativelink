@@ -1,0 +1,13 @@
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: nativelink-route
+spec:
+  parentRefs:
+    - name: nativelink-gateway
+      sectionName: nativelink-gateway
+  rules:
+    - backendRefs:
+        - name: nativelink
+          port: 50051

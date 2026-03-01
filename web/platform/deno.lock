@@ -1,0 +1,98 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@std/cli@^1.0.17": "1.0.17",
+    "jsr:@std/encoding@^1.0.10": "1.0.10",
+    "jsr:@std/fmt@^1.0.7": "1.0.7",
+    "jsr:@std/html@^1.0.3": "1.0.3",
+    "jsr:@std/http@1.0": "1.0.15",
+    "jsr:@std/media-types@^1.1.0": "1.1.0",
+    "jsr:@std/net@^1.0.4": "1.0.4",
+    "jsr:@std/path@1.0": "1.0.9",
+    "jsr:@std/path@^1.0.9": "1.0.9",
+    "jsr:@std/streams@^1.0.9": "1.0.9"
+  },
+  "jsr": {
+    "@std/cli@1.0.17": {
+      "integrity": "e15b9abe629e17be90cc6216327f03a29eae613365f1353837fa749aad29ce7b"
+    },
+    "@std/encoding@1.0.10": {
+      "integrity": "8783c6384a2d13abd5e9e87a7ae0520a30e9f56aeeaa3bdf910a3eaaf5c811a1"
+    },
+    "@std/fmt@1.0.7": {
+      "integrity": "2a727c043d8df62cd0b819b3fb709b64dd622e42c3b1bb817ea7e6cc606360fb"
+    },
+    "@std/html@1.0.3": {
+      "integrity": "7a0ac35e050431fb49d44e61c8b8aac1ebd55937e0dc9ec6409aa4bab39a7988"
+    },
+    "@std/http@1.0.15": {
+      "integrity": "435a4934b4e196e82a8233f724da525f7b7112f3566502f28815e94764c19159",
+      "dependencies": [
+        "jsr:@std/cli",
+        "jsr:@std/encoding",
+        "jsr:@std/fmt",
+        "jsr:@std/html",
+        "jsr:@std/media-types",
+        "jsr:@std/net",
+        "jsr:@std/path@^1.0.9",
+        "jsr:@std/streams"
+      ]
+    },
+    "@std/media-types@1.1.0": {
+      "integrity": "c9d093f0c05c3512932b330e3cc1fe1d627b301db33a4c2c2185c02471d6eaa4"
+    },
+    "@std/net@1.0.4": {
+      "integrity": "2f403b455ebbccf83d8a027d29c5a9e3a2452fea39bb2da7f2c04af09c8bc852"
+    },
+    "@std/path@1.0.9": {
+      "integrity": "260a49f11edd3db93dd38350bf9cd1b4d1366afa98e81b86167b4e3dd750129e"
+    },
+    "@std/streams@1.0.9": {
+      "integrity": "a9d26b1988cdd7aa7b1f4b51e1c36c1557f3f252880fa6cc5b9f37078b1a5035"
+    }
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@astrojs/check@~0.9.4",
+        "npm:@astrojs/markdown-remark@^6.3.1",
+        "npm:@astrojs/partytown@^2.1.4",
+        "npm:@astrojs/react@^4.2.7",
+        "npm:@astrojs/sitemap@^3.3.1",
+        "npm:@astrojs/starlight@~0.34.2",
+        "npm:@bazel/bazelisk@^1.26.0",
+        "npm:@beoe/pan-zoom@^0.0.4",
+        "npm:@beoe/rehype-mermaid@~0.4.2",
+        "npm:@biomejs/biome@1.9.4",
+        "npm:@builder.io/qwik@^1.13.0",
+        "npm:@deno/astro-adapter@~0.2.1",
+        "npm:@lhci/cli@0.14",
+        "npm:@lorenzo_lewis/starlight-utils@~0.3.2",
+        "npm:@qwikdev/astro@~0.7.12",
+        "npm:@qwikest/icons@^0.0.13",
+        "npm:@react-three/drei@^10.0.7",
+        "npm:@react-three/fiber@^9.1.2",
+        "npm:@tailwindcss/vite@^4.1.5",
+        "npm:@types/bun@^1.2.12",
+        "npm:astro@5.13.2",
+        "npm:clsx@^2.1.1",
+        "npm:dotenv@^16.5.0",
+        "npm:framer-motion@^12.9.4",
+        "npm:mdast@3",
+        "npm:motion@^12.9.4",
+        "npm:playwright@1.52.0",
+        "npm:react-dom@^19.1.0",
+        "npm:react@^19.1.0",
+        "npm:rehype-autolink-headings@^7.1.0",
+        "npm:remark-mdx@^3.1.0",
+        "npm:remark-parse@11",
+        "npm:remark-stringify@11",
+        "npm:remark@^15.0.1",
+        "npm:tailwind-merge@^3.2.0",
+        "npm:tailwindcss@^4.1.5",
+        "npm:typescript@^5.8.3",
+        "npm:unist-util-visit@5"
+      ]
+    }
+  }
+}

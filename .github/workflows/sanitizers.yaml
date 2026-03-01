@@ -1,0 +1,54 @@
+---
+name: Sanitizers
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  sanitized-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+        sanitizer: [asan]
+    name: ${{ matrix.sanitizer }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Free disk space
+        uses: >- # v2.0.0
+          endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
+        with:
+          remove_android: false # Takes too long.
+          remove_dotnet: true
+          remove_haskell: true
+
+      - name: Setup Bazel
+        uses: >- # v0.13.0
+          bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Run Bazel tests
+        run: bazel test --config=${{ matrix.sanitizer }} --verbose_failures //...
+        shell: bash

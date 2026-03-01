@@ -1,0 +1,66 @@
+---
+name: Deploy NativeLink Web
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/platform/**'
+      - '**/*.md'
+      - 'nativelink-config/**'
+      - 'tools/**'
+      - '**/*.lock'
+      - '**/*.nix'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'web/platform/**'
+      - '**/*.md'
+      - 'nativelink-config/**'
+      - 'tools/**'
+      - '**/*.lock'
+      - '**/*.nix'
+
+permissions: read-all
+
+jobs:
+  deploy:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+    name: Web Platform Deployment / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    environment: production
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+
+      - name: Test Build
+        if: github.event_name == 'pull_request'
+        working-directory: web/platform
+        run: |
+          nix develop --impure --command bash -c "
+            bun setup && bun docs && bun run build
+          "
+
+      - name: Production deployment
+        if: matrix.os == 'ubuntu-24.04' && github.ref == 'refs/heads/main'
+        working-directory: web/platform
+        env:
+          DENO_DEPLOY_TOKEN: ${{ secrets.DENO_DEPLOY_TOKEN }}
+        run: |
+          nix develop --impure --command bash -c "
+            bun prod --project=nativelink --org=nativelink \
+            --token=$DENO_DEPLOY_TOKEN \
+          "

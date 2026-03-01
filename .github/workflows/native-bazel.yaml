@@ -1,0 +1,118 @@
+---
+name: Bazel Native
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  unit-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk
+
+      - name: Setup Bazel
+        uses: >- # v0.18.0
+          bazel-contrib/setup-bazel@083175551ceeceebc757ebee2127fde78840ca77
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: ${{ github.workflow }}-${{ matrix.os }}
+
+      - name: Run Bazel tests
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
+            bazel test //... \
+              --extra_toolchains=@rust_toolchains//:all \
+              --verbose_failures
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            bazel \
+              --output_user_root=${{ steps.bazel-cache.outputs.mountpoint }} \
+              test \
+              --config=windows \
+              //... \
+              --verbose_failures
+          else
+            echo "Unknown runner OS: $RUNNER_OS"
+            exit 1
+          fi
+        shell: bash
+
+  redis-store-tester:
+    name: Redis store tester
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - uses: hoverkraft-tech/compose-action@3846bcd61da338e9eaaf83e7ed0234a12b099b72 # v2.4.1
+        with:
+          compose-file: src/bin/docker-compose.store-tester.yaml
+
+      - name: Setup Bazel
+        uses: >- # v0.13.0
+          bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: ${{ github.workflow }}-ubuntu-24.04
+
+      - name: Run Store tester with sentinel
+        run: |
+          bazel run //:redis_store_tester \
+            --extra_toolchains=@rust_toolchains//:all \
+            --verbose_failures -- --redis-mode sentinel --mode sequential
+        env:
+          RUST_LOG: trace
+          REDIS_HOST: localhost
+          MAX_LOOPS: 10 # running sequentially just to test all the actions work
+        shell: bash
+
+      - name: Run Store tester with standard
+        run: |
+          bazel run //:redis_store_tester \
+            --extra_toolchains=@rust_toolchains//:all \
+            --verbose_failures -- --redis-mode standard --mode sequential
+        env:
+          RUST_LOG: trace
+          REDIS_HOST: localhost
+          MAX_LOOPS: 10 # running sequentially just to test all the actions work
+        shell: bash
+
+      - name: Run Store tester with cluster
+        run: |
+          bazel run //:redis_store_tester \
+            --extra_toolchains=@rust_toolchains//:all \
+            --verbose_failures -- --redis-mode cluster --mode sequential
+        env:
+          RUST_LOG: trace
+          REDIS_HOST: localhost
+          MAX_LOOPS: 10 # running sequentially just to test all the actions work
+        shell: bash

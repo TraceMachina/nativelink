@@ -1,0 +1,10 @@
+---
+version: "2"
+linters:
+  enable-all: true
+  disable:
+    # Allow all packages for now.
+    - depguard
+
+    # TODO(palfrey): Fix these at some point.
+    - exhaustruct

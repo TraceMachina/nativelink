@@ -1,0 +1,132 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+    "rust_test",
+    "rust_test_suite",
+)
+
+rust_library(
+    name = "nativelink-scheduler",
+    srcs = [
+        "src/api_worker_scheduler.rs",
+        "src/awaited_action_db/awaited_action.rs",
+        "src/awaited_action_db/mod.rs",
+        "src/cache_lookup_scheduler.rs",
+        "src/default_scheduler_factory.rs",
+        "src/grpc_scheduler.rs",
+        "src/lib.rs",
+        "src/memory_awaited_action_db.rs",
+        "src/mock_scheduler.rs",
+        "src/platform_property_manager.rs",
+        "src/property_modifier_scheduler.rs",
+        "src/simple_scheduler.rs",
+        "src/simple_scheduler_state_manager.rs",
+        "src/store_awaited_action_db.rs",
+        "src/worker.rs",
+        "src/worker_capability_index.rs",
+        "src/worker_registry.rs",
+        "src/worker_scheduler.rs",
+    ],
+    proc_macro_deps = [
+        "@crates//:async-trait",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-metric",
+        "//nativelink-proto",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:async-lock",
+        "@crates//:bytes",
+        "@crates//:futures",
+        "@crates//:lru",
+        "@crates//:opentelemetry",
+        "@crates//:opentelemetry-semantic-conventions",
+        "@crates//:parking_lot",
+        "@crates//:redis",
+        "@crates//:scopeguard",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:static_assertions",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+        "@crates//:tracing",
+    ],
+)
+
+rust_test_suite(
+    name = "integration",
+    timeout = "short",
+    srcs = [
+        "tests/action_messages_test.rs",
+        "tests/cache_lookup_scheduler_test.rs",
+        "tests/property_modifier_scheduler_test.rs",
+        "tests/redis_store_awaited_action_db_test.rs",
+        "tests/simple_scheduler_state_manager_test.rs",
+        "tests/simple_scheduler_test.rs",
+        "tests/worker_capability_index_test.rs",
+    ],
+    compile_data = [
+        "tests/utils/scheduler_utils.rs",
+    ],
+    proc_macro_deps = [
+        "//nativelink-macro",
+        "@crates//:async-trait",
+    ],
+    deps = [
+        ":nativelink-scheduler",
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-metric",
+        "//nativelink-proto",
+        "//nativelink-redis-tester",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:async-lock",
+        "@crates//:bytes",
+        "@crates//:futures",
+        "@crates//:mock_instant",
+        "@crates//:parking_lot",
+        "@crates//:pretty_assertions",
+        "@crates//:prost",
+        "@crates//:redis",
+        "@crates//:serde_json",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+        "@crates//:tracing",
+        "@crates//:tracing-test",
+        "@crates//:uuid",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-scheduler",
+    proc_macro_deps = [
+        "//nativelink-macro",
+    ],
+    deps = [
+        "@crates//:pretty_assertions",
+        "@crates//:redis",
+        "@crates//:tracing-test",
+    ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-scheduler",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":nativelink-scheduler",
+)

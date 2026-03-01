@@ -1,0 +1,119 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+    "rust_test",
+    "rust_test_suite",
+)
+
+rust_library(
+    name = "nativelink-worker",
+    srcs = [
+        "src/directory_cache.rs",
+        "src/lib.rs",
+        "src/local_worker.rs",
+        "src/running_actions_manager.rs",
+        "src/worker_api_client_wrapper.rs",
+        "src/worker_utils.rs",
+    ],
+    proc_macro_deps = [
+        "@crates//:async-trait",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-metric",
+        "//nativelink-proto",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:bytes",
+        "@crates//:filetime",
+        "@crates//:formatx",
+        "@crates//:futures",
+        "@crates//:opentelemetry",
+        "@crates//:parking_lot",
+        "@crates//:prost",
+        "@crates//:relative-path",
+        "@crates//:scopeguard",
+        "@crates//:serde",
+        "@crates//:serde_json5",
+        "@crates//:shlex",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+        "@crates//:tracing",
+        "@crates//:uuid",
+    ],
+)
+
+rust_test_suite(
+    name = "integration",
+    timeout = "short",
+    srcs = [
+        "tests/local_worker_test.rs",
+        "tests/running_actions_manager_test.rs",
+        "tests/worker_utils_test.rs",
+    ],
+    compile_data = [
+        "tests/utils/local_worker_test_utils.rs",
+        "tests/utils/mock_running_actions_manager.rs",
+    ],
+    proc_macro_deps = [
+        "//nativelink-macro",
+        "@crates//:async-trait",
+    ],
+    deps = [
+        ":nativelink-worker",
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-proto",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:async-lock",
+        "@crates//:bytes",
+        "@crates//:futures",
+        "@crates//:hyper-1.7.0",
+        "@crates//:pin-project-lite",
+        "@crates//:pretty_assertions",
+        "@crates//:prost",
+        "@crates//:prost-types",
+        "@crates//:rand",
+        "@crates//:serial_test",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tracing",
+        "@crates//:tracing-test",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-worker",
+    proc_macro_deps = [
+        "//nativelink-macro",
+    ],
+    deps = [
+        "@crates//:hyper",
+        "@crates//:pretty_assertions",
+        "@crates//:prost-types",
+        "@crates//:rand",
+        "@crates//:serial_test",
+        "@crates//:tempfile",
+        "@crates//:tracing-test",
+    ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-worker",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":nativelink-worker",
+)

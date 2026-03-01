@@ -1,0 +1,140 @@
+{
+  stores: [
+    {
+      // MongoDB store for CAS data
+      name: "MONGO_CAS",
+      experimental_mongo: {
+        connection_string: "mongodb://localhost:27017",
+        database: "nativelink",
+        cas_collection: "cas",
+        key_prefix: "cas:",
+        read_chunk_size: "64kb",
+        max_concurrent_uploads: 10,
+        connection_timeout_ms: 3000,
+        command_timeout_ms: 10000,
+        write_concern_w: "majority",
+        write_concern_j: true,
+      },
+    },
+    {
+      // MongoDB store for scheduler with change streams
+      name: "MONGO_SCHEDULER",
+      experimental_mongo: {
+        connection_string: "mongodb://localhost:27017",
+        database: "nativelink",
+        scheduler_collection: "scheduler",
+        key_prefix: "sched:",
+        enable_change_streams: true,
+        write_concern_w: "majority",
+      },
+    },
+    {
+      // Production example with MongoDB Atlas
+      name: "MONGO_PRODUCTION",
+      experimental_mongo: {
+        connection_string: "mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority",
+        database: "nativelink_prod",
+        cas_collection: "cas_data",
+        scheduler_collection: "scheduler_data",
+        key_prefix: "prod:",
+        read_chunk_size: "128kb",
+        max_concurrent_uploads: 20,
+        enable_change_streams: true,
+        write_concern_w: "majority",
+        write_concern_j: true,
+        write_concern_timeout_ms: 5000,
+      },
+    },
+    {
+      // Example of chaining stores with MongoDB
+      name: "PRODUCTION_CAS",
+      fast_slow: {
+        fast: {
+          memory: {
+            eviction_policy: {
+              max_bytes: "1gb",
+            },
+          },
+        },
+        slow: {
+          size_partitioning: {
+            size: "64kb",
+            lower_store: {
+              ref_store: {
+                name: "MONGO_CAS", // Small objects
+              },
+            },
+            upper_store: {
+              compression: {
+                compression_algorithm: {
+                  lz4: {},
+                },
+                backend: {
+                  ref_store: {
+                    name: "MONGO_CAS", // Large objects, compressed
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_arch: "minimum",
+          OS: "exact",
+        },
+        max_job_retries: 3,
+        worker_timeout_s: 300,
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "PRODUCTION_CAS",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "MONGO_CAS",
+          },
+        ],
+        execution: [
+          {
+            instance_name: "main",
+            cas_store: "PRODUCTION_CAS",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "main",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        bytestream: {
+          cas_stores: {
+            main: "PRODUCTION_CAS",
+          },
+        },
+      },
+    },
+  ],
+}

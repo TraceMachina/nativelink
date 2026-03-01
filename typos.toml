@@ -1,0 +1,24 @@
+[default.extend-words]
+# `conly_flags` in lre-cc
+conly = "conly"
+
+[default]
+# Old wrong spelling support
+extend-ignore-re = [
+  "alias = \"Cachable\"",
+  "old_unique_qualifier_cachable_works",
+]
+
+[files]
+extend-exclude = [
+  # Covered by Vale
+  "*.md",
+  ".git/*",
+  ".github/styles/*",
+  "kubernetes/vendor/olm/*",
+  "nativelink-proto/*",
+  "web/*",
+  # Contains old wrongly spelt data
+  "nativelink-util/tests/data/*.json",
+]
+ignore-hidden = false

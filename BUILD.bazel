@@ -1,0 +1,117 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+exports_files(
+    [
+        ".rustfmt.toml",
+        "clippy.toml",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_binary(
+    name = "nativelink",
+    srcs = [
+        "src/bin/nativelink.rs",
+    ],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-scheduler",
+        "//nativelink-service",
+        "//nativelink-store",
+        "//nativelink-util",
+        "//nativelink-worker",
+        "@crates//:async-lock",
+        "@crates//:axum",
+        "@crates//:clap",
+        "@crates//:futures",
+        "@crates//:hyper",
+        "@crates//:hyper-util",
+        "@crates//:mimalloc",
+        "@crates//:parking_lot",
+        "@crates//:rustls-pki-types",
+        "@crates//:tokio",
+        "@crates//:tokio-rustls",
+        "@crates//:tonic",
+        "@crates//:tower",
+        "@crates//:tracing",
+    ],
+)
+
+rust_binary(
+    name = "redis_store_tester",
+    srcs = [
+        "src/bin/redis_store_tester.rs",
+    ],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:bytes",
+        "@crates//:clap",
+        "@crates//:futures",
+        "@crates//:rand",
+        "@crates//:redis",
+        "@crates//:tokio",
+        "@crates//:tracing",
+    ],
+)
+
+filegroup(
+    name = "docs",
+    srcs = [
+        "//nativelink-config:docs",
+        "//nativelink-error:docs",
+        "//nativelink-macro:docs",
+        "//nativelink-proto:docs",
+        "//nativelink-scheduler:docs",
+        "//nativelink-service:docs",
+        "//nativelink-store:docs",
+        "//nativelink-util:docs",
+        "//nativelink-worker:docs",
+    ],
+)
+
+test_suite(
+    name = "unit_tests",
+    tests = [
+        "//nativelink-config:unit_test",
+        "//nativelink-error:unit_test",
+        "//nativelink-macro:unit_test",
+        "//nativelink-metric:unit_test",
+        "//nativelink-scheduler:unit_test",
+        "//nativelink-service:unit_test",
+        "//nativelink-store:unit_test",
+        "//nativelink-util:unit_test",
+        "//nativelink-worker:unit_test",
+    ],
+)
+
+test_suite(
+    name = "doctests",
+    tests = [
+        "//nativelink-config:doc_test",
+        "//nativelink-error:doc_test",
+        "//nativelink-macro:doc_test",
+        "//nativelink-proto:doc_test",
+        "//nativelink-scheduler:doc_test",
+        "//nativelink-service:doc_test",
+        "//nativelink-store:doc_test",
+        "//nativelink-util:doc_test",
+        "//nativelink-worker:doc_test",
+    ],
+)
+
+genrule(
+    name = "dummy_test_sh",
+    outs = ["dummy_test.sh"],
+    cmd = "echo \"sleep .1;   echo $$(printf '=%.0s' {1..100})\" > \"$@\"",
+)
+
+sh_test(
+    name = "dummy_test",
+    timeout = "short",
+    srcs = [":dummy_test_sh"],
+)

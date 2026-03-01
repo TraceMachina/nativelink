@@ -1,0 +1,98 @@
+{
+  stores: [
+    {
+      name: "GRPC_LOCAL_STORE",
+
+      // Note: This file is used to test GRPC store.
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            address: "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051",
+          },
+        ],
+        store_type: "cas",
+      },
+    },
+    {
+      name: "GRPC_LOCAL_AC_STORE",
+
+      // Note: This file is used to test GRPC store.
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            address: "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051",
+          },
+        ],
+        store_type: "ac",
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          OSFamily: "priority",
+          "container-image": "priority",
+          "lre-rs": "priority",
+          ISA: "exact",
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50052",
+        },
+      },
+
+      // Each of the services below is keyed on an instance_name.
+      // By default, an empty string is used, but if a different
+      // instance_name is provided, the instance name must be
+      // specified by the invoking tool (e.g. using
+      // `--remote_instance_name=` for Bazel)
+      services: {
+        ac: [
+          {
+            ac_store: "GRPC_LOCAL_AC_STORE",
+          },
+        ],
+        execution: [
+          {
+            cas_store: "GRPC_LOCAL_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+      },
+    },
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        // Note: This should be served on a different port, because it has
+        // a different permission set than the other services.
+        // In other words, this service is a backend api. The ones above
+        // are a frontend api.
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        health: {},
+      },
+    },
+  ],
+}

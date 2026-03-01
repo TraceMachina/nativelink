@@ -1,0 +1,83 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: nix2container-image-info
+  labels:
+    app.kubernetes.io/versions: "0.1"
+spec:
+  description: >
+    Get the image name and tag from a nix2container flake output.
+  workspaces:
+    - name: optional-src
+      optional: true
+      description: |
+        The source repository to invoke from.
+      mountPath: /mnt
+      readOnly: true
+    - name: nix-store
+      description: |
+        An workspace containing a nix store. Appended via a `--store` argument.
+      readOnly: true
+      mountPath: /workspace/nix-store/nix
+  params:
+    - name: flakeOutput
+      type: string
+      description: |
+        The output of a Nix Flake. This output must refer to an image built with
+        nix2container.
+
+        See:
+          - https://nixos.wiki/wiki/Flakes for more in formation on the Flake
+            URL schema.
+          - https://github.com/nlewo/nix2container for more information on the
+            required builder for the flake outputs.
+
+        Examples:
+          - "/mnt/src_root#someoutput" for a flake output in the `output-src`
+            directory.
+          - "github:TraceMachina/nativelink#image" for the latest nativelink
+            image.
+          - "github:<user>/<repo>?ref=pull/<PR_NUMBER>/head#<PACKAGE>" to use
+            an image from a pull request of a repository on GitHub.
+  results:
+    - name: imageName
+      description: The Nix-derived image name.
+    - name: imageTag
+      description: The Nix-derived image tag.
+  steps:
+    - name: get-image-tags
+      image: nixpkgs/nix-flakes:latest
+      env:
+        - name: FLAKE_OUTPUT
+          value: "$(params.flakeOutput)"
+      script: |
+        #!/usr/bin/env sh
+
+        if [ "$(workspaces.optional-src.bound)" = "true" ]; then
+          cd "$(workspaces.optional-src.path)"
+        fi
+
+        # The double-mount optimization doesn't work on MacOS where this cluster
+        # runs in an aarch64-linux environment.
+        if [ "$(uname -m)" = "x86_64" ] && [ "$(uname -s)" = "Linux" ]; then
+          NIX_SOCKET="unix:///workspace/nix-store/nix/var/nix/daemon-socket/socket"
+          NIX_ROOT="/workspace/nix-store"
+          NIX_STORE_OPTS="--store ${NIX_SOCKET}?root=${NIX_ROOT}"
+        else
+          NIX_STORE_OPTS=""
+        fi
+
+        echo "NIX_STORE_OPTS: '$NIX_STORE_OPTS'"
+
+        # Not ideal, but will have to do until we implement more elaborate git
+        # repo syncing schemes.
+        git config --global --add safe.directory "*"
+
+        IMAGE_NAME=$(nix eval $NIX_STORE_OPTS "${FLAKE_OUTPUT}".imageName --raw)
+        IMAGE_TAG=$(nix eval $NIX_STORE_OPTS "${FLAKE_OUTPUT}".imageTag --raw)
+
+        echo "Evaluated IMAGE_NAME: '$IMAGE_NAME'"
+        echo "Evaluated IMAGE_TAG: '$IMAGE_TAG'"
+
+        echo -n "${IMAGE_NAME}" > $(results.imageName.path)
+        echo -n "${IMAGE_TAG}" > $(results.imageTag.path)

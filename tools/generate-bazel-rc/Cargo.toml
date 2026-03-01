@@ -1,0 +1,14 @@
+#:schema ../cargo-with-detailed-deps.json
+[package]
+edition = "2024"
+name = "generate-bazel-rc"
+version = "0.1.0"
+
+[dependencies]
+toml = { version = "1.0.0", default-features = false, features = [
+  "display",
+  "parse",
+  "serde",
+] }
+
+[workspace]

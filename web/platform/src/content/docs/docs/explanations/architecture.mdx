@@ -1,0 +1,33 @@
+---
+title: 'Architecture'
+description: "An overview of NativeLink's architecture."
+---
+
+This diagram presents a high-level overview of data flow in NativeLink.
+
+```mermaid
+sequenceDiagram
+    participant build server (client)
+    participant scheduler pool
+    participant worker pool
+    participant cas
+    build server (client)->>scheduler pool: queue jobs
+    scheduler pool->>worker pool: route jobs
+    worker pool->>cas: upload artifacts
+    worker pool->>scheduler pool: result download instructions
+    scheduler pool->>build server (client): result download instructions
+    cas->>build server (client): service queries
+    build server (client)->>cas: service queries
+```
+
+1. The `client` such as Bazel, Buck2 or Reclient creates a job and sends it to
+   the `scheduler`'s job queue.
+2. The `scheduler` finds a suitable worker in the worker pool and routes the job
+   to it.
+3. The `worker` runs the job, sending output artifacts to the `cas`.
+4. The `worker` provides download instructions for the artifact to the
+   `scheduler`.
+5. The `scheduler` forwards the download instructions to the `client`.
+
+In conclusion, the client created a job and sent it to NativeLink and gets a
+response that lets it download the built artifact.

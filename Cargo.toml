@@ -1,0 +1,212 @@
+#:schema tools/cargo-with-detailed-deps.json
+[workspace]
+exclude = [
+  "nativelink-config/generate-stores-config",
+  "tools/generate-bazel-rc",
+]
+resolver = "2"
+
+[package]
+edition = "2024"
+name = "nativelink"
+rust-version = "1.87.0"
+version = "1.0.0-rc2"
+
+[profile.release]
+lto = true
+
+# Prefer this profile in CI, for instance via `cargo test --all --profile=smol`.
+# It reduces the size of the `target` directory from ~12GB to ~1GB.
+[profile.smol]
+debug = false
+inherits = "dev"
+opt-level = "z"
+strip = true
+
+[[bin]]
+name = "nativelink"
+
+[features]
+nix = ["nativelink-worker/nix"]
+
+[dependencies]
+nativelink-config = { path = "nativelink-config" }
+nativelink-error = { path = "nativelink-error" }
+nativelink-scheduler = { path = "nativelink-scheduler" }
+nativelink-service = { path = "nativelink-service" }
+nativelink-store = { path = "nativelink-store" }
+nativelink-util = { path = "nativelink-util" }
+nativelink-worker = { path = "nativelink-worker" }
+
+async-lock = { version = "3.4.0", features = ["std"], default-features = false }
+axum = { version = "0.8.3", default-features = false }
+bytes = { version = "1.10.1", default-features = false }
+clap = { version = "4.5.35", features = [
+  "color",
+  "derive",
+  "error-context",
+  "help",
+  "std",
+  "suggestions",
+  "usage",
+], default-features = false }
+futures = { version = "0.3.31", default-features = false }
+hyper = { version = "1.6.0", default-features = false }
+hyper-util = { version = "0.1.11", default-features = false, features = [
+  "tracing",
+] }
+mimalloc = { version = "0.1.44", default-features = false }
+rand = { version = "0.9.0", default-features = false, features = [
+  "thread_rng",
+] }
+rustls-pki-types = { version = "1.13.1", features = [
+  "std",
+], default-features = false }
+tokio = { version = "1.44.1", features = [
+  "fs",
+  "io-util",
+  "rt-multi-thread",
+  "signal",
+], default-features = false }
+tokio-rustls = { version = "0.26.2", default-features = false, features = [
+  "ring",
+] }
+tonic = { version = "0.13.0", features = [
+  "tls-ring",
+  "transport",
+], default-features = false }
+tower = { version = "0.5.2", default-features = false }
+tracing = { version = "0.1.41", default-features = false }
+
+[workspace.cargo-features-manager.keep]
+async-lock = ["std"]
+aws-sdk-s3 = ["rt-tokio"]
+aws-smithy-runtime = ["test-util"]
+# This causes blake3 to detect SIMD capabilities at runtime.
+blake3 = ["std"]
+pretty_assertions = ["std"]
+redis-test = ["aio"]
+serial_test = ["async"]
+tokio = ["fs", "io-util", "rt-multi-thread", "signal"]
+tokio-stream = ["fs"]
+tonic = ["tls", "transport"]
+tonic-build = ["prost"]
+uuid = ["serde", "v4"]
+
+[workspace.lints.rust]
+ambiguous-glob-reexports = "deny"
+clashing-extern-declarations = "deny"
+const-item-mutation = "deny"
+dangling-pointers-from-temporaries = "deny"
+deref-nullptr = "deny"
+drop-bounds = "deny"
+future-incompatible = "deny"
+hidden-glob-reexports = "deny"
+improper-ctypes = "deny"
+improper-ctypes-definitions = "deny"
+invalid-from-utf8 = "deny"
+invalid-macro-export-arguments = "deny"
+invalid-nan-comparisons = "deny"
+invalid-reference-casting = "deny"
+invalid-value = "deny"
+opaque-hidden-inferred-bound = "deny"
+overlapping-range-endpoints = "deny"
+suspicious-double-ref-op = "deny"
+unconditional-recursion = "deny"
+unexpected-cfgs = "deny"
+unknown-lints = "deny"
+unnameable-test-items = "deny"
+unsafe-op-in-unsafe-fn = "deny"
+unstable-syntax-pre-expansion = "deny"
+unused-imports = "deny"
+
+keyword-idents = "warn"
+let-underscore = "warn"
+macro-use-extern-crate = "warn"
+meta-variable-misuse = "warn"
+missing-abi = "warn"
+missing-copy-implementations = "warn"
+missing-debug-implementations = "warn"
+noop-method-call = "warn"
+single-use-lifetimes = "warn"
+trivial-casts = "warn"
+trivial-numeric-casts = "warn"
+unreachable-pub = "warn"
+unused = { level = "warn", priority = -1 }
+unused-import-braces = "warn"
+unused-lifetimes = "warn"
+unused-qualifications = "warn"
+variant-size-differences = "warn"
+
+[workspace.lints.clippy]
+
+# Global configuration
+all = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Restriction Denies with default priority
+alloc-instead-of-core = "deny"
+as-underscore = "deny"
+await-holding-lock = "deny"
+bind-instead-of-map = "deny"
+collapsible-if = "deny"
+disallowed-methods = "deny"
+doc-markdown = "deny"
+elidable-lifetime-names = "deny"
+explicit-into-iter-loop = "deny"
+future-not-send = "deny"
+implicit-clone = "deny"
+implicit-hasher = "deny"
+manual-is-variant-and = "deny"
+map-unwrap-or = "deny"
+or-fun-call = "deny"
+ptr-arg = "deny"
+redundant-closure-for-method-calls = "deny"
+semicolon-if-nothing-returned = "deny"
+single-char-pattern = "deny"
+std-instead-of-core = "deny"
+string-lit-as-bytes = "deny"
+todo = "deny"
+unchecked-duration-subtraction = "deny"
+unnecessary-semicolon = "deny"
+used-underscore-binding = "deny"
+useless-format = "deny"
+
+# Restriction Warnings with default priority
+dbg-macro = "warn"
+decimal-literal-representation = "warn"
+get-unwrap = "allow"                    # TODO(jhpratt) Flip
+missing-docs-in-private-items = "allow" # TODO(jhpratt) Flip
+print-stdout = "warn"
+unimplemented = "warn"
+unwrap-in-result = "allow"              # TODO(jhpratt) Flip
+unwrap-used = "allow"                   # TODO(jhpratt) Flip
+use-debug = "warn"
+
+# Nursery denies we want once they get out of Nursery
+missing-const-for-fn = "deny"
+
+# Nursery overrides that are either buggy or we want to fix
+cognitive-complexity = { level = "allow", priority = 1 }        # TODO(palfrey) Flip
+iter-with-drain = { level = "allow", priority = 1 }             # TODO(jhpratt) Flip
+option-if-let-else = { level = "allow", priority = 1 }          # rust-lang/rust-clippy#8829
+redundant-pub-crate = { level = "allow", priority = 1 }         # rust-lang/rust-clippy#5369
+significant-drop-tightening = { level = "allow", priority = 1 } # TODO(jhpratt) Flip
+too-long-first-doc-paragraph = { level = "allow" }              # TODO(jhpratt) Flip
+uninhabited-references = { level = "allow", priority = 1 }      # rust-lang/rust-clippy#11984
+
+# TODO(palfrey): Remove these to get to pedantic.
+cast_possible_truncation = { level = "deny", priority = 1 }
+cast_possible_wrap = { level = "allow", priority = 1 }
+cast_precision_loss = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
+large_futures = { level = "allow", priority = 1 }
+missing_errors_doc = { level = "allow", priority = 1 }
+missing_fields_in_debug = { level = "allow", priority = 1 }
+missing_panics_doc = { level = "allow", priority = 1 }
+must_use_candidate = { level = "allow", priority = 1 }
+ref_option = { level = "allow", priority = 1 }
+too_many_lines = { level = "allow", priority = 1 }
+unused_async = { level = "allow", priority = 1 }
+unused_self = { level = "allow", priority = 1 }

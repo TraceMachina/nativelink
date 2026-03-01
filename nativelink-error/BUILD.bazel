@@ -1,0 +1,60 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+    "rust_test",
+)
+
+rust_library(
+    name = "nativelink-error",
+    srcs = [
+        "src/lib.rs",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//nativelink-metric",
+        "//nativelink-proto",
+        "@crates//:prost",
+        "@crates//:prost-types",
+        "@crates//:redis",
+        "@crates//:rustls-pki-types",
+        "@crates//:serde",
+        "@crates//:serde_json5",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:url",
+        "@crates//:uuid",
+        "@crates//:walkdir",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-error",
+    deps = [
+        "//nativelink-metric",
+        "//nativelink-proto",
+        "@crates//:async-lock",
+        "@crates//:hex",
+        "@crates//:prost",
+        "@crates//:prost-types",
+        "@crates//:redis",
+        "@crates//:serde",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-error",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":nativelink-error",
+)

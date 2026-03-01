@@ -1,0 +1,35 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: cosign-verify
+  labels:
+    app.kubernetes.io/versions: "0.1"
+spec:
+  description: >
+    Invoke `cosign verify`.
+  params:
+    - name: fullImageURL
+      type: string
+      description: >
+        A fully qualified image url which includes the hash like:
+          `ghcr.io/tracemachina/nativelink@sha256xxxxxxxxx`
+
+        Don't pass images by tag here. It would make the verification result
+        useless as a tagged image could be changed between the time of
+        verification and the time that the actual pull Task runs.
+    - name: certificateIdentity
+      type: string
+      description: >
+        The certificate identity to pass to `--certificate-identity`.
+    - name: certificateOIDCIssuer
+      type: string
+      description: >
+        The certificate OIDC issues to pass to `--certificate-oidc-issuer`.
+  steps:
+    - name: verify
+      image: ghcr.io/sigstore/cosign/cosign:v2.2.4
+      args:
+        - "verify"
+        - "$(params.fullImageURL)"
+        - "--certificate-identity=$(params.certificateIdentity)"
+        - "--certificate-oidc-issuer=$(params.certificateOIDCIssuer)"

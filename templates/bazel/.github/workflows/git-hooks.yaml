@@ -1,0 +1,28 @@
+---
+name: Run git-hooks checks
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions: read-all
+
+jobs:
+  git-hooks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Nix
+        uses: >- # v17
+          DeterminateSystems/nix-installer-action@21a544727d0c62386e78b4befe52d19ad12692e3
+
+      - name: Run pre-commit hooks
+        run: nix flake check

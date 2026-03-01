@@ -1,0 +1,46 @@
+---
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: OCIRepository
+metadata:
+  name: capacitor
+  namespace: flux-system
+spec:
+  interval: 12h
+  url: oci://ghcr.io/gimlet-io/capacitor-manifests
+  ref:
+    semver: ">=0.1.0"
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: capacitor
+  namespace: flux-system
+spec:
+  targetNamespace: flux-system
+  interval: 1h
+  retryInterval: 2m
+  timeout: 5m
+  wait: true
+  prune: true
+  path: "./"
+  sourceRef:
+    kind: OCIRepository
+    name: capacitor
+---
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-ingress-to-capacitor
+  namespace: flux-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: onechart
+      app.kubernetes.io/instance: capacitor
+  ingress:
+  - fromEntities:
+    - ingress
+  - toPorts:
+    - ports:
+      - port: "9000"
+        protocol: TCP

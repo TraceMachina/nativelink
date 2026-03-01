@@ -1,0 +1,12 @@
+.container {
+   display: flex;
+   justify-content: center;
+   align-items: center;
+}
+
+.counter {
+   border: 1px solid white;
+}
+.card {
+   padding: 2em;
+}

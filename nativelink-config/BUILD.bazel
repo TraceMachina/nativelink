@@ -1,0 +1,93 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+    "rust_test",
+    "rust_test_suite",
+)
+
+rust_library(
+    name = "nativelink-config",
+    srcs = [
+        "src/backcompat.rs",
+        "src/cas_server.rs",
+        "src/lib.rs",
+        "src/schedulers.rs",
+        "src/serde_utils.rs",
+        "src/stores.rs",
+    ],
+    compile_data = [
+        "README.md",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//nativelink-error",
+        "@crates//:byte-unit",
+        "@crates//:humantime",
+        "@crates//:rand",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:serde_json5",
+        "@crates//:shellexpand",
+        "@crates//:tracing",
+    ],
+)
+
+rust_test_suite(
+    name = "integration",
+    timeout = "short",
+    srcs = [
+        "tests/deserialization_test.rs",
+        "tests/json5_test.rs",
+    ],
+    data = glob(
+        ["examples/*.json5"],
+    ),
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "@crates//:byte-unit",
+        "@crates//:humantime",
+        "@crates//:pretty_assertions",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:serde_json5",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-config",
+    deps = [
+        "@crates//:pretty_assertions",
+        "@crates//:serde_json",
+        "@crates//:tracing-test",
+    ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-config",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc(
+    name = "docs_json",
+    crate = ":nativelink-config",
+    rustdoc_flags = [
+        "--output-format=json",
+        "-Zunstable-options",
+    ],
+    target_compatible_with = select({
+        "@local-remote-execution//rust:nightly": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":nativelink-config",
+)

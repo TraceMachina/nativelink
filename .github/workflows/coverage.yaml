@@ -1,0 +1,61 @@
+---
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '.github/styles/**'
+      - 'web/**'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  coverage:
+    name: Coverage
+    runs-on: xlarge-ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+
+      - name: Generate coverage
+        run: |
+          nix build -L .#nativelinkCoverageForHost
+
+      - name: Upload coverage artifact
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: >- # v3.0.1
+          actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
+        with:
+          path: result/html
+
+  deploy:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    name: Deploy Coverage
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    needs: coverage
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write      # to deploy to GitHub Pages
+      id-token: write   # to authenticate to GitHub Pages
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: >- # v4.0.5
+          actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e

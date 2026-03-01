@@ -1,0 +1,194 @@
+load("@bazel_skylib//lib:selects.bzl", "selects")
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_binary",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+)
+
+PROTO_NAMES = [
+    "build.bazel.remote.asset.v1",
+    "build.bazel.remote.execution.v2",
+    "build.bazel.semver",
+    "com.github.trace_machina.nativelink.remote_execution",
+    "com.github.trace_machina.nativelink.events",
+    "google.api",
+    "google.bytestream",
+    "google.devtools.build.v1",
+    "google.longrunning",
+    "google.rpc",
+    "build_event_stream",
+    "command_line",
+    "devtools.build.lib.packages.metrics",
+    "blaze",
+    "options",
+    "failure_details",
+    "blaze.invocation_policy",
+    "blaze.strategy_policy",
+]
+
+rust_binary(
+    name = "gen_protos_tool",
+    srcs = ["gen_protos_tool.rs"],
+    deps = [
+        "@crates//:clap",
+        "@crates//:prost-build",
+        "@crates//:tonic-build",
+    ],
+)
+
+# TODO(palfrey): The config settings we create here don't follow good
+#                    practices and are purely created this way to work around a
+#                    suboptimal naming scheme in toolchains_protoc. Don't use
+#                    this outside of getting protoc. Consider upstreaming a
+#                    naming scheme fix.
+PLATFORM_OS_ARCH = [
+    ("linux", "aarch64"),
+    ("linux", "x86_64"),
+    ("macos", "aarch64"),
+    ("macos", "x86_64"),
+    ("windows", "aarch64"),
+    ("windows", "x86_64"),
+]
+
+[
+    selects.config_setting_group(
+        name = "{}_{}".format(
+            os.replace("macos", "osx"),
+            arch.replace("aarch64", "aarch_64"),
+        ),
+        match_all = [
+            "@platforms//cpu:{}".format(arch),
+            "@platforms//os:{}".format(os),
+        ],
+    )
+    for (os, arch) in PLATFORM_OS_ARCH
+]
+
+PLATFORM_NAMES = [
+    "{}_{}".format(
+        os.replace("macos", "osx"),
+        arch.replace("aarch64", "aarch_64"),
+    )
+    for (os, arch) in PLATFORM_OS_ARCH
+]
+
+genrule(
+    name = "gen_rs_protos",
+    srcs = [
+        "build/bazel/remote/asset/v1/remote_asset.proto",
+        "build/bazel/remote/execution/v2/remote_execution.proto",
+        "build/bazel/semver/semver.proto",
+        "com/github/trace_machina/nativelink/remote_execution/events.proto",
+        "com/github/trace_machina/nativelink/remote_execution/worker_api.proto",
+        "google/api/annotations.proto",
+        "google/api/client.proto",
+        "google/api/field_behavior.proto",
+        "google/api/http.proto",
+        "google/bytestream/bytestream.proto",
+        "google/devtools/build/v1/build_events.proto",
+        "google/devtools/build/v1/build_status.proto",
+        "google/devtools/build/v1/publish_build_event.proto",
+        "google/longrunning/operations.proto",
+        "google/protobuf/any.proto",
+        "google/protobuf/descriptor.proto",
+        "google/protobuf/duration.proto",
+        "google/protobuf/empty.proto",
+        "google/protobuf/timestamp.proto",
+        "google/protobuf/wrappers.proto",
+        "google/rpc/status.proto",
+        "src/main/java/com/google/devtools/build/lib/buildeventstream/proto/build_event_stream.proto",
+        "src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto",
+        "src/main/protobuf/command_line.proto",
+        "src/main/protobuf/action_cache.proto",
+        "src/main/protobuf/option_filters.proto",
+        "src/main/protobuf/failure_details.proto",
+        "src/main/protobuf/invocation_policy.proto",
+        "src/main/protobuf/strategy_policy.proto",
+    ],
+    outs = ["{}.pb.rs".format(name) for name in PROTO_NAMES],
+    cmd = select({
+        platform: '''
+        set -e
+        export PROTOC=$(execpath @@toolchains_protoc++protoc+toolchains_protoc_hub.{}//:bin/protoc)
+
+        $(execpath :gen_protos_tool) $(SRCS) -o $(RULEDIR)
+
+        for file in $(RULEDIR)/*.rs; do
+            mv -- "$$file" "$${{file%.rs}}.pb.rs"
+        done
+        '''.format(platform)
+        for platform in PLATFORM_NAMES
+    }),
+    tools = [
+        ":gen_protos_tool",
+    ] + select({
+        platform: [
+            "@@toolchains_protoc++protoc+toolchains_protoc_hub.{}//:bin/protoc".format(platform),
+        ]
+        for platform in PLATFORM_NAMES
+    }),
+)
+
+py_binary(
+    name = "gen_lib_rs_tool",
+    srcs = ["gen_lib_rs_tool.py"],
+)
+
+genrule(
+    name = "gen_lib_rs",
+    srcs = [":gen_rs_protos"],
+    outs = ["lib.rs"],
+    cmd = "$(execpath :gen_lib_rs_tool) --rootdir $(RULEDIR) $(SRCS) > $@",
+    tools = [":gen_lib_rs_tool"],
+)
+
+rust_library(
+    name = "nativelink-proto",
+    srcs = glob(["genproto/*.rs"]),
+    tags = ["no-rustfmt"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crates//:derive_more",
+        "@crates//:prost",
+        "@crates//:prost-types",
+        "@crates//:tonic",
+    ],
+)
+
+py_binary(
+    name = "update_protos",
+    srcs = ["update_protos.py"],
+    args = ["--update"] + PROTO_NAMES,
+    data = [
+        ":gen_lib_rs",
+        ":gen_rs_protos",
+    ],
+)
+
+# Test to ensure the proto files are in sync with the checked in files.
+py_test(
+    name = "update_protos_test",
+    timeout = "short",
+    srcs = ["update_protos.py"],
+    args = ["--check"] + PROTO_NAMES,
+    data = glob(["genproto/*.rs"]) + [
+        ":gen_lib_rs",
+        ":gen_rs_protos",
+    ],
+    main = "update_protos.py",
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-proto",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":nativelink-proto",
+)

@@ -1,0 +1,43 @@
+---
+name: Create SemVer-tagged OCI image
+on:
+  push:
+    tags:
+      - '*'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  publish-image:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [image, nativelink-worker-init, nativelink-worker-lre-cc]
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+      id-token: write
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: >- # v4.2.2
+          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+
+      - name: Test image
+        run: |
+          nix run .#local-image-test ${{ matrix.image }}
+
+      - name: Upload image
+        run: |
+          nix run .#publish-ghcr ${{ matrix.image }} ${{github.ref_name}}
+        env:
+          GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}

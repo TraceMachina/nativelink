@@ -1,0 +1,28 @@
+{
+  "command_digest": "1bdda06f381981eab0548babc2ffd90e084803159e6fe7d287b490dd1375f1fc-525",
+  "input_root_digest": "b9002e1da634b904c8bde2677cfba9a64f6a6e64a3c2d1e6f1f4915b84cecb79-82",
+  "insert_timestamp": {
+    "nanos_since_epoch": 803642506,
+    "secs_since_epoch": 1727466558
+  },
+  "load_timestamp": {
+    "nanos_since_epoch": 0,
+    "secs_since_epoch": 0
+  },
+  "platform_properties": {
+    "container-image": "docker://nativelink-toolchain-drake:latest",
+    "cpu_count": "50"
+  },
+  "priority": 0,
+  "timeout": {
+    "nanos": 999999999,
+    "secs": 18446744073709551615
+  },
+  "unique_qualifier": {
+    "Uncachable": {
+      "digest": "38fc5a8a97c1217160b0b658751979b9a1171286381489c8b98c993ec40b1546-210",
+      "digest_function": "Sha256",
+      "instance_name": "main"
+    }
+  }
+}

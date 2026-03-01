@@ -1,0 +1,123 @@
+{
+  stores: [
+    {
+      // MongoDB store for CAS data
+      name: "MONGO_CAS",
+      experimental_mongo: {
+        connection_string: "mongodb://localhost:27017",
+        database: "nativelink",
+        cas_collection: "cas",
+        key_prefix: "cas:",
+        read_chunk_size: "64kb",
+        max_concurrent_uploads: 10,
+        connection_timeout_ms: 3000,
+        command_timeout_ms: 10000,
+        write_concern_w: "majority",
+        write_concern_j: true,
+      },
+    },
+    {
+      // MongoDB store for scheduler with change streams
+      name: "MONGO_SCHEDULER",
+      experimental_mongo: {
+        connection_string: "mongodb://localhost:27017",
+        database: "nativelink",
+        scheduler_collection: "scheduler",
+        key_prefix: "sched:",
+        enable_change_streams: true,
+        write_concern_w: "majority",
+      },
+    },
+    {
+      // Example of chaining stores with MongoDB
+      name: "PRODUCTION_CAS",
+      fast_slow: {
+        fast: {
+          memory: {
+            eviction_policy: {
+              max_bytes: "1gb",
+            },
+          },
+        },
+        slow: {
+          size_partitioning: {
+            size: "64kb",
+            lower_store: {
+              ref_store: {
+                name: "MONGO_CAS", // Small objects
+              },
+            },
+            upper_store: {
+              compression: {
+                compression_algorithm: {
+                  lz4: {},
+                },
+                backend: {
+                  ref_store: {
+                    name: "MONGO_CAS", // Large objects, compressed
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_arch: "minimum",
+          OS: "exact",
+        },
+        max_job_retries: 3,
+        worker_timeout_s: 300,
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "",
+            cas_store: "PRODUCTION_CAS",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "",
+            ac_store: "MONGO_CAS",
+          },
+        ],
+        execution: [
+          {
+            instance_name: "",
+            cas_store: "PRODUCTION_CAS",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        bytestream: {
+          cas_stores: {
+            "": "PRODUCTION_CAS",
+          },
+        },
+      },
+    },
+  ],
+}

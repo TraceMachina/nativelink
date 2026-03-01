@@ -1,0 +1,80 @@
+# Adapted from:
+# https://github.com/tektoncd/catalog/blob/main/task/skopeo-copy/0.3/skopeo-copy.yaml
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: skopeo-copy
+  labels:
+    app.kubernetes.io/version: "0.3"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.12.1"
+    tekton.dev/categories: CLI
+    tekton.dev/tags: cli
+    tekton.dev/displayName: "skopeo copy"
+    tekton.dev/platforms: "linux/amd64,linux/s390x,linux/ppc64le,linux/arm64"
+spec:
+  description: >-
+    Skopeo is a command line tool for working with remote image registries.
+
+    Skopeo doesn’t require a daemon to be running while performing its operations.
+    In particular, the handy skopeo command called copy will ease the whole image
+    copy operation. The copy command will take care of copying the image from
+    internal.registry to production.registry. If your production registry requires
+    credentials to login in order to push the image, skopeo can handle that as well.
+
+  workspaces:
+    - name: images-url
+  params:
+    - name: srcImageURL
+      description: URL of the image to be copied to the destination registry
+      type: string
+      default: ""
+    - name: destImageURL
+      description: URL of the image where the image from source should be copied to
+      type: string
+      default: ""
+    - name: srcTLSverify
+      description: Verify the TLS on the src registry endpoint
+      type: string
+      default: "true"
+    - name: destTLSverify
+      description: Verify the TLS on the dest registry endpoint
+      type: string
+      default: "true"
+  steps:
+    - name: skopeo-copy
+      env:
+      - name: HOME
+        value: /tekton/home
+      image: quay.io/skopeo/stable:v1
+      script: |
+        #!/usr/bin/env bash
+
+        copyMultipleImages() {
+          filename="$(workspaces.images-url.path)/url.txt"
+          while IFS= read -r line || [ -n "$line" ]
+          do
+            cmd=()
+            read -ra cmd <<< "$line"
+
+            # Ensure we have exactly two URLs per line
+            if [ "${#cmd[@]}" -eq 2 ]; then
+              skopeo copy "${cmd[0]}" "${cmd[1]}" --src-tls-verify="$(params.srcTLSverify)" --dest-tls-verify="$(params.destTLSverify)"
+              echo "Copied from ${cmd[0]} to ${cmd[1]}"
+            else
+              echo "Error: Expected two URLs per line, got ${#cmd[@]}"
+            fi
+          done < "$filename"
+        }
+
+        # Copy a single image
+        if [ -n "$(params.srcImageURL)" ] && [ -n "$(params.destImageURL)" ]; then
+          skopeo copy "$(params.srcImageURL)" "$(params.destImageURL)" --src-tls-verify="$(params.srcTLSverify)" --dest-tls-verify="$(params.destTLSverify)"
+          echo "Copied single image from $(params.srcImageURL) to $(params.destImageURL)"
+        else
+          copyMultipleImages
+        fi
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532

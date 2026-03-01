@@ -1,0 +1,68 @@
+html[data-theme="light"] .beoe-dark {
+   display: none;
+}
+
+html[data-theme="dark"] .beoe-light {
+   display: none;
+}
+
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6) > a {
+   color: var(--sl-color-white);
+   text-decoration: none;
+
+   &:hover {
+      text-decoration: underline;
+   }
+}
+
+html {
+   scroll-behavior: smooth;
+}
+
+.buttons {
+   display: flex;
+   justify-content: center;
+   gap: 10px;
+}
+
+.buttons button {
+   background-color: #4a90e2; /* A nice blue color */
+   color: white;
+   font-size: 18px;
+   font-weight: bold;
+   border: none;
+   border-radius: 50%;
+   width: 50px;
+   height: 50px;
+   cursor: pointer;
+   transition: transform 0.2s ease, background-color 0.2s ease;
+   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+   display: flex;
+   justify-content: center;
+   align-items: center;
+}
+
+.buttons button:hover {
+   background-color: #357abd; /* Darker blue on hover */
+   transform: scale(1.1);
+}
+
+.buttons button:active {
+   background-color: #2c6ba1; /* Even darker blue on active */
+   transform: scale(1.05);
+}
+
+.buttons button:focus {
+   outline: none;
+   box-shadow: 0 0 0 3px rgba(74, 144, 226, 0.5);
+}
+
+.buttons button:disabled {
+   background-color: #b0bec5; /* Grey color for disabled state */
+   cursor: not-allowed;
+   transform: none;
+}
+
+.buttons button:disabled:hover {
+   transform: none;
+}

@@ -1,0 +1,57 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "css": {
+    "formatter": {
+      "enabled": true,
+      "indentStyle": "space",
+      "indentWidth": 3,
+      "lineWidth": 80
+    },
+    "linter": {
+      "enabled": true
+    }
+  },
+  "files": {
+    "ignore": [
+      "*.astro",
+      "dist",
+      "node_modules",
+      "deno.d.ts",
+      ".lighthouseci"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": false,
+    "indentStyle": "space",
+    "lineWidth": 80
+  },
+  "javascript": {
+    "globals": [
+      "Bun",
+      "Deno",
+      "Timer",
+      "React"
+    ]
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "all": true,
+      "style": {
+        "noDefaultExport": "off",
+        "noShoutyConstants": "warn",
+        "useBlockStatements": "error",
+        "useNamingConvention": "off",
+        "useShorthandArrayType": "error"
+      },
+      "suspicious": {
+        "noConsole": "off",
+        "noReactSpecificProps": "off"
+      }
+    }
+  },
+  "organizeImports": {
+    "enabled": true
+  }
+}
