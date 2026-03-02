@@ -105,7 +105,7 @@ fn setinfo(responses: &mut HashMap<String, String>) {
             .arg("redis-rs"),
     );
     responses.insert(
-        vec![hello.clone(), setinfo.clone()].join(""),
+        [hello.clone(), setinfo.clone()].join(""),
         args_as_string(vec![
             Value::Map(vec![(
                 Value::SimpleString("server".into()),
@@ -116,7 +116,7 @@ fn setinfo(responses: &mut HashMap<String, String>) {
         ]),
     );
     responses.insert(
-        vec![hello, cmd_as_string(redis::cmd("SELECT").arg(3)), setinfo].join(""),
+        [hello, cmd_as_string(redis::cmd("SELECT").arg(3)), setinfo].join(""),
         args_as_string(vec![
             Value::Map(vec![(
                 Value::SimpleString("server".into()),

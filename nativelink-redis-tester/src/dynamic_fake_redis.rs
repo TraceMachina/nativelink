@@ -94,6 +94,10 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                 };
 
                 let ret: Value = match cmd.as_str() {
+                    "HELLO" => Value::Map(vec![(
+                        Value::SimpleString("server".into()),
+                        Value::SimpleString("redis".into()),
+                    )]),
                     "CLIENT" => {
                         // We can safely ignore these, as it's just setting the library name/version
                         Value::Int(0)
