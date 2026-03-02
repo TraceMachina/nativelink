@@ -78,12 +78,20 @@ fn args_as_string(args: Vec<Value>) -> String {
     output
 }
 
-fn add_to_response<B: BuildHasher>(
+pub fn add_to_response<B: BuildHasher>(
     response: &mut HashMap<String, String, B>,
     cmd: &redis::Cmd,
     args: Vec<Value>,
 ) {
-    response.insert(cmd_as_string(cmd), args_as_string(args));
+    add_to_response_raw(response, cmd, args_as_string(args));
+}
+
+pub fn add_to_response_raw<B: BuildHasher>(
+    response: &mut HashMap<String, String, B>,
+    cmd: &redis::Cmd,
+    args: String,
+) {
+    response.insert(cmd_as_string(cmd), args);
 }
 
 fn setinfo(responses: &mut HashMap<String, String>) {

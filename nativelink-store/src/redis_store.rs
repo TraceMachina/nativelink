@@ -526,6 +526,11 @@ where
         trace!(?spec, "redis spec is after setting defaults");
         Ok(())
     }
+
+    // Only used by tests, because we need to make a real redis connection, then fix this to get fixed values
+    pub fn replace_temp_name_generator(&mut self, replacement: fn() -> String) {
+        self.temp_name_generator_fn = replacement;
+    }
 }
 
 impl RedisStore<ClusterConnection, ClusterRedisManager<ClusterConnection>> {
