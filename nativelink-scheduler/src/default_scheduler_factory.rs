@@ -68,10 +68,13 @@ async fn inner_scheduler_factory(
             let ac_store = store_manager
                 .get_store(&spec.ac_store)
                 .err_tip(|| format!("'ac_store': '{}' does not exist", spec.ac_store))?;
-            let (action_scheduler, worker_scheduler) =
-                Box::pin(inner_scheduler_factory(&spec.scheduler, store_manager, maybe_origin_event_tx))
-                    .await
-                    .err_tip(|| "In nested CacheLookupScheduler construction")?;
+            let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
+                &spec.scheduler,
+                store_manager,
+                maybe_origin_event_tx,
+            ))
+            .await
+            .err_tip(|| "In nested CacheLookupScheduler construction")?;
             let cache_lookup_scheduler = Arc::new(CacheLookupScheduler::new(
                 ac_store,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
@@ -79,10 +82,13 @@ async fn inner_scheduler_factory(
             (Some(cache_lookup_scheduler), worker_scheduler)
         }
         SchedulerSpec::PropertyModifier(spec) => {
-            let (action_scheduler, worker_scheduler) =
-                Box::pin(inner_scheduler_factory(&spec.scheduler, store_manager, maybe_origin_event_tx))
-                    .await
-                    .err_tip(|| "In nested PropertyModifierScheduler construction")?;
+            let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
+                &spec.scheduler,
+                store_manager,
+                maybe_origin_event_tx,
+            ))
+            .await
+            .err_tip(|| "In nested PropertyModifierScheduler construction")?;
             let property_modifier_scheduler = Arc::new(PropertyModifierScheduler::new(
                 spec,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,

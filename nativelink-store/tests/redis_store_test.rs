@@ -1178,8 +1178,7 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
 #[nativelink_test]
 async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let subscription_manager =
-        RedisSubscriptionManager::new(rx);
+    let subscription_manager = RedisSubscriptionManager::new(rx);
 
     // To give the stream enough time to get polled
     sleep(Duration::from_secs(1)).await;

@@ -842,7 +842,9 @@ impl SchedulerSubscriptionManager for ExperimentalMongoSubscriptionManager {
 impl SchedulerStore for ExperimentalMongoStore {
     type SubscriptionManager = ExperimentalMongoSubscriptionManager;
 
-    async fn subscription_manager(&self) -> Result<Arc<ExperimentalMongoSubscriptionManager>, Error> {
+    async fn subscription_manager(
+        &self,
+    ) -> Result<Arc<ExperimentalMongoSubscriptionManager>, Error> {
         let mut subscription_manager = self.subscription_manager.lock();
         if let Some(subscription_manager) = &*subscription_manager {
             Ok(subscription_manager.clone())

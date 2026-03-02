@@ -116,7 +116,7 @@ where
     /// Get an invocation of the update version script for a given `key`.
     fn update_script(&self, key: &str) -> redis::ScriptInvocation<'_>;
 
-    /// Configure the connection to have a psubscribe on it and peform the
+    /// Configure the connection to have a psubscribe on it and perform the
     /// subscription on reconnect.
     fn psubscribe(&self, pattern: &str) -> impl Future<Output = Result<(), Error>> + Send;
 }
@@ -206,7 +206,10 @@ where
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("StandardRedisManager")
-            .field("update_if_version_matches_script", &self.update_if_version_matches_script)
+            .field(
+                "update_if_version_matches_script",
+                &self.update_if_version_matches_script,
+            )
             .field("subscriptions", &self.subscriptions)
             .finish()
     }
