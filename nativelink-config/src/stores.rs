@@ -1156,10 +1156,16 @@ pub struct GrpcSpec {
     pub connections_per_endpoint: usize,
 
     /// Maximum time (seconds) allowed for a single RPC request (e.g. a
-    /// ByteStream.Write call) before it is cancelled. This prevents
-    /// individual RPCs from hanging forever on dead connections.
+    /// ByteStream.Write call) before it is cancelled.
     ///
-    /// Default: 120 (seconds)
+    /// A value of 0 (the default) disables the per-RPC timeout. Dead
+    /// connections are still detected by the HTTP/2 and TCP keepalive
+    /// mechanisms configured on each endpoint.
+    ///
+    /// For large uploads (multi-GB), either leave this at 0 or set it
+    /// large enough to accommodate the full transfer time.
+    ///
+    /// Default: 0 (disabled)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub rpc_timeout_s: u64,
 }
