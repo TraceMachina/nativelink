@@ -95,14 +95,37 @@ pub fn add_to_response_raw<B: BuildHasher>(
 }
 
 fn setinfo(responses: &mut HashMap<String, String>) {
-    // Library sends both lib-name and lib-ver in one go, so we respond to both
-    add_to_response(
-        responses,
+    // We do raw inserts of command here, because the library sends 3/4 commands in one go
+    // They always start with HELLO, then optionally SELECT, so we use this to differentiate
+    let hello = cmd_as_string(redis::cmd("HELLO").arg("3"));
+    let setinfo = cmd_as_string(
         redis::cmd("CLIENT")
             .arg("SETINFO")
             .arg("LIB-NAME")
             .arg("redis-rs"),
-        vec![Value::Okay, Value::Okay],
+    );
+    responses.insert(
+        vec![hello.clone(), setinfo.clone()].join(""),
+        args_as_string(vec![
+            Value::Map(vec![(
+                Value::SimpleString("server".into()),
+                Value::SimpleString("redis".into()),
+            )]),
+            Value::Okay,
+            Value::Okay,
+        ]),
+    );
+    responses.insert(
+        vec![hello, cmd_as_string(redis::cmd("SELECT").arg(3)), setinfo].join(""),
+        args_as_string(vec![
+            Value::Map(vec![(
+                Value::SimpleString("server".into()),
+                Value::SimpleString("redis".into()),
+            )]),
+            Value::Okay,
+            Value::Okay,
+            Value::Okay,
+        ]),
     );
 }
 

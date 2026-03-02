@@ -601,6 +601,13 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
         let mut parsed_addr = local_addr
             .replace("redis+sentinel://", "redis://")
             .into_connection_info()?;
+
+        let redis_settings = parsed_addr
+            .redis_settings()
+            .clone()
+            // We need RESP3 here because we want to do set_push_sender
+            .set_protocol(redis::ProtocolVersion::RESP3);
+        parsed_addr = parsed_addr.set_redis_settings(redis_settings);
         debug!(?parsed_addr, "Parsed redis addr");
 
         let client = timeout(

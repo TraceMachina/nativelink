@@ -641,7 +641,7 @@ fn test_connection_errors() {
         Error {
             code: Code::DeadlineExceeded,
             messages: vec![
-                "deadline has elapsed".into(),
+                "Io: timed out".into(),
                 format!("While connecting to redis with url: redis://nativelink.com:6379/")
             ]
         },
@@ -671,7 +671,7 @@ async fn test_health() {
         } => {
             assert_eq!(
                 struct_name,
-                "nativelink_store::redis_store::RedisStore<redis::aio::connection_manager::ConnectionManager, redis::aio::pubsub::PubSub>"
+                "nativelink_store::redis_store::RedisStore<redis::aio::connection_manager::ConnectionManager, nativelink_store::redis_store::StandardRedisManager<redis::aio::connection_manager::ConnectionManager>>"
             );
             assert!(
                 message.starts_with("Store.update_oneshot() failed: Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"While appending to temp key ("),
@@ -814,7 +814,7 @@ async fn test_redis_connect_timeout() {
         Error {
             code: Code::DeadlineExceeded,
             messages: vec![
-                "deadline has elapsed".into(),
+                "Io: timed out".into(),
                 format!("While connecting to redis with url: redis://127.0.0.1:{port}/")
             ]
         },
