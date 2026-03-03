@@ -354,7 +354,7 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
             }
             output
         };
-        fake_redis_internal(listener, inner).await;
+        fake_redis_internal(listener, vec![inner]).await;
     }
 
     pub async fn run(self) -> u16 {

@@ -23,8 +23,8 @@ use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::{
-    add_lua_script, add_to_response_raw, fake_redis_sentinel_master_stream,
-    fake_redis_sentinel_stream, fake_redis_stream, make_fake_redis_with_responses,
+    add_lua_script, fake_redis_sentinel_master_stream, fake_redis_sentinel_stream,
+    fake_redis_stream, make_fake_redis_with_responses, read_only_run,
 };
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{
@@ -751,17 +751,8 @@ async fn test_sentinel_connect_with_bad_master() {
 #[nativelink_test]
 async fn test_sentinel_connect_and_update_readonly() {
     let redis_span = info_span!("redis");
-    let mut responses = add_lua_version_script(fake_redis_sentinel_master_stream());
-    let temp_key = make_temp_key("abcd");
-    let readonly_err = "READONLY You can't write against a read only replica.";
-    add_to_response_raw(
-        &mut responses,
-        redis::cmd("SETRANGE").arg(&temp_key).arg(0).arg("hello"),
-        format!("!{}\r\n{readonly_err}\r\n", readonly_err.len()),
-    );
-    let redis_port = make_fake_redis_with_responses(responses)
-        .instrument(redis_span)
-        .await;
+
+    let redis_port = read_only_run().instrument(redis_span).await;
     let sentinel_span = info_span!("sentinel");
     let sentinel_port =
         make_fake_redis_with_responses(fake_redis_sentinel_stream("master", redis_port))

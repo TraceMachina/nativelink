@@ -27,7 +27,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bytes::Bytes;
 use const_format::formatcp;
-use futures::stream::{self, FuturesUnordered};
+use futures::stream::FuturesUnordered;
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt, future};
 use itertools::izip;
 use nativelink_config::stores::{RedisMode, RedisSpec};
@@ -321,6 +321,7 @@ where
 
     /// The maximum number of chunk uploads per update.
     /// This is used to limit the number of chunk uploads per update to prevent
+    /// overloading when uploading large blocks of data
     #[metric(help = "The maximum number of chunk uploads per update")]
     max_chunk_uploads_per_update: usize,
 
@@ -892,18 +893,35 @@ where
                             Ok::<_, Error>((offset, *bytes_read, chunk))
                         }),
                 ))
-            }).zip(
-            stream::repeat(client.connection_manager.clone()))
-            .map(|(res, mut connection_manager)| {
+            })
+            .map(|res| {
                 let (offset, end_pos, chunk) = res?;
                 let temp_key_ref = &temp_key;
                 Ok(async move {
-                    connection_manager
+                    let (mut connection_manager, connect_id) = self.connection_manager.get_connection().await?;
+                    match connection_manager
                         .setrange::<_, _, usize>(temp_key_ref, offset, chunk.to_vec())
-                        .await
-                        .err_tip(
-                            || format!("While appending to temp key ({temp_key_ref}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"),
-                        )?;
+                        .await {
+                        Ok(_) => {},
+                        Err(err)
+                            if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
+                        {
+                            let (mut connection_manager, _connect_id) = self.connection_manager.reconnect(connect_id).await?;
+                            connection_manager
+                                .setrange::<_, _, usize>(temp_key_ref, offset, chunk.to_vec())
+                                .await
+                                .err_tip(
+                                    || format!("(after reconnect) while appending to temp key ({temp_key_ref}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"),
+                                )?;
+                        }
+                        Err(err) => {
+                            let mut error: Error = err.into();
+                            error
+                                .messages
+                                .push(format!("While appending to temp key ({temp_key_ref}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"));
+                            return Err(error);
+                        }
+                    }
                     Ok::<u32, Error>(end_pos)
                 })
             })
@@ -1502,7 +1520,7 @@ where
                 .invoke_async(&mut client.connection_manager)
                 .await
             {
-                Ok((success, new_version)) => (success, new_version),
+                Ok(v) => v,
                 Err(err)
                     if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
                 {
@@ -1513,7 +1531,6 @@ where
                 }
                 Err(err) => {
                     let mut error: Error = err.into();
-                    error.code = Code::Internal;
                     error
                         .messages
                         .push(format!("In RedisStore::update_data::versioned for {key:?}"));
