@@ -92,7 +92,7 @@ async fn dynamic_fake_redis(listener: TcpListener) {
                     }
                 }
                 "STRLEN" => Either::Left(Value::Int(5)),
-                "RENAME" => {
+                "RENAME" | "HMSET" => {
                     let value = SETRANGE_TRIGGERED.load(Ordering::Relaxed);
                     if value {
                         Either::Left(Value::Okay)

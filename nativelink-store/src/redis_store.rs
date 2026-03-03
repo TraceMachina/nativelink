@@ -1527,7 +1527,8 @@ where
                     client.reconnect(&self.connection_manager).await?;
                     script_invocation
                         .invoke_async(&mut client.connection_manager)
-                        .await?
+                        .await
+                        .err_tip(|| format!("(after reconnect) In RedisStore::update_data::versioned for {key:?}"))?
                 }
                 Err(err) => {
                     let mut error: Error = err.into();

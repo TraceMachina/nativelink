@@ -35,8 +35,9 @@ use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::HealthStatus;
 use nativelink_util::store_trait::{
-    SchedulerIndexProvider, SchedulerStore, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
-    StoreKey, StoreLike, TrueValue, UploadSizeInfo,
+    FalseValue, SchedulerIndexProvider, SchedulerStore, SchedulerStoreDataProvider,
+    SchedulerStoreDecodeTo, SchedulerStoreKeyProvider, StoreKey, StoreLike, TrueValue,
+    UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use redis::{RedisError, Value};
@@ -749,7 +750,7 @@ async fn test_sentinel_connect_with_bad_master() {
 }
 
 #[nativelink_test]
-async fn test_sentinel_connect_and_update_readonly() {
+async fn test_sentinel_connect_and_update_oneshot_readonly() {
     let redis_span = info_span!("redis");
 
     let redis_port = read_only_run().instrument(redis_span).await;
@@ -771,6 +772,33 @@ async fn test_sentinel_connect_and_update_readonly() {
         .update_oneshot("abcd", Bytes::from_static(b"hello"))
         .await
         .expect("working update");
+}
+
+#[nativelink_test]
+async fn test_sentinel_connect_and_update_data_readonly() {
+    let redis_span = info_span!("redis");
+
+    let redis_port = read_only_run().instrument(redis_span).await;
+    let sentinel_span = info_span!("sentinel");
+    let sentinel_port =
+        make_fake_redis_with_responses(fake_redis_sentinel_stream("master", redis_port))
+            .instrument(sentinel_span)
+            .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis+sentinel://127.0.0.1:{sentinel_port}/")],
+        mode: RedisMode::Sentinel,
+        ..Default::default()
+    };
+    let mut raw_store =
+        Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
+    raw_store.replace_temp_name_generator(mock_uuid_generator);
+    let store = Arc::new(raw_store);
+    let data = TestSchedulerData {
+        key: "test:scheduler_key_1".to_string(),
+        content: "Test scheduler data #1".to_string(),
+        version: 0,
+    };
+    store.update_data(data).await.expect("working update");
 }
 
 #[nativelink_test]
@@ -868,6 +896,31 @@ impl SchedulerStoreDecodeTo for TestSchedulerData {
             content,
             version,
         })
+    }
+}
+
+impl SchedulerStoreKeyProvider for TestSchedulerData {
+    type Versioned = FalseValue; // Using versioned storage
+
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(std::borrow::Cow::Owned(self.key.clone()))
+    }
+}
+
+impl SchedulerStoreDataProvider for TestSchedulerData {
+    fn try_into_bytes(self) -> Result<Bytes, Error> {
+        Ok(Bytes::from(self.content.into_bytes()))
+    }
+
+    fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
+        // Add some test indexes - need to use 'static strings
+        Ok(vec![
+            ("test_index", Bytes::from("test_value")),
+            (
+                "content_prefix",
+                Bytes::from(self.content.chars().take(10).collect::<String>()),
+            ),
+        ])
     }
 }
 
