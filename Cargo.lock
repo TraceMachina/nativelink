@@ -2879,6 +2879,7 @@ name = "nativelink-util"
 version = "1.0.0-rc2"
 dependencies = [
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "bitflags 2.10.0",
  "blake3",
