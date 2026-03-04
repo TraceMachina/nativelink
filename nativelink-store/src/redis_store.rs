@@ -1583,11 +1583,30 @@ where
             for (name, value) in maybe_index {
                 fields.push((name.into(), value.to_vec()));
             }
-            client
+            match client
                 .connection_manager
                 .hset_multiple::<_, _, _, ()>(redis_key.as_ref(), &fields)
                 .await
-                .err_tip(|| format!("In RedisStore::update_data::noversion for {redis_key}"))?;
+            {
+                Ok(v) => v,
+                Err(err)
+                    if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
+                {
+                    client.reconnect(&self.connection_manager).await?;
+                    client
+                        .connection_manager
+                        .hset_multiple::<_, _, _, ()>(redis_key.as_ref(), &fields)
+                        .await
+                        .err_tip(|| format!("(after reconnect) In RedisStore::update_data::noversion for {redis_key}"))?
+                }
+                Err(err) => {
+                    let mut error: Error = err.into();
+                    error.messages.push(format!(
+                        "In RedisStore::update_data::noversion for {redis_key}"
+                    ));
+                    return Err(error);
+                }
+            };
             // If we have a publish channel configured, send a notice that the key has been set.
             if let Some(pub_sub_channel) = &self.pub_sub_channel {
                 return Ok(client

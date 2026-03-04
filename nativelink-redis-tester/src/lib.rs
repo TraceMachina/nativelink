@@ -24,4 +24,4 @@ pub use fake_redis::{
     make_fake_redis_with_responses,
 };
 pub use pubsub::MockPubSub;
-pub use read_only_redis::run as read_only_run;
+pub use read_only_redis::ReadOnlyRedis;

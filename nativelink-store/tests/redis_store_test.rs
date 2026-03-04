@@ -23,8 +23,8 @@ use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::{
-    add_lua_script, fake_redis_sentinel_master_stream, fake_redis_sentinel_stream,
-    fake_redis_stream, make_fake_redis_with_responses, read_only_run,
+    ReadOnlyRedis, add_lua_script, fake_redis_sentinel_master_stream, fake_redis_sentinel_stream,
+    fake_redis_stream, make_fake_redis_with_responses,
 };
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{
@@ -35,9 +35,9 @@ use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::HealthStatus;
 use nativelink_util::store_trait::{
-    FalseValue, SchedulerIndexProvider, SchedulerStore, SchedulerStoreDataProvider,
-    SchedulerStoreDecodeTo, SchedulerStoreKeyProvider, StoreKey, StoreLike, TrueValue,
-    UploadSizeInfo,
+    FalseValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
+    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider, StoreKey,
+    StoreLike, TrueValue, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use redis::{RedisError, Value};
@@ -753,7 +753,7 @@ async fn test_sentinel_connect_with_bad_master() {
 async fn test_sentinel_connect_and_update_oneshot_readonly() {
     let redis_span = info_span!("redis");
 
-    let redis_port = read_only_run().instrument(redis_span).await;
+    let redis_port = ReadOnlyRedis::new().run().instrument(redis_span).await;
     let sentinel_span = info_span!("sentinel");
     let sentinel_port =
         make_fake_redis_with_responses(fake_redis_sentinel_stream("master", redis_port))
@@ -775,10 +775,10 @@ async fn test_sentinel_connect_and_update_oneshot_readonly() {
 }
 
 #[nativelink_test]
-async fn test_sentinel_connect_and_update_data_readonly() {
+async fn test_sentinel_connect_and_update_data_unversioned_readonly() {
     let redis_span = info_span!("redis");
 
-    let redis_port = read_only_run().instrument(redis_span).await;
+    let redis_port = ReadOnlyRedis::new().run().instrument(redis_span).await;
     let sentinel_span = info_span!("sentinel");
     let sentinel_port =
         make_fake_redis_with_responses(fake_redis_sentinel_stream("master", redis_port))
@@ -793,7 +793,34 @@ async fn test_sentinel_connect_and_update_data_readonly() {
         Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
     raw_store.replace_temp_name_generator(mock_uuid_generator);
     let store = Arc::new(raw_store);
-    let data = TestSchedulerData {
+    let data = TestSchedulerDataUnversioned {
+        key: "test:scheduler_key_1".to_string(),
+        content: "Test scheduler data #1".to_string(),
+        version: 0,
+    };
+    store.update_data(data).await.expect("working update");
+}
+
+#[nativelink_test]
+async fn test_sentinel_connect_and_update_data_versioned_readonly() {
+    let redis_span = info_span!("redis");
+
+    let redis_port = ReadOnlyRedis::new().run().instrument(redis_span).await;
+    let sentinel_span = info_span!("sentinel");
+    let sentinel_port =
+        make_fake_redis_with_responses(fake_redis_sentinel_stream("master", redis_port))
+            .instrument(sentinel_span)
+            .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis+sentinel://127.0.0.1:{sentinel_port}/")],
+        mode: RedisMode::Sentinel,
+        ..Default::default()
+    };
+    let mut raw_store =
+        Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
+    raw_store.replace_temp_name_generator(mock_uuid_generator);
+    let store = Arc::new(raw_store);
+    let data = TestSchedulerDataVersioned {
         key: "test:scheduler_key_1".to_string(),
         content: "Test scheduler data #1".to_string(),
         version: 0,
@@ -878,13 +905,13 @@ struct SearchByContentPrefix {
 
 // Define test structures that implement the scheduler traits
 #[derive(Debug, Clone, PartialEq)]
-struct TestSchedulerData {
+struct TestSchedulerDataUnversioned {
     key: String,
     content: String,
     version: i64,
 }
 
-impl SchedulerStoreDecodeTo for TestSchedulerData {
+impl SchedulerStoreDecodeTo for TestSchedulerDataUnversioned {
     type DecodeOutput = Self;
 
     fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
@@ -899,15 +926,15 @@ impl SchedulerStoreDecodeTo for TestSchedulerData {
     }
 }
 
-impl SchedulerStoreKeyProvider for TestSchedulerData {
-    type Versioned = FalseValue; // Using versioned storage
+impl SchedulerStoreKeyProvider for TestSchedulerDataUnversioned {
+    type Versioned = FalseValue; // Using unversioned storage
 
     fn get_key(&self) -> StoreKey<'static> {
         StoreKey::Str(std::borrow::Cow::Owned(self.key.clone()))
     }
 }
 
-impl SchedulerStoreDataProvider for TestSchedulerData {
+impl SchedulerStoreDataProvider for TestSchedulerDataUnversioned {
     fn try_into_bytes(self) -> Result<Bytes, Error> {
         Ok(Bytes::from(self.content.into_bytes()))
     }
@@ -924,13 +951,52 @@ impl SchedulerStoreDataProvider for TestSchedulerData {
     }
 }
 
+// Define test structures that implement the scheduler traits
+#[derive(Debug, Clone, PartialEq)]
+struct TestSchedulerDataVersioned {
+    key: String,
+    content: String,
+    version: i64,
+}
+
+impl SchedulerStoreKeyProvider for TestSchedulerDataVersioned {
+    type Versioned = TrueValue; // Using versioned storage
+
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(std::borrow::Cow::Owned(self.key.clone()))
+    }
+}
+
+impl SchedulerStoreDataProvider for TestSchedulerDataVersioned {
+    fn try_into_bytes(self) -> Result<Bytes, Error> {
+        Ok(Bytes::from(self.content.into_bytes()))
+    }
+
+    fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
+        // Add some test indexes - need to use 'static strings
+        Ok(vec![
+            ("test_index", Bytes::from("test_value")),
+            (
+                "content_prefix",
+                Bytes::from(self.content.chars().take(10).collect::<String>()),
+            ),
+        ])
+    }
+}
+
+impl SchedulerCurrentVersionProvider for TestSchedulerDataVersioned {
+    fn current_version(&self) -> i64 {
+        0
+    }
+}
+
 struct TestSchedulerKey;
 
 impl SchedulerStoreDecodeTo for TestSchedulerKey {
-    type DecodeOutput = TestSchedulerData;
+    type DecodeOutput = TestSchedulerDataUnversioned;
 
     fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
-        TestSchedulerData::decode(version, data)
+        TestSchedulerDataUnversioned::decode(version, data)
     }
 }
 
@@ -955,7 +1021,7 @@ impl SchedulerStoreKeyProvider for SearchByContentPrefix {
 }
 
 impl SchedulerStoreDecodeTo for SearchByContentPrefix {
-    type DecodeOutput = TestSchedulerData;
+    type DecodeOutput = TestSchedulerDataUnversioned;
 
     fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
         TestSchedulerKey::decode(version, data)
@@ -1025,7 +1091,7 @@ fn test_search_by_index() -> Result<(), Error> {
         prefix: "Searchable".to_string(),
     };
 
-    let search_results: Vec<TestSchedulerData> = store
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
         .search_by_index_prefix(search_provider)
         .await
         .err_tip(|| "Failed to search by index")?
@@ -1130,7 +1196,7 @@ fn test_search_by_index_with_sort_key() -> Result<(), Error> {
         prefix: "Searchable".to_string(),
     };
 
-    let search_results: Vec<TestSchedulerData> = store
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
         .search_by_index_prefix(search_provider)
         .await
         .err_tip(|| "Failed to search by index")?
@@ -1236,7 +1302,7 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
         prefix: "Searchable".to_string(),
     };
 
-    let search_results: Vec<TestSchedulerData> = store
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
         .search_by_index_prefix(search_provider)
         .await
         .err_tip(|| "Failed to search by index")?

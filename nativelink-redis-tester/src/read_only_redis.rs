@@ -14,6 +14,7 @@
 
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use either::Either;
 use nativelink_util::background_spawn;
@@ -27,110 +28,129 @@ use crate::fake_redis::{arg_as_string, fake_redis_internal};
 
 const FAKE_SCRIPT_SHA: &str = "b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5";
 
-// The first time we hit SETRANGE, we output a ReadOnly
-static SETRANGE_TRIGGERED: AtomicBool = AtomicBool::new(false);
-
-async fn dynamic_fake_redis(listener: TcpListener) {
-    let readonly_err_str = "READONLY You can't write against a read only replica.";
-    let readonly_err = format!("!{}\r\n{readonly_err_str}\r\n", readonly_err_str.len());
-
-    let inner = move |buf: &[u8]| -> String {
-        let mut output = String::new();
-        let mut buf_index = 0;
-        loop {
-            let frame = match decode(&buf[buf_index..]).unwrap() {
-                Some((frame, amt)) => {
-                    buf_index += amt;
-                    frame
-                }
-                None => {
-                    panic!("No frame!");
-                }
-            };
-            let (cmd, args) = {
-                if let OwnedFrame::Array(a) = frame {
-                    if let OwnedFrame::BulkString(s) = a.first().unwrap() {
-                        let args: Vec<_> = a[1..].to_vec();
-                        (str::from_utf8(s).unwrap().to_string(), args)
-                    } else {
-                        panic!("Array not starting with cmd: {a:?}");
-                    }
-                } else {
-                    panic!("Non array cmd: {frame:?}");
-                }
-            };
-
-            let ret: Either<Value, String> = match cmd.as_str() {
-                "HELLO" => Either::Left(Value::Map(vec![(
-                    Value::SimpleString("server".into()),
-                    Value::SimpleString("redis".into()),
-                )])),
-                "CLIENT" => {
-                    // We can safely ignore these, as it's just setting the library name/version
-                    Either::Left(Value::Int(0))
-                }
-                "SCRIPT" => {
-                    assert_eq!(args[0], OwnedFrame::BulkString(b"LOAD".to_vec()));
-
-                    let OwnedFrame::BulkString(ref _script) = args[1] else {
-                        panic!("Script should be a bulkstring: {args:?}");
-                    };
-                    Either::Left(Value::SimpleString(FAKE_SCRIPT_SHA.to_string()))
-                }
-                "ROLE" => Either::Left(Value::Array(vec![
-                    Value::BulkString(b"master".to_vec()),
-                    Value::Int(0),
-                    Value::Array(vec![]),
-                ])),
-                "SETRANGE" => {
-                    let value = SETRANGE_TRIGGERED.load(Ordering::Relaxed);
-                    if value {
-                        Either::Left(Value::Int(5))
-                    } else {
-                        SETRANGE_TRIGGERED.store(true, Ordering::Relaxed);
-                        Either::Right(readonly_err.clone())
-                    }
-                }
-                "STRLEN" => Either::Left(Value::Int(5)),
-                "RENAME" | "HMSET" => {
-                    let value = SETRANGE_TRIGGERED.load(Ordering::Relaxed);
-                    if value {
-                        Either::Left(Value::Okay)
-                    } else {
-                        Either::Right(readonly_err.clone())
-                    }
-                }
-                actual => {
-                    panic!("Mock command not implemented! {actual:?}");
-                }
-            };
-
-            match ret {
-                Either::Left(v) => {
-                    arg_as_string(&mut output, v);
-                }
-                Either::Right(s) => {
-                    write!(&mut output, "{s}").unwrap();
-                }
-            }
-
-            if buf_index == buf.len() {
-                break;
-            }
-        }
-        output
-    };
-    fake_redis_internal(listener, vec![inner]).await;
+#[derive(Clone, Debug)]
+pub struct ReadOnlyRedis {
+    // The first time we hit SETRANGE/HMSET, we output a ReadOnly. Next time, we assume we're reconnected and do correct values
+    readonly_triggered: Arc<AtomicBool>,
 }
 
-pub async fn run() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    info!("Using port {port}");
+impl Default for ReadOnlyRedis {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    background_spawn!("listener", async move {
-        dynamic_fake_redis(listener).await;
-    });
+impl ReadOnlyRedis {
+    pub fn new() -> Self {
+        Self {
+            readonly_triggered: Arc::new(AtomicBool::new(false)),
+        }
+    }
 
-    port
+    async fn dynamic_fake_redis(self, listener: TcpListener) {
+        let readonly_err_str = "READONLY You can't write against a read only replica.";
+        let readonly_err = format!("!{}\r\n{readonly_err_str}\r\n", readonly_err_str.len());
+
+        let inner = move |buf: &[u8]| -> String {
+            let mut output = String::new();
+            let mut buf_index = 0;
+            loop {
+                let frame = match decode(&buf[buf_index..]).unwrap() {
+                    Some((frame, amt)) => {
+                        buf_index += amt;
+                        frame
+                    }
+                    None => {
+                        panic!("No frame!");
+                    }
+                };
+                let (cmd, args) = {
+                    if let OwnedFrame::Array(a) = frame {
+                        if let OwnedFrame::BulkString(s) = a.first().unwrap() {
+                            let args: Vec<_> = a[1..].to_vec();
+                            (str::from_utf8(s).unwrap().to_string(), args)
+                        } else {
+                            panic!("Array not starting with cmd: {a:?}");
+                        }
+                    } else {
+                        panic!("Non array cmd: {frame:?}");
+                    }
+                };
+
+                let ret: Either<Value, String> = match cmd.as_str() {
+                    "HELLO" => Either::Left(Value::Map(vec![(
+                        Value::SimpleString("server".into()),
+                        Value::SimpleString("redis".into()),
+                    )])),
+                    "CLIENT" => {
+                        // We can safely ignore these, as it's just setting the library name/version
+                        Either::Left(Value::Int(0))
+                    }
+                    "SCRIPT" => {
+                        assert_eq!(args[0], OwnedFrame::BulkString(b"LOAD".to_vec()));
+
+                        let OwnedFrame::BulkString(ref _script) = args[1] else {
+                            panic!("Script should be a bulkstring: {args:?}");
+                        };
+                        Either::Left(Value::SimpleString(FAKE_SCRIPT_SHA.to_string()))
+                    }
+                    "ROLE" => Either::Left(Value::Array(vec![
+                        Value::BulkString(b"master".to_vec()),
+                        Value::Int(0),
+                        Value::Array(vec![]),
+                    ])),
+                    "SETRANGE" => {
+                        let value = self.readonly_triggered.load(Ordering::Relaxed);
+                        if value {
+                            Either::Left(Value::Int(5))
+                        } else {
+                            self.readonly_triggered.store(true, Ordering::Relaxed);
+                            Either::Right(readonly_err.clone())
+                        }
+                    }
+                    "STRLEN" => Either::Left(Value::Int(5)),
+                    "RENAME" | "HMSET" => {
+                        let value = self.readonly_triggered.load(Ordering::Relaxed);
+                        if value {
+                            Either::Left(Value::Okay)
+                        } else {
+                            self.readonly_triggered.store(true, Ordering::Relaxed);
+                            Either::Right(readonly_err.clone())
+                        }
+                    }
+                    "EVALSHA" => Either::Left(Value::Array(vec![Value::Int(1), Value::Int(0)])),
+                    actual => {
+                        panic!("Mock command not implemented! {actual:?}");
+                    }
+                };
+
+                match ret {
+                    Either::Left(v) => {
+                        arg_as_string(&mut output, v);
+                    }
+                    Either::Right(s) => {
+                        write!(&mut output, "{s}").unwrap();
+                    }
+                }
+
+                if buf_index == buf.len() {
+                    break;
+                }
+            }
+            output
+        };
+        fake_redis_internal(listener, vec![inner]).await;
+    }
+
+    pub async fn run(self) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        info!("Using port {port}");
+
+        background_spawn!("listener", async move {
+            self.dynamic_fake_redis(listener).await;
+        });
+
+        port
+    }
 }
