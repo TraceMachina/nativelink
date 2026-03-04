@@ -1597,7 +1597,7 @@ where
                         .connection_manager
                         .hset_multiple::<_, _, _, ()>(redis_key.as_ref(), &fields)
                         .await
-                        .err_tip(|| format!("(after reconnect) In RedisStore::update_data::noversion for {redis_key}"))?
+                        .err_tip(|| format!("(after reconnect) In RedisStore::update_data::noversion for {redis_key}"))?;
                 }
                 Err(err) => {
                     let mut error: Error = err.into();
@@ -1606,7 +1606,7 @@ where
                     ));
                     return Err(error);
                 }
-            };
+            }
             // If we have a publish channel configured, send a notice that the key has been set.
             if let Some(pub_sub_channel) = &self.pub_sub_channel {
                 return Ok(client
