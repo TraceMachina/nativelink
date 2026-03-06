@@ -10,7 +10,7 @@ resolver = "2"
 edition = "2024"
 name = "nativelink"
 rust-version = "1.87.0"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 
 [profile.release]
 lto = true
