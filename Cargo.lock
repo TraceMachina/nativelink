@@ -2724,6 +2724,7 @@ dependencies = [
 name = "nativelink-redis-tester"
 version = "1.0.0-rc2"
 dependencies = [
+ "either",
  "nativelink-util",
  "redis",
  "redis-protocol",
