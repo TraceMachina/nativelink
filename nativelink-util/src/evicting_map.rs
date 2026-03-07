@@ -435,41 +435,49 @@ where
     }
 
     pub async fn get(&self, key: &Q) -> Option<T> {
-        // Fast path: Check if we need eviction before acquiring lock for eviction
-        let needs_eviction = {
-            let state = self.state.lock();
-            if let Some((_, peek_entry)) = state.lru.peek_lru() {
-                self.should_evict(
-                    state.lru.len(),
-                    peek_entry,
-                    state.sum_store_size,
-                    self.max_bytes,
-                )
+        let (result, items_to_unref, removal_futures) = {
+            let mut state = self.state.lock();
+            // Check if the requested item is expired before promoting it.
+            if let Some(entry) = state.lru.peek(key.borrow()) {
+                if self.should_evict(state.lru.len(), entry, 0, u64::MAX) {
+                    // Item is expired, remove it.
+                    if let Some((k, eviction_item)) = state.lru.pop_entry(key.borrow()) {
+                        let (data, futures) = state.remove(k.borrow(), &eviction_item, false);
+                        let (mut items, mut removals) = self.evict_items(&mut *state);
+                        items.push(data);
+                        removals.extend(futures);
+                        (None, items, removals)
+                    } else {
+                        let (items, removals) = self.evict_items(&mut *state);
+                        (None, items, removals)
+                    }
+                } else {
+                    // Item is valid. Promote it in LRU so it's safe from eviction.
+                    let data = state.lru.get_mut(key.borrow()).map(|entry| {
+                        entry.seconds_since_anchor =
+                            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+                        entry.data.clone()
+                    });
+                    let (items, removals) = self.evict_items(&mut *state);
+                    (data, items, removals)
+                }
             } else {
-                false
+                let (items, removals) = self.evict_items(&mut *state);
+                (None, items, removals)
             }
         };
+        // Unref items outside of lock — lock is guaranteed dropped here.
+        Self::unref_items(items_to_unref, removal_futures).await;
+        result
+    }
 
-        // Perform eviction if needed
-        if needs_eviction {
-            let (items_to_unref, removal_futures) = {
-                let mut state = self.state.lock();
-                self.evict_items(&mut *state)
-            };
-            // Unref items outside of lock
-            let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
-            while callbacks.next().await.is_some() {}
-            let mut callbacks: FuturesUnordered<_> =
-                items_to_unref.iter().map(LenEntry::unref).collect();
-            while callbacks.next().await.is_some() {}
-        }
-
-        // Now get the item
-        let mut state = self.state.lock();
-        let entry = state.lru.get_mut(key.borrow())?;
-        entry.seconds_since_anchor =
-            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
-        Some(entry.data.clone())
+    /// Helper to unref evicted items outside of lock.
+    async fn unref_items(items_to_unref: Vec<T>, removal_futures: Vec<RemoveFuture>) {
+        let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
+        while callbacks.next().await.is_some() {}
+        let mut callbacks: FuturesUnordered<_> =
+            items_to_unref.iter().map(LenEntry::unref).collect();
+        while callbacks.next().await.is_some() {}
     }
 
     /// Returns the replaced item if any.
