@@ -3,6 +3,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0-rc3](https://github.com/TraceMachina/nativelink/compare/v1.0.0-rc2..v1.0.0-rc3) - 2026-03-06
+
+
+
+### ⛰️  Features
+
+- Add json schema ([#2193](https://github.com/TraceMachina/nativelink/issues/2193)) - ([d926c47](https://github.com/TraceMachina/nativelink/commit/d926c4756a830e38c9b162c388e6fafcba091da7))
+
+### 🐛 Bug Fixes
+
+- Fix Redis to reconnect in Sentinel (Chris Staite) ([#2190](https://github.com/TraceMachina/nativelink/issues/2190)) - ([8783134](https://github.com/TraceMachina/nativelink/commit/87831340af3cfcb3cffbc4f43bc3da9ecf8c8467))
+- Fix worker inflight tasks heading ([#2177](https://github.com/TraceMachina/nativelink/issues/2177)) - ([8ae17ba](https://github.com/TraceMachina/nativelink/commit/8ae17bae0603d66102d171554f331e10a3e9ac9e))
+- Fix all the current clippy lints ([#2174](https://github.com/TraceMachina/nativelink/issues/2174)) - ([23611ca](https://github.com/TraceMachina/nativelink/commit/23611caa3966a1934d6a3a7da0007083bbc75d8b))
+
+### 📚 Documentation
+
+- Document max concurrent writes ([#2169](https://github.com/TraceMachina/nativelink/issues/2169)) - ([cedba0e](https://github.com/TraceMachina/nativelink/commit/cedba0e829daeb6affa601324ca7eacdcd4e7fea))
+- Document RPC timeouts in Redis config ([#2168](https://github.com/TraceMachina/nativelink/issues/2168)) - ([f0d12ff](https://github.com/TraceMachina/nativelink/commit/f0d12ffce777662eb23f898042393a2fac8f2952))
+- Document max inflight tasks ([#2167](https://github.com/TraceMachina/nativelink/issues/2167)) - ([2650680](https://github.com/TraceMachina/nativelink/commit/26506800e0bddfe9dd35008dfda279a2b19604df))
+
+### 🧪 Testing & CI
+
+- Fix Fast slow store Not Found error by returning failed precondition ([#2194](https://github.com/TraceMachina/nativelink/issues/2194)) - ([3354945](https://github.com/TraceMachina/nativelink/commit/3354945b1f0cb9aba7041ad6ffad0bb67def8d4f))
+- Flake update fixes ([#2192](https://github.com/TraceMachina/nativelink/issues/2192)) - ([a7d873a](https://github.com/TraceMachina/nativelink/commit/a7d873aca54ae62f0ce13fbbf3dc7817f9f82efa))
+- pre-commit rustfmt all files ([#2176](https://github.com/TraceMachina/nativelink/issues/2176)) - ([27fa965](https://github.com/TraceMachina/nativelink/commit/27fa9652baf9ed7cdbc248fd6591bf813a790f65))
+
+### ⚙️ Miscellaneous
+
+- Only display Baggage enduser.id when identity is present ([#2197](https://github.com/TraceMachina/nativelink/issues/2197)) - ([86b86e1](https://github.com/TraceMachina/nativelink/commit/86b86e15e8dcc3936a07d22feb10d088dc9ad4ae))
+- Prevent retry loop large uploads ([#2195](https://github.com/TraceMachina/nativelink/issues/2195)) - ([2a2ca64](https://github.com/TraceMachina/nativelink/commit/2a2ca6496af559a91207de3e384e338111138fd1))
+- If all workers are fully allocated, shortcut find workers ([#2130](https://github.com/TraceMachina/nativelink/issues/2130)) - ([faad8bb](https://github.com/TraceMachina/nativelink/commit/faad8bb038fefc439daca73978138b821084648c))
+
+### ⬆️ Bumps & Version Updates
+
+- Update module github.com/cloudflare/circl to v1.6.3 [SECURITY] ([#2191](https://github.com/TraceMachina/nativelink/issues/2191)) - ([77b13f0](https://github.com/TraceMachina/nativelink/commit/77b13f053a40e3f67cb202ff086ca0a9185907fb))
+- Update curl version in Dockerfiles ([#2189](https://github.com/TraceMachina/nativelink/issues/2189)) - ([c161433](https://github.com/TraceMachina/nativelink/commit/c161433702cd6b6a29a169e7516c06a60c1341f9))
+- Update grafana/grafana Docker tag to v12 ([#2182](https://github.com/TraceMachina/nativelink/issues/2182)) - ([658dd53](https://github.com/TraceMachina/nativelink/commit/658dd532c2275c888cfc03c2149fa805de8ecbc5))
+
 ## [1.0.0-rc2](https://github.com/TraceMachina/nativelink/compare/v0.8.0..1.0.0-rc2) - 2026-02-16
 
 
