@@ -34,7 +34,7 @@ use crate::retry::{self, Retrier, RetryResult};
 #[derive(Debug)]
 pub struct ConnectionManager {
     // The channel to request connections from the worker.
-    worker_tx: mpsc::Sender<oneshot::Sender<Connection>>,
+    worker_tx: mpsc::Sender<(String, oneshot::Sender<Connection>)>,
 }
 
 /// The index into `ConnectionManagerWorker::endpoints`.
@@ -101,8 +101,8 @@ struct ConnectionManagerWorker {
     connecting_channels: FuturesUnordered<Pin<Box<dyn Future<Output = IndexedChannel> + Send>>>,
     /// Connected channels that are available for use.
     available_channels: VecDeque<EstablishedChannel>,
-    /// Requests for a Channel when available.
-    waiting_connections: VecDeque<oneshot::Sender<Connection>>,
+    /// Requests for a Channel when available - (reason, request)
+    waiting_connections: VecDeque<(String, oneshot::Sender<Connection>)>,
     /// The retry configuration for connecting to an Endpoint, on failure will
     /// restart the retrier after a 1 second delay.
     retrier: Retrier,
@@ -136,7 +136,7 @@ impl ConnectionManager {
             .collect();
 
         if max_concurrent_requests == 0 {
-            max_concurrent_requests = usize::MAX;
+            max_concurrent_requests = 100;
         }
         if connections_per_endpoint == 0 {
             connections_per_endpoint = 1;
@@ -165,10 +165,10 @@ impl ConnectionManager {
     /// Get a Connection that can be used as a `tonic::Channel`, except it
     /// performs some additional counting to reconnect on error and restrict
     /// the number of concurrent connections.
-    pub async fn connection(&self) -> Result<Connection, Error> {
+    pub async fn connection(&self, reason: String) -> Result<Connection, Error> {
         let (tx, rx) = oneshot::channel();
         self.worker_tx
-            .send(tx)
+            .send((reason, tx))
             .await
             .map_err(|err| make_err!(Code::Unavailable, "Requesting a new connection: {err:?}"))?;
         rx.await
@@ -180,7 +180,7 @@ impl ConnectionManagerWorker {
     async fn service_requests(
         mut self,
         connections_per_endpoint: usize,
-        mut worker_rx: mpsc::Receiver<oneshot::Sender<Connection>>,
+        mut worker_rx: mpsc::Receiver<(String, oneshot::Sender<Connection>)>,
         mut connection_rx: mpsc::UnboundedReceiver<ConnectionRequest>,
     ) {
         // Make the initial set of connections, connection failures will be
@@ -199,12 +199,12 @@ impl ConnectionManagerWorker {
         loop {
             tokio::select! {
                 request = worker_rx.recv() => {
-                    let Some(request) = request else {
+                    let Some((reason, request)) = request else {
                         // The ConnectionManager was dropped, shut down the
                         // worker.
                         break;
                     };
-                    self.handle_worker(request);
+                    self.handle_worker(reason, request);
                 }
                 maybe_request = connection_rx.recv() => {
                     if let Some(request) = maybe_request {
@@ -308,20 +308,22 @@ impl ConnectionManagerWorker {
     }
 
     // This must never be made async otherwise the select may cancel it.
-    fn handle_worker(&mut self, tx: oneshot::Sender<Connection>) {
+    fn handle_worker(&mut self, reason: String, tx: oneshot::Sender<Connection>) {
         if let Some(channel) = (self.available_connections > 0)
             .then_some(())
             .and_then(|()| self.available_channels.pop_front())
         {
+            debug!(reason, "ConnectionManager: request running");
             self.provide_channel(channel, tx);
         } else {
             debug!(
                 available_connections = self.available_connections,
                 available_channels = self.available_channels.len(),
                 waiting_connections = self.waiting_connections.len(),
+                reason,
                 "ConnectionManager: no connection available, request queued",
             );
-            self.waiting_connections.push_back(tx);
+            self.waiting_connections.push_back((reason, tx));
         }
     }
 
@@ -342,7 +344,8 @@ impl ConnectionManagerWorker {
             && !self.available_channels.is_empty()
         {
             if let Some(channel) = self.available_channels.pop_front() {
-                if let Some(tx) = self.waiting_connections.pop_front() {
+                if let Some((reason, tx)) = self.waiting_connections.pop_front() {
+                    debug!(reason, "ConnectionManager: channel available, running");
                     self.provide_channel(channel, tx);
                 } else {
                     // This should never happen, but better than an unwrap.

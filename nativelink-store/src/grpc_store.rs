@@ -145,7 +145,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection(format!("find_missing_blobs: {:?}", request.blob_digests))
                 .await
                 .err_tip(|| "in find_missing_blobs")?;
             ContentAddressableStorageClient::new(channel)
@@ -170,7 +170,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection("batch_update_blobs".into())
                 .await
                 .err_tip(|| "in batch_update_blobs")?;
             ContentAddressableStorageClient::new(channel)
@@ -195,7 +195,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection("batch_read_blobs".into())
                 .await
                 .err_tip(|| "in batch_read_blobs")?;
             ContentAddressableStorageClient::new(channel)
@@ -220,7 +220,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection(format!("get_tree: {:?}", request.root_digest))
                 .await
                 .err_tip(|| "in get_tree")?;
             ContentAddressableStorageClient::new(channel)
@@ -247,7 +247,7 @@ impl GrpcStore {
     ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<>, Error> {
         let channel = self
             .connection_manager
-            .connection()
+            .connection(format!("read_internal: {}", request.resource_name))
             .await
             .err_tip(|| "in read_internal")?;
         let mut response = ByteStreamClient::new(channel)
@@ -325,34 +325,36 @@ impl GrpcStore {
                         "GrpcStore::write: requesting connection from pool",
                     );
                     let conn_start = std::time::Instant::now();
-                    let rpc_fut = self.connection_manager.connection().and_then(|channel| {
-                        let conn_elapsed = conn_start.elapsed();
-                        let instance_for_rpc = instance_name.clone();
-                        let conn_elapsed_ms =
-                            u64::try_from(conn_elapsed.as_millis()).unwrap_or(u64::MAX);
-                        trace!(
-                            instance_name = %instance_for_rpc,
-                            conn_elapsed_ms,
-                            "GrpcStore::write: got connection, starting ByteStream.Write RPC",
-                        );
-                        let rpc_start = std::time::Instant::now();
-                        let local_state_for_rpc = local_state.clone();
-                        async move {
-                            let res = ByteStreamClient::new(channel)
-                                .write(WriteStateWrapper::new(local_state_for_rpc))
-                                .await
-                                .err_tip(|| "in GrpcStore::write");
-                            let rpc_elapsed_ms =
-                                u64::try_from(rpc_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    let rpc_fut = self.connection_manager.connection("write".into()).and_then(
+                        |channel| {
+                            let conn_elapsed = conn_start.elapsed();
+                            let instance_for_rpc = instance_name.clone();
+                            let conn_elapsed_ms =
+                                u64::try_from(conn_elapsed.as_millis()).unwrap_or(u64::MAX);
                             trace!(
                                 instance_name = %instance_for_rpc,
-                                rpc_elapsed_ms,
-                                success = res.is_ok(),
-                                "GrpcStore::write: ByteStream.Write RPC returned",
+                                conn_elapsed_ms,
+                                "GrpcStore::write: got connection, starting ByteStream.Write RPC",
                             );
-                            res
-                        }
-                    });
+                            let rpc_start = std::time::Instant::now();
+                            let local_state_for_rpc = local_state.clone();
+                            async move {
+                                let res = ByteStreamClient::new(channel)
+                                    .write(WriteStateWrapper::new(local_state_for_rpc))
+                                    .await
+                                    .err_tip(|| "in GrpcStore::write");
+                                let rpc_elapsed_ms = u64::try_from(rpc_start.elapsed().as_millis())
+                                    .unwrap_or(u64::MAX);
+                                trace!(
+                                    instance_name = %instance_for_rpc,
+                                    rpc_elapsed_ms,
+                                    success = res.is_ok(),
+                                    "GrpcStore::write: ByteStream.Write RPC returned",
+                                );
+                                res
+                            }
+                        },
+                    );
 
                     let result = if rpc_timeout > Duration::ZERO {
                         match tokio::time::timeout(rpc_timeout, rpc_fut).await {
@@ -444,7 +446,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection(format!("query_write_status: {}", request.resource_name))
                 .await
                 .err_tip(|| "in query_write_status")?;
             ByteStreamClient::new(channel)
@@ -464,7 +466,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection(format!("get_action_result: {:?}", request.action_digest))
                 .await
                 .err_tip(|| "in get_action_result")?;
             ActionCacheClient::new(channel)
@@ -484,7 +486,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection(format!("update_action_result: {:?}", request.action_digest))
                 .await
                 .err_tip(|| "in update_action_result")?;
             ActionCacheClient::new(channel)
