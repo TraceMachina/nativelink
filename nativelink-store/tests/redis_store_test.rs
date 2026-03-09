@@ -15,6 +15,7 @@
 use core::ops::RangeBounds;
 use core::time::Duration;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use futures::TryStreamExt;
@@ -22,20 +23,21 @@ use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::{
-    MockPubSub, add_lua_script, fake_redis_sentinel_master_stream, fake_redis_sentinel_stream,
+    ReadOnlyRedis, add_lua_script, fake_redis_sentinel_master_stream, fake_redis_sentinel_stream,
     fake_redis_stream, make_fake_redis_with_responses,
 };
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{
-    DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE, DEFAULT_MAX_COUNT_PER_CURSOR, LUA_VERSION_SET_SCRIPT,
-    RedisStore, RedisSubscriptionManager,
+    ClusterRedisManager, DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE, DEFAULT_MAX_COUNT_PER_CURSOR,
+    LUA_VERSION_SET_SCRIPT, RedisStore, RedisSubscriptionManager,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::HealthStatus;
 use nativelink_util::store_trait::{
-    SchedulerIndexProvider, SchedulerStore, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
-    StoreKey, StoreLike, TrueValue, UploadSizeInfo,
+    FalseValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
+    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider, StoreKey,
+    StoreLike, TrueValue, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use redis::{RedisError, Value};
@@ -58,7 +60,9 @@ fn make_temp_key(final_name: &str) -> String {
     format!("temp-{TEMP_UUID}-{{{final_name}}}")
 }
 
-async fn make_mock_store(commands: Vec<MockCmd>) -> RedisStore<MockRedisConnection, MockPubSub> {
+async fn make_mock_store(
+    commands: Vec<MockCmd>,
+) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
     make_mock_store_with_prefix(commands, String::new()).await
 }
 
@@ -83,7 +87,7 @@ async fn fake_redis_sentinel_master_stream_with_script() -> u16 {
 async fn make_mock_store_with_prefix(
     mut commands: Vec<MockCmd>,
     key_prefix: String,
-) -> RedisStore<MockRedisConnection, MockPubSub> {
+) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
     commands.insert(
         0,
         MockCmd::new(
@@ -92,9 +96,9 @@ async fn make_mock_store_with_prefix(
         ),
     );
     let mock_connection = MockRedisConnection::new(commands);
+    let manager = ClusterRedisManager::new(mock_connection).await.unwrap();
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     RedisStore::new_from_builder_and_parts(
-        mock_connection,
-        None,
         None,
         mock_uuid_generator,
         key_prefix,
@@ -103,7 +107,8 @@ async fn make_mock_store_with_prefix(
         DEFAULT_SCAN_COUNT,
         DEFAULT_MAX_PERMITS,
         DEFAULT_MAX_COUNT_PER_CURSOR,
-        None,
+        rx,
+        manager,
     )
     .await
     .unwrap()
@@ -501,7 +506,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
 #[nativelink_test]
 async fn list_test() -> Result<(), Error> {
     async fn get_list(
-        store: &RedisStore<MockRedisConnection, MockPubSub>,
+        store: &RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>>,
         range: impl RangeBounds<StoreKey<'static>> + Send + Sync + 'static,
     ) -> Vec<StoreKey<'static>> {
         let mut found_keys = vec![];
@@ -637,7 +642,7 @@ fn test_connection_errors() {
         Error {
             code: Code::DeadlineExceeded,
             messages: vec![
-                "deadline has elapsed".into(),
+                "Io: timed out".into(),
                 format!("While connecting to redis with url: redis://nativelink.com:6379/")
             ]
         },
@@ -667,7 +672,7 @@ async fn test_health() {
         } => {
             assert_eq!(
                 struct_name,
-                "nativelink_store::redis_store::RedisStore<redis::aio::connection_manager::ConnectionManager, redis::aio::pubsub::PubSub>"
+                "nativelink_store::redis_store::RedisStore<redis::aio::connection_manager::ConnectionManager, nativelink_store::redis_store::StandardRedisManager<redis::aio::connection_manager::ConnectionManager>>"
             );
             assert!(
                 message.starts_with("Store.update_oneshot() failed: Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"While appending to temp key ("),
@@ -745,6 +750,85 @@ async fn test_sentinel_connect_with_bad_master() {
 }
 
 #[nativelink_test]
+async fn test_sentinel_connect_and_update_oneshot_readonly() {
+    let redis_span = info_span!("redis");
+
+    let redis_port = ReadOnlyRedis::new().run().instrument(redis_span).await;
+    let sentinel_span = info_span!("sentinel");
+    let sentinel_port =
+        make_fake_redis_with_responses(fake_redis_sentinel_stream("master", redis_port))
+            .instrument(sentinel_span)
+            .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis+sentinel://127.0.0.1:{sentinel_port}/")],
+        mode: RedisMode::Sentinel,
+        ..Default::default()
+    };
+    let mut raw_store =
+        Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
+    raw_store.replace_temp_name_generator(mock_uuid_generator);
+    let store = Arc::new(raw_store);
+    store
+        .update_oneshot("abcd", Bytes::from_static(b"hello"))
+        .await
+        .expect("working update");
+}
+
+#[nativelink_test]
+async fn test_sentinel_connect_and_update_data_unversioned_readonly() {
+    let redis_span = info_span!("redis");
+
+    let redis_port = ReadOnlyRedis::new().run().instrument(redis_span).await;
+    let sentinel_span = info_span!("sentinel");
+    let sentinel_port =
+        make_fake_redis_with_responses(fake_redis_sentinel_stream("master", redis_port))
+            .instrument(sentinel_span)
+            .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis+sentinel://127.0.0.1:{sentinel_port}/")],
+        mode: RedisMode::Sentinel,
+        ..Default::default()
+    };
+    let mut raw_store =
+        Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
+    raw_store.replace_temp_name_generator(mock_uuid_generator);
+    let store = Arc::new(raw_store);
+    let data = TestSchedulerDataUnversioned {
+        key: "test:scheduler_key_1".to_string(),
+        content: "Test scheduler data #1".to_string(),
+        version: 0,
+    };
+    store.update_data(data).await.expect("working update");
+}
+
+#[nativelink_test]
+async fn test_sentinel_connect_and_update_data_versioned_readonly() {
+    let redis_span = info_span!("redis");
+
+    let redis_port = ReadOnlyRedis::new().run().instrument(redis_span).await;
+    let sentinel_span = info_span!("sentinel");
+    let sentinel_port =
+        make_fake_redis_with_responses(fake_redis_sentinel_stream("master", redis_port))
+            .instrument(sentinel_span)
+            .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis+sentinel://127.0.0.1:{sentinel_port}/")],
+        mode: RedisMode::Sentinel,
+        ..Default::default()
+    };
+    let mut raw_store =
+        Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
+    raw_store.replace_temp_name_generator(mock_uuid_generator);
+    let store = Arc::new(raw_store);
+    let data = TestSchedulerDataVersioned {
+        key: "test:scheduler_key_1".to_string(),
+        content: "Test scheduler data #1".to_string(),
+        version: 0,
+    };
+    store.update_data(data).await.expect("working update");
+}
+
+#[nativelink_test]
 async fn test_sentinel_connect_with_url_specified_master() {
     let redis_port = fake_redis_sentinel_master_stream_with_script()
         .instrument(info_span!("redis"))
@@ -776,7 +860,7 @@ async fn test_redis_connect_timeout() {
         Error {
             code: Code::DeadlineExceeded,
             messages: vec![
-                "deadline has elapsed".into(),
+                "Io: timed out".into(),
                 format!("While connecting to redis with url: redis://127.0.0.1:{port}/")
             ]
         },
@@ -821,13 +905,13 @@ struct SearchByContentPrefix {
 
 // Define test structures that implement the scheduler traits
 #[derive(Debug, Clone, PartialEq)]
-struct TestSchedulerData {
+struct TestSchedulerDataUnversioned {
     key: String,
     content: String,
     version: i64,
 }
 
-impl SchedulerStoreDecodeTo for TestSchedulerData {
+impl SchedulerStoreDecodeTo for TestSchedulerDataUnversioned {
     type DecodeOutput = Self;
 
     fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
@@ -842,13 +926,77 @@ impl SchedulerStoreDecodeTo for TestSchedulerData {
     }
 }
 
+impl SchedulerStoreKeyProvider for TestSchedulerDataUnversioned {
+    type Versioned = FalseValue; // Using unversioned storage
+
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(std::borrow::Cow::Owned(self.key.clone()))
+    }
+}
+
+impl SchedulerStoreDataProvider for TestSchedulerDataUnversioned {
+    fn try_into_bytes(self) -> Result<Bytes, Error> {
+        Ok(Bytes::from(self.content.into_bytes()))
+    }
+
+    fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
+        // Add some test indexes - need to use 'static strings
+        Ok(vec![
+            ("test_index", Bytes::from("test_value")),
+            (
+                "content_prefix",
+                Bytes::from(self.content.chars().take(10).collect::<String>()),
+            ),
+        ])
+    }
+}
+
+// Define test structures that implement the scheduler traits
+#[derive(Debug, Clone, PartialEq)]
+struct TestSchedulerDataVersioned {
+    key: String,
+    content: String,
+    version: i64,
+}
+
+impl SchedulerStoreKeyProvider for TestSchedulerDataVersioned {
+    type Versioned = TrueValue; // Using versioned storage
+
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(std::borrow::Cow::Owned(self.key.clone()))
+    }
+}
+
+impl SchedulerStoreDataProvider for TestSchedulerDataVersioned {
+    fn try_into_bytes(self) -> Result<Bytes, Error> {
+        Ok(Bytes::from(self.content.into_bytes()))
+    }
+
+    fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
+        // Add some test indexes - need to use 'static strings
+        Ok(vec![
+            ("test_index", Bytes::from("test_value")),
+            (
+                "content_prefix",
+                Bytes::from(self.content.chars().take(10).collect::<String>()),
+            ),
+        ])
+    }
+}
+
+impl SchedulerCurrentVersionProvider for TestSchedulerDataVersioned {
+    fn current_version(&self) -> i64 {
+        0
+    }
+}
+
 struct TestSchedulerKey;
 
 impl SchedulerStoreDecodeTo for TestSchedulerKey {
-    type DecodeOutput = TestSchedulerData;
+    type DecodeOutput = TestSchedulerDataUnversioned;
 
     fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
-        TestSchedulerData::decode(version, data)
+        TestSchedulerDataUnversioned::decode(version, data)
     }
 }
 
@@ -873,7 +1021,7 @@ impl SchedulerStoreKeyProvider for SearchByContentPrefix {
 }
 
 impl SchedulerStoreDecodeTo for SearchByContentPrefix {
-    type DecodeOutput = TestSchedulerData;
+    type DecodeOutput = TestSchedulerDataUnversioned;
 
     fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
         TestSchedulerKey::decode(version, data)
@@ -943,7 +1091,7 @@ fn test_search_by_index() -> Result<(), Error> {
         prefix: "Searchable".to_string(),
     };
 
-    let search_results: Vec<TestSchedulerData> = store
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
         .search_by_index_prefix(search_provider)
         .await
         .err_tip(|| "Failed to search by index")?
@@ -1048,7 +1196,7 @@ fn test_search_by_index_with_sort_key() -> Result<(), Error> {
         prefix: "Searchable".to_string(),
     };
 
-    let search_results: Vec<TestSchedulerData> = store
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
         .search_by_index_prefix(search_provider)
         .await
         .err_tip(|| "Failed to search by index")?
@@ -1154,7 +1302,7 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
         prefix: "Searchable".to_string(),
     };
 
-    let search_results: Vec<TestSchedulerData> = store
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
         .search_by_index_prefix(search_provider)
         .await
         .err_tip(|| "Failed to search by index")?
@@ -1174,8 +1322,8 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
-    let subscription_manager =
-        RedisSubscriptionManager::new(MockPubSub::new(), None, "test_pub_sub".into());
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let subscription_manager = RedisSubscriptionManager::new(rx);
 
     // To give the stream enough time to get polled
     sleep(Duration::from_secs(1)).await;

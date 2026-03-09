@@ -2739,7 +2739,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nativelink"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 dependencies = [
  "async-lock",
  "axum",
@@ -2767,7 +2767,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -2785,7 +2785,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 dependencies = [
  "nativelink-metric",
  "nativelink-proto",
@@ -2804,7 +2804,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2813,7 +2813,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -2833,7 +2833,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 dependencies = [
  "derive_more 2.1.0",
  "prost",
@@ -2845,8 +2845,9 @@ dependencies = [
 
 [[package]]
 name = "nativelink-redis-tester"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 dependencies = [
+ "either",
  "nativelink-util",
  "redis",
  "redis-protocol",
@@ -2857,7 +2858,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2893,7 +2894,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2933,7 +2934,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2999,7 +3000,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 dependencies = [
  "async-trait",
  "axum",
@@ -3056,7 +3057,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 dependencies = [
  "async-lock",
  "bytes",
