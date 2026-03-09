@@ -254,22 +254,24 @@ where
             .map(|value| value.as_str().to_string())
             .unwrap_or_default();
 
-        if identity.is_empty() && self.identity_required {
-            return Box::pin(async move {
-                Ok(tonic::Status::failed_precondition(
-                    r"
+        if identity.is_empty() {
+            if self.identity_required {
+                return Box::pin(async move {
+                    Ok(tonic::Status::failed_precondition(
+                        r"
 
 NativeLink instance configured to require this OpenTelemetry Baggage header:
 
     `Baggage: enduser.id=YOUR_IDENTITY`
 
 ",
-                )
-                .into_http())
-            });
+                    )
+                    .into_http())
+                });
+            }
+        } else {
+            debug!("Baggage enduser.id: {identity}");
         }
-
-        debug!("Baggage enduser.id: {identity}");
 
         let tracer = global::tracer("origin_middleware");
         let span = tracer

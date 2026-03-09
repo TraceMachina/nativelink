@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-util"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -70,6 +70,7 @@ tokio-stream = { version = "0.1.17", features = [
 ], default-features = false }
 tokio-util = { version = "0.7.14", default-features = false }
 tonic = { version = "0.13.0", features = [
+  "router",
   "tls-native-roots",
   "tls-ring",
   "transport",
@@ -96,6 +97,7 @@ walkdir = { version = "2.5.0", default-features = false }
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 
+axum = { version = "0.8.3", default-features = false }
 http-body-util = { version = "0.1.3", default-features = false }
 pretty_assertions = { version = "1.4.1", features = [
   "std",

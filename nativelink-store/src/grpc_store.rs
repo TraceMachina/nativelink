@@ -90,11 +90,7 @@ impl GrpcStore {
             endpoints.push(endpoint);
         }
 
-        let rpc_timeout = if spec.rpc_timeout_s > 0 {
-            Duration::from_secs(spec.rpc_timeout_s)
-        } else {
-            Duration::from_mins(2)
-        };
+        let rpc_timeout = Duration::from_secs(spec.rpc_timeout_s);
 
         Ok(Arc::new(Self {
             instance_name: spec.instance_name.clone(),

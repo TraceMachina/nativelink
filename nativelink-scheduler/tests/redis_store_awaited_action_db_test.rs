@@ -144,7 +144,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         ..Default::default()
     };
     let store = RedisStore::new_standard(spec).await.expect("Working spec");
-    fake_redis_backend.set_subscription_manager(store.subscription_manager().unwrap());
+    fake_redis_backend.set_subscription_manager(store.subscription_manager().await.unwrap());
 
     let notifier = Arc::new(Notify::new());
     let awaited_action_db = StoreAwaitedActionDb::new(
@@ -153,6 +153,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         MockInstantWrapped::default,
         move || WORKER_OPERATION_ID.into(),
     )
+    .await
     .unwrap();
 
     let mut subscription = awaited_action_db
@@ -249,7 +250,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         ..Default::default()
     };
     let store = RedisStore::new_standard(spec).await.expect("Working spec");
-    fake_redis_backend.set_subscription_manager(store.subscription_manager().unwrap());
+    fake_redis_backend.set_subscription_manager(store.subscription_manager().await.unwrap());
 
     let notifier = Arc::new(Notify::new());
     let worker_operation_id = Arc::new(Mutex::new(WORKER_OPERATION_ID_1));
@@ -260,6 +261,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         MockInstantWrapped::default,
         move || worker_operation_id_clone.lock().clone().into(),
     )
+    .await
     .unwrap();
 
     let task_change_notify = Arc::new(Notify::new());
@@ -415,6 +417,7 @@ async fn test_outdated_version() -> Result<(), Error> {
         MockInstantWrapped::default,
         move || worker_operation_id_clone.lock().clone().into(),
     )
+    .await
     .unwrap();
 
     let worker_awaited_action = make_awaited_action("WORKER_OPERATION_ID");
@@ -462,7 +465,7 @@ async fn test_orphaned_client_operation_id_returns_none() -> Result<(), Error> {
         ..Default::default()
     };
     let store = RedisStore::new_standard(spec).await.expect("Working spec");
-    fake_redis_backend.set_subscription_manager(store.subscription_manager().unwrap());
+    fake_redis_backend.set_subscription_manager(store.subscription_manager().await.unwrap());
 
     // Manually set up the orphaned state in the fake backend:
     // 1. Add client_id → operation_id mapping (cid_* key)
@@ -488,6 +491,7 @@ async fn test_orphaned_client_operation_id_returns_none() -> Result<(), Error> {
         MockInstantWrapped::default,
         move || worker_operation_id_clone.lock().clone().into(),
     )
+    .await
     .unwrap();
 
     // Try to get the awaited action by the client operation ID

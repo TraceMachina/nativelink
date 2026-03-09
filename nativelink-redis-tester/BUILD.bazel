@@ -14,10 +14,12 @@ rust_library(
         "src/fake_redis.rs",
         "src/lib.rs",
         "src/pubsub.rs",
+        "src/read_only_redis.rs",
     ],
     visibility = ["//visibility:public"],
     deps = [
         "//nativelink-util",
+        "@crates//:either",
         "@crates//:redis",
         "@crates//:redis-protocol",
         "@crates//:redis-test",

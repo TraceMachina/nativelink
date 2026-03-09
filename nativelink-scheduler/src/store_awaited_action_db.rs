@@ -193,6 +193,7 @@ where
             OperationSubscriberState::Unsubscribed => {
                 let subscription = store
                     .subscription_manager()
+                    .await
                     .err_tip(|| "In OperationSubscriber::changed::subscription_manager")?
                     .subscribe(self.subscription_key.borrow())
                     .err_tip(|| "In OperationSubscriber::changed::subscribe")?;
@@ -608,7 +609,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Clone + 'static,
 {
-    pub fn new(
+    pub async fn new(
         store: Arc<S>,
         task_change_publisher: Arc<Notify>,
         now_fn: NowFn,
@@ -616,6 +617,7 @@ where
     ) -> Result<Self, Error> {
         let mut subscription = store
             .subscription_manager()
+            .await
             .err_tip(|| "In RedisAwaitedActionDb::new")?
             .subscribe(OperationIdToAwaitedAction(Cow::Owned(OperationId::String(
                 String::new(),
