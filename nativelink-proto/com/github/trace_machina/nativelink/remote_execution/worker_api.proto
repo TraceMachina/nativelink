@@ -75,7 +75,64 @@ message ConnectWorkerRequest {
     /// The default (0) means unlimited.
     uint64 max_inflight_tasks = 3;
 
-    reserved 4; // NextId.
+    /// This worker's CAS gRPC endpoint for peer blob serving.
+    /// If set, other workers can fetch blobs directly from this worker.
+    /// Example: "grpc://192.168.191.5:50081"
+    string cas_endpoint = 5;
+
+    reserved 4;
+    reserved 6;
+}
+
+/// Per-digest info including LRU access time for cache eviction heuristics.
+message BlobDigestInfo {
+    /// The digest of the blob.
+    build.bazel.remote.execution.v2.Digest digest = 1;
+    /// The last time this blob was accessed in the worker's local cache.
+    /// Seconds since UNIX epoch. The scheduler can use this to estimate
+    /// how close a blob is to eviction (lower = more likely to be evicted).
+    int64 last_access_timestamp = 2;
+}
+
+/// Notification that blobs are available on a worker for peer serving.
+message BlobsAvailableNotification {
+    /// The worker's CAS endpoint where these blobs can be fetched.
+    string worker_cas_endpoint = 1;
+    /// The digests of newly available blobs (kept for backward compat / simple notifications).
+    repeated build.bazel.remote.execution.v2.Digest digests = 2;
+    /// If true, this is a full snapshot of all blobs in the worker's cache.
+    /// The server should replace its entire view for this endpoint with the
+    /// contents of this message (digest_infos + digests). If false, this is
+    /// an incremental update (new blobs only).
+    bool is_full_snapshot = 3;
+    /// Digests that have been evicted from the worker since the last update.
+    /// Only meaningful when is_full_snapshot == false.
+    repeated build.bazel.remote.execution.v2.Digest evicted_digests = 4;
+    /// Per-digest info with LRU timestamps. When present, the server should
+    /// prefer this over the plain `digests` field.
+    repeated BlobDigestInfo digest_infos = 5;
+}
+
+/// Notification that blobs have been evicted from a worker.
+message BlobsEvictedNotification {
+    /// The worker's CAS endpoint from which these blobs were evicted.
+    string worker_cas_endpoint = 1;
+    /// The digests of evicted blobs.
+    repeated build.bazel.remote.execution.v2.Digest digests = 2;
+}
+
+/// Request to touch (update access time) blobs on a worker to prevent eviction.
+message TouchBlobsRequest {
+    /// The digests of blobs to touch.
+    repeated build.bazel.remote.execution.v2.Digest digests = 1;
+}
+
+/// A hint that a specific digest is available on one or more peer workers.
+message PeerHint {
+    /// The digest available on peers.
+    build.bazel.remote.execution.v2.Digest digest = 1;
+    /// gRPC endpoints of workers that have this blob.
+    repeated string peer_endpoints = 2;
 }
 
 /// The result of an ExecutionRequest.
@@ -146,8 +203,12 @@ message UpdateForWorker {
 
         /// Instructs the worker to kill a specific running operation.
         KillOperationRequest kill_operation_request = 5;
+
+        /// Instructs the worker to touch (update access time) on blobs
+        /// to prevent premature eviction.
+        TouchBlobsRequest touch_blobs = 7;
     }
-    reserved 6; // NextId.
+    reserved 6; // Previously NextId, now reserved.
 }
 
 /// Communication from the worker to the scheduler.
@@ -182,8 +243,14 @@ message UpdateForScheduler {
 
         /// Notify that the execution has completed, but result is uploading.
         ExecuteComplete execute_complete = 5;
+
+        /// Notifies the scheduler that new blobs are available on this worker.
+        BlobsAvailableNotification blobs_available = 7;
+
+        /// Notifies the scheduler that blobs have been evicted from this worker.
+        BlobsEvictedNotification blobs_evicted = 8;
     }
-    reserved 6; // NextId.
+    reserved 6; // Previously NextId, now reserved.
 }
 
 message StartExecute {
@@ -204,7 +271,11 @@ message StartExecute {
     /// The ID of the worker that is executing the action.
     string worker_id = 6;
 
-    reserved 7; // NextId.
+    /// Hints about input blobs available on peer workers.
+    /// Workers should try these peers first before falling back to server CAS.
+    repeated PeerHint peer_hints = 8;
+
+    reserved 9; // NextId.
 }
 
 /// This is a special message used to save actions into the CAS that can be used

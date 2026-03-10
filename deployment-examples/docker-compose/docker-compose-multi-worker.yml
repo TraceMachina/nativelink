@@ -53,6 +53,8 @@ services:
       - cas-data:/data/cas  # Shared CAS volume
       - worker1-data:/data/worker1
       - ./worker-shared-cas.json5:/nativelink-config.json5
+    ports:
+      - "50181:50081"  # Peer CAS endpoint for blob sharing
     environment:
       - RUST_LOG=info
       - SCHEDULER_ENDPOINT=scheduler
@@ -78,6 +80,8 @@ services:
       - cas-data:/data/cas  # Shared CAS volume
       - worker2-data:/data/worker2
       - ./worker-shared-cas.json5:/nativelink-config.json5
+    ports:
+      - "50182:50081"  # Peer CAS endpoint for blob sharing
     environment:
       - RUST_LOG=info
       - SCHEDULER_ENDPOINT=scheduler
@@ -103,6 +107,8 @@ services:
       - cas-data:/data/cas  # Shared CAS volume
       - worker3-data:/data/worker3
       - ./worker-shared-cas.json5:/nativelink-config.json5
+    ports:
+      - "50183:50081"  # Peer CAS endpoint for blob sharing
     environment:
       - RUST_LOG=info
       - SCHEDULER_ENDPOINT=scheduler

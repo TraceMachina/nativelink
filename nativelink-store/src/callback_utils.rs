@@ -17,22 +17,21 @@ use core::pin::Pin;
 use std::sync::Arc;
 
 use nativelink_util::evicting_map;
-use nativelink_util::store_trait::{RemoveItemCallback, StoreKey};
+use nativelink_util::store_trait::{ItemCallback, StoreKey};
 
-// Generic struct to hold a RemoveItemCallback ref for the purposes
-// of a RemoveStateCallback call
+// Generic struct to hold an ItemCallback ref for the purposes of an item callback call
 #[derive(Debug)]
-pub struct RemoveItemCallbackHolder {
-    callback: Arc<dyn RemoveItemCallback>,
+pub struct ItemCallbackHolder {
+    callback: Arc<dyn ItemCallback>,
 }
 
-impl RemoveItemCallbackHolder {
-    pub fn new(callback: Arc<dyn RemoveItemCallback>) -> Self {
+impl ItemCallbackHolder {
+    pub fn new(callback: Arc<dyn ItemCallback>) -> Self {
         Self { callback }
     }
 }
 
-impl<'a, Q> evicting_map::RemoveItemCallback<Q> for RemoveItemCallbackHolder
+impl<'a, Q> evicting_map::ItemCallback<Q> for ItemCallbackHolder
 where
     Q: Borrow<StoreKey<'a>>,
 {
@@ -43,4 +42,8 @@ where
         Box::pin(async move { callback.callback(store_key).await })
     }
 
+    fn on_insert(&self, store_key: &Q, size: u64) {
+        let store_key: &StoreKey<'_> = Borrow::<StoreKey<'_>>::borrow(store_key);
+        self.callback.on_insert(store_key.borrow().into_owned(), size);
+    }
 }

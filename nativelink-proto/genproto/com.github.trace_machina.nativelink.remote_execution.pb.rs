@@ -46,6 +46,86 @@ pub struct ConnectWorkerRequest {
     /// / The default (0) means unlimited.
     #[prost(uint64, tag = "3")]
     pub max_inflight_tasks: u64,
+    /// / This worker's CAS gRPC endpoint for peer blob serving.
+    /// / If set, other workers can fetch blobs directly from this worker.
+    /// / Example: "grpc://192.168.191.5:50081"
+    #[prost(string, tag = "5")]
+    pub cas_endpoint: ::prost::alloc::string::String,
+}
+/// / Per-digest info including LRU access time for cache eviction heuristics.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BlobDigestInfo {
+    /// / The digest of the blob.
+    #[prost(message, optional, tag = "1")]
+    pub digest: ::core::option::Option<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
+    /// / The last time this blob was accessed in the worker's local cache.
+    /// / Seconds since UNIX epoch. The scheduler can use this to estimate
+    /// / how close a blob is to eviction (lower = more likely to be evicted).
+    #[prost(int64, tag = "2")]
+    pub last_access_timestamp: i64,
+}
+/// / Notification that blobs are available on a worker for peer serving.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BlobsAvailableNotification {
+    /// / The worker's CAS endpoint where these blobs can be fetched.
+    #[prost(string, tag = "1")]
+    pub worker_cas_endpoint: ::prost::alloc::string::String,
+    /// / The digests of newly available blobs (kept for backward compat / simple notifications).
+    #[prost(message, repeated, tag = "2")]
+    pub digests: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
+    /// / If true, this is a full snapshot of all blobs in the worker's cache.
+    /// / The server should replace its entire view for this endpoint with the
+    /// / contents of this message (digest_infos + digests). If false, this is
+    /// / an incremental update (new blobs only).
+    #[prost(bool, tag = "3")]
+    pub is_full_snapshot: bool,
+    /// / Digests that have been evicted from the worker since the last update.
+    /// / Only meaningful when is_full_snapshot == false.
+    #[prost(message, repeated, tag = "4")]
+    pub evicted_digests: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
+    /// / Per-digest info with LRU timestamps. When present, the server should
+    /// / prefer this over the plain `digests` field.
+    #[prost(message, repeated, tag = "5")]
+    pub digest_infos: ::prost::alloc::vec::Vec<BlobDigestInfo>,
+}
+/// / Notification that blobs have been evicted from a worker.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BlobsEvictedNotification {
+    /// / The worker's CAS endpoint from which these blobs were evicted.
+    #[prost(string, tag = "1")]
+    pub worker_cas_endpoint: ::prost::alloc::string::String,
+    /// / The digests of evicted blobs.
+    #[prost(message, repeated, tag = "2")]
+    pub digests: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
+}
+/// / Request to touch (update access time) blobs on a worker to prevent eviction.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TouchBlobsRequest {
+    /// / The digests of blobs to touch.
+    #[prost(message, repeated, tag = "1")]
+    pub digests: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
+}
+/// / A hint that a specific digest is available on one or more peer workers.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PeerHint {
+    /// / The digest available on peers.
+    #[prost(message, optional, tag = "1")]
+    pub digest: ::core::option::Option<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
+    /// / gRPC endpoints of workers that have this blob.
+    #[prost(string, repeated, tag = "2")]
+    pub peer_endpoints: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// / The result of an ExecutionRequest.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -103,7 +183,7 @@ pub struct KillOperationRequest {
 /// / Communication from the scheduler to the worker.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateForWorker {
-    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4, 5, 7")]
     pub update: ::core::option::Option<update_for_worker::Update>,
 }
 /// Nested message and enum types in `UpdateForWorker`.
@@ -132,12 +212,16 @@ pub mod update_for_worker {
         /// / Instructs the worker to kill a specific running operation.
         #[prost(message, tag = "5")]
         KillOperationRequest(super::KillOperationRequest),
+        /// / Instructs the worker to touch (update access time) on blobs
+        /// / to prevent premature eviction.
+        #[prost(message, tag = "7")]
+        TouchBlobs(super::TouchBlobsRequest),
     }
 }
 /// / Communication from the worker to the scheduler.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateForScheduler {
-    #[prost(oneof = "update_for_scheduler::Update", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "update_for_scheduler::Update", tags = "1, 2, 3, 4, 5, 7, 8")]
     pub update: ::core::option::Option<update_for_scheduler::Update>,
 }
 /// Nested message and enum types in `UpdateForScheduler`.
@@ -174,6 +258,12 @@ pub mod update_for_scheduler {
         /// / Notify that the execution has completed, but result is uploading.
         #[prost(message, tag = "5")]
         ExecuteComplete(super::ExecuteComplete),
+        /// / Notifies the scheduler that new blobs are available on this worker.
+        #[prost(message, tag = "7")]
+        BlobsAvailable(super::BlobsAvailableNotification),
+        /// / Notifies the scheduler that blobs have been evicted from this worker.
+        #[prost(message, tag = "8")]
+        BlobsEvicted(super::BlobsEvictedNotification),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -199,6 +289,10 @@ pub struct StartExecute {
     /// / The ID of the worker that is executing the action.
     #[prost(string, tag = "6")]
     pub worker_id: ::prost::alloc::string::String,
+    /// / Hints about input blobs available on peer workers.
+    /// / Workers should try these peers first before falling back to server CAS.
+    #[prost(message, repeated, tag = "8")]
+    pub peer_hints: ::prost::alloc::vec::Vec<PeerHint>,
 }
 /// / This is a special message used to save actions into the CAS that can be used
 /// / by programs like bb_browswer to inspect the history of a build.

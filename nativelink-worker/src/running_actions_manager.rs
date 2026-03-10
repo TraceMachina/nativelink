@@ -42,6 +42,7 @@ use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
     EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
+use nativelink_config::stores::StoreDirection;
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -67,7 +68,7 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
@@ -1880,7 +1881,10 @@ impl RunningActionImpl {
                 state.execution_metadata.clone(),
             )
         };
-        let cas_store = self.running_actions_manager.cas_store.as_ref();
+        // Upload outputs to the fast store (local FilesystemStore) only.
+        // The slow store (remote CAS) upload is deferred to the background
+        // after the execution result is reported, reducing latency.
+        let cas_store = self.running_actions_manager.cas_store.fast_store();
         let hasher = self.action_info.unique_qualifier.digest_function();
 
         let mut output_path_futures = FuturesUnordered::new();
@@ -2346,6 +2350,10 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
         operation_id: &OperationId,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 
+    /// Spawn a background task to upload action output blobs from the local
+    /// fast store to the remote slow store. No-op by default.
+    fn spawn_upload_to_remote(self: &Arc<Self>, _action_result: &ActionResult) {}
+
     fn metrics(&self) -> &Arc<Metrics>;
 }
 
@@ -2678,6 +2686,10 @@ pub struct RunningActionsManagerArgs<'a> {
     pub max_upload_timeout: Duration,
     pub timeout_handled_externally: bool,
     pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    /// Worker-local locality map for registering peer hints from StartExecute.
+    /// When present, peer_hints from the scheduler are registered here so that
+    /// WorkerProxyStore can fetch blobs from peer workers.
+    pub peer_locality_map: Option<nativelink_util::blob_locality_map::SharedBlobLocalityMap>,
 }
 
 struct CleanupGuard {
@@ -2725,6 +2737,8 @@ pub struct RunningActionsManagerImpl {
     /// Optional directory cache for improving performance by caching reconstructed
     /// input directories and using hardlinks.
     directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    /// Worker-local locality map for registering peer hints from StartExecute.
+    peer_locality_map: Option<nativelink_util::blob_locality_map::SharedBlobLocalityMap>,
 }
 
 impl RunningActionsManagerImpl {
@@ -2769,6 +2783,7 @@ impl RunningActionsManagerImpl {
             cleaning_up_operations: Mutex::new(HashSet::new()),
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
+            peer_locality_map: args.peer_locality_map,
         })
     }
 
@@ -2780,6 +2795,101 @@ impl RunningActionsManagerImpl {
                 sleep_fn: |duration| Box::pin(tokio::time::sleep(duration)),
             },
         )
+    }
+
+    /// Spawn a background task that uploads all action output blobs from the
+    /// fast store (local FilesystemStore) to the slow store (remote CAS).
+    /// This is called after the execution result has been reported to the
+    /// scheduler, so it does not block action completion latency.
+    pub fn spawn_upload_to_remote(self: &Arc<Self>, action_result: &ActionResult) {
+        let slow_store = self.cas_store.slow_store();
+        if slow_store
+            .inner_store(None::<StoreKey<'_>>)
+            .optimized_for(StoreOptimizations::NoopUpdates)
+        {
+            return;
+        }
+        // Respect slow_direction config — when set to Get or ReadOnly,
+        // the slow store should not receive writes (same check as
+        // FastSlowStore::update).
+        let dir = self.cas_store.slow_direction();
+        if dir == StoreDirection::Get || dir == StoreDirection::ReadOnly {
+            return;
+        }
+
+        let mut digests = Vec::new();
+        for file in &action_result.output_files {
+            if file.digest.size_bytes() > 0 {
+                digests.push(file.digest);
+            }
+        }
+        for folder in &action_result.output_folders {
+            if folder.tree_digest.size_bytes() > 0 {
+                digests.push(folder.tree_digest);
+            }
+        }
+        if action_result.stdout_digest.size_bytes() > 0 {
+            digests.push(action_result.stdout_digest);
+        }
+        if action_result.stderr_digest.size_bytes() > 0 {
+            digests.push(action_result.stderr_digest);
+        }
+        if digests.is_empty() {
+            return;
+        }
+
+        let cas_store = self.cas_store.clone();
+        let total = digests.len();
+        tokio::spawn(async move {
+            let fast_store = cas_store.fast_store();
+            let slow_store = cas_store.slow_store();
+            let start = std::time::Instant::now();
+            info!(
+                total_digests = total,
+                "upload_to_remote: starting background CAS upload",
+            );
+
+            // Small blobs use update_oneshot which routes through
+            // BatchUpdateBlobs for efficient coalescing. Large blobs
+            // stream through a channel to avoid loading into memory.
+            const BATCH_THRESHOLD: u64 = 1024 * 1024; // 1 MiB
+
+            let mut uploads = FuturesUnordered::new();
+            for digest in digests {
+                uploads.push(async move {
+                    let result = if digest.size_bytes() <= BATCH_THRESHOLD {
+                        match fast_store.get_part_unchunked(digest, 0, None).await {
+                            Ok(data) => slow_store.update_oneshot(digest, data).await,
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        let (tx, rx) = make_buf_channel_pair();
+                        let read_fut = fast_store.get(digest, tx);
+                        let write_fut = slow_store.update(
+                            digest,
+                            rx,
+                            UploadSizeInfo::ExactSize(digest.size_bytes()),
+                        );
+                        let (read_res, write_res) = tokio::join!(read_fut, write_fut);
+                        read_res.merge(write_res)
+                    };
+                    if let Err(e) = result {
+                        warn!(
+                            ?digest,
+                            ?e,
+                            "upload_to_remote: failed to upload digest",
+                        );
+                    }
+                });
+            }
+            while uploads.next().await.is_some() {}
+
+            info!(
+                total_digests = total,
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "upload_to_remote: background CAS upload completed",
+            );
+        });
     }
 
     /// Fixes a race condition that occurs when an action fails to execute on a worker, and the same worker
@@ -2977,6 +3087,30 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         self.metrics
             .create_and_add_action
             .wrap(async move {
+                // Extract peer hints BEFORE consuming start_execute.
+                let peer_hints = start_execute.peer_hints.clone();
+                if !peer_hints.is_empty() {
+                    if let Some(ref locality_map) = self.peer_locality_map {
+                        let mut map = locality_map.write();
+                        let mut total_registered = 0usize;
+                        for hint in &peer_hints {
+                            if let Some(ref digest_proto) = hint.digest {
+                                if let Ok(digest) = DigestInfo::try_from(digest_proto) {
+                                    for endpoint in &hint.peer_endpoints {
+                                        map.register_blobs(endpoint, &[digest]);
+                                        total_registered += 1;
+                                    }
+                                }
+                            }
+                        }
+                        info!(
+                            hints = peer_hints.len(),
+                            registrations = total_registered,
+                            "Registered peer hints from scheduler into worker locality map"
+                        );
+                    }
+                }
+
                 let queued_timestamp = start_execute
                     .queued_timestamp
                     .and_then(|time| time.try_into().ok())
@@ -3099,6 +3233,10 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 .wait_for(|()| self.running_actions.lock().is_empty())
                 .await,
         );
+    }
+
+    fn spawn_upload_to_remote(self: &Arc<Self>, action_result: &ActionResult) {
+        RunningActionsManagerImpl::spawn_upload_to_remote(self, action_result);
     }
 
     #[inline]

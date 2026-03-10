@@ -53,7 +53,7 @@ use nativelink_util::digest_hasher::{
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreLike, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{IS_WORKER_REQUEST, Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
@@ -682,6 +682,7 @@ impl ByteStreamServer {
         instance: &InstanceInfo,
         digest: DigestInfo,
         read_request: ReadRequest,
+        is_worker: bool,
     ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + Send + use<>, Error> {
         struct ReaderState {
             max_bytes_per_stream: usize,
@@ -710,14 +711,21 @@ impl ByteStreamServer {
             max_bytes_per_stream: instance.max_bytes_per_stream,
             maybe_get_part_result: None,
             get_part_fut: Box::pin(async move {
-                store
-                    .get_part(
-                        digest,
-                        tx,
-                        u64::try_from(read_request.read_offset)
-                            .err_tip(|| "Could not convert read_offset to u64")?,
-                        read_limit,
-                    )
+                // Propagate the worker/non-worker distinction into the store
+                // layer so WorkerProxyStore can decide whether to proxy or
+                // redirect.
+                IS_WORKER_REQUEST
+                    .scope(is_worker, async {
+                        store
+                            .get_part(
+                                digest,
+                                tx,
+                                u64::try_from(read_request.read_offset)
+                                    .err_tip(|| "Could not convert read_offset to u64")?,
+                                read_limit,
+                            )
+                            .await
+                    })
                     .await
             }),
         });
@@ -1124,6 +1132,9 @@ impl ByteStream for ByteStreamServer {
     ) -> Result<Response<Self::ReadStream>, Status> {
         let start_time = Instant::now();
 
+        let is_worker = grpc_request
+            .metadata()
+            .contains_key("x-nativelink-worker");
         let read_request = grpc_request.into_inner();
         let resource_info = ResourceInfo::new(&read_request.resource_name, false)?;
         let instance_name = resource_info.instance_name.as_ref();
@@ -1161,7 +1172,7 @@ impl ByteStream for ByteStreamServer {
             "ByteStream::read",
         );
         let resp = self
-            .inner_read(instance, digest, read_request)
+            .inner_read(instance, digest, read_request, is_worker)
             .instrument(error_span!("bytestream_read"))
             .with_context(
                 make_ctx_for_hash_func(digest_function).err_tip(|| "In BytestreamServer::read")?,

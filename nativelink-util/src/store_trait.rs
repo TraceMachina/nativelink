@@ -28,6 +28,19 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{Future, FutureExt, Stream, join, try_join};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
+
+tokio::task_local! {
+    /// Set to `true` when the current CAS request originates from a worker
+    /// (not a client like Bazel). `WorkerProxyStore` checks this to decide
+    /// between proxying blob data (for clients) and returning a redirect
+    /// with peer endpoints (for workers).
+    pub static IS_WORKER_REQUEST: bool;
+}
+
+/// Prefix for redirect errors returned by `WorkerProxyStore` to worker callers.
+/// The remainder of the message is a comma-separated list of peer gRPC endpoints
+/// that have the requested blob. Example: `"NL_REDIRECT:grpc://w1:50081,grpc://w2:50081"`
+pub const REDIRECT_PREFIX: &str = "NL_REDIRECT:";
 use nativelink_metric::MetricsComponent;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
@@ -381,11 +394,11 @@ impl Store {
     }
 
     #[inline]
-    pub fn register_remove_callback(
+    pub fn register_item_callback(
         &self,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
-        self.inner.clone().register_remove_callback(callback)
+        self.inner.clone().register_item_callback(callback)
     }
 }
 
@@ -835,20 +848,21 @@ pub trait StoreDriver:
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error>;
 }
 
-// Callback to be called when a store deletes an item. This is used so
-// compound stores can remove items from their internal state when their
-// underlying stores remove items e.g. caches
-pub trait RemoveItemCallback: Debug + Send + Sync {
+// Callback invoked when a store inserts or deletes an item.
+pub trait ItemCallback: Debug + Send + Sync {
     fn callback<'a>(
         &'a self,
         store_key: StoreKey<'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Called synchronously when a new item is inserted.
+    fn on_insert(&self, _store_key: StoreKey<'_>, _size: u64) {}
 }
 
 /// The instructions on how to decode a value from a Bytes & version into

@@ -90,11 +90,13 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     }
 }
 
-// Callback to be called when the EvictingMap removes an item
-// either via eviction or direct deletion. This will be called with
-// whatever key type the EvictingMap uses.
-pub trait RemoveItemCallback<Q>: Debug + Send + Sync {
+// Callback invoked when the EvictingMap inserts or removes an item.
+pub trait ItemCallback<Q>: Debug + Send + Sync {
     fn callback(&self, store_key: &Q) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    /// Called synchronously when a new item is inserted.
+    /// Default is a no-op.
+    fn on_insert(&self, _store_key: &Q, _size: u64) {}
 }
 
 #[derive(Debug, MetricsComponent)]
@@ -102,7 +104,7 @@ struct State<
     K: Ord + Hash + Eq + Clone + Debug + Send + Borrow<Q>,
     Q: Ord + Hash + Eq + Debug,
     T: LenEntry + Debug + Send,
-    C: RemoveItemCallback<Q>,
+    C: ItemCallback<Q>,
 > {
     lru: LruCache<K, EvictionItem<T>>,
     btree: Option<BTreeSet<K>>,
@@ -121,7 +123,7 @@ struct State<
     lifetime_inserted_bytes: Counter,
 
     _key_type: PhantomData<Q>,
-    remove_callbacks: Vec<C>,
+    item_callbacks: Vec<C>,
 }
 
 type RemoveFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -130,7 +132,7 @@ impl<
     K: Ord + Hash + Eq + Clone + Debug + Send + Sync + Borrow<Q>,
     Q: Ord + Hash + Eq + Debug + Sync,
     T: LenEntry + Debug + Sync + Send,
-    C: RemoveItemCallback<Q>,
+    C: ItemCallback<Q>,
 > State<K, Q, T, C>
 {
     /// Removes an item from the cache and returns the data for deferred cleanup.
@@ -158,7 +160,7 @@ impl<
         }
 
         let callbacks = self
-            .remove_callbacks
+            .item_callbacks
             .iter()
             .map(|callback| callback.callback(key))
             .collect();
@@ -169,6 +171,10 @@ impl<
 
     /// Inserts a new item into the cache. If the key already exists, the old item is returned
     /// for deferred cleanup.
+    ///
+    /// Note: This method does NOT fire `on_insert` callbacks. The caller is
+    /// responsible for collecting the key+size pairs and firing callbacks
+    /// after releasing the State mutex to avoid nested locking.
     #[must_use]
     fn put(&mut self, key: &K, eviction_item: EvictionItem<T>) -> Option<(T, Vec<RemoveFuture>)>
     where
@@ -184,18 +190,20 @@ impl<
             .map(|old_item| self.remove(key.borrow(), &old_item, true))
     }
 
-    fn add_remove_callback(&mut self, callback: C) {
-        self.remove_callbacks.push(callback);
+    fn add_item_callback(&mut self, callback: C) {
+        self.item_callbacks.push(callback);
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct NoopRemove;
+pub struct NoopCallback;
 
-impl<Q> RemoveItemCallback<Q> for NoopRemove {
+impl<Q> ItemCallback<Q> for NoopCallback {
     fn callback(&self, _store_key: &Q) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         Box::pin(async {})
     }
+
+    fn on_insert(&self, _store_key: &Q, _size: u64) {}
 }
 
 #[derive(Debug, MetricsComponent)]
@@ -204,7 +212,7 @@ pub struct EvictingMap<
     Q: Ord + Hash + Eq + Debug,
     T: LenEntry + Debug + Send,
     I: InstantWrapper,
-    C: RemoveItemCallback<Q> = NoopRemove,
+    C: ItemCallback<Q> = NoopCallback,
 > {
     #[metric]
     state: Mutex<State<K, Q, T, C>>,
@@ -225,7 +233,7 @@ where
     Q: Ord + Hash + Eq + Debug + Sync,
     T: LenEntry + Debug + Clone + Send + Sync,
     I: InstantWrapper,
-    C: RemoveItemCallback<Q>,
+    C: ItemCallback<Q>,
 {
     pub fn new(config: &EvictionPolicy, anchor_time: I) -> Self {
         Self {
@@ -241,7 +249,7 @@ where
                 replaced_items: CounterWithTime::default(),
                 lifetime_inserted_bytes: Counter::default(),
                 _key_type: PhantomData,
-                remove_callbacks: Vec::new(),
+                item_callbacks: Vec::new(),
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,
@@ -503,10 +511,19 @@ where
 
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
-        let (replaced_items, evicted_items, removal_futures) = {
+        let (replaced_items, evicted_items, removal_futures, insert_notifications) = {
             let mut state = self.state.lock();
             self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
         };
+        // State lock released. Fire insert callbacks outside the critical section.
+        if !insert_notifications.is_empty() {
+            let state = self.state.lock();
+            for (key, size) in &insert_notifications {
+                for cb in &state.item_callbacks {
+                    cb.on_insert(key.borrow(), *size);
+                }
+            }
+        }
 
         // Replaced items share the same key (and thus content path) as the
         // new insert. Their unrefs MUST complete before the caller continues
@@ -555,7 +572,7 @@ where
             return Vec::new();
         }
 
-        let (replaced_items, evicted_items, removal_futures) = {
+        let (replaced_items, evicted_items, removal_futures, insert_notifications) = {
             let mut state = self.state.lock();
             self.inner_insert_many(
                 &mut state,
@@ -563,6 +580,15 @@ where
                 i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX),
             )
         };
+        // State lock released. Fire insert callbacks outside the critical section.
+        if !insert_notifications.is_empty() {
+            let state = self.state.lock();
+            for (key, size) in &insert_notifications {
+                for cb in &state.item_callbacks {
+                    cb.on_insert(key.borrow(), *size);
+                }
+            }
+        }
 
         // Replaced items share the same key/path — must await their unrefs.
         let result: Vec<T> = replaced_items
@@ -589,19 +615,23 @@ where
         result
     }
 
-    /// Returns `(replaced_items, evicted_items, removal_futures)`.
+    /// Returns `(replaced_items, evicted_items, removal_futures, insert_notifications)`.
     /// - `replaced_items`: items that were replaced by new inserts (same key).
     /// - `evicted_items`: items evicted due to size/age/count limits.
-    /// - `removal_futures`: callbacks from remove_callbacks for all removed items.
+    /// - `removal_futures`: callbacks from item_callbacks for all removed items.
+    /// - `insert_notifications`: (key, size) pairs for firing on_insert callbacks
+    ///   outside the State mutex critical section.
     ///
     /// Callers should fire-and-forget the eviction cleanup (evicted_items unrefs
     /// + removal_futures) via `background_spawn!` to avoid blocking the caller.
+    /// Callers MUST fire on_insert callbacks for each insert_notification after
+    /// releasing the State mutex to avoid nested locking.
     fn inner_insert_many<It>(
         &self,
         state: &mut State<K, Q, T, C>,
         inserts: It,
         seconds_since_anchor: i32,
-    ) -> (Vec<T>, Vec<T>, Vec<RemoveFuture>)
+    ) -> (Vec<T>, Vec<T>, Vec<RemoveFuture>, Vec<(K, u64)>)
     where
         It: IntoIterator<Item = (K, T)> + Send,
         // Note: It's not enough to have the inserts themselves be Send. The
@@ -610,6 +640,7 @@ where
     {
         let mut replaced_items = Vec::new();
         let mut removal_futures = Vec::new();
+        let mut insert_notifications = Vec::new();
         for (key, data) in inserts {
             let new_item_size = data.len();
             let eviction_item = EvictionItem {
@@ -623,13 +654,14 @@ where
             }
             state.sum_store_size += new_item_size;
             state.lifetime_inserted_bytes.add(new_item_size);
+            insert_notifications.push((key, new_item_size));
         }
 
         // Perform eviction after all insertions
         let (evicted_items, futures) = self.evict_items(state);
         removal_futures.extend(futures);
 
-        (replaced_items, evicted_items, removal_futures)
+        (replaced_items, evicted_items, removal_futures, insert_notifications)
     }
 
     pub async fn remove(&self, key: &Q) -> bool {
@@ -723,7 +755,21 @@ where
         was_removed
     }
 
-    pub fn add_remove_callback(&self, callback: C) {
-        self.state.lock().add_remove_callback(callback);
+    pub fn add_item_callback(&self, callback: C) {
+        self.state.lock().add_item_callback(callback);
+    }
+
+    /// Returns all entries in the cache with their LRU timestamps as absolute
+    /// seconds since UNIX epoch. Each entry is (key, unix_timestamp_secs).
+    ///
+    /// This is a peek-only operation: it does NOT promote entries in the LRU.
+    pub fn get_all_entries_with_timestamps(&self) -> Vec<(K, i64)> {
+        let anchor_epoch = self.anchor_time.unix_timestamp() as i64;
+        let state = self.state.lock();
+        let mut result = Vec::with_capacity(state.lru.len());
+        result.extend(state.lru.iter().map(|(k, v)| {
+            (k.clone(), anchor_epoch + v.seconds_since_anchor as i64)
+        }));
+        result
     }
 }

@@ -27,7 +27,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
@@ -376,13 +376,13 @@ impl StoreDriver for DedupStore {
         self
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
         self.index_store
-            .register_remove_callback(callback.clone())?;
-        self.content_store.register_remove_callback(callback)?;
+            .register_item_callback(callback.clone())?;
+        self.content_store.register_item_callback(callback)?;
         Ok(())
     }
 }

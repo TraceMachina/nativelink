@@ -14,6 +14,7 @@ nativelink-config = { path = "../nativelink-config" }
 nativelink-error = { path = "../nativelink-error" }
 nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
+nativelink-service = { path = "../nativelink-service" }
 nativelink-store = { path = "../nativelink-store" }
 nativelink-util = { path = "../nativelink-util" }
 
@@ -22,6 +23,7 @@ bytes = { version = "1.10.1", default-features = false }
 filetime = { version = "0.2.25", default-features = false }
 formatx = { version = "0.2.3", default-features = false }
 futures = { version = "0.3.31", default-features = false }
+hostname = { version = "0.4.0", default-features = false }
 opentelemetry = { version = "0.31.0", default-features = false }
 parking_lot = { version = "0.12.3", default-features = false }
 prost = { version = "0.14.3", default-features = false }

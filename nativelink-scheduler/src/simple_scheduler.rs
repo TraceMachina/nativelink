@@ -485,6 +485,24 @@ impl SimpleScheduler {
         task_change_notify: Arc<Notify>,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
+        Self::new_with_cas_store(
+            spec,
+            awaited_action_db,
+            task_change_notify,
+            maybe_origin_event_tx,
+            None,
+            None,
+        )
+    }
+
+    pub fn new_with_cas_store<A: AwaitedActionDb>(
+        spec: &SimpleSpec,
+        awaited_action_db: A,
+        task_change_notify: Arc<Notify>,
+        maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        cas_store: Option<nativelink_util::store_trait::Store>,
+        locality_map: Option<nativelink_util::blob_locality_map::SharedBlobLocalityMap>,
+    ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         Self::new_with_callback(
             spec,
             awaited_action_db,
@@ -499,6 +517,8 @@ impl SimpleScheduler {
             task_change_notify,
             SystemTime::now,
             maybe_origin_event_tx,
+            cas_store,
+            locality_map,
         )
     }
 
@@ -515,6 +535,8 @@ impl SimpleScheduler {
         task_change_notify: Arc<Notify>,
         now_fn: NowFn,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        cas_store: Option<nativelink_util::store_trait::Store>,
+        locality_map: Option<nativelink_util::blob_locality_map::SharedBlobLocalityMap>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             spec.supported_platform_properties
@@ -562,13 +584,15 @@ impl SimpleScheduler {
             Some(worker_registry.clone()),
         );
 
-        let worker_scheduler = ApiWorkerScheduler::new(
+        let worker_scheduler = ApiWorkerScheduler::new_with_locality_map(
             state_manager.clone(),
             platform_property_manager.clone(),
             spec.allocation_strategy,
             worker_change_notify.clone(),
             worker_timeout_s,
             worker_registry,
+            locality_map,
+            cas_store,
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();

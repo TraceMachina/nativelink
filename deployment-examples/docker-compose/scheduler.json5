@@ -40,6 +40,10 @@
           "lre-rs": "priority",
           ISA: "exact",
         },
+        // Enable locality-aware scheduling by pointing at the CAS store.
+        // The scheduler will resolve input trees and score workers by
+        // how many input bytes they already have cached.
+        cas_store: "GRPC_LOCAL_STORE",
       },
     },
   ],

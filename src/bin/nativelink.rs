@@ -46,6 +46,7 @@ use nativelink_service::fetch_server::FetchServer;
 use nativelink_service::health_server::HealthServer;
 use nativelink_service::push_server::PushServer;
 use nativelink_service::worker_api_server::WorkerApiServer;
+use nativelink_util::blob_locality_map;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::fs::set_open_file_limit;
@@ -244,11 +245,17 @@ async fn inner_main(
         })
         .transpose()?;
 
+    // Create a shared blob locality map for peer-to-peer blob sharing.
+    // This map is shared between the scheduler (for locality scoring and
+    // peer hint generation) and WorkerApiServer (for receiving
+    // BlobsAvailable updates from workers).
+    let locality_map = blob_locality_map::new_shared_blob_locality_map();
+
     let mut action_schedulers = HashMap::new();
     let mut worker_schedulers = HashMap::new();
     for SchedulerConfig { name, spec } in cfg.schedulers.iter().flatten() {
         let (maybe_action_scheduler, maybe_worker_scheduler) =
-            scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref())
+            scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref(), Some(locality_map.clone()))
                 .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
         if let Some(action_scheduler) = maybe_action_scheduler {
             action_schedulers.insert(name.clone(), action_scheduler.clone());
@@ -259,6 +266,41 @@ async fn inner_main(
     }
 
     let server_cfgs: Vec<ServerConfig> = cfg.servers.into_iter().collect();
+
+    // Wrap CAS stores with WorkerProxyStore so the server can proxy reads
+    // to workers that have the blob (discovered via BlobsAvailable reports).
+    {
+        let mut cas_store_names: HashSet<String> = HashSet::new();
+        for server_cfg in &server_cfgs {
+            if let Some(ref services) = server_cfg.services {
+                if let Some(ref cas_cfgs) = services.cas {
+                    for c in cas_cfgs {
+                        cas_store_names.insert(c.config.cas_store.clone());
+                    }
+                }
+                if let Some(ref bs_cfgs) = services.bytestream {
+                    for c in bs_cfgs {
+                        cas_store_names.insert(c.config.cas_store.clone());
+                    }
+                }
+            }
+        }
+        for store_name in &cas_store_names {
+            if let Some(original_store) = store_manager.get_store(store_name) {
+                let proxy_store = nativelink_util::store_trait::Store::new(
+                    nativelink_store::worker_proxy_store::WorkerProxyStore::new(
+                        original_store,
+                        locality_map.clone(),
+                    ),
+                );
+                store_manager.add_store(store_name, proxy_store);
+                info!(
+                    store_name,
+                    "Wrapped CAS store with WorkerProxyStore for peer blob sharing"
+                );
+            }
+        }
+    }
 
     for server_cfg in server_cfgs {
         let services = server_cfg
@@ -342,7 +384,7 @@ async fn inner_main(
                 services
                     .worker_api
                     .map_or(Ok(None), |cfg| {
-                        WorkerApiServer::new(&cfg, &worker_schedulers)
+                        WorkerApiServer::new(&cfg, &worker_schedulers, Some(locality_map.clone()))
                             .map(|v| Some(service_setup!(v, http_config)))
                     })
                     .err_tip(|| "Could not create WorkerApi service")?,

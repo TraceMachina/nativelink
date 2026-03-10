@@ -183,6 +183,13 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
     async fn execution_complete(&mut self, _request: ExecuteComplete) -> Result<(), Error> {
         Ok(())
     }
+
+    async fn blobs_available(
+        &mut self,
+        _request: nativelink_proto::com::github::trace_machina::nativelink::remote_execution::BlobsAvailableNotification,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 pub(crate) fn setup_grpc_stream() -> (
@@ -210,6 +217,8 @@ pub(crate) async fn setup_local_worker_with_config(
             Box::pin(async move { Ok(mock_worker_api_client) })
         }),
         Box::new(move |_| Box::pin(async move { /* No sleep */ })),
+        None, // No periodic BlobsAvailable in tests
+        None, // No CAS server guard in tests
     );
     let (shutdown_tx_test, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
 

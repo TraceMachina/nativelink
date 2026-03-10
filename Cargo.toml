@@ -83,6 +83,21 @@ tonic = { version = "0.14.5", features = [
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
 
+[dev-dependencies]
+nativelink-proto = { path = "nativelink-proto" }
+prost = { version = "0.14.3", default-features = false }
+prost-types = { version = "0.14.3", default-features = false }
+sha2 = { version = "0.10.8", default-features = false, features = ["asm"] }
+tempfile = { version = "3.15.0", default-features = false }
+tokio = { version = "1.44.1", features = [
+  "macros",
+  "rt-multi-thread",
+  "time",
+], default-features = false }
+tonic = { version = "0.14.5", features = [
+  "transport",
+], default-features = false }
+
 [workspace.metadata.cargo-features-manager.keep]
 async-lock = ["std"]
 aws-sdk-s3 = ["rt-tokio"]

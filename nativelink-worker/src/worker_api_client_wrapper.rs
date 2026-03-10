@@ -19,7 +19,8 @@ use nativelink_error::{make_err, Error, ResultExt};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_scheduler::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
+    BlobsAvailableNotification, ConnectWorkerRequest, ExecuteComplete,
+    ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker,
 };
 use tokio::sync::mpsc::Sender;
 use tonic::codec::Streaming;
@@ -52,6 +53,11 @@ pub trait WorkerApiClientTrait: Clone + Sync + Send + Sized + Unpin {
     fn execution_complete(
         &mut self,
         request: ExecuteComplete,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    fn blobs_available(
+        &mut self,
+        request: BlobsAvailableNotification,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
@@ -132,5 +138,12 @@ impl WorkerApiClientTrait for WorkerApiClientWrapper {
 
     async fn execution_complete(&mut self, request: ExecuteComplete) -> Result<(), Error> {
         self.send_update(Update::ExecuteComplete(request)).await
+    }
+
+    async fn blobs_available(
+        &mut self,
+        request: BlobsAvailableNotification,
+    ) -> Result<(), Error> {
+        self.send_update(Update::BlobsAvailable(request)).await
     }
 }

@@ -22,7 +22,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use tokio::join;
 
@@ -162,13 +162,13 @@ impl StoreDriver for SizePartitioningStore {
         self
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
         self.lower_store
-            .register_remove_callback(callback.clone())?;
-        self.upper_store.register_remove_callback(callback)?;
+            .register_item_callback(callback.clone())?;
+        self.upper_store.register_item_callback(callback)?;
         Ok(())
     }
 }

@@ -830,6 +830,25 @@ pub struct LocalWorkerConfig {
     /// them from CAS for every action.
     /// Default: None (directory cache disabled)
     pub directory_cache: Option<DirectoryCacheConfig>,
+
+    /// If set, the worker will start a CAS + ByteStream gRPC server on
+    /// 0.0.0.0:<port> and advertise grpc://<hostname>:<port> to the
+    /// scheduler and other workers for peer-to-peer blob sharing.
+    /// The hostname is resolved at runtime via gethostname().
+    /// Example: 50081
+    /// Default: None (no peer CAS server)
+    #[serde(default)]
+    pub cas_server_port: Option<u16>,
+
+    /// How often (in milliseconds) the worker should send a periodic
+    /// BlobsAvailable snapshot to the scheduler, reporting which blobs
+    /// are in the local CAS cache and their LRU timestamps.
+    /// Interval in milliseconds. Default: 0 (uses built-in default of
+    /// 500ms).
+    ///
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub blobs_available_interval_ms: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

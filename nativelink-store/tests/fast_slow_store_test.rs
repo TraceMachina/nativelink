@@ -28,7 +28,7 @@ use nativelink_store::noop_store::NoopStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike};
+use nativelink_util::store_trait::{ItemCallback, Store, StoreDriver, StoreKey, StoreLike};
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -310,9 +310,9 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             self
         }
 
-        fn register_remove_callback(
+        fn register_item_callback(
             self: Arc<Self>,
-            _callback: Arc<dyn RemoveItemCallback>,
+            _callback: Arc<dyn ItemCallback>,
         ) -> Result<(), Error> {
             Ok(())
         }
@@ -634,9 +634,9 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
             self
         }
 
-        fn register_remove_callback(
+        fn register_item_callback(
             self: Arc<Self>,
-            _callback: Arc<dyn RemoveItemCallback>,
+            _callback: Arc<dyn ItemCallback>,
         ) -> Result<(), Error> {
             Ok(())
         }
