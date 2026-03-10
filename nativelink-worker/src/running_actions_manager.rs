@@ -704,26 +704,39 @@ pub fn download_to_directory<'a>(
         // Step 2: Walk the tree, creating all directories and collecting files.
         let (files, symlinks) = collect_files_from_tree(&tree, digest, current_directory)?;
 
-        // Create all subdirectories (BFS order ensures parents are created first).
+        // Create all subdirectories using level-parallel BFS — siblings at
+        // the same depth are created concurrently while parent-before-child
+        // ordering is maintained (each level completes before the next starts).
         {
-            let mut dir_queue = VecDeque::new();
-            dir_queue.push_back((*digest, current_directory.to_string()));
-            while let Some((dir_digest, dir_path)) = dir_queue.pop_front() {
-                if let Some(directory) = tree.get(&dir_digest) {
-                    for subdir in &directory.directories {
-                        let child_digest: DigestInfo = subdir
-                            .digest
-                            .as_ref()
-                            .err_tip(|| "Expected Digest")?
-                            .try_into()
-                            .err_tip(|| "In Directory::directories::digest")?;
-                        let child_path = format!("{}/{}", dir_path, subdir.name);
-                        fs::create_dir(&child_path)
-                            .await
-                            .err_tip(|| format!("Could not create directory {child_path}"))?;
-                        dir_queue.push_back((child_digest, child_path));
+            let mut current_level = vec![(*digest, current_directory.to_string())];
+            while !current_level.is_empty() {
+                let mut next_level = Vec::new();
+                for (dir_digest, dir_path) in &current_level {
+                    if let Some(directory) = tree.get(dir_digest) {
+                        for subdir in &directory.directories {
+                            let child_digest: DigestInfo = subdir
+                                .digest
+                                .as_ref()
+                                .err_tip(|| "Expected Digest")?
+                                .try_into()
+                                .err_tip(|| "In Directory::directories::digest")?;
+                            let child_path = format!("{}/{}", dir_path, subdir.name);
+                            next_level.push((child_digest, child_path));
+                        }
                     }
                 }
+                if !next_level.is_empty() {
+                    try_join_all(next_level.iter().map(|(_, path)| {
+                        let path = path.clone();
+                        async move {
+                            fs::create_dir(&path)
+                                .await
+                                .err_tip(|| format!("Could not create directory {path}"))
+                        }
+                    }))
+                    .await?;
+                }
+                current_level = next_level;
             }
         }
 
@@ -766,10 +779,16 @@ pub fn download_to_directory<'a>(
         let store_keys: Vec<StoreKey<'_>> =
             unique_digests.iter().map(|d| (*d).into()).collect();
         let mut has_results = vec![None; store_keys.len()];
-        Pin::new(cas_store.fast_store())
-            .has_with_results(&store_keys, &mut has_results)
-            .await
-            .err_tip(|| "Batch has_with_results on fast store")?;
+        // Check in chunks to reduce Mutex hold time in the fast store,
+        // allowing concurrent operations from other actions to interleave.
+        const HAS_CHECK_CHUNK: usize = 500;
+        for start in (0..store_keys.len()).step_by(HAS_CHECK_CHUNK) {
+            let end = (start + HAS_CHECK_CHUNK).min(store_keys.len());
+            Pin::new(cas_store.fast_store())
+                .has_with_results(&store_keys[start..end], &mut has_results[start..end])
+                .await
+                .err_tip(|| "Batch has_with_results on fast store")?;
+        }
 
         let cached_set: HashSet<DigestInfo> = unique_digests
             .iter()
@@ -871,26 +890,21 @@ pub fn download_to_directory<'a>(
         // store (via cache hit, BatchReadBlobs, or ByteStream). Pass
         // already_in_cache=true so hardlink_and_set_metadata skips the redundant
         // populate_fast_store call on the first attempt.
-        let hardlink_futures: FuturesUnordered<_> = files
-            .into_iter()
-            .map(|file| {
+        const HARDLINK_CONCURRENCY: usize = 64;
+        futures::stream::iter(files.into_iter().map(Ok::<_, Error>))
+            .try_for_each_concurrent(HARDLINK_CONCURRENCY, |file| async move {
                 let in_cache = !is_zero_digest(file.digest);
-                async move {
-                    let digest = file.digest;
-                    hardlink_and_set_metadata(cas_store, filesystem_store, file, in_cache)
-                        .await
-                        .map_err(move |e| {
-                            let mut e = e.append(format!("for digest {digest}"));
-                            if e.code == Code::NotFound {
-                                e.details.push(make_precondition_failure_any(digest));
-                            }
-                            e
-                        })
-                }
+                let digest = file.digest;
+                hardlink_and_set_metadata(cas_store, filesystem_store, file, in_cache)
+                    .await
+                    .map_err(move |e| {
+                        let mut e = e.append(format!("for digest {digest}"));
+                        if e.code == Code::NotFound {
+                            e.details.push(make_precondition_failure_any(digest));
+                        }
+                        e
+                    })
             })
-            .collect();
-        hardlink_futures
-            .try_for_each(|()| futures::future::ready(Ok(())))
             .await?;
 
         let total_bytes: u64 = unique_digests.iter().map(|d| d.size_bytes()).sum();
