@@ -1027,8 +1027,11 @@ impl StoreDriver for GrpcStore {
     }
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
-        // Signal that update_oneshot is optimized when batch threshold is set
-        // on a CAS store. AC stores don't benefit from batching.
+        if optimization == StoreOptimizations::LazyExistenceOnSync
+            && !matches!(self.store_type, nativelink_config::stores::StoreType::Ac)
+        {
+            return true;
+        }
         optimization == StoreOptimizations::SubscribesToUpdateOneshot
             && self.batch_update_threshold > 0
             && !matches!(self.store_type, nativelink_config::stores::StoreType::Ac)

@@ -315,30 +315,43 @@ impl CasServer {
         deque.push_back(root_digest);
 
         while !deque.is_empty() {
-            let digest: DigestInfo = deque.pop_front().err_tip(|| "In VecDeque::pop_front")?;
-            let directory = get_and_decode_digest::<Directory>(&store, digest.into())
-                .await
-                .err_tip(|| "Converting digest to Directory")?;
-            if digest == page_token_digest {
-                page_token_matched = true;
+            let level: Vec<DigestInfo> = deque.drain(..).collect();
+            let mut futs = FuturesUnordered::new();
+            for digest in level {
+                let store = store.clone();
+                futs.push(async move {
+                    let dir = get_and_decode_digest::<Directory>(&store, digest.into())
+                        .await
+                        .err_tip(|| "Converting digest to Directory")?;
+                    Ok::<_, Error>((digest, dir))
+                });
             }
-            for directory in &directory.directories {
-                let digest: DigestInfo = directory
-                    .digest
-                    .clone()
-                    .err_tip(|| "Expected Digest to exist in Directory::directories::digest")?
-                    .try_into()
-                    .err_tip(|| "In Directory::file::digest")?;
-                deque.push_back(digest);
-            }
-
             let page_size_usize = usize::try_from(page_size).unwrap_or(usize::MAX);
-
-            if page_token_matched {
-                directories.push(directory);
-                if directories.len() == page_size_usize {
-                    break;
+            while let Some(result) = futs.next().await {
+                let (digest, directory) = result?;
+                if digest == page_token_digest {
+                    page_token_matched = true;
                 }
+                for child in &directory.directories {
+                    let child_digest: DigestInfo = child
+                        .digest
+                        .clone()
+                        .err_tip(|| "Expected Digest to exist in Directory::directories::digest")?
+                        .try_into()
+                        .err_tip(|| "In Directory::file::digest")?;
+                    deque.push_back(child_digest);
+                }
+                if page_token_matched {
+                    directories.push(directory);
+                    if directories.len() == page_size_usize {
+                        break;
+                    }
+                }
+            }
+            if page_token_matched
+                && directories.len() >= usize::try_from(page_size).unwrap_or(usize::MAX)
+            {
+                break;
             }
         }
         // `next_page_token` will return the `{hash_str}:{size_bytes}` of the next request's first directory digest.
