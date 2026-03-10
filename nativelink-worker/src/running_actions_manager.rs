@@ -60,6 +60,7 @@ use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
+use nativelink_store::worker_proxy_store::WorkerProxyStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
     SymlinkInfo, to_execute_response,
@@ -378,23 +379,136 @@ const BYTESTREAM_CONCURRENCY: usize = 16;
 /// Batch-download small blobs via `BatchReadBlobs` and write them into the fast store.
 /// Returns the set of digests that were successfully fetched.
 ///
-/// Batches are sent concurrently (up to `BATCH_READ_CONCURRENCY`) to pipeline
-/// RPCs and hide per-batch round-trip latency.
+/// If WorkerProxyStore is available, uses the locality map to route digests
+/// to peers that have them. Digests without a known peer go to the server.
+/// Any misses from peers or server are retried via `populate_fast_store_unchecked`.
 async fn batch_read_small_blobs(
     cas_store: &FastSlowStore,
     small_digests: &[DigestInfo],
 ) -> Result<HashSet<DigestInfo>, Error> {
-    let grpc_store = match cas_store.slow_store().downcast_ref::<GrpcStore>(None) {
+    let slow_store = cas_store.slow_store();
+
+    // Try locality-aware routing through WorkerProxyStore.
+    if let Some(proxy) = slow_store.downcast_ref::<WorkerProxyStore>(None) {
+        let peer_stores = proxy.peer_stores();
+        if !peer_stores.is_empty() {
+            // Assign digests to endpoints using the locality map.
+            let mut endpoint_digests: HashMap<Arc<str>, Vec<DigestInfo>> = HashMap::new();
+            let mut server_digests: Vec<DigestInfo> = Vec::new();
+
+            {
+                let locality = proxy.locality_map().read();
+                for &digest in small_digests {
+                    let peers = locality.lookup_workers(&digest);
+                    let assigned = peers
+                        .iter()
+                        .find(|ep| peer_stores.contains_key(ep.as_ref()));
+                    if let Some(endpoint) = assigned {
+                        endpoint_digests
+                            .entry(endpoint.clone())
+                            .or_default()
+                            .push(digest);
+                    } else {
+                        server_digests.push(digest);
+                    }
+                }
+            }
+
+            let peer_blob_count: usize = endpoint_digests.values().map(|v| v.len()).sum();
+            info!(
+                total = small_digests.len(),
+                to_peers = peer_blob_count,
+                to_server = server_digests.len(),
+                peer_endpoints = endpoint_digests.len(),
+                "BatchReadBlobs: locality-based routing"
+            );
+
+            // Collect ALL batch work items (peer + server) for parallel execution.
+            let mut all_batches: Vec<(&str, &GrpcStore, Vec<DigestInfo>)> = Vec::new();
+
+            for (endpoint, digests) in &endpoint_digests {
+                if let Some(store) = peer_stores.get(endpoint.as_ref()) {
+                    if let Some(grpc) = store.downcast_ref::<GrpcStore>(None) {
+                        for batch in partition_into_batches(digests) {
+                            all_batches.push((endpoint.as_ref(), grpc, batch));
+                        }
+                    }
+                }
+            }
+
+            if let Some(grpc) = proxy.inner_store().downcast_ref::<GrpcStore>(None) {
+                for batch in partition_into_batches(&server_digests) {
+                    all_batches.push(("server", grpc, batch));
+                }
+            }
+
+            // Execute ALL batches in parallel across all endpoints.
+            let results = futures::future::join_all(
+                all_batches.into_iter().map(|(ep, grpc, batch)| async move {
+                    let result = execute_batch_read(grpc, cas_store, &batch).await;
+                    (ep, result)
+                }),
+            )
+            .await;
+
+            let mut fetched = HashSet::new();
+            for (ep, result) in results {
+                match result {
+                    Ok(completed) => fetched.extend(completed),
+                    Err(e) => info!(endpoint = ep, ?e, "BatchReadBlobs: batch failed"),
+                }
+            }
+
+            // Retry misses via populate_fast_store_unchecked (full store chain).
+            let misses: Vec<DigestInfo> = small_digests
+                .iter()
+                .filter(|d| !fetched.contains(d))
+                .copied()
+                .collect();
+
+            if !misses.is_empty() {
+                info!(count = misses.len(), "BatchReadBlobs: fetching misses via store chain");
+                futures::stream::iter(misses.iter().map(Ok::<_, Error>))
+                    .try_for_each_concurrent(BYTESTREAM_CONCURRENCY, |&digest| async move {
+                        cas_store
+                            .populate_fast_store_unchecked(digest.into())
+                            .await
+                            .err_tip(|| format!("Populating fast store (batch miss) for {digest:?}"))
+                    })
+                    .await?;
+                fetched.extend(misses);
+            }
+
+            return Ok(fetched);
+        }
+    }
+
+    // No peers available — server-only batch read.
+    let grpc_store = match slow_store.downcast_ref::<GrpcStore>(None) {
         Some(store) => store,
-        None => return Ok(HashSet::new()), // Can't batch, caller will use populate_fast_store
+        None => return Ok(HashSet::new()),
     };
 
-    // Partition digests into 4 MiB batches.
+    let batches = partition_into_batches(small_digests);
+    let fetched: HashSet<DigestInfo> = futures::stream::iter(batches.into_iter())
+        .map(|batch| async move { execute_batch_read(grpc_store, cas_store, &batch).await })
+        .buffer_unordered(BATCH_READ_CONCURRENCY)
+        .try_fold(HashSet::new(), |mut acc, completed| async move {
+            acc.extend(completed);
+            Ok(acc)
+        })
+        .await?;
+
+    Ok(fetched)
+}
+
+/// Partition digests into 4 MiB batches for BatchReadBlobs.
+fn partition_into_batches(digests: &[DigestInfo]) -> Vec<Vec<DigestInfo>> {
     let mut batches: Vec<Vec<DigestInfo>> = Vec::new();
     let mut current_batch: Vec<DigestInfo> = Vec::new();
     let mut current_size: u64 = 0;
 
-    for &digest in small_digests {
+    for &digest in digests {
         let blob_size = digest.size_bytes();
         if !current_batch.is_empty() && current_size + blob_size > BATCH_READ_MAX_REQUEST_SIZE {
             batches.push(std::mem::take(&mut current_batch));
@@ -406,20 +520,7 @@ async fn batch_read_small_blobs(
     if !current_batch.is_empty() {
         batches.push(current_batch);
     }
-
-    // Execute batches concurrently with bounded concurrency.
-    let fetched: HashSet<DigestInfo> = futures::stream::iter(batches)
-        .map(|batch| async move {
-            execute_batch_read(grpc_store, cas_store, &batch).await
-        })
-        .buffer_unordered(BATCH_READ_CONCURRENCY)
-        .try_fold(HashSet::new(), |mut acc, completed| async move {
-            acc.extend(completed);
-            Ok(acc)
-        })
-        .await?;
-
-    Ok(fetched)
+    batches
 }
 
 /// Execute a single BatchReadBlobs request and write results to fast store.

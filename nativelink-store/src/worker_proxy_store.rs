@@ -32,7 +32,7 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::RwLock;
 use tokio::task::JoinHandle;
-use tracing::{debug, info, trace, warn};
+use tracing::{info, trace, warn};
 
 use crate::grpc_store::GrpcStore;
 
@@ -96,6 +96,21 @@ impl WorkerProxyStore {
             return;
         }
         self.get_or_create_connection(endpoint).await;
+    }
+
+    /// Returns the inner (server) store.
+    pub fn inner_store(&self) -> &Store {
+        &self.inner
+    }
+
+    /// Returns the locality map for looking up which peers have which digests.
+    pub fn locality_map(&self) -> &SharedBlobLocalityMap {
+        &self.locality_map
+    }
+
+    /// Returns all currently-connected peer stores.
+    pub fn peer_stores(&self) -> HashMap<Arc<str>, Store> {
+        self.worker_connections.read().clone()
     }
 
     /// Remove a worker endpoint from the connection pool.
