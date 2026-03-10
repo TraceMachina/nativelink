@@ -912,13 +912,17 @@ pub async fn new_local_worker(
         let locality_map = nativelink_util::blob_locality_map::new_shared_blob_locality_map();
 
         // Wrap the slow store (central CAS) with WorkerProxyStore.
+        // Enable racing so the worker races peer fetches against server fetches.
         let slow_store = fast_slow_store.slow_store().clone();
-        let proxy_store = Store::new(
+        let mut proxy_arc =
             nativelink_store::worker_proxy_store::WorkerProxyStore::new(
                 slow_store,
                 locality_map.clone(),
-            ),
-        );
+            );
+        Arc::get_mut(&mut proxy_arc)
+            .expect("WorkerProxyStore just created, no other refs")
+            .enable_race_peers();
+        let proxy_store = Store::new(proxy_arc);
 
         // Build a new FastSlowStore: fast=local disk, slow=WorkerProxyStore(central CAS).
         // Preserve the original store's direction config so that e.g.
