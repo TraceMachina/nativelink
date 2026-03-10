@@ -533,7 +533,7 @@ impl StoreDriver for WorkerProxyStore {
                     Ok(chunk) if !chunk.is_empty() => {
                         // Server produced data first — it wins.
                         peer_handle.abort();
-                        debug!(
+                        info!(
                             ?digest,
                             "WorkerProxyStore: server won race against peer"
                         );
@@ -544,7 +544,7 @@ impl StoreDriver for WorkerProxyStore {
                     Ok(_empty) => {
                         // Server returned EOF immediately (zero-length blob).
                         peer_handle.abort();
-                        debug!(
+                        info!(
                             ?digest,
                             "WorkerProxyStore: server won race (empty blob)"
                         );
@@ -620,7 +620,7 @@ impl StoreDriver for WorkerProxyStore {
                             return server_handle.await
                                 .map_err(|e| make_err!(Code::Internal, "server task join: {e}"))?;
                         }
-                        debug!(
+                        info!(
                             ?digest,
                             "WorkerProxyStore: server won race (peer failed)"
                         );
