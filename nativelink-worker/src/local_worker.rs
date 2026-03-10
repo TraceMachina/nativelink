@@ -71,7 +71,16 @@ fn cas_advertised_endpoint(port: u16) -> String {
     static HOSTNAME: OnceLock<String> = OnceLock::new();
     let hostname = HOSTNAME.get_or_init(|| {
         match hostname::get() {
-            Ok(h) => h.to_string_lossy().into_owned(),
+            Ok(h) => {
+                let name = h.to_string_lossy().into_owned();
+                // Append .local for mDNS resolution if the hostname is bare
+                // (no dots), so the server can resolve it via multicast DNS.
+                if name.contains('.') {
+                    name
+                } else {
+                    format!("{name}.local")
+                }
+            }
             Err(err) => {
                 error!(
                     ?err,

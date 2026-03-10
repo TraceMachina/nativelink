@@ -30,7 +30,7 @@ use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_metric::MetricsComponent;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::background_spawn;
 use crate::instant_wrapper::InstantWrapper;
@@ -344,6 +344,9 @@ where
             self.max_bytes
         };
 
+        let elapsed_seconds =
+            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+
         let mut items_to_unref = Vec::new();
         let mut removal_futures = Vec::new();
 
@@ -352,7 +355,13 @@ where
                 .lru
                 .pop_lru()
                 .expect("Tried to peek() then pop() but failed");
-            debug!(?key, "Evicting",);
+            let age_secs = elapsed_seconds.saturating_sub(eviction_item.seconds_since_anchor);
+            let size = eviction_item.data.len();
+            if age_secs < 120 {
+                warn!(?key, age_secs, size, "Evicting recently-inserted item");
+            } else {
+                debug!(?key, age_secs, size, "Evicting");
+            }
             let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);
             removal_futures.extend(futures.into_iter());
@@ -413,7 +422,15 @@ where
                         if self.should_evict(lru_len, entry, 0, u64::MAX) {
                             *result = None;
                             if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
-                                debug!(?key, "Item expired, evicting");
+                                let elapsed_seconds =
+                                    i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+                                let age_secs = elapsed_seconds.saturating_sub(eviction_item.seconds_since_anchor);
+                                let size = eviction_item.data.len();
+                                if age_secs < 120 {
+                                    warn!(?key, age_secs, size, "Expired recently-inserted item");
+                                } else {
+                                    debug!(?key, age_secs, size, "Item expired, evicting");
+                                }
                                 let (data, futures) =
                                     state.remove(key.borrow(), &eviction_item, false);
                                 // Store data for later unref - we can't drop state here as we're still iterating
