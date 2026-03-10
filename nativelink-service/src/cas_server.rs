@@ -89,11 +89,23 @@ impl CasServer {
             .has_many(&requested_blobs)
             .await
             .err_tip(|| "In find_missing_blobs")?;
-        let missing_blob_digests = sizes
+        let missing_blob_digests: Vec<_> = sizes
             .into_iter()
             .zip(request.blob_digests)
             .filter_map(|(maybe_size, digest)| maybe_size.map_or_else(|| Some(digest), |_| None))
             .collect();
+
+        info!(
+            requested = requested_blobs.len(),
+            missing = missing_blob_digests.len(),
+            "FindMissingBlobs",
+        );
+        if !missing_blob_digests.is_empty() {
+            debug!(
+                digests = ?missing_blob_digests.iter().map(|d| format!("{}-{}", d.hash, d.size_bytes)).collect::<Vec<_>>(),
+                "FindMissingBlobs: missing digests",
+            );
+        }
 
         Ok(Response::new(FindMissingBlobsResponse {
             missing_blob_digests,
