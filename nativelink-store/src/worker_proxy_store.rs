@@ -53,6 +53,10 @@ pub struct WorkerProxyStore {
     locality_map: SharedBlobLocalityMap,
     /// Cached GrpcStore connections to worker endpoints.
     worker_connections: RwLock<HashMap<Arc<str>, Store>>,
+    /// When true, race peer fetches against server fetches in get_part.
+    /// Only workers should enable this — servers should use the sequential
+    /// path which generates redirects for workers.
+    race_peers: bool,
 }
 
 impl core::fmt::Debug for WorkerProxyStore {
@@ -76,7 +80,14 @@ impl WorkerProxyStore {
             inner,
             locality_map,
             worker_connections: RwLock::new(HashMap::new()),
+            race_peers: false,
         })
+    }
+
+    /// Enable racing peer fetches against server fetches.
+    /// Only workers should call this — servers should leave it disabled.
+    pub fn enable_race_peers(&mut self) {
+        self.race_peers = true;
     }
 
     /// Add a worker endpoint to the connection pool.
@@ -460,21 +471,14 @@ impl StoreDriver for WorkerProxyStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        // Check if we're on the server side (IS_WORKER_REQUEST already set
-        // by the gRPC handler). Server-side requests must use the sequential
-        // path which generates redirects for workers. Racing only applies on
-        // the worker side, where we race our server fetch against a peer fetch.
-        let is_server_side = IS_WORKER_REQUEST
-            .try_with(|v| *v)
-            .unwrap_or(false);
-
-        // Look up peers in the locality map. If we have known peers and we're
-        // on the worker side, race a peer fetch against the server fetch.
+        // Only race when explicitly enabled (worker side). Server-side
+        // WorkerProxyStore uses the sequential path which generates
+        // redirects for workers and proxies for non-worker callers.
         let digest = key.borrow().into_digest();
-        let peers = if is_server_side {
-            Vec::new() // Don't race on the server side.
-        } else {
+        let peers = if self.race_peers {
             self.locality_map.read().lookup_workers(&digest)
+        } else {
+            Vec::new()
         };
 
         if peers.is_empty() {
@@ -1069,7 +1073,8 @@ mod tests {
     async fn test_race_server_wins_when_inner_has_blob() -> Result<(), Error> {
         let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
         let locality_map = new_shared_blob_locality_map();
-        let proxy = WorkerProxyStore::new(inner.clone(), locality_map.clone());
+        let mut proxy = WorkerProxyStore::new(inner.clone(), locality_map.clone());
+        Arc::get_mut(&mut proxy).unwrap().enable_race_peers();
         let store = Store::new(proxy.clone());
 
         let value = b"race test data";
@@ -1105,7 +1110,8 @@ mod tests {
     async fn test_race_peer_wins_when_inner_misses() -> Result<(), Error> {
         let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
         let locality_map = new_shared_blob_locality_map();
-        let proxy = WorkerProxyStore::new(inner, locality_map.clone());
+        let mut proxy = WorkerProxyStore::new(inner, locality_map.clone());
+        Arc::get_mut(&mut proxy).unwrap().enable_race_peers();
         let store = Store::new(proxy.clone());
 
         let value = b"peer only data";
@@ -1135,7 +1141,8 @@ mod tests {
     async fn test_race_both_miss_returns_error() -> Result<(), Error> {
         let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
         let locality_map = new_shared_blob_locality_map();
-        let proxy = WorkerProxyStore::new(inner, locality_map.clone());
+        let mut proxy = WorkerProxyStore::new(inner, locality_map.clone());
+        Arc::get_mut(&mut proxy).unwrap().enable_race_peers();
         let store = Store::new(proxy.clone());
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
