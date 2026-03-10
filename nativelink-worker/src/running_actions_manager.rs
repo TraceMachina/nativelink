@@ -2818,6 +2818,7 @@ impl RunningActionsManagerImpl {
         }
 
         let mut digests = Vec::new();
+        let mut tree_digests = Vec::new();
         for file in &action_result.output_files {
             if file.digest.size_bytes() > 0 {
                 digests.push(file.digest);
@@ -2826,6 +2827,7 @@ impl RunningActionsManagerImpl {
         for folder in &action_result.output_folders {
             if folder.tree_digest.size_bytes() > 0 {
                 digests.push(folder.tree_digest);
+                tree_digests.push(folder.tree_digest);
             }
         }
         if action_result.stdout_digest.size_bytes() > 0 {
@@ -2839,13 +2841,45 @@ impl RunningActionsManagerImpl {
         }
 
         let cas_store = self.cas_store.clone();
-        let total = digests.len();
         tokio::spawn(async move {
             let fast_store = cas_store.fast_store();
             let slow_store = cas_store.slow_store();
             let start = std::time::Instant::now();
+
+            // Extract file digests from output directory trees so they
+            // are also pushed to the remote CAS (not just the Tree blob).
+            for tree_digest in &tree_digests {
+                match get_and_decode_digest::<ProtoTree>(fast_store, (*tree_digest).into()).await {
+                    Ok(tree) => {
+                        let file_digests: Vec<DigestInfo> = tree
+                            .children
+                            .into_iter()
+                            .chain(tree.root)
+                            .flat_map(|dir| dir.files)
+                            .filter_map(|f| f.digest.and_then(|d| DigestInfo::try_from(d).ok()))
+                            .filter(|d| d.size_bytes() > 0)
+                            .collect();
+                        info!(
+                            ?tree_digest,
+                            file_count = file_digests.len(),
+                            "upload_to_remote: extracted file digests from output directory tree",
+                        );
+                        digests.extend(file_digests);
+                    }
+                    Err(e) => {
+                        warn!(
+                            ?tree_digest,
+                            ?e,
+                            "upload_to_remote: failed to decode tree for file digest extraction",
+                        );
+                    }
+                }
+            }
+
+            let total = digests.len();
             info!(
                 total_digests = total,
+                tree_count = tree_digests.len(),
                 "upload_to_remote: starting background CAS upload",
             );
 
@@ -2854,6 +2888,8 @@ impl RunningActionsManagerImpl {
             // stream through a channel to avoid loading into memory.
             const BATCH_THRESHOLD: u64 = 1024 * 1024; // 1 MiB
 
+            let mut success_count = 0u64;
+            let mut fail_count = 0u64;
             let mut uploads = FuturesUnordered::new();
             for digest in digests {
                 uploads.push(async move {
@@ -2873,19 +2909,31 @@ impl RunningActionsManagerImpl {
                         let (read_res, write_res) = tokio::join!(read_fut, write_fut);
                         read_res.merge(write_res)
                     };
-                    if let Err(e) = result {
-                        warn!(
-                            ?digest,
-                            ?e,
-                            "upload_to_remote: failed to upload digest",
-                        );
+                    match result {
+                        Ok(()) => true,
+                        Err(e) => {
+                            warn!(
+                                ?digest,
+                                ?e,
+                                "upload_to_remote: failed to upload digest",
+                            );
+                            false
+                        }
                     }
                 });
             }
-            while uploads.next().await.is_some() {}
+            while let Some(ok) = uploads.next().await {
+                if ok {
+                    success_count += 1;
+                } else {
+                    fail_count += 1;
+                }
+            }
 
             info!(
                 total_digests = total,
+                success_count,
+                fail_count,
                 elapsed_ms = start.elapsed().as_millis() as u64,
                 "upload_to_remote: background CAS upload completed",
             );
