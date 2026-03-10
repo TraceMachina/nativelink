@@ -158,7 +158,7 @@ impl WorkerProxyStore {
             store_type: StoreType::Cas,
             retry: Retry::default(),
             max_concurrent_requests: 0,
-            connections_per_endpoint: 4,
+            connections_per_endpoint: 64,
             rpc_timeout_s: 120,
             batch_update_threshold_bytes: 0, // Not uploading via this store
             batch_coalesce_delay_ms: 0,
@@ -511,13 +511,11 @@ impl StoreDriver for WorkerProxyStore {
         // Clone inner store for the server task.
         let inner = self.inner.clone();
 
-        // Spawn server fetch.
+        // Spawn server fetch. Do NOT set IS_WORKER_REQUEST — we want the
+        // server to actually serve the blob data, not return a redirect.
         let server_handle: JoinHandle<Result<(), Error>> = tokio::spawn(async move {
-            IS_WORKER_REQUEST
-                .scope(
-                    true,
-                    inner.get_part(server_key.borrow(), &mut server_tx, offset, length),
-                )
+            inner
+                .get_part(server_key.borrow(), &mut server_tx, offset, length)
                 .await
         });
 

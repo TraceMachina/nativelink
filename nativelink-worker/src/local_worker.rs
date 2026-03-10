@@ -607,6 +607,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                     for file in &action_result.output_files {
                                                         v.push(file.digest.into());
                                                     }
+                                                    for folder in &action_result.output_folders {
+                                                        v.push(folder.tree_digest.into());
+                                                    }
                                                     if action_result.stdout_digest.size_bytes() > 0 {
                                                         v.push(action_result.stdout_digest.into());
                                                     }

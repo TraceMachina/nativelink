@@ -376,6 +376,51 @@ impl WorkerConnection {
         Ok(())
     }
 
+    fn register_action_result_digests(
+        locality_map: &SharedBlobLocalityMap,
+        endpoint: &str,
+        execute_response: &nativelink_proto::build::bazel::remote::execution::v2::ExecuteResponse,
+    ) {
+        let Some(ref action_result) = execute_response.result else {
+            return;
+        };
+        let now = SystemTime::now();
+        let mut digests = Vec::new();
+        for file in &action_result.output_files {
+            if let Some(ref d) = file.digest {
+                if let Ok(di) = DigestInfo::try_from(d.clone()) {
+                    digests.push((di, now));
+                }
+            }
+        }
+        for dir in &action_result.output_directories {
+            if let Some(ref d) = dir.tree_digest {
+                if let Ok(di) = DigestInfo::try_from(d.clone()) {
+                    digests.push((di, now));
+                }
+            }
+        }
+        if let Some(ref d) = action_result.stdout_digest {
+            if d.size_bytes > 0 {
+                if let Ok(di) = DigestInfo::try_from(d.clone()) {
+                    digests.push((di, now));
+                }
+            }
+        }
+        if let Some(ref d) = action_result.stderr_digest {
+            if d.size_bytes > 0 {
+                if let Ok(di) = DigestInfo::try_from(d.clone()) {
+                    digests.push((di, now));
+                }
+            }
+        }
+        if !digests.is_empty() {
+            locality_map
+                .write()
+                .register_blobs_with_timestamps(endpoint, &digests);
+        }
+    }
+
     async fn inner_execution_response(&self, execute_result: ExecuteResult) -> Result<(), Error> {
         let operation_id = OperationId::from(execute_result.operation_id);
 
@@ -384,6 +429,18 @@ impl WorkerConnection {
             .err_tip(|| "Expected result to exist in ExecuteResult")?
         {
             execute_result::Result::ExecuteResponse(finished_result) => {
+                // Register output digests in the locality map so the server
+                // can proxy blob reads back to the worker immediately, even
+                // before the BlobsAvailableNotification arrives.
+                if let Some(ref locality_map) = self.locality_map {
+                    if !self.cas_endpoint.is_empty() {
+                        Self::register_action_result_digests(
+                            locality_map,
+                            &self.cas_endpoint,
+                            &finished_result,
+                        );
+                    }
+                }
                 let action_stage = finished_result
                     .try_into()
                     .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?;

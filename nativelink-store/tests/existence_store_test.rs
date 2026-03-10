@@ -26,6 +26,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::store_trait::{Store, StoreLike};
 use pretty_assertions::assert_eq;
+use tokio::time::sleep;
 
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
@@ -147,7 +148,9 @@ async fn ensure_has_requests_do_let_evictions_happen() -> Result<(), Error> {
     // Remove from the inner store.
     inner_store.remove_entry(digest.into()).await;
 
-    // has() always queries the inner store, so it reflects the removal.
+    // Allow background eviction callbacks to propagate to the existence cache.
+    sleep(Duration::from_millis(10)).await;
+    // has() reflects the removal once the background callback clears the cache.
     assert_eq!(store.has(digest).await, Ok(None));
 
     Ok(())
@@ -174,6 +177,8 @@ async fn copes_with_dropped_items() -> Result<(), Error> {
         .await
         .err_tip(|| "Failed to update store")?;
 
+    // Allow background eviction callbacks to propagate to the existence cache.
+    sleep(Duration::from_millis(10)).await;
     let inner_store_item = inner_store.has(digest).await;
     assert!(
         inner_store_item.is_ok(),
