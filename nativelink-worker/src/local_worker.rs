@@ -1042,12 +1042,16 @@ pub async fn new_local_worker(
                 %advertised,
                 "Starting worker CAS server for peer blob sharing"
             );
-            tonic::transport::Server::builder()
+            let result = tonic::transport::Server::builder()
                 .add_service(cas_server.into_service())
                 .add_service(bytestream_server.into_service())
                 .serve(addr)
                 .await
-                .map_err(|e| make_err!(Code::Internal, "Worker CAS server failed: {e:?}"))
+                .map_err(|e| make_err!(Code::Internal, "Worker CAS server failed: {e:?}"));
+            if let Err(ref e) = result {
+                error!(%addr, ?e, "Worker CAS server exited with error");
+            }
+            result
         }))
     } else {
         None
