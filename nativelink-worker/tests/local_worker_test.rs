@@ -35,12 +35,12 @@ use nativelink_config::stores::{
 };
 use nativelink_error::{Code, Error, make_err, make_input_err};
 use nativelink_macro::nativelink_test;
-use nativelink_proto::build::bazel::remote::execution::v2::Platform;
+use nativelink_proto::build::bazel::remote::execution::v2::{Digest, Platform};
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest, StartExecute,
-    UpdateForWorker, execute_result,
+    ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest, PeerHint,
+    StartExecute, UpdateForWorker, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
@@ -127,6 +127,7 @@ async fn platform_properties_smoke_test() -> Result<(), Error> {
                 }
             ],
             max_inflight_tasks: 0,
+            cas_endpoint: String::new(),
         }
     );
 
@@ -261,6 +262,7 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
                         queued_timestamp: None,
                         platform: Some(Platform::default()),
                         worker_id: expected_worker_id.clone(),
+                        peer_hints: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -351,6 +353,7 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
                         queued_timestamp: None,
                         platform: Some(Platform::default()),
                         worker_id: expected_worker_id.clone(),
+                        peer_hints: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -489,7 +492,7 @@ async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(
     fs::create_dir_all(format!("{}/{}", work_directory, "another_dir")).await?;
     let mut file =
         fs::create_file(OsString::from(format!("{}/{}", work_directory, "foo.txt"))).await?;
-    std::io::Write::write_all(file.as_std_mut(), b"Hello, world!")
+    Write::write_all(file.as_std_mut(), b"Hello, world!")
         .map_err(|e| Into::<Error>::into(e))?;
     file.as_std().sync_all()
         .map_err(|e| Into::<Error>::into(e))?;
@@ -628,6 +631,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
                         queued_timestamp: None,
                         platform: Some(Platform::default()),
                         worker_id: expected_worker_id.clone(),
+                        peer_hints: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -715,6 +719,7 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
                         queued_timestamp: None,
                         platform: Some(Platform::default()),
                         worker_id: expected_worker_id.clone(),
+                        peer_hints: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -1035,6 +1040,7 @@ async fn worker_translates_not_found_to_failed_precondition_test() -> Result<(),
                         queued_timestamp: None,
                         platform: Some(Platform::default()),
                         worker_id: expected_worker_id.clone(),
+                        peer_hints: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -1079,6 +1085,389 @@ async fn worker_translates_not_found_to_failed_precondition_test() -> Result<(),
         "Expected error message to contain 'One or more input blobs missing', got: {}",
         error_status.message
     );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn peer_hints_passed_to_action_manager_test() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    {
+        // Ensure our worker connects and properties were sent.
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(props, ConnectWorkerRequest::default());
+    }
+
+    let expected_worker_id = "foobar".to_string();
+
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    {
+        // First initialize our worker by sending the response to the connection request.
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let action_digest = DigestInfo::new([3u8; 32], 10);
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    };
+
+    // Create peer hints: digest D1 is available on "worker-a:50081".
+    let d1 = DigestInfo::new([10u8; 32], 500);
+    let peer_hints = vec![PeerHint {
+        digest: Some(Digest::from(d1)),
+        peer_endpoints: vec!["worker-a:50081".to_string()],
+    }];
+
+    {
+        // Send execution request with peer_hints populated.
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                        peer_hints: peer_hints.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let running_action = Arc::new(MockRunningAction::new());
+
+    // Send and wait for response from create_and_add_action to RunningActionsManager.
+    // This returns the (worker_id, StartExecute) that was passed to the mock.
+    let (received_worker_id, received_start_execute) = test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(running_action.clone()))
+        .await;
+
+    // Verify worker_id is passed correctly.
+    assert_eq!(received_worker_id, expected_worker_id);
+
+    // Verify peer_hints arrived intact at the mock RunningActionsManager.
+    assert_eq!(
+        received_start_execute.peer_hints.len(),
+        1,
+        "Expected exactly one peer hint"
+    );
+    assert_eq!(
+        received_start_execute.peer_hints[0].digest,
+        Some(Digest::from(d1)),
+        "Peer hint digest should match the one we sent"
+    );
+    assert_eq!(
+        received_start_execute.peer_hints[0].peer_endpoints,
+        vec!["worker-a:50081".to_string()],
+        "Peer hint endpoint should match the one we sent"
+    );
+
+    // Complete the action normally so the test can clean up.
+    running_action
+        .simple_expect_get_finished_result(Ok(ActionResult::default()))
+        .await?;
+
+    // Expect the action result to be cached.
+    let _cached = test_context
+        .actions_manager
+        .expect_cache_action_result()
+        .await;
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn empty_peer_hints_action_starts_normally_test() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    {
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(props, ConnectWorkerRequest::default());
+    }
+
+    let expected_worker_id = "foobar".to_string();
+
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let action_digest = DigestInfo::new([3u8; 32], 10);
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    };
+
+    {
+        // Send execution request with empty peer_hints.
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                        peer_hints: Vec::new(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let running_action = Arc::new(MockRunningAction::new());
+
+    let (received_worker_id, received_start_execute) = test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(running_action.clone()))
+        .await;
+
+    // Verify worker_id is passed correctly.
+    assert_eq!(received_worker_id, expected_worker_id);
+
+    // Verify empty peer_hints doesn't cause any issues.
+    assert!(
+        received_start_execute.peer_hints.is_empty(),
+        "Expected peer_hints to be empty"
+    );
+
+    let action_result = ActionResult {
+        output_files: vec![],
+        output_folders: vec![],
+        output_file_symlinks: vec![],
+        output_directory_symlinks: vec![],
+        exit_code: 0,
+        stdout_digest: DigestInfo::new([21u8; 32], 10),
+        stderr_digest: DigestInfo::new([22u8; 32], 10),
+        execution_metadata: ExecutionMetadata {
+            worker: expected_worker_id.clone(),
+            queued_timestamp: SystemTime::UNIX_EPOCH,
+            worker_start_timestamp: SystemTime::UNIX_EPOCH,
+            worker_completed_timestamp: SystemTime::UNIX_EPOCH,
+            input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
+            input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
+            execution_start_timestamp: SystemTime::UNIX_EPOCH,
+            execution_completed_timestamp: SystemTime::UNIX_EPOCH,
+            output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
+            output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+        },
+        server_logs: HashMap::new(),
+        error: None,
+        message: String::new(),
+    };
+
+    // Complete the action normally.
+    running_action
+        .simple_expect_get_finished_result(Ok(action_result.clone()))
+        .await?;
+
+    // Expect the action result to be cached.
+    let (stored_digest, stored_result, _digest_hasher) = test_context
+        .actions_manager
+        .expect_cache_action_result()
+        .await;
+    assert_eq!(stored_digest, action_digest);
+    assert_eq!(stored_result, action_result);
+
+    // Verify we get the execution response back.
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
+    assert_eq!(
+        execution_response,
+        ExecuteResult {
+            instance_name: INSTANCE_NAME.to_string(),
+            operation_id: String::new(),
+            result: Some(execute_result::Result::ExecuteResponse(
+                ActionStage::Completed(action_result).into()
+            )),
+        }
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn multiple_peer_hints_with_multiple_endpoints_test() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    {
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(props, ConnectWorkerRequest::default());
+    }
+
+    let expected_worker_id = "foobar".to_string();
+
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let action_digest = DigestInfo::new([3u8; 32], 10);
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    };
+
+    // Create multiple peer hints with multiple endpoints.
+    let d1 = DigestInfo::new([10u8; 32], 500);
+    let d2 = DigestInfo::new([11u8; 32], 1000);
+    let peer_hints = vec![
+        PeerHint {
+            digest: Some(Digest::from(d1)),
+            peer_endpoints: vec![
+                "worker-a:50081".to_string(),
+                "worker-b:50081".to_string(),
+            ],
+        },
+        PeerHint {
+            digest: Some(Digest::from(d2)),
+            peer_endpoints: vec!["worker-c:50081".to_string()],
+        },
+    ];
+
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                        peer_hints: peer_hints.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let running_action = Arc::new(MockRunningAction::new());
+
+    let (_received_worker_id, received_start_execute) = test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(running_action.clone()))
+        .await;
+
+    // Verify all peer_hints arrived intact.
+    assert_eq!(
+        received_start_execute.peer_hints.len(),
+        2,
+        "Expected exactly two peer hints"
+    );
+
+    // Verify first hint: d1 available on worker-a and worker-b.
+    assert_eq!(
+        received_start_execute.peer_hints[0].digest,
+        Some(Digest::from(d1)),
+    );
+    assert_eq!(
+        received_start_execute.peer_hints[0].peer_endpoints,
+        vec!["worker-a:50081".to_string(), "worker-b:50081".to_string()],
+    );
+
+    // Verify second hint: d2 available on worker-c.
+    assert_eq!(
+        received_start_execute.peer_hints[1].digest,
+        Some(Digest::from(d2)),
+    );
+    assert_eq!(
+        received_start_execute.peer_hints[1].peer_endpoints,
+        vec!["worker-c:50081".to_string()],
+    );
+
+    // Complete the action normally.
+    running_action
+        .simple_expect_get_finished_result(Ok(ActionResult::default()))
+        .await?;
+
+    let _cached = test_context
+        .actions_manager
+        .expect_cache_action_result()
+        .await;
 
     Ok(())
 }

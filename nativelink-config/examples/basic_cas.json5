@@ -62,6 +62,10 @@
           ISA: "exact",
           InputRootAbsolutePath: "ignore", // used by chromium builds, but we can drop it
         },
+        // Enable locality-aware scheduling. The scheduler resolves input
+        // trees and scores workers by how many input bytes they already
+        // have cached.
+        cas_store: "WORKER_FAST_SLOW_STORE",
       },
     },
   ],
@@ -72,6 +76,8 @@
           uri: "grpc://127.0.0.1:50061",
         },
         cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        // Expose a CAS server for peer-to-peer blob sharing.
+        cas_server_port: 50081,
         upload_action_result: {
           ac_store: "AC_MAIN_STORE",
         },

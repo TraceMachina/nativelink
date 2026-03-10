@@ -33,7 +33,7 @@ use nativelink_util::buf_channel::{
 use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
+    ItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
     UploadSizeInfo, slow_update_store_with_file,
 };
 use parking_lot::Mutex;
@@ -137,6 +137,14 @@ impl FastSlowStore {
 
     pub const fn slow_store(&self) -> &Store {
         &self.slow_store
+    }
+
+    pub const fn fast_direction(&self) -> StoreDirection {
+        self.fast_direction
+    }
+
+    pub const fn slow_direction(&self) -> StoreDirection {
+        self.slow_direction
     }
 
     pub fn get_arc(&self) -> Option<Arc<Self>> {
@@ -758,12 +766,12 @@ impl StoreDriver for FastSlowStore {
         self
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
-        self.fast_store.register_remove_callback(callback.clone())?;
-        self.slow_store.register_remove_callback(callback)?;
+        self.fast_store.register_item_callback(callback.clone())?;
+        self.slow_store.register_item_callback(callback)?;
         Ok(())
     }
 }

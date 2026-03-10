@@ -22,7 +22,7 @@ async fn make_connect_worker_request_with_extra_envs() -> Result<(), Error> {
     extra_envs.insert("PATH".into(), env::var("PATH").unwrap());
 
     let res =
-        make_connect_worker_request("1234".to_string(), &worker_properties, &extra_envs, 1).await?;
+        make_connect_worker_request("1234".to_string(), &worker_properties, &extra_envs, 1, String::new()).await?;
     assert_eq!(
         res.properties.first(),
         Some(&Property {

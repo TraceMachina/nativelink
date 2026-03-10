@@ -52,6 +52,8 @@
         supported_platform_properties: {
           cpu_count: "minimum",
         },
+        // Enable locality-aware scheduling by pointing at the CAS store.
+        cas_store: "CAS",
       },
     },
   ],
@@ -63,6 +65,8 @@
           uri: "grpc://127.0.0.1:50061",
         },
         cas_fast_slow_store: "CAS",
+        // Expose a CAS server for peer-to-peer blob sharing.
+        cas_server_port: 50081,
         upload_action_result: {
           ac_store: "AC",
         },
@@ -83,6 +87,7 @@
           uri: "grpc://127.0.0.1:50061",
         },
         cas_fast_slow_store: "CAS",
+        cas_server_port: 50082,
         upload_action_result: {
           ac_store: "AC",
         },
@@ -103,6 +108,7 @@
           uri: "grpc://127.0.0.1:50061",
         },
         cas_fast_slow_store: "CAS",
+        cas_server_port: 50083,
         upload_action_result: {
           ac_store: "AC",
         },

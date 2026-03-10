@@ -18,7 +18,7 @@ use core::str;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
@@ -32,18 +32,21 @@ use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
-    execute_result,
+    BlobDigestInfo, BlobsAvailableNotification, ExecuteComplete, ExecuteResult, GoingAwayRequest,
+    KeepAliveRequest, UpdateForWorker, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
+use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
-use nativelink_util::common::fs;
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::shutdown_guard::ShutdownGuard;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{ItemCallback, Store, StoreDriver, StoreKey};
+use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{spawn, tls_utils};
 use opentelemetry::context::Context;
+use parking_lot::Mutex;
 use tokio::process;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
@@ -57,6 +60,88 @@ use crate::running_actions_manager::{
 };
 use crate::worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrapper};
 use crate::worker_utils::make_connect_worker_request;
+
+/// Default interval for periodic BlobsAvailable reports (milliseconds).
+const DEFAULT_BLOBS_AVAILABLE_INTERVAL_MS: u64 = 500;
+
+/// Build the advertised gRPC endpoint for peer blob sharing.
+/// Uses the machine's hostname so a single config works across all workers.
+/// The hostname is resolved once and cached for the lifetime of the process.
+fn cas_advertised_endpoint(port: u16) -> String {
+    use std::sync::OnceLock;
+    static HOSTNAME: OnceLock<String> = OnceLock::new();
+    let hostname = HOSTNAME.get_or_init(|| {
+        match hostname::get() {
+            Ok(h) => h.to_string_lossy().into_owned(),
+            Err(err) => {
+                error!(
+                    ?err,
+                    "hostname::get() failed, using 'localhost' — peer blob sharing will not work across machines"
+                );
+                "localhost".to_string()
+            }
+        }
+    });
+    format!("grpc://{hostname}:{port}")
+}
+
+/// Accumulated blob changes between BlobsAvailable ticks.
+#[derive(Debug, Default)]
+pub struct BlobChanges {
+    /// digest → last_access_timestamp (unix seconds).
+    pub added: HashMap<DigestInfo, i64>,
+    pub evicted: HashSet<DigestInfo>,
+}
+
+/// Tracks inserts and evictions from the FilesystemStore between ticks.
+/// Registered as a callback on the FilesystemStore's evicting map.
+#[derive(Debug)]
+pub struct BlobChangeTracker {
+    pending: Mutex<BlobChanges>,
+}
+
+impl BlobChangeTracker {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            pending: Mutex::new(BlobChanges::default()),
+        })
+    }
+
+    /// Atomically swap out accumulated changes, returning them.
+    /// The internal state is replaced with an empty BlobChanges.
+    pub fn swap(&self) -> BlobChanges {
+        let mut pending = self.pending.lock();
+        std::mem::take(&mut *pending)
+    }
+}
+
+impl ItemCallback for BlobChangeTracker {
+    // On evict: add to evicted, remove from added (cancel out insert+evict).
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        if let StoreKey::Digest(digest) = store_key {
+            let mut pending = self.pending.lock();
+            pending.added.remove(&digest);
+            pending.evicted.insert(digest);
+        }
+        Box::pin(core::future::ready(()))
+    }
+
+    // On insert: add to added, remove from evicted (cancel out evict+reinsert).
+    fn on_insert(&self, store_key: StoreKey<'_>, _size: u64) {
+        if let StoreKey::Digest(digest) = store_key {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let mut pending = self.pending.lock();
+            pending.evicted.remove(&digest);
+            pending.added.insert(digest, ts);
+        }
+    }
+}
 
 /// Amount of time to wait if we have actions in transit before we try to
 /// consider an error to have occurred.
@@ -75,6 +160,20 @@ const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_secs(1200); // 20 mins.
 const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_secs(600); // 10 mins.
 
+/// Holds the FilesystemStore reference and change tracker needed for
+/// periodic BlobsAvailable reporting.
+#[derive(Clone, Debug)]
+pub struct BlobsAvailableState {
+    /// Reference to the worker's local FilesystemStore (the fast store in FastSlowStore).
+    fs_store: Arc<FilesystemStore>,
+    /// Tracks inserted and evicted digests between periodic ticks.
+    tracker: Arc<BlobChangeTracker>,
+    /// The worker's CAS endpoint for peer serving (e.g. "grpc://192.168.191.5:50081").
+    cas_endpoint: String,
+    /// How often to send periodic BlobsAvailable (0 = disabled).
+    interval: Duration,
+}
+
 struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
     config: &'a LocalWorkerConfig,
     // According to the tonic documentation it is a cheap operation to clone this.
@@ -87,6 +186,8 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     // on by the scheduler.
     actions_in_transit: Arc<AtomicU64>,
     metrics: Arc<Metrics>,
+    /// State for periodic BlobsAvailable reporting. None if disabled (no CAS endpoint).
+    blobs_available_state: Option<BlobsAvailableState>,
 }
 
 pub async fn preconditions_met<H: BuildHasher + Sync>(
@@ -147,6 +248,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         worker_id: String,
         running_actions_manager: Arc<U>,
         metrics: Arc<Metrics>,
+        blobs_available_state: Option<BlobsAvailableState>,
     ) -> Self {
         Self {
             config,
@@ -159,6 +261,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             // on by the scheduler.
             actions_in_transit: Arc::new(AtomicU64::new(0)),
             metrics,
+            blobs_available_state,
         }
     }
 
@@ -186,6 +289,79 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         }
     }
 
+    /// Sends a periodic BlobsAvailable notification.
+    /// - First tick: full snapshot of all digests with timestamps (scans store once).
+    /// - Subsequent ticks: delta from callback-accumulated changes (no scan).
+    async fn send_periodic_blobs_available(
+        grpc_client: &mut T,
+        state: &BlobsAvailableState,
+        is_first: bool,
+    ) {
+        let (digest_infos, evicted_digests) = if is_first {
+            // Full snapshot: scan everything once.
+            let all = state.fs_store.get_all_digests_with_timestamps();
+            // Drain any changes that accumulated during startup.
+            drop(state.tracker.swap());
+
+            let infos: Vec<BlobDigestInfo> = all
+                .iter()
+                .map(|(digest, ts)| BlobDigestInfo {
+                    digest: Some((*digest).into()),
+                    last_access_timestamp: *ts,
+                })
+                .collect();
+
+            (infos, Vec::new())
+        } else {
+            // Delta: swap out accumulated changes.
+            let changes = state.tracker.swap();
+            if changes.added.is_empty() && changes.evicted.is_empty() {
+                trace!("BlobsAvailable: no changes since last tick, skipping");
+                return;
+            }
+
+            let infos: Vec<BlobDigestInfo> = changes
+                .added
+                .iter()
+                .map(|(digest, &ts)| BlobDigestInfo {
+                    digest: Some((*digest).into()),
+                    last_access_timestamp: ts,
+                })
+                .collect();
+            let evicted_protos = changes.evicted.iter().map(|d| (*d).into()).collect();
+
+            (infos, evicted_protos)
+        };
+
+        let new_or_touched_count = digest_infos.len();
+        let evicted_count = evicted_digests.len();
+
+        let notification = BlobsAvailableNotification {
+            worker_cas_endpoint: state.cas_endpoint.clone(),
+            digests: Vec::new(),
+            is_full_snapshot: is_first,
+            evicted_digests,
+            digest_infos,
+        };
+
+        if let Err(err) = grpc_client.blobs_available(notification).await {
+            warn!(
+                ?err,
+                new_or_touched_count,
+                evicted_count,
+                is_first,
+                "Failed to send periodic BlobsAvailable"
+            );
+        } else {
+            info!(
+                new_or_touched_count,
+                evicted_count,
+                is_first,
+                "Sent periodic BlobsAvailable"
+            );
+        }
+    }
+
     async fn run(
         &self,
         update_for_worker_stream: Streaming<UpdateForWorker>,
@@ -205,6 +381,30 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         // NOTE: If you ever return from this function it will disconnect from the scheduler.
         let mut futures = FuturesUnordered::new();
         futures.push(self.start_keep_alive().boxed());
+
+        // Start periodic BlobsAvailable reporting if configured.
+        if let Some(ref state) = self.blobs_available_state {
+            if !state.interval.is_zero() {
+                let mut grpc_client = self.grpc_client.clone();
+                let state = state.clone();
+                futures.push(
+                    async move {
+                        let mut is_first = true;
+                        loop {
+                            sleep(state.interval).await;
+                            Self::send_periodic_blobs_available(
+                                &mut grpc_client,
+                                &state,
+                                is_first,
+                            )
+                            .await;
+                            is_first = false;
+                        }
+                    }
+                    .boxed(),
+                );
+            }
+        }
 
         let (add_future_channel, add_future_rx) = mpsc::unbounded_channel();
         let mut add_future_rx = UnboundedReceiverStream::new(add_future_rx).fuse();
@@ -247,6 +447,44 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     ?err,
                                     "Failed to send kill request for operation"
                                 );
+                            }
+                        }
+                        Update::TouchBlobs(touch_request) => {
+                            // Touch blobs in the local store to update access times
+                            // and prevent premature eviction of referenced blobs.
+                            let digest_count = touch_request.digests.len();
+                            trace!(digest_count, "Received TouchBlobs request");
+                            if let Some(ref state) = self.blobs_available_state {
+                                let fs_store = state.fs_store.clone();
+                                let digests: Vec<DigestInfo> = touch_request
+                                    .digests
+                                    .into_iter()
+                                    .filter_map(|d| DigestInfo::try_from(d).ok())
+                                    .collect();
+                                // Best-effort: call has() on each digest to update
+                                // the EvictingMap's LRU access time.
+                                let keys: Vec<StoreKey<'_>> = digests
+                                    .iter()
+                                    .map(|d| StoreKey::from(*d))
+                                    .collect();
+                                let mut results = vec![None; keys.len()];
+                                if let Err(err) = Pin::new(fs_store.as_ref())
+                                    .has_with_results(&keys, &mut results)
+                                    .await
+                                {
+                                    warn!(
+                                        ?err,
+                                        digest_count,
+                                        "TouchBlobs: failed to touch digests in FilesystemStore"
+                                    );
+                                } else {
+                                    let found = results.iter().filter(|r| r.is_some()).count();
+                                    trace!(
+                                        digest_count,
+                                        found,
+                                        "TouchBlobs: touched digests in FilesystemStore"
+                                    );
+                                }
                             }
                         }
                         Update::StartAction(start_execute) => {
@@ -298,10 +536,6 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 let actions_in_transit = self.actions_in_transit.clone();
                                 let worker_id = self.worker_id.clone();
                                 let running_actions_manager = self.running_actions_manager.clone();
-                                let mut grpc_client = self.grpc_client.clone();
-                                let complete = ExecuteComplete {
-                                    operation_id: operation_id.clone(),
-                                };
                                 self.metrics.clone().wrap(move |metrics| async move {
                                     metrics.preconditions.wrap(preconditions_met(precondition_script_cfg, &extra_envs))
                                     .and_then(|()| running_actions_manager.create_and_add_action(worker_id, start_execute))
@@ -320,20 +554,21 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .clone()
                                             .prepare_action()
                                             .and_then(RunningAction::execute)
+                                            // upload_results now only uploads to the local fast store
+                                            // (FilesystemStore). The remote CAS upload is deferred to
+                                            // the background after the result is reported.
                                             .and_then(RunningAction::upload_results)
-                                            .and_then(|result| async move {
-                                                // Notify that execution has completed so it can schedule a new action.
-                                                // This must happen AFTER upload_results to ensure outputs are
-                                                // fully uploaded before the worker is freed for new work.
-                                                drop(grpc_client.execution_complete(complete).await);
-                                                Ok(result)
-                                            })
                                             .and_then(RunningAction::get_finished_result)
-                                            // Note: We need ensure we run cleanup even if one of the other steps fail.
                                             .then(|result| async move {
-                                                if let Err(e) = action.cleanup().await {
-                                                    return Result::<ActionResult, Error>::Err(e).merge(result);
-                                                }
+                                                // Spawn cleanup in the background — it only removes
+                                                // the work directory (files already renamed into CAS).
+                                                // The cleaning_up_operations + wait_for_cleanup mechanism
+                                                // handles the race if the same action is retried.
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = action.cleanup().await {
+                                                        error!(?e, "Background cleanup failed");
+                                                    }
+                                                });
                                                 result
                                             })
                                     }).await
@@ -342,24 +577,74 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
                             let make_publish_future = {
                                 let mut grpc_client = self.grpc_client.clone();
+                                let cas_endpoint_for_notify = self.config.cas_server_port
+                                    .map(|port| cas_advertised_endpoint(port))
+                                    .unwrap_or_default();
 
                                 let running_actions_manager = self.running_actions_manager.clone();
+                                let complete = ExecuteComplete {
+                                    operation_id: operation_id.clone(),
+                                };
                                 move |res: Result<ActionResult, Error>| async move {
                                     let instance_name = maybe_instance_name
                                         .err_tip(|| "`instance_name` could not be resolved; this is likely an internal error in local_worker.")?;
                                     match res {
                                         Ok(mut action_result) => {
-                                            // Save in the action cache before notifying the scheduler that we've completed.
-                                            if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
-                                                if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
-                                                    error!(
-                                                        ?err,
-                                                        ?action_digest,
-                                                        "Error saving action in store",
-                                                    );
+                                            // Collect output digests upfront so both futures
+                                            // can proceed without borrowing action_result.
+                                            let output_digests: Vec<_> = {
+                                                let mut v = Vec::new();
+                                                if !cas_endpoint_for_notify.is_empty() {
+                                                    for file in &action_result.output_files {
+                                                        v.push(file.digest.into());
+                                                    }
+                                                    if action_result.stdout_digest.size_bytes() > 0 {
+                                                        v.push(action_result.stdout_digest.into());
+                                                    }
+                                                    if action_result.stderr_digest.size_bytes() > 0 {
+                                                        v.push(action_result.stderr_digest.into());
+                                                    }
                                                 }
-                                            }
-                                            let action_stage = ActionStage::Completed(action_result);
+                                                v
+                                            };
+
+                                            // 1. BlobsAvailableNotif and cache_action_result run
+                                            //    concurrently — they use independent connections
+                                            //    (worker API stream vs AC/historical stores).
+                                            let blobs_fut = async {
+                                                if !output_digests.is_empty() {
+                                                    if let Err(err) = grpc_client.blobs_available(
+                                                        BlobsAvailableNotification {
+                                                            worker_cas_endpoint: cas_endpoint_for_notify.clone(),
+                                                            digests: output_digests,
+                                                            is_full_snapshot: false,
+                                                            evicted_digests: Vec::new(),
+                                                            digest_infos: Vec::new(),
+                                                        }
+                                                    ).await {
+                                                        warn!(?err, "Failed to send blobs_available notification");
+                                                    }
+                                                }
+                                            };
+                                            let cache_fut = async {
+                                                if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
+                                                    if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
+                                                        error!(
+                                                            ?err,
+                                                            ?action_digest,
+                                                            "Error saving action in store",
+                                                        );
+                                                    }
+                                                }
+                                            };
+                                            tokio::join!(blobs_fut, cache_fut);
+
+                                            // 2. Notify scheduler that execution is complete
+                                            //    so it can schedule new work on this worker.
+                                            drop(grpc_client.execution_complete(complete).await);
+
+                                            // 3. Send execution response with the action result.
+                                            let action_stage = ActionStage::Completed(action_result.clone());
                                             grpc_client.execution_response(
                                                 ExecuteResult{
                                                     instance_name,
@@ -369,11 +654,20 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             )
                                             .await
                                             .err_tip(|| "Error while calling execution_response")?;
+
+                                            // 4. Upload output blobs from local CAS to remote
+                                            //    CAS in the background. This is fire-and-forget;
+                                            //    peers can already serve the blobs directly.
+                                            running_actions_manager.spawn_upload_to_remote(&action_result);
                                         },
                                         Err(e) => {
-                                            let is_cas_blob_missing = e.code == Code::NotFound
-                                                && e.message_string().contains("not found in either fast or slow store");
-                                            if is_cas_blob_missing {
+                                            // Still notify completion on error so the worker
+                                            // is freed for new work.
+                                            drop(grpc_client.execution_complete(complete).await);
+
+                                            if e.code == Code::NotFound {
+                                                // Per REAPI spec, missing inputs should return
+                                                // FAILED_PRECONDITION so the client re-uploads.
                                                 warn!(
                                                     ?e,
                                                     "Missing CAS inputs during prepare_action, returning FAILED_PRECONDITION"
@@ -493,6 +787,11 @@ pub struct LocalWorker<T: WorkerApiClientTrait + 'static, U: RunningActionsManag
     connection_factory: ConnectionFactory<T>,
     sleep_fn: Option<Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>>,
     metrics: Arc<Metrics>,
+    /// State for periodic BlobsAvailable reporting.
+    blobs_available_state: Option<BlobsAvailableState>,
+    /// Guard for the worker CAS server task. Keeps the task alive as long as
+    /// the `LocalWorker` is alive. When dropped, the CAS server is aborted.
+    _cas_server_guard: Option<JoinHandleDropGuard<Result<(), Error>>>,
 }
 
 impl<
@@ -597,6 +896,43 @@ pub async fn new_local_worker(
         None
     };
 
+    // If peer blob sharing is configured (cas_server_port is set), create a
+    // worker-local locality map and wrap the slow store with WorkerProxyStore.
+    // This enables workers to fetch blobs from peers instead of the central CAS.
+    let (effective_cas_store, peer_locality_map) = if config.cas_server_port.is_some() {
+        let locality_map = nativelink_util::blob_locality_map::new_shared_blob_locality_map();
+
+        // Wrap the slow store (central CAS) with WorkerProxyStore.
+        let slow_store = fast_slow_store.slow_store().clone();
+        let proxy_store = Store::new(
+            nativelink_store::worker_proxy_store::WorkerProxyStore::new(
+                slow_store,
+                locality_map.clone(),
+            ),
+        );
+
+        // Build a new FastSlowStore: fast=local disk, slow=WorkerProxyStore(central CAS).
+        // Preserve the original store's direction config so that e.g.
+        // slow_direction=get prevents uploads from propagating to the server.
+        let fast_store = fast_slow_store.fast_store().clone();
+        let fss_spec = nativelink_config::stores::FastSlowSpec {
+            fast: nativelink_config::stores::StoreSpec::Noop(Default::default()),
+            slow: nativelink_config::stores::StoreSpec::Noop(Default::default()),
+            fast_direction: fast_slow_store.fast_direction(),
+            slow_direction: fast_slow_store.slow_direction(),
+        };
+        let new_fss = FastSlowStore::new(&fss_spec, fast_store, proxy_store);
+        info!(
+            "Peer blob sharing enabled: wrapping slow store with WorkerProxyStore"
+        );
+
+        (new_fss, Some(locality_map))
+    } else {
+        (fast_slow_store.clone(), None)
+    };
+
+    let effective_cas_store_for_cas_server = effective_cas_store.clone();
+
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
@@ -604,7 +940,7 @@ pub async fn new_local_worker(
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),
             },
-            cas_store: fast_slow_store,
+            cas_store: effective_cas_store,
             ac_store,
             historical_store,
             upload_action_result_config: &config.upload_action_result,
@@ -612,7 +948,106 @@ pub async fn new_local_worker(
             max_upload_timeout,
             timeout_handled_externally: config.timeout_handled_externally,
             directory_cache,
+            peer_locality_map: peer_locality_map.clone(),
         })?);
+
+    // Set up periodic BlobsAvailable reporting if we have a CAS port.
+    let blobs_available_state = if config.cas_server_port.is_some() {
+        // Try to get a reference to the FilesystemStore (the fast store in FastSlowStore).
+        let fs_store_opt: Option<Arc<FilesystemStore>> = fast_slow_store
+            .fast_store()
+            .downcast_ref::<FilesystemStore>(None)
+            .and_then(|fs| fs.get_arc());
+
+        if let Some(fs_store) = fs_store_opt {
+            let interval_ms = if config.blobs_available_interval_ms == 0 {
+                DEFAULT_BLOBS_AVAILABLE_INTERVAL_MS
+            } else {
+                config.blobs_available_interval_ms
+            };
+            let cas_endpoint = config
+                .cas_server_port
+                .map(|port| cas_advertised_endpoint(port))
+                .unwrap_or_default();
+
+            // Create change tracker and register it on the FilesystemStore.
+            let tracker = BlobChangeTracker::new();
+            if let Err(err) = fs_store
+                .clone()
+                .register_item_callback(tracker.clone())
+            {
+                warn!(?err, "Failed to register blob change tracker on FilesystemStore");
+            } else {
+                info!(
+                    interval_ms,
+                    "Registered periodic BlobsAvailable reporting with callback-based change tracking"
+                );
+            }
+
+            Some(BlobsAvailableState {
+                fs_store,
+                tracker,
+                cas_endpoint,
+                interval: Duration::from_millis(interval_ms),
+            })
+        } else {
+            warn!("FastSlowStore's fast store is not a FilesystemStore; periodic BlobsAvailable reporting disabled");
+            None
+        }
+    } else {
+        None
+    };
+
+    // Start a CAS + ByteStream gRPC server for peer blob sharing if configured.
+    // Serves the effective_cas_store (which includes WorkerProxyStore) so that
+    // reads can be proxied to peers when the local store doesn't have the blob.
+    let cas_server_guard = if let Some(cas_port) = config.cas_server_port {
+        let cas_store = Store::new(effective_cas_store_for_cas_server);
+        let store_manager = Arc::new(nativelink_store::store_manager::StoreManager::new());
+        store_manager.add_store("worker_cas", cas_store);
+
+        let cas_configs = vec![nativelink_config::cas_server::WithInstanceName {
+            instance_name: String::new(),
+            config: nativelink_config::cas_server::CasStoreConfig {
+                cas_store: "worker_cas".to_string(),
+            },
+        }];
+        let bytestream_configs = vec![nativelink_config::cas_server::WithInstanceName {
+            instance_name: String::new(),
+            config: nativelink_config::cas_server::ByteStreamConfig {
+                cas_store: "worker_cas".to_string(),
+                ..Default::default()
+            },
+        }];
+
+        let cas_server = nativelink_service::cas_server::CasServer::new(&cas_configs, &store_manager)
+            .err_tip(|| "Failed to create worker CAS server")?;
+        let bytestream_server =
+            nativelink_service::bytestream_server::ByteStreamServer::new(&bytestream_configs, &store_manager)
+                .err_tip(|| "Failed to create worker ByteStream server")?;
+
+        let addr: std::net::SocketAddr = ([0, 0, 0, 0], cas_port).into();
+        let advertised = cas_advertised_endpoint(cas_port);
+
+        let worker_name = config.name.clone();
+        Some(spawn!("worker_cas_server", async move {
+            info!(
+                worker_name = %worker_name,
+                %addr,
+                %advertised,
+                "Starting worker CAS server for peer blob sharing"
+            );
+            tonic::transport::Server::builder()
+                .add_service(cas_server.into_service())
+                .add_service(bytestream_server.into_service())
+                .serve(addr)
+                .await
+                .map_err(|e| make_err!(Code::Internal, "Worker CAS server failed: {e:?}"))
+        }))
+    } else {
+        None
+    };
+
     let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),
         running_actions_manager,
@@ -644,6 +1079,8 @@ pub async fn new_local_worker(
             })
         }),
         Box::new(move |d| Box::pin(sleep(d))),
+        blobs_available_state,
+        cas_server_guard,
     );
     Ok(local_worker)
 }
@@ -654,6 +1091,8 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         running_actions_manager: Arc<U>,
         connection_factory: ConnectionFactory<T>,
         sleep_fn: Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>,
+        blobs_available_state: Option<BlobsAvailableState>,
+        cas_server_guard: Option<JoinHandleDropGuard<Result<(), Error>>>,
     ) -> Self {
         let metrics = Arc::new(Metrics::new(Arc::downgrade(
             running_actions_manager.metrics(),
@@ -664,6 +1103,8 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             connection_factory,
             sleep_fn: Some(sleep_fn),
             metrics,
+            blobs_available_state,
+            _cas_server_guard: cas_server_guard,
         }
     }
 
@@ -699,11 +1140,16 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             }
         }
 
+        let cas_endpoint = self
+            .config
+            .cas_server_port
+            .map_or_else(String::new, |port| cas_advertised_endpoint(port));
         let connect_worker_request = make_connect_worker_request(
             self.config.name.clone(),
             &self.config.platform_properties,
             &extra_envs,
             self.config.max_inflight_tasks,
+            cas_endpoint,
         )
         .await?;
         let mut update_for_worker_stream = client
@@ -769,6 +1215,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                         worker_id,
                         self.running_actions_manager.clone(),
                         self.metrics.clone(),
+                        self.blobs_available_state.clone(),
                     ),
                     update_for_worker_stream,
                 ),
@@ -851,5 +1298,287 @@ impl Metrics {
         fut: F,
     ) -> U {
         fut(self).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nativelink_util::common::DigestInfo;
+    use nativelink_util::store_trait::StoreKey;
+
+    #[test]
+    fn test_blob_change_tracker_eviction_collects_and_swaps() {
+        let tracker = BlobChangeTracker::new();
+        let d1 = DigestInfo::new([1u8; 32], 100);
+        let d2 = DigestInfo::new([2u8; 32], 200);
+
+        // Evict two digests via the callback.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(tracker.callback(StoreKey::Digest(d1)));
+        rt.block_on(tracker.callback(StoreKey::Digest(d2)));
+
+        // Swap should return both as evicted.
+        let changes = tracker.swap();
+        assert!(changes.added.is_empty(), "Expected no added digests");
+        assert_eq!(changes.evicted.len(), 2, "Expected 2 evicted digests");
+        assert!(changes.evicted.contains(&d1), "Expected d1 in evicted set");
+        assert!(changes.evicted.contains(&d2), "Expected d2 in evicted set");
+
+        // Second swap should return empty.
+        let changes2 = tracker.swap();
+        assert!(changes2.added.is_empty());
+        assert!(changes2.evicted.is_empty());
+    }
+
+    #[test]
+    fn test_blob_change_tracker_ignores_non_digest_keys() {
+        let tracker = BlobChangeTracker::new();
+
+        // Evict callback with a string key.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(tracker.callback(StoreKey::Str(Cow::Borrowed("some_key"))));
+
+        // Insert callback with a string key.
+        tracker.on_insert(StoreKey::Str(Cow::Borrowed("other_key")), 42);
+
+        let changes = tracker.swap();
+        assert!(changes.added.is_empty());
+        assert!(changes.evicted.is_empty());
+    }
+
+    #[test]
+    fn test_blob_change_tracker_insert_callback() {
+        let tracker = BlobChangeTracker::new();
+        let d1 = DigestInfo::new([1u8; 32], 100);
+        let d2 = DigestInfo::new([2u8; 32], 200);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        tracker.on_insert(StoreKey::Digest(d1), 100);
+        tracker.on_insert(StoreKey::Digest(d2), 200);
+
+        let changes = tracker.swap();
+        assert_eq!(changes.added.len(), 2, "Expected 2 added digests");
+        // Timestamps should be approximately "now" (within 2 seconds).
+        let ts1 = *changes.added.get(&d1).unwrap();
+        let ts2 = *changes.added.get(&d2).unwrap();
+        assert!((ts1 - now).abs() < 2, "d1 timestamp {ts1} too far from now {now}");
+        assert!((ts2 - now).abs() < 2, "d2 timestamp {ts2} too far from now {now}");
+        assert!(changes.evicted.is_empty());
+    }
+
+    #[test]
+    fn test_blob_change_tracker_swap_returns_and_clears() {
+        let tracker = BlobChangeTracker::new();
+        let d1 = DigestInfo::new([1u8; 32], 100);
+        let d2 = DigestInfo::new([2u8; 32], 200);
+
+        // Accumulate an insert and an eviction.
+        tracker.on_insert(StoreKey::Digest(d1), 100);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(tracker.callback(StoreKey::Digest(d2)));
+
+        // First swap returns the accumulated changes.
+        let changes = tracker.swap();
+        assert_eq!(changes.added.len(), 1);
+        assert!(changes.added.contains_key(&d1));
+        assert_eq!(changes.evicted.len(), 1);
+        assert!(changes.evicted.contains(&d2));
+
+        // Second swap should be empty.
+        let changes2 = tracker.swap();
+        assert!(changes2.added.is_empty());
+        assert!(changes2.evicted.is_empty());
+    }
+
+    #[test]
+    fn test_blob_change_tracker_insert_then_evict_records_eviction() {
+        let tracker = BlobChangeTracker::new();
+        let d1 = DigestInfo::new([1u8; 32], 100);
+
+        // Insert then evict the same digest — the eviction must still be
+        // recorded so the server knows the blob is no longer available.
+        tracker.on_insert(StoreKey::Digest(d1), 100);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(tracker.callback(StoreKey::Digest(d1)));
+
+        let changes = tracker.swap();
+        // The digest was inserted then evicted within the same tick.
+        // It should be removed from `added` (no longer available) and
+        // appear in `evicted` so the server is notified.
+        assert!(
+            !changes.added.contains_key(&d1),
+            "Expected d1 to NOT be in added after insert+evict"
+        );
+        assert!(
+            changes.evicted.contains(&d1),
+            "Expected d1 in evicted (it was evicted, removing it from added)"
+        );
+    }
+
+    #[test]
+    fn test_blob_change_tracker_evict_then_reinsert_cancels_out() {
+        let tracker = BlobChangeTracker::new();
+        let d1 = DigestInfo::new([1u8; 32], 100);
+
+        // Evict then reinsert the same digest — should show as added only.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(tracker.callback(StoreKey::Digest(d1)));
+        tracker.on_insert(StoreKey::Digest(d1), 100);
+
+        let changes = tracker.swap();
+        assert!(
+            changes.added.contains_key(&d1),
+            "Expected d1 in added after evict+reinsert"
+        );
+        assert!(
+            !changes.evicted.contains(&d1),
+            "Expected d1 NOT in evicted after evict+reinsert"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Gap 4: BlobChangeTracker <-> EvictingMap integration test
+    // ---------------------------------------------------------------
+    // Wires: EvictingMap -> ItemCallbackHolder -> BlobChangeTracker
+    // and verifies that inserts and evictions flow through correctly.
+    #[test]
+    fn test_blob_change_tracker_evicting_map_integration() {
+        use std::time::SystemTime;
+
+        use nativelink_config::stores::EvictionPolicy;
+        use nativelink_store::callback_utils::ItemCallbackHolder;
+        use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+        use nativelink_util::store_trait::StoreKeyBorrow;
+
+        // Simple value type for the EvictingMap.
+        #[derive(Clone, Debug)]
+        struct TestValue(u64);
+
+        impl LenEntry for TestValue {
+            fn len(&self) -> u64 {
+                self.0
+            }
+            fn is_empty(&self) -> bool {
+                self.0 == 0
+            }
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            // Create an EvictingMap with max_bytes = 100.
+            let evicting_map = EvictingMap::<
+                StoreKeyBorrow,
+                StoreKey<'static>,
+                TestValue,
+                SystemTime,
+                ItemCallbackHolder,
+            >::new(
+                &EvictionPolicy {
+                    max_count: 0,
+                    max_seconds: 0,
+                    max_bytes: 100,
+                    evict_bytes: 0,
+                },
+                SystemTime::now(),
+            );
+
+            // Create a BlobChangeTracker and register it.
+            let tracker = BlobChangeTracker::new();
+            let holder = ItemCallbackHolder::new(tracker.clone());
+            evicting_map.add_item_callback(holder);
+
+            let d1 = DigestInfo::new([1u8; 32], 30);
+            let d2 = DigestInfo::new([2u8; 32], 40);
+
+            // Insert two items (total 70 bytes, under 100 limit).
+            let key1: StoreKeyBorrow = StoreKey::Digest(d1).into();
+            let key2: StoreKeyBorrow = StoreKey::Digest(d2).into();
+            evicting_map.insert(key1, TestValue(30)).await;
+            evicting_map.insert(key2, TestValue(40)).await;
+
+            // Swap and verify both digests appear in `added`.
+            let changes = tracker.swap();
+            assert_eq!(
+                changes.added.len(),
+                2,
+                "Expected 2 added digests after initial inserts"
+            );
+            assert!(
+                changes.added.contains_key(&d1),
+                "Expected d1 in added set"
+            );
+            assert!(
+                changes.added.contains_key(&d2),
+                "Expected d2 in added set"
+            );
+            assert!(
+                changes.evicted.is_empty(),
+                "Expected no evictions yet"
+            );
+
+            // Now insert a third item (50 bytes) — total would be 120 bytes,
+            // which exceeds max_bytes=100. This should trigger eviction of
+            // the least recently used item (d1, 30 bytes).
+            let d3 = DigestInfo::new([3u8; 32], 50);
+            let key3: StoreKeyBorrow = StoreKey::Digest(d3).into();
+            evicting_map.insert(key3, TestValue(50)).await;
+
+            // Allow background tasks to run (eviction callbacks are fire-and-forget).
+            tokio::task::yield_now().await;
+
+            let changes = tracker.swap();
+            assert!(
+                changes.added.contains_key(&d3),
+                "Expected d3 in added set after third insert"
+            );
+            assert!(
+                changes.evicted.contains(&d1),
+                "Expected d1 in evicted set (LRU eviction)"
+            );
+            // d2 should NOT have been evicted (total after eviction: 40 + 50 = 90 <= 100).
+            assert!(
+                !changes.evicted.contains(&d2),
+                "Expected d2 to NOT be evicted"
+            );
+        });
+    }
+
+    #[test]
+    fn test_cas_advertised_endpoint_format() {
+        let endpoint = cas_advertised_endpoint(50081);
+        assert!(
+            endpoint.starts_with("grpc://"),
+            "Expected endpoint to start with 'grpc://', got: {endpoint}"
+        );
+        assert!(
+            endpoint.ends_with(":50081"),
+            "Expected endpoint to end with ':50081', got: {endpoint}"
+        );
+
+        // Extract hostname and verify it's non-empty.
+        let without_prefix = endpoint.strip_prefix("grpc://").unwrap();
+        let hostname = without_prefix.strip_suffix(":50081").unwrap();
+        assert!(
+            !hostname.is_empty(),
+            "Expected non-empty hostname in endpoint: {endpoint}"
+        );
     }
 }

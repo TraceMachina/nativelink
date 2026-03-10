@@ -49,7 +49,7 @@ use nativelink_util::proto_stream_utils::{
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+    IS_WORKER_REQUEST, ItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
 };
 use nativelink_util::{default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
@@ -415,15 +415,23 @@ impl GrpcStore {
 
         let mut request = grpc_request.into_inner();
         request.instance_name.clone_from(&self.instance_name);
+        let is_worker = IS_WORKER_REQUEST.try_with(|v| *v).unwrap_or(false);
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
                 .connection("batch_read_blobs".into())
                 .await
                 .err_tip(|| "in batch_read_blobs")?;
+            let mut grpc_request = Request::new(request);
+            if is_worker {
+                grpc_request.metadata_mut().insert(
+                    "x-nativelink-worker",
+                    tonic::metadata::MetadataValue::from_static("true"),
+                );
+            }
             ContentAddressableStorageClient::new(channel)
                 .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                .batch_read_blobs(Request::new(request))
+                .batch_read_blobs(grpc_request)
                 .await
                 .err_tip(|| "in GrpcStore::batch_read_blobs")
         })
@@ -475,9 +483,16 @@ impl GrpcStore {
             .connection(format!("read_internal: {}", request.resource_name))
             .await
             .err_tip(|| "in read_internal")?;
+        let mut grpc_request = Request::new(request);
+        if IS_WORKER_REQUEST.try_with(|v| *v).unwrap_or(false) {
+            grpc_request.metadata_mut().insert(
+                "x-nativelink-worker",
+                tonic::metadata::MetadataValue::from_static("true"),
+            );
+        }
         let mut response = ByteStreamClient::new(channel)
             .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-            .read(Request::new(request))
+            .read(grpc_request)
             .await
             .err_tip(|| "in GrpcStore::read")?
             .into_inner();
@@ -1151,9 +1166,9 @@ impl StoreDriver for GrpcStore {
         self
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
+        _callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
         Err(Error::new(
             Code::Internal,

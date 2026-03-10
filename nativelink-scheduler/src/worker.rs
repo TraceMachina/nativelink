@@ -111,6 +111,11 @@ pub struct Worker {
     /// Reset to `None` when a keepalive is received.
     pub quarantined_at: Option<SystemTime>,
 
+    /// The worker's CAS gRPC endpoint for peer blob serving.
+    /// Empty if the worker does not support peer serving.
+    #[metric(help = "The worker's CAS endpoint for peer blob sharing.")]
+    pub cas_endpoint: String,
+
     /// Stats about the worker.
     #[metric]
     metrics: Arc<Metrics>,
@@ -152,6 +157,17 @@ impl Worker {
         timestamp: WorkerTimestamp,
         max_inflight_tasks: u64,
     ) -> Self {
+        Self::new_with_cas_endpoint(id, platform_properties, tx, timestamp, max_inflight_tasks, String::new())
+    }
+
+    pub fn new_with_cas_endpoint(
+        id: WorkerId,
+        platform_properties: PlatformProperties,
+        tx: UnboundedSender<UpdateForWorker>,
+        timestamp: WorkerTimestamp,
+        max_inflight_tasks: u64,
+        cas_endpoint: String,
+    ) -> Self {
         Self {
             id,
             platform_properties,
@@ -164,6 +180,7 @@ impl Worker {
             is_draining: false,
             max_inflight_tasks,
             quarantined_at: None,
+            cas_endpoint,
             metrics: Arc::new(Metrics {
                 connected_timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -231,6 +248,7 @@ impl Worker {
                     queued_timestamp: Some(action_info.inner.insert_timestamp.into()),
                     platform: Some((&action_info.platform_properties).into()),
                     worker_id,
+                    peer_hints: Vec::new(),
                 };
                 reduce_platform_properties(
                     worker_platform_properties,

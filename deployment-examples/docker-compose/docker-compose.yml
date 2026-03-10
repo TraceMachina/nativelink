@@ -70,6 +70,7 @@ services:
       RUST_LOG: ${RUST_LOG:-warn}
       CAS_ENDPOINT: nativelink_local_cas
       SCHEDULER_ENDPOINT: nativelink_scheduler
+    ports: [ "50081:50081/tcp" ]
     command: |
       nativelink /root/worker.json5
     depends_on:

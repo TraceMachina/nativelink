@@ -272,6 +272,8 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
 
     // First client adds the action
@@ -326,6 +328,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
                 queued_timestamp: Some(SystemTime::UNIX_EPOCH.into()),
                 platform: Some(Platform::default()),
                 worker_id: worker_id.clone().into(),
+                peer_hints: Vec::new(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();

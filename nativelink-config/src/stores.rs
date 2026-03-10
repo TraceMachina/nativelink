@@ -1233,7 +1233,7 @@ fn default_batch_coalesce_delay_ms() -> u64 {
 }
 
 const fn default_connections_per_endpoint() -> usize {
-    16
+    32
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

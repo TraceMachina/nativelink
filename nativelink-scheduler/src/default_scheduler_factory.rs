@@ -23,6 +23,7 @@ use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
 use nativelink_store::redis_store::{RedisStore, StandardRedisManager};
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::operation_state_manager::ClientStateManager;
 use redis::aio::ConnectionManager;
@@ -49,18 +50,20 @@ pub async fn scheduler_factory(
     spec: &SchedulerSpec,
     store_manager: &StoreManager,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+    locality_map: Option<SharedBlobLocalityMap>,
 ) -> Result<SchedulerFactoryResults, Error> {
-    inner_scheduler_factory(spec, store_manager, maybe_origin_event_tx).await
+    inner_scheduler_factory(spec, store_manager, maybe_origin_event_tx, locality_map).await
 }
 
 async fn inner_scheduler_factory(
     spec: &SchedulerSpec,
     store_manager: &StoreManager,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+    locality_map: Option<SharedBlobLocalityMap>,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match spec {
         SchedulerSpec::Simple(spec) => {
-            simple_scheduler_factory(spec, store_manager, SystemTime::now, maybe_origin_event_tx)
+            simple_scheduler_factory(spec, store_manager, SystemTime::now, maybe_origin_event_tx, locality_map)
                 .await?
         }
         SchedulerSpec::Grpc(spec) => (Some(Arc::new(GrpcScheduler::new(spec)?)), None),
@@ -72,6 +75,7 @@ async fn inner_scheduler_factory(
                 &spec.scheduler,
                 store_manager,
                 maybe_origin_event_tx,
+                locality_map.clone(),
             ))
             .await
             .err_tip(|| "In nested CacheLookupScheduler construction")?;
@@ -86,6 +90,7 @@ async fn inner_scheduler_factory(
                 &spec.scheduler,
                 store_manager,
                 maybe_origin_event_tx,
+                locality_map.clone(),
             ))
             .await
             .err_tip(|| "In nested PropertyModifierScheduler construction")?;
@@ -105,7 +110,19 @@ async fn simple_scheduler_factory(
     store_manager: &StoreManager,
     now_fn: fn() -> SystemTime,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+    locality_map: Option<SharedBlobLocalityMap>,
 ) -> Result<SchedulerFactoryResults, Error> {
+    // Resolve the CAS store for locality-aware scheduling if configured.
+    let cas_store = if let Some(ref cas_store_name) = spec.cas_store {
+        Some(
+            store_manager
+                .get_store(cas_store_name)
+                .err_tip(|| format!("'cas_store': '{cas_store_name}' does not exist"))?,
+        )
+    } else {
+        None
+    };
+
     match spec
         .experimental_backend
         .as_ref()
@@ -118,11 +135,13 @@ async fn simple_scheduler_factory(
                 &task_change_notify,
                 SystemTime::now,
             );
-            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new_with_cas_store(
                 spec,
                 awaited_action_db,
                 task_change_notify,
                 maybe_origin_event_tx.cloned(),
+                cas_store,
+                locality_map,
             );
             Ok((Some(action_scheduler), Some(worker_scheduler)))
         }
@@ -154,11 +173,13 @@ async fn simple_scheduler_factory(
             )
             .await
             .err_tip(|| "In state_manager_factory::redis_state_manager")?;
-            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new_with_cas_store(
                 spec,
                 awaited_action_db,
                 task_change_notify,
                 maybe_origin_event_tx.cloned(),
+                cas_store,
+                locality_map,
             );
             Ok((Some(action_scheduler), Some(worker_scheduler)))
         }

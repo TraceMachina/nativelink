@@ -38,7 +38,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::stall_detector::StallGuard;
-use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::store_trait::{IS_WORKER_REQUEST, Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use prost::Message;
 use tonic::{Request, Response, Status};
@@ -439,6 +439,9 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
+        let is_worker = grpc_request
+            .metadata()
+            .contains_key("x-nativelink-worker");
         let request = grpc_request.into_inner();
         let digest_function = request.digest_function;
 
@@ -446,11 +449,15 @@ impl ContentAddressableStorage for CasServer {
             nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
             "BatchReadBlobs",
         );
-        self.inner_batch_read_blobs(request)
-            .instrument(error_span!("cas_server_batch_read_blobs"))
-            .with_context(
-                make_ctx_for_hash_func(digest_function)
-                    .err_tip(|| "In CasServer::batch_read_blobs")?,
+        IS_WORKER_REQUEST
+            .scope(
+                is_worker,
+                self.inner_batch_read_blobs(request)
+                    .instrument(error_span!("cas_server_batch_read_blobs"))
+                    .with_context(
+                        make_ctx_for_hash_func(digest_function)
+                            .err_tip(|| "In CasServer::batch_read_blobs")?,
+                    ),
             )
             .await
             .err_tip(|| "Failed on batch_read_blobs() command")

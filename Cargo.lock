@@ -1884,6 +1884,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link",
+]
+
+[[package]]
 name = "http"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2631,14 +2642,19 @@ dependencies = [
  "mimalloc",
  "nativelink-config",
  "nativelink-error",
+ "nativelink-proto",
  "nativelink-scheduler",
  "nativelink-service",
  "nativelink-store",
  "nativelink-util",
  "nativelink-worker",
+ "prost",
+ "prost-types",
  "rand 0.9.2",
  "rustls-pki-types",
+ "sha2",
  "socket2 0.5.10",
+ "tempfile",
  "tokio",
  "tokio-rustls",
  "tonic",
@@ -2944,12 +2960,14 @@ dependencies = [
  "filetime",
  "formatx",
  "futures",
+ "hostname",
  "hyper 1.8.1",
  "nativelink-config",
  "nativelink-error",
  "nativelink-macro",
  "nativelink-metric",
  "nativelink-proto",
+ "nativelink-service",
  "nativelink-store",
  "nativelink-util",
  "opentelemetry",

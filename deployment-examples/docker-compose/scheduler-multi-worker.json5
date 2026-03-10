@@ -40,6 +40,8 @@
           "lre-rs": "priority",
           ISA: "exact",
         },
+        // Enable locality-aware scheduling by pointing at the CAS store.
+        cas_store: "GRPC_LOCAL_STORE",
       },
     },
   ],

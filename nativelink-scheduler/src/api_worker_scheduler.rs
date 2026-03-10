@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::num::NonZeroUsize;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -26,13 +28,18 @@ use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
     RootMetricsComponent, group,
 };
+use nativelink_proto::build::bazel::remote::execution::v2::Directory;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    StartExecute, UpdateForWorker, update_for_worker,
+    PeerHint, StartExecute, UpdateForWorker, update_for_worker,
 };
+use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
 use nativelink_util::action_messages::{OperationId, WorkerId};
+use nativelink_util::common::DigestInfo;
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::shutdown_guard::ShutdownGuard;
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
+use prost::Message;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedSender;
 use tonic::async_trait;
@@ -130,6 +137,10 @@ struct ApiWorkerSchedulerImpl {
     /// Used to accelerate `find_worker_for_action` by filtering candidates
     /// based on properties before doing linear scan.
     capability_index: WorkerCapabilityIndex,
+
+    /// Reverse map: CAS endpoint → WorkerId.
+    /// Updated when workers are added/removed.
+    endpoint_to_worker: HashMap<String, WorkerId>,
 }
 
 impl core::fmt::Debug for ApiWorkerSchedulerImpl {
@@ -143,6 +154,7 @@ impl core::fmt::Debug for ApiWorkerSchedulerImpl {
                 &self.capability_index.worker_count(),
             )
             .field("worker_registry", &self.worker_registry)
+            .field("endpoint_to_worker_len", &self.endpoint_to_worker.len())
             .finish_non_exhaustive()
     }
 }
@@ -197,6 +209,13 @@ impl ApiWorkerSchedulerImpl {
     fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id.clone();
         let platform_properties = worker.platform_properties.clone();
+
+        // Update endpoint → worker reverse map for locality scoring.
+        if !worker.cas_endpoint.is_empty() {
+            self.endpoint_to_worker
+                .insert(worker.cas_endpoint.clone(), worker_id.clone());
+        }
+
         self.workers.put(worker_id.clone(), worker);
 
         // Add to capability index for fast matching
@@ -229,6 +248,14 @@ impl ApiWorkerSchedulerImpl {
         self.capability_index.remove_worker(worker_id);
 
         let result = self.workers.pop(worker_id);
+
+        // Remove from endpoint → worker reverse map.
+        if let Some(ref worker) = result {
+            if !worker.cas_endpoint.is_empty() {
+                self.endpoint_to_worker.remove(&worker.cas_endpoint);
+            }
+        }
+
         self.worker_change_notify.notify_one();
         result
     }
@@ -367,20 +394,125 @@ impl ApiWorkerSchedulerImpl {
     /// channel sender, and pre-built protobuf message so the caller can
     /// send the notification after releasing the lock.
     ///
+    /// Uses locality-aware scheduling:
+    /// - Primary: score candidates by total bytes of cached input blobs
+    ///   using pre-computed endpoint scores (computed outside the lock).
+    /// - Fallback: existing LRU/MRU strategy.
+    ///
     /// This prevents two concurrent match operations from selecting the
     /// same worker, which is the key enabler for `MATCH_CONCURRENCY > 1`.
+    ///
+    /// `endpoint_scores` and `peer_hints` are pre-computed outside the write
+    /// lock to avoid holding it during O(files) iterations over the locality
+    /// map.
     fn inner_find_and_reserve_worker(
         &mut self,
         platform_properties: &PlatformProperties,
         operation_id: &OperationId,
         action_info: &ActionInfoWithProps,
         full_worker_logging: bool,
+        endpoint_scores: Option<&HashMap<String, (u64, SystemTime)>>,
+        peer_hints: Vec<PeerHint>,
     ) -> Option<(WorkerId, UnboundedSender<UpdateForWorker>, UpdateForWorker)> {
-        let worker_id = self.inner_find_worker_for_action(platform_properties, full_worker_logging)?;
+        let input_root_digest = action_info.inner.input_root_digest;
+
+        // Build the set of capability-matching candidates that can accept work.
+        let candidates = self
+            .capability_index
+            .find_matching_workers(platform_properties, full_worker_logging);
+
+        if candidates.is_empty() {
+            if full_worker_logging {
+                debug!("No workers in capability index match required properties");
+            }
+            return None;
+        }
+
+        // Helper: check if a specific worker is a valid candidate.
+        let worker_is_viable = |worker_id: &WorkerId| -> bool {
+            if !candidates.contains(worker_id) {
+                return false;
+            }
+            let Some(w) = self.workers.0.peek(worker_id) else {
+                return false;
+            };
+            if w.quarantined_at.is_some() || !w.can_accept_work() {
+                return false;
+            }
+            platform_properties.is_satisfied_by(&w.platform_properties, false)
+        };
+
+        // ── Locality scoring ──
+        // Convert pre-computed endpoint scores to worker scores, filtering
+        // to the candidate set. This is O(endpoints) not O(files).
+        let locality_winner = if let Some(ep_scores) = endpoint_scores {
+            let scores = endpoint_scores_to_worker_scores(
+                ep_scores,
+                &self.endpoint_to_worker,
+                &candidates,
+            );
+            if !scores.is_empty() {
+                // Sort workers by score descending, then by timestamp
+                // descending as a tiebreaker. Workers within 10% of the
+                // top score are considered tied and the most recently
+                // refreshed one wins.
+                let mut sorted: Vec<_> = scores.into_iter().collect();
+                sorted.sort_by(|a, b| {
+                    let (score_a, ts_a) = a.1;
+                    let (score_b, ts_b) = b.1;
+                    let max_score = score_a.max(score_b);
+                    // Within 10% of each other? Use timestamp as tiebreaker.
+                    let threshold = max_score / 10; // 10% of the larger score
+                    if score_a.abs_diff(score_b) <= threshold {
+                        // Scores are similar, prefer more recent timestamp.
+                        ts_b.cmp(&ts_a)
+                    } else {
+                        // Scores differ significantly, prefer higher score.
+                        score_b.cmp(&score_a)
+                    }
+                });
+
+                let best = sorted.first().map(|(_, (s, _))| *s).unwrap_or(0);
+                if best > 0 {
+                    sorted.into_iter()
+                        .find(|(wid, (score, _))| *score > 0 && worker_is_viable(wid))
+                        .map(|(wid, (score, _))| {
+                            info!(
+                                ?wid,
+                                score,
+                                %input_root_digest,
+                                "Locality scoring -- worker has {} cached input bytes",
+                                score
+                            );
+                            wid
+                        })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let worker_id = if let Some(wid) = locality_winner {
+            // Promote in LRU.
+            self.workers.get_mut(&wid);
+            wid
+        } else {
+            // ── Fallback: existing LRU/MRU strategy ──
+            let wid = self.inner_find_worker_for_action(platform_properties, full_worker_logging)?;
+            wid
+        };
 
         // Atomically reserve the worker by mutating its state under the same lock.
-        let (tx, msg) =
-            self.prepare_worker_run_action(&worker_id, operation_id, action_info)?;
+        let (tx, msg) = self.prepare_worker_run_action(
+            &worker_id,
+            operation_id,
+            action_info,
+            peer_hints,
+        )?;
 
         Some((worker_id, tx, msg))
     }
@@ -484,16 +616,32 @@ impl ApiWorkerSchedulerImpl {
     /// properties, recording the running action), then returns the cloned `tx` sender
     /// and pre-built message so the caller can send the notification *after* releasing
     /// the write lock.
+    ///
+    /// `peer_hints` are pre-computed outside the write lock from the resolved
+    /// input tree. When no resolved tree is available the hints will be empty
+    /// -- the old fallback that generated a single hint for `input_root_digest`
+    /// never worked because workers register individual file digests, not
+    /// directory digests.
+    ///
     /// Returns `None` if the worker was not found.
     fn prepare_worker_run_action(
         &mut self,
         worker_id: &WorkerId,
         operation_id: &OperationId,
         action_info: &ActionInfoWithProps,
+        peer_hints: Vec<PeerHint>,
     ) -> Option<(UnboundedSender<UpdateForWorker>, UpdateForWorker)> {
         let worker = self.workers.get_mut(worker_id)?;
         // Clone the tx so we can send outside the lock.
         let tx = worker.tx.clone();
+
+        if !peer_hints.is_empty() {
+            info!(
+                ?worker_id,
+                hints = peer_hints.len(),
+                "Generated peer hints for StartExecute"
+            );
+        }
 
         // Build the protobuf message while we still have access to worker state.
         let start_execute = StartExecute {
@@ -502,6 +650,7 @@ impl ApiWorkerSchedulerImpl {
             queued_timestamp: Some(action_info.inner.insert_timestamp.into()),
             platform: Some((&action_info.platform_properties).into()),
             worker_id: worker.id.clone().into(),
+            peer_hints,
         };
         let msg = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(start_execute)),
@@ -569,7 +718,22 @@ pub struct ApiWorkerScheduler {
 
     /// Performance metrics for observability.
     metrics: Arc<SchedulerMetrics>,
+
+    /// Blob locality map for peer-to-peer blob sharing.
+    /// Used to generate peer hints in StartExecute messages.
+    locality_map: Option<SharedBlobLocalityMap>,
+
+    /// CAS store for resolving input trees (reading Directory protos).
+    /// When set, enables tier-2 locality scoring.
+    cas_store: Option<Store>,
+
+    /// Cached resolved input trees: input_root_digest → (file_digest, size) pairs.
+    /// Held under a tokio::Mutex briefly for get/put, not during I/O.
+    tree_cache: Arc<tokio::sync::Mutex<LruCache<DigestInfo, Arc<Vec<(DigestInfo, u64)>>>>>,
 }
+
+/// Capacity for the resolved input tree LRU cache.
+const TREE_CACHE_CAPACITY: usize = 1024;
 
 impl ApiWorkerScheduler {
     pub fn new(
@@ -580,6 +744,28 @@ impl ApiWorkerScheduler {
         worker_timeout_s: u64,
         worker_registry: SharedWorkerRegistry,
     ) -> Arc<Self> {
+        Self::new_with_locality_map(
+            worker_state_manager,
+            platform_property_manager,
+            allocation_strategy,
+            worker_change_notify,
+            worker_timeout_s,
+            worker_registry,
+            None,
+            None,
+        )
+    }
+
+    pub fn new_with_locality_map(
+        worker_state_manager: Arc<dyn WorkerStateManager>,
+        platform_property_manager: Arc<PlatformPropertyManager>,
+        allocation_strategy: WorkerAllocationStrategy,
+        worker_change_notify: Arc<Notify>,
+        worker_timeout_s: u64,
+        worker_registry: SharedWorkerRegistry,
+        locality_map: Option<SharedBlobLocalityMap>,
+        cas_store: Option<Store>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             inner: RwLock::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
@@ -589,11 +775,17 @@ impl ApiWorkerScheduler {
                 worker_registry: worker_registry.clone(),
                 shutting_down: false,
                 capability_index: WorkerCapabilityIndex::new(),
+                endpoint_to_worker: HashMap::new(),
             }),
             platform_property_manager,
             worker_timeout_s,
             worker_registry,
             metrics: Arc::new(SchedulerMetrics::default()),
+            locality_map,
+            cas_store,
+            tree_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(
+                NonZeroUsize::new(TREE_CACHE_CAPACITY).unwrap(),
+            ))),
         })
     }
 
@@ -617,7 +809,7 @@ impl ApiWorkerScheduler {
         let prepare_result = {
             let mut inner = self.inner.write().await;
             let result =
-                inner.prepare_worker_run_action(&worker_id, &operation_id, &action_info);
+                inner.prepare_worker_run_action(&worker_id, &operation_id, &action_info, Vec::new());
             if result.is_none() {
                 // Worker not found - handle under the lock since we need worker_state_manager.
                 warn!(
@@ -771,6 +963,26 @@ impl ApiWorkerScheduler {
             .find_worker_calls
             .fetch_add(1, Ordering::Relaxed);
 
+        // ── Phase 1: async tree resolution (BEFORE write lock) ──
+        let resolved_tree = self
+            .resolve_input_tree(action_info.inner.input_root_digest)
+            .await;
+
+        // ── Phase 2: pre-compute locality scores and peer hints (BEFORE write lock) ──
+        // These are O(files × endpoints_per_blob) operations that previously
+        // ran inside the write lock, blocking all scheduler operations for
+        // 2-5ms on large actions (50K+ inputs).
+        let (endpoint_scores, peer_hints) = match (&resolved_tree, &self.locality_map) {
+            (Some(tree), Some(loc_map)) => {
+                let (scores, hints) = score_and_generate_hints(tree, loc_map);
+                (Some(scores), hints)
+            }
+            _ => (None, Vec::new()),
+        };
+
+        // ── Phase 3: acquire write lock, do selection + reservation ──
+        // Inside the lock we only do O(workers) work: candidate filtering,
+        // endpoint→WorkerId mapping, and state mutation.
         let mut inner = self.inner.write().await;
         let worker_count = inner.workers.len() as u64;
         let result = inner.inner_find_and_reserve_worker(
@@ -778,6 +990,8 @@ impl ApiWorkerScheduler {
             operation_id,
             action_info,
             full_worker_logging,
+            endpoint_scores.as_ref(),
+            peer_hints,
         );
 
         // Track workers iterated (worst case is all workers)
@@ -843,6 +1057,240 @@ impl ApiWorkerScheduler {
         })?;
         worker.keep_alive()
     }
+
+    /// Resolves the full input tree for the given `input_root_digest` by
+    /// reading Directory protos from the CAS store and collecting all file
+    /// digests and sizes. Results are cached in `tree_cache`.
+    ///
+    /// Returns `None` if no CAS store is configured or on any error (errors
+    /// are logged but do not fail scheduling — we just skip locality scoring).
+    ///
+    /// Runs *outside* the scheduler write lock, so multiple actions can
+    /// resolve concurrently. The `tokio::Mutex` on `tree_cache` is held
+    /// only briefly for get/put, not during store I/O.
+    async fn resolve_input_tree(
+        &self,
+        input_root_digest: DigestInfo,
+    ) -> Option<Arc<Vec<(DigestInfo, u64)>>> {
+        let cas_store = self.cas_store.as_ref()?;
+
+        // Check cache first (brief lock).
+        {
+            let mut cache = self.tree_cache.lock().await;
+            if let Some(cached) = cache.get(&input_root_digest) {
+                info!(
+                    %input_root_digest,
+                    file_count = cached.len(),
+                    "Tree resolution cache hit"
+                );
+                return Some(cached.clone());
+            }
+        }
+
+        // Cache miss — resolve the tree by reading Directory protos from CAS.
+        let result = resolve_tree_from_cas(cas_store, input_root_digest).await;
+        match result {
+            Ok(file_digests) => {
+                info!(
+                    %input_root_digest,
+                    file_count = file_digests.len(),
+                    "Resolved input tree from CAS (cache miss)"
+                );
+                let arc = Arc::new(file_digests);
+                // Store in cache (brief lock).
+                {
+                    let mut cache = self.tree_cache.lock().await;
+                    cache.put(input_root_digest, arc.clone());
+                }
+                Some(arc)
+            }
+            Err(err) => {
+                warn!(
+                    %input_root_digest,
+                    ?err,
+                    "Failed to resolve input tree for locality scoring, skipping"
+                );
+                None
+            }
+        }
+    }
+}
+
+/// Resolves a directory tree from the CAS store by recursively reading
+/// Directory protos and collecting all (file_digest, file_size) pairs.
+/// Deduplicates by digest.
+async fn resolve_tree_from_cas(
+    cas_store: &Store,
+    root_digest: DigestInfo,
+) -> Result<Vec<(DigestInfo, u64)>, Error> {
+    use std::collections::HashSet;
+    use futures::stream::FuturesUnordered;
+    use futures::StreamExt;
+
+    let mut file_digests: Vec<(DigestInfo, u64)> = Vec::new();
+    let mut seen_files: HashSet<DigestInfo> = HashSet::new();
+    let mut dirs_to_visit: Vec<DigestInfo> = vec![root_digest];
+    let mut seen_dirs: HashSet<DigestInfo> = HashSet::new();
+    seen_dirs.insert(root_digest);
+
+    while !dirs_to_visit.is_empty() {
+        // Fetch all directories at current level in parallel.
+        let fetches: FuturesUnordered<_> = dirs_to_visit
+            .drain(..)
+            .map(|dir_digest| {
+                let cas_store = cas_store.clone();
+                async move {
+                    let key: StoreKey<'_> = dir_digest.into();
+                    let bytes = cas_store
+                        .get_part_unchunked(key, 0, None)
+                        .await
+                        .err_tip(|| {
+                            format!(
+                                "Reading directory {dir_digest} from CAS for tree resolution"
+                            )
+                        })?;
+                    let directory = Directory::decode(bytes).map_err(|e| {
+                        make_err!(Code::Internal, "Failed to decode Directory proto: {e}")
+                    })?;
+                    Ok::<_, Error>(directory)
+                }
+            })
+            .collect();
+
+        let results: Vec<Result<Directory, Error>> = fetches.collect().await;
+        for result in results {
+            let directory = result?;
+
+            // Collect file digests.
+            for file_node in &directory.files {
+                if let Some(ref digest) = file_node.digest {
+                    if let Ok(digest_info) = DigestInfo::try_from(digest) {
+                        if seen_files.insert(digest_info) {
+                            file_digests.push((digest_info, digest_info.size_bytes()));
+                        }
+                    }
+                }
+            }
+
+            // Queue subdirectories for visiting (dedup via seen_dirs).
+            for dir_node in &directory.directories {
+                if let Some(ref digest) = dir_node.digest {
+                    if let Ok(digest_info) = DigestInfo::try_from(digest) {
+                        if seen_dirs.insert(digest_info) {
+                            dirs_to_visit.push(digest_info);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(file_digests)
+}
+
+/// Scores endpoints by the total bytes of input blobs they have cached
+/// AND generates peer hints in a single pass over the file digests,
+/// acquiring the locality map read lock only once.
+///
+/// Returns:
+/// - `HashMap<String, (u64, SystemTime)>`: endpoint scores (total cached
+///   bytes, most recent blob timestamp)
+/// - `Vec<PeerHint>`: peer hints sorted by file size descending, truncated
+///   to MAX_PEER_HINTS
+///
+/// This is called OUTSIDE the scheduler write lock, so it does not need
+/// access to `endpoint_to_worker` or the candidate set. The caller maps
+/// endpoints to WorkerIds and filters to candidates inside the lock.
+fn score_and_generate_hints(
+    file_digests: &[(DigestInfo, u64)],
+    locality_map: &SharedBlobLocalityMap,
+) -> (HashMap<String, (u64, SystemTime)>, Vec<PeerHint>) {
+    /// Maximum number of peer hints to include in a StartExecute message
+    /// to avoid oversized messages.
+    const MAX_PEER_HINTS: usize = 1000;
+
+    let map = locality_map.read();
+    let blobs = map.blobs_map();
+    let mut scores: HashMap<String, (u64, SystemTime)> = HashMap::new();
+    let mut hint_candidates: Vec<(DigestInfo, u64, Vec<String>)> = Vec::new();
+
+    for &(digest, size) in file_digests {
+        if let Some(endpoints) = blobs.get(&digest) {
+            // Accumulate endpoint scores.
+            for (endpoint, ts) in endpoints {
+                let entry = scores
+                    .entry(endpoint.to_string())
+                    .or_insert((0, UNIX_EPOCH));
+                entry.0 += size;
+                if *ts > entry.1 {
+                    entry.1 = *ts;
+                }
+            }
+            // Collect hint candidate if this digest has peer locations.
+            if !endpoints.is_empty() {
+                let peer_eps: Vec<String> =
+                    endpoints.keys().map(|e| e.to_string()).collect();
+                hint_candidates.push((digest, size, peer_eps));
+            }
+        }
+    }
+
+    // Sort by size descending to prioritize large files.
+    hint_candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    hint_candidates.truncate(MAX_PEER_HINTS);
+
+    let peer_hints: Vec<PeerHint> = hint_candidates
+        .into_iter()
+        .map(|(digest, _size, peer_endpoints)| PeerHint {
+            digest: Some(digest.into()),
+            peer_endpoints,
+        })
+        .collect();
+
+    (scores, peer_hints)
+}
+
+/// Converts endpoint scores to worker scores using the endpoint-to-worker
+/// mapping, filtering to the given candidate set.
+///
+/// Returns `HashMap<WorkerId, (u64, SystemTime)>` where the tuple is
+/// (total cached bytes, most recent blob timestamp across all endpoints
+/// belonging to this worker).
+fn endpoint_scores_to_worker_scores(
+    endpoint_scores: &HashMap<String, (u64, SystemTime)>,
+    endpoint_to_worker: &HashMap<String, WorkerId>,
+    candidates: &std::collections::HashSet<WorkerId>,
+) -> HashMap<WorkerId, (u64, SystemTime)> {
+    let mut worker_scores: HashMap<WorkerId, (u64, SystemTime)> = HashMap::new();
+    for (endpoint, &(score, ts)) in endpoint_scores {
+        if let Some(worker_id) = endpoint_to_worker.get(endpoint) {
+            if candidates.contains(worker_id) {
+                let entry = worker_scores
+                    .entry(worker_id.clone())
+                    .or_insert((0, UNIX_EPOCH));
+                entry.0 += score;
+                if ts > entry.1 {
+                    entry.1 = ts;
+                }
+            }
+        }
+    }
+    worker_scores
+}
+
+/// Backward-compatible wrapper used by existing tests. Scores candidate
+/// workers by the total bytes of input blobs they have cached.
+/// Returns only the byte score (drops the timestamp) for simpler assertions.
+#[cfg(test)]
+fn score_workers(
+    candidates: &std::collections::HashSet<WorkerId>,
+    file_digests: &[(DigestInfo, u64)],
+    locality_map: &SharedBlobLocalityMap,
+    endpoint_to_worker: &HashMap<String, WorkerId>,
+) -> HashMap<WorkerId, u64> {
+    let (endpoint_scores, _hints) = score_and_generate_hints(file_digests, locality_map);
+    let full_scores = endpoint_scores_to_worker_scores(&endpoint_scores, endpoint_to_worker, candidates);
+    full_scores.into_iter().map(|(wid, (score, _))| (wid, score)).collect()
 }
 
 #[async_trait]
@@ -1061,3 +1509,445 @@ impl WorkerScheduler for ApiWorkerScheduler {
 }
 
 impl RootMetricsComponent for ApiWorkerScheduler {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use bytes::Bytes;
+    use nativelink_config::stores::MemorySpec;
+    use nativelink_proto::build::bazel::remote::execution::v2::{
+        Digest as ProtoDigest, DirectoryNode, FileNode,
+    };
+    use nativelink_store::memory_store::MemoryStore;
+    use nativelink_util::blob_locality_map::new_shared_blob_locality_map;
+    use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+
+    /// Helper: encode a Directory proto and compute its DigestInfo (SHA256).
+    fn encode_directory(dir: &Directory) -> (Vec<u8>, DigestInfo) {
+        let dir_bytes = dir.encode_to_vec();
+        let mut hasher = DigestHasherFunc::Sha256.hasher();
+        hasher.update(&dir_bytes);
+        let digest_info = hasher.finalize_digest();
+        (dir_bytes, digest_info)
+    }
+
+    /// Helper: create a FileNode with a deterministic fake digest.
+    fn make_file_node(name: &str, hash_byte: u8, size: i64) -> FileNode {
+        FileNode {
+            name: name.to_string(),
+            digest: Some(ProtoDigest {
+                hash: format!("{:02x}", hash_byte).repeat(32), // 64-char hex
+                size_bytes: size,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_score_workers_basic() {
+        let locality_map = new_shared_blob_locality_map();
+        let d1 = DigestInfo::new([1u8; 32], 1000);
+        let d2 = DigestInfo::new([2u8; 32], 2000);
+        let d3 = DigestInfo::new([3u8; 32], 3000);
+
+        // worker-a has d1 and d2 (3000 bytes total)
+        // worker-b has d2 and d3 (5000 bytes total)
+        {
+            let mut map = locality_map.write();
+            map.register_blobs("grpc://worker-a:50081", &[d1, d2]);
+            map.register_blobs("grpc://worker-b:50081", &[d2, d3]);
+        }
+
+        let worker_a = WorkerId::from("worker-a-id".to_string());
+        let worker_b = WorkerId::from("worker-b-id".to_string());
+
+        let mut endpoint_to_worker = HashMap::new();
+        endpoint_to_worker.insert("grpc://worker-a:50081".to_string(), worker_a.clone());
+        endpoint_to_worker.insert("grpc://worker-b:50081".to_string(), worker_b.clone());
+
+        let mut candidates = HashSet::new();
+        candidates.insert(worker_a.clone());
+        candidates.insert(worker_b.clone());
+
+        let file_digests = vec![(d1, 1000), (d2, 2000), (d3, 3000)];
+
+        let scores = score_workers(&candidates, &file_digests, &locality_map, &endpoint_to_worker);
+
+        assert_eq!(scores.get(&worker_a), Some(&3000)); // d1(1000) + d2(2000)
+        assert_eq!(scores.get(&worker_b), Some(&5000)); // d2(2000) + d3(3000)
+    }
+
+    #[test]
+    fn test_score_workers_non_candidate_excluded() {
+        let locality_map = new_shared_blob_locality_map();
+        let d1 = DigestInfo::new([1u8; 32], 1000);
+
+        {
+            let mut map = locality_map.write();
+            map.register_blobs("grpc://worker-a:50081", &[d1]);
+        }
+
+        let worker_a = WorkerId::from("worker-a-id".to_string());
+        let mut endpoint_to_worker = HashMap::new();
+        endpoint_to_worker.insert("grpc://worker-a:50081".to_string(), worker_a.clone());
+
+        // worker_a is NOT in candidates
+        let candidates = HashSet::new();
+        let file_digests = vec![(d1, 1000)];
+
+        let scores = score_workers(&candidates, &file_digests, &locality_map, &endpoint_to_worker);
+        assert!(scores.is_empty());
+    }
+
+    #[test]
+    fn test_score_workers_empty_locality_map() {
+        let locality_map = new_shared_blob_locality_map();
+        let d1 = DigestInfo::new([1u8; 32], 1000);
+
+        let worker_a = WorkerId::from("worker-a-id".to_string());
+        let mut candidates = HashSet::new();
+        candidates.insert(worker_a.clone());
+
+        let endpoint_to_worker = HashMap::new();
+        let file_digests = vec![(d1, 1000)];
+
+        let scores = score_workers(&candidates, &file_digests, &locality_map, &endpoint_to_worker);
+        assert!(scores.is_empty());
+    }
+
+    // ---------------------------------------------------------------
+    // resolve_tree_from_cas tests
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_resolve_tree_single_directory() {
+        // A single directory with 3 files, no subdirectories.
+        let dir = Directory {
+            files: vec![
+                make_file_node("file1.txt", 0xaa, 1000),
+                make_file_node("file2.txt", 0xbb, 2000),
+                make_file_node("file3.txt", 0xcc, 3000),
+            ],
+            directories: vec![],
+            ..Default::default()
+        };
+
+        let (dir_bytes, dir_digest) = encode_directory(&dir);
+        let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+        let key: StoreKey<'_> = dir_digest.into();
+        store
+            .update_oneshot(key, Bytes::from(dir_bytes))
+            .await
+            .expect("store update_oneshot failed");
+
+        let result = resolve_tree_from_cas(&store, dir_digest)
+            .await
+            .expect("resolve_tree_from_cas failed");
+
+        assert_eq!(result.len(), 3, "Expected 3 file digests");
+
+        // Verify all three sizes are present (order may vary).
+        let mut sizes: Vec<u64> = result.iter().map(|&(_, s)| s).collect();
+        sizes.sort();
+        assert_eq!(sizes, vec![1000, 2000, 3000]);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_tree_nested_directories() {
+        // Subdirectory with 2 files.
+        let sub_dir = Directory {
+            files: vec![
+                make_file_node("sub_file1.txt", 0x11, 500),
+                make_file_node("sub_file2.txt", 0x22, 700),
+            ],
+            directories: vec![],
+            ..Default::default()
+        };
+        let (sub_dir_bytes, sub_dir_digest) = encode_directory(&sub_dir);
+
+        // Root directory with 1 file and a reference to the subdirectory.
+        let root_dir = Directory {
+            files: vec![make_file_node("root_file.txt", 0x33, 1200)],
+            directories: vec![DirectoryNode {
+                name: "subdir".to_string(),
+                digest: Some(sub_dir_digest.into()),
+            }],
+            ..Default::default()
+        };
+        let (root_dir_bytes, root_dir_digest) = encode_directory(&root_dir);
+
+        let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+        let root_key: StoreKey<'_> = root_dir_digest.into();
+        store
+            .update_oneshot(root_key, Bytes::from(root_dir_bytes))
+            .await
+            .expect("store root dir");
+        let sub_key: StoreKey<'_> = sub_dir_digest.into();
+        store
+            .update_oneshot(sub_key, Bytes::from(sub_dir_bytes))
+            .await
+            .expect("store sub dir");
+
+        let result = resolve_tree_from_cas(&store, root_dir_digest)
+            .await
+            .expect("resolve_tree_from_cas failed");
+
+        assert_eq!(result.len(), 3, "Expected 3 files (1 root + 2 subdir)");
+
+        let mut sizes: Vec<u64> = result.iter().map(|&(_, s)| s).collect();
+        sizes.sort();
+        assert_eq!(sizes, vec![500, 700, 1200]);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_tree_deduplicates_files() {
+        // Two directories both referencing the same file digest.
+        let shared_file = make_file_node("shared.txt", 0xdd, 999);
+
+        let sub_dir = Directory {
+            files: vec![shared_file.clone()],
+            directories: vec![],
+            ..Default::default()
+        };
+        let (sub_dir_bytes, sub_dir_digest) = encode_directory(&sub_dir);
+
+        let root_dir = Directory {
+            files: vec![
+                // Same digest as the file in sub_dir (same hash_byte 0xdd, same size).
+                make_file_node("also_shared.txt", 0xdd, 999),
+            ],
+            directories: vec![DirectoryNode {
+                name: "subdir".to_string(),
+                digest: Some(sub_dir_digest.into()),
+            }],
+            ..Default::default()
+        };
+        let (root_dir_bytes, root_dir_digest) = encode_directory(&root_dir);
+
+        let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+        let root_key: StoreKey<'_> = root_dir_digest.into();
+        store
+            .update_oneshot(root_key, Bytes::from(root_dir_bytes))
+            .await
+            .expect("store root dir");
+        let sub_key: StoreKey<'_> = sub_dir_digest.into();
+        store
+            .update_oneshot(sub_key, Bytes::from(sub_dir_bytes))
+            .await
+            .expect("store sub dir");
+
+        let result = resolve_tree_from_cas(&store, root_dir_digest)
+            .await
+            .expect("resolve_tree_from_cas failed");
+
+        // The same digest should appear only once.
+        assert_eq!(
+            result.len(),
+            1,
+            "Duplicate file digest should be deduplicated"
+        );
+        assert_eq!(result[0].1, 999);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_tree_circular_directory() {
+        // A true hash cycle (A->B->A) is impossible with content-addressed
+        // hashes: the digest of A depends on B's digest and vice versa.
+        // Instead, we test the seen_dirs guard with a diamond structure:
+        //   root -> {dir_left, dir_right}, both -> dir_shared
+        // Without the seen_dirs set, dir_shared would be visited twice.
+        let dir_shared = Directory {
+            files: vec![make_file_node("shared.txt", 0x11, 100)],
+            directories: vec![],
+            ..Default::default()
+        };
+        let (shared_bytes, shared_digest) = encode_directory(&dir_shared);
+
+        let dir_left = Directory {
+            files: vec![make_file_node("left.txt", 0x22, 200)],
+            directories: vec![DirectoryNode {
+                name: "shared".to_string(),
+                digest: Some(shared_digest.into()),
+            }],
+            ..Default::default()
+        };
+        let (left_bytes, left_digest) = encode_directory(&dir_left);
+
+        let dir_right = Directory {
+            files: vec![make_file_node("right.txt", 0x33, 300)],
+            directories: vec![DirectoryNode {
+                name: "shared".to_string(),
+                digest: Some(shared_digest.into()),
+            }],
+            ..Default::default()
+        };
+        let (right_bytes, right_digest) = encode_directory(&dir_right);
+
+        let root = Directory {
+            files: vec![],
+            directories: vec![
+                DirectoryNode {
+                    name: "left".to_string(),
+                    digest: Some(left_digest.into()),
+                },
+                DirectoryNode {
+                    name: "right".to_string(),
+                    digest: Some(right_digest.into()),
+                },
+            ],
+            ..Default::default()
+        };
+        let (root_bytes, root_digest) = encode_directory(&root);
+
+        let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+        for (bytes, digest) in [
+            (root_bytes, root_digest),
+            (left_bytes, left_digest),
+            (right_bytes, right_digest),
+            (shared_bytes, shared_digest),
+        ] {
+            let key: StoreKey<'_> = digest.into();
+            store
+                .update_oneshot(key, Bytes::from(bytes))
+                .await
+                .expect("store update");
+        }
+
+        let result = resolve_tree_from_cas(&store, root_digest)
+            .await
+            .expect("resolve_tree_from_cas failed");
+
+        // dir_shared is referenced by both dir_left and dir_right, but
+        // seen_dirs ensures it's only visited once. Files: shared(0x11),
+        // left(0x22), right(0x33) — all unique digests, so 3 total.
+        assert_eq!(
+            result.len(),
+            3,
+            "Diamond structure: shared dir visited once, 3 unique files"
+        );
+
+        let mut sizes: Vec<u64> = result.iter().map(|&(_, s)| s).collect();
+        sizes.sort();
+        assert_eq!(sizes, vec![100, 200, 300]);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_tree_missing_directory() {
+        // Attempt to resolve a digest that doesn't exist in the store.
+        let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+
+        let missing_digest = DigestInfo::new([0xff; 32], 42);
+        let result = resolve_tree_from_cas(&store, missing_digest).await;
+
+        assert!(
+            result.is_err(),
+            "Should return an error for a missing directory"
+        );
+    }
+
+    #[test]
+    fn test_score_workers_empty_file_list() {
+        let locality_map = new_shared_blob_locality_map();
+
+        // Even with data in the locality map, empty file_digests => empty scores.
+        {
+            let mut map = locality_map.write();
+            let d1 = DigestInfo::new([1u8; 32], 1000);
+            map.register_blobs("grpc://worker-a:50081", &[d1]);
+        }
+
+        let worker_a = WorkerId::from("worker-a-id".to_string());
+        let mut endpoint_to_worker = HashMap::new();
+        endpoint_to_worker.insert("grpc://worker-a:50081".to_string(), worker_a.clone());
+
+        let mut candidates = HashSet::new();
+        candidates.insert(worker_a);
+
+        let file_digests: Vec<(DigestInfo, u64)> = vec![];
+
+        let scores = score_workers(&candidates, &file_digests, &locality_map, &endpoint_to_worker);
+        assert!(
+            scores.is_empty(),
+            "Expected empty scores for empty file_digests, got {scores:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_input_tree_cache_hit_returns_same_arc() {
+        use nativelink_config::schedulers::WorkerAllocationStrategy;
+        use nativelink_metric::MetricsComponent;
+        use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
+        use crate::platform_property_manager::PlatformPropertyManager;
+        use crate::worker_registry::WorkerRegistry;
+
+        // Minimal mock WorkerStateManager for constructing ApiWorkerScheduler.
+        #[derive(Debug)]
+        struct NoopWorkerStateManager;
+
+        impl MetricsComponent for NoopWorkerStateManager {
+            fn publish(
+                &self,
+                _kind: MetricKind,
+                _field_metadata: MetricFieldData,
+            ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+                Ok(MetricPublishKnownKindData::Component)
+            }
+        }
+
+        #[tonic::async_trait]
+        impl WorkerStateManager for NoopWorkerStateManager {
+            async fn update_operation(
+                &self,
+                _operation_id: &OperationId,
+                _worker_id: &WorkerId,
+                _update: UpdateOperationType,
+            ) -> Result<(), Error> {
+                Ok(())
+            }
+        }
+
+        // Create a store with a single-directory tree (one file).
+        let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+
+        let dir = Directory {
+            files: vec![make_file_node("test.txt", 0xaa, 1000)],
+            directories: vec![],
+            ..Default::default()
+        };
+        let (dir_bytes, dir_digest) = encode_directory(&dir);
+        let key: StoreKey<'_> = dir_digest.into();
+        store
+            .update_oneshot(key, Bytes::from(dir_bytes))
+            .await
+            .expect("store update");
+
+        // Build scheduler with CAS store.
+        let scheduler = ApiWorkerScheduler::new_with_locality_map(
+            Arc::new(NoopWorkerStateManager),
+            Arc::new(PlatformPropertyManager::new(HashMap::new())),
+            WorkerAllocationStrategy::default(),
+            Arc::new(Notify::new()),
+            100,
+            Arc::new(WorkerRegistry::new()),
+            None,
+            Some(store),
+        );
+
+        // First call: cache miss, resolves from CAS.
+        let result1 = scheduler.resolve_input_tree(dir_digest).await;
+        assert!(result1.is_some(), "Expected Some from first resolve");
+
+        // Second call: cache hit, should return the same Arc.
+        let result2 = scheduler.resolve_input_tree(dir_digest).await;
+        assert!(result2.is_some(), "Expected Some from second resolve");
+
+        let arc1 = result1.unwrap();
+        let arc2 = result2.unwrap();
+        assert!(
+            Arc::ptr_eq(&arc1, &arc2),
+            "Expected resolve_input_tree to return the same Arc on cache hit (pointer equality)"
+        );
+    }
+}

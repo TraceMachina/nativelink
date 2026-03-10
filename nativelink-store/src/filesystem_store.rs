@@ -37,13 +37,13 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
+    ItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
 use tokio::sync::Semaphore;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::callback_utils::RemoveItemCallbackHolder;
+use crate::callback_utils::ItemCallbackHolder;
 use crate::cas_utils::is_zero_digest;
 
 // Default size to allocate memory of the buffer when reading files.
@@ -428,7 +428,7 @@ pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
 type FsEvictingMap<'a, Fe> =
-    EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime, RemoveItemCallbackHolder>;
+    EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime, ItemCallbackHolder>;
 
 async fn add_files_to_cache<Fe: FileEntry>(
     evicting_map: &FsEvictingMap<'_, Fe>,
@@ -732,6 +732,22 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
     pub fn get_arc(&self) -> Option<Arc<Self>> {
         self.weak_self.upgrade()
+    }
+
+    /// Returns all digest entries in the cache with their absolute last-access
+    /// timestamps (seconds since UNIX epoch). String-keyed entries are skipped.
+    /// This is a peek-only operation and does NOT promote entries in the LRU.
+    pub fn get_all_digests_with_timestamps(&self) -> Vec<(DigestInfo, i64)> {
+        self.evicting_map
+            .get_all_entries_with_timestamps()
+            .into_iter()
+            .filter_map(|(key_borrow, abs_timestamp)| {
+                match StoreKey::from(key_borrow) {
+                    StoreKey::Digest(digest) => Some((digest, abs_timestamp)),
+                    _ => None,
+                }
+            })
+            .collect()
     }
 
     /// Remove a digest's entry from the evicting map so the next
@@ -1161,12 +1177,12 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
         self.evicting_map
-            .add_remove_callback(RemoveItemCallbackHolder::new(callback));
+            .add_item_callback(ItemCallbackHolder::new(callback));
         Ok(())
     }
 }
