@@ -374,7 +374,7 @@ fn collect_files_from_tree(
 const BATCH_READ_CONCURRENCY: usize = 16;
 
 /// Maximum number of concurrent ByteStream fetches in flight.
-const BYTESTREAM_CONCURRENCY: usize = 16;
+const BYTESTREAM_CONCURRENCY: usize = 64;
 
 /// Batch-download small blobs via `BatchReadBlobs` and write them into the fast store.
 /// Returns the set of digests that were successfully fetched.
@@ -398,18 +398,24 @@ async fn batch_read_small_blobs(
 
             {
                 let locality = proxy.locality_map().read();
+                let mut round_robin_idx: usize = 0;
                 for &digest in small_digests {
                     let peers = locality.lookup_workers(&digest);
-                    let assigned = peers
+                    // Filter to connected peers only.
+                    let connected: Vec<&Arc<str>> = peers
                         .iter()
-                        .find(|ep| peer_stores.contains_key(ep.as_ref()));
-                    if let Some(endpoint) = assigned {
+                        .filter(|ep| peer_stores.contains_key(ep.as_ref()))
+                        .collect();
+                    if connected.is_empty() {
+                        server_digests.push(digest);
+                    } else {
+                        // Round-robin among connected peers that have this blob.
+                        let endpoint = connected[round_robin_idx % connected.len()].clone();
+                        round_robin_idx = round_robin_idx.wrapping_add(1);
                         endpoint_digests
-                            .entry(endpoint.clone())
+                            .entry(endpoint)
                             .or_default()
                             .push(digest);
-                    } else {
-                        server_digests.push(digest);
                     }
                 }
             }
@@ -468,15 +474,28 @@ async fn batch_read_small_blobs(
 
             if !misses.is_empty() {
                 info!(count = misses.len(), "BatchReadBlobs: fetching misses via store chain");
-                futures::stream::iter(misses.iter().map(Ok::<_, Error>))
-                    .try_for_each_concurrent(BYTESTREAM_CONCURRENCY, |&digest| async move {
-                        cas_store
+                let retry_results = futures::future::join_all(
+                    misses.iter().map(|&digest| async move {
+                        let result = cas_store
                             .populate_fast_store_unchecked(digest.into())
-                            .await
-                            .err_tip(|| format!("Populating fast store (batch miss) for {digest:?}"))
-                    })
-                    .await?;
-                fetched.extend(misses);
+                            .await;
+                        (digest, result)
+                    }),
+                )
+                .await;
+                let mut retry_failures = 0u32;
+                for (digest, result) in retry_results {
+                    match result {
+                        Ok(()) => { fetched.insert(digest); }
+                        Err(e) => {
+                            retry_failures += 1;
+                            info!(?digest, ?e, "BatchReadBlobs: retry fetch failed");
+                        }
+                    }
+                }
+                if retry_failures > 0 {
+                    info!(retry_failures, "BatchReadBlobs: some retries failed");
+                }
             }
 
             return Ok(fetched);
