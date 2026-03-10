@@ -452,11 +452,11 @@ impl StoreDriver for WorkerProxyStore {
         ))
     }
 
-    fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
-        // Return self — WorkerProxyStore is not transparent because it adds
-        // locality-map based peer lookup. Callers (like FastSlowStore) need
-        // to see WorkerProxyStore's optimized_for flags, not the inner store's.
-        self
+    fn inner_store(&self, key: Option<StoreKey>) -> &dyn StoreDriver {
+        // Delegate to inner store so that callers can downcast through
+        // the chain (e.g. worker finding FastSlowStore via downcast_ref).
+        // WorkerProxyStore's optimized_for override is independent of this.
+        self.inner.inner_store(key)
     }
 
     fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
