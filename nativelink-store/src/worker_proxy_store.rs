@@ -22,14 +22,17 @@ use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, Retry, StoreType};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
-use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::buf_channel::{
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
+};
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{
     IS_WORKER_REQUEST, ItemCallback, REDIRECT_PREFIX, Store, StoreDriver, StoreKey, StoreLike,
     StoreOptimizations, UploadSizeInfo,
 };
 use parking_lot::RwLock;
-use tracing::{info, trace, warn};
+use tokio::task::JoinHandle;
+use tracing::{debug, info, trace, warn};
 
 use crate::grpc_store::GrpcStore;
 
@@ -288,6 +291,129 @@ impl WorkerProxyStore {
 
         Ok(false)
     }
+
+    /// The original sequential get_part logic: try inner store, then parse
+    /// redirects, then fall back to locality map / peer proxying.
+    /// This is used as the fallback when no peers are known for racing.
+    async fn get_part_sequential(
+        &self,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        let mut redirect_endpoints: Option<Vec<String>> = None;
+        match IS_WORKER_REQUEST
+            .scope(
+                true,
+                self.inner.get_part(key.borrow(), &mut *writer, offset, length),
+            )
+            .await
+        {
+            Ok(()) => return Ok(()),
+            Err(e) if e.code == Code::NotFound => {
+                trace!(
+                    key = ?key.borrow().into_digest(),
+                    "WorkerProxyStore: inner store miss (NotFound), consulting locality map"
+                );
+            }
+            Err(e) if e.code == Code::FailedPrecondition => {
+                let msg = e.message_string();
+                if let Some(start) = msg.find(REDIRECT_PREFIX) {
+                    let endpoints_str = &msg[start + REDIRECT_PREFIX.len()..];
+                    let endpoints_str = endpoints_str
+                        .split('|')
+                        .next()
+                        .unwrap_or(endpoints_str);
+                    let endpoints: Vec<String> = endpoints_str
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect();
+                    if !endpoints.is_empty() {
+                        info!(
+                            key = ?key.borrow().into_digest(),
+                            ?endpoints,
+                            "WorkerProxyStore: received redirect from inner store"
+                        );
+                        redirect_endpoints = Some(endpoints);
+                    }
+                }
+                if redirect_endpoints.is_none() {
+                    return Err(e);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+
+        if let Some(endpoints) = redirect_endpoints {
+            if self
+                .try_read_from_endpoints(key.borrow(), writer, offset, length, &endpoints)
+                .await?
+            {
+                return Ok(());
+            }
+        }
+
+        let is_worker = IS_WORKER_REQUEST.try_with(|v| *v).unwrap_or(false);
+
+        if is_worker {
+            let digest = key.borrow().into_digest();
+            let workers = self.locality_map.read().lookup_workers(&digest);
+            if workers.is_empty() {
+                return Err(make_err!(
+                    Code::NotFound,
+                    "Blob {digest:?} not found in inner store or locality map"
+                ));
+            }
+            let endpoints = workers.join(",");
+            info!(
+                ?digest,
+                endpoints,
+                "WorkerProxyStore: redirecting worker to peer endpoints"
+            );
+            return Err(make_err!(
+                Code::FailedPrecondition,
+                "{REDIRECT_PREFIX}{endpoints}|"
+            ));
+        }
+
+        if self
+            .try_read_from_worker(key.borrow(), writer, offset, length)
+            .await?
+        {
+            return Ok(());
+        }
+
+        Err(make_err!(
+            Code::NotFound,
+            "Blob {:?} not found in inner store or any worker",
+            key.borrow().into_digest()
+        ))
+    }
+
+    /// Forward remaining data from a racer's read half to the caller's writer,
+    /// then wait for the spawned task to complete.
+    async fn forward_racer(
+        winner_name: &str,
+        writer: &mut DropCloserWriteHalf,
+        rx: &mut DropCloserReadHalf,
+        handle: JoinHandle<Result<(), Error>>,
+    ) -> Result<(), Error> {
+        // Forward all remaining chunks from the racer's channel to the
+        // caller's writer. bind_buffered handles EOF propagation.
+        writer
+            .bind_buffered(rx)
+            .await
+            .err_tip(|| format!("WorkerProxyStore: {winner_name} racer bind_buffered"))?;
+
+        // Wait for the spawned get_part to confirm it finished successfully.
+        // If the task was already done (sent EOF), this returns immediately.
+        handle
+            .await
+            .map_err(|e| make_err!(Code::Internal, "WorkerProxyStore: {winner_name} task join error: {e}"))?
+            .err_tip(|| format!("WorkerProxyStore: {winner_name} get_part failed after winning race"))
+    }
 }
 
 #[async_trait]
@@ -334,122 +460,175 @@ impl StoreDriver for WorkerProxyStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        // Try inner store directly — avoids an extra has() round trip.
-        // NotFound is returned before any bytes are written, so the
-        // writer is still clean and we can retry with peer workers.
-        //
-        // Always tell the inner store we're a worker so that if it's a
-        // GrpcStore → server chain, the server returns a redirect instead
-        // of proxying the blob through itself.
-        let mut redirect_endpoints: Option<Vec<String>> = None;
-        match IS_WORKER_REQUEST
-            .scope(true, self.inner.get_part(key.borrow(), &mut *writer, offset, length))
-            .await
-        {
-            Ok(()) => return Ok(()),
-            Err(e) if e.code == Code::NotFound => {
-                // Inner store doesn't have it — try peer workers below.
-                trace!(
-                    key = ?key.borrow().into_digest(),
-                    "WorkerProxyStore: inner store miss (NotFound), consulting locality map"
-                );
-            }
-            Err(e) if e.code == Code::FailedPrecondition => {
-                // Check if the inner store returned a redirect (e.g. from
-                // a server-side WorkerProxyStore telling us to fetch from
-                // specific peers directly). The prefix may be embedded in
-                // a longer error message after gRPC round-tripping.
-                let msg = e.message_string();
-                if let Some(start) = msg.find(REDIRECT_PREFIX) {
-                    let endpoints_str = &msg[start + REDIRECT_PREFIX.len()..];
-                    // Endpoints are terminated by '|' (added by the redirect
-                    // generator to survive error message wrapping/merging).
-                    let endpoints_str = endpoints_str
-                        .split('|')
-                        .next()
-                        .unwrap_or(endpoints_str);
-                    let endpoints: Vec<String> = endpoints_str
-                        .split(',')
-                        .filter(|s| !s.is_empty())
-                        .map(String::from)
-                        .collect();
-                    if !endpoints.is_empty() {
-                        info!(
-                            key = ?key.borrow().into_digest(),
-                            ?endpoints,
-                            "WorkerProxyStore: received redirect from inner store"
-                        );
-                        redirect_endpoints = Some(endpoints);
-                    }
-                }
-                if redirect_endpoints.is_none() {
-                    return Err(e);
-                }
-            }
-            Err(e) => return Err(e),
-        }
-
-        // If we got redirect endpoints from the inner store, try those
-        // specific peers first (they are authoritative).
-        if let Some(endpoints) = redirect_endpoints {
-            if self
-                .try_read_from_endpoints(
-                    key.borrow(),
-                    writer,
-                    offset,
-                    length,
-                    &endpoints,
-                )
-                .await?
-            {
-                return Ok(());
-            }
-        }
-
-        // Check if the caller is a worker. Workers get a redirect error
-        // with peer endpoints so they can fetch directly (data stays on
-        // the worker-to-worker plane and never transits through the server).
-        let is_worker = IS_WORKER_REQUEST
+        // Check if we're on the server side (IS_WORKER_REQUEST already set
+        // by the gRPC handler). Server-side requests must use the sequential
+        // path which generates redirects for workers. Racing only applies on
+        // the worker side, where we race our server fetch against a peer fetch.
+        let is_server_side = IS_WORKER_REQUEST
             .try_with(|v| *v)
             .unwrap_or(false);
 
-        if is_worker {
-            let digest = key.borrow().into_digest();
-            let workers = self.locality_map.read().lookup_workers(&digest);
-            if workers.is_empty() {
-                return Err(make_err!(
-                    Code::NotFound,
-                    "Blob {digest:?} not found in inner store or locality map"
-                ));
+        // Look up peers in the locality map. If we have known peers and we're
+        // on the worker side, race a peer fetch against the server fetch.
+        let digest = key.borrow().into_digest();
+        let peers = if is_server_side {
+            Vec::new() // Don't race on the server side.
+        } else {
+            self.locality_map.read().lookup_workers(&digest)
+        };
+
+        if peers.is_empty() {
+            // No peers known (or server side) — use the sequential path.
+            return self
+                .get_part_sequential(key, writer, offset, length)
+                .await;
+        }
+
+        // Try to get a connection to the first peer.
+        let peer_store = match self.get_or_create_connection(&peers[0]).await {
+            Some(store) => store,
+            None => {
+                return self
+                    .get_part_sequential(key, writer, offset, length)
+                    .await;
             }
-            let endpoints = workers.join(",");
-            info!(
-                ?digest,
-                endpoints,
-                "WorkerProxyStore: redirecting worker to peer endpoints"
-            );
-            // Terminate the endpoint list with '|' so the receiver can
-            // reliably parse it even after error message wrapping/merging.
-            return Err(make_err!(
-                Code::FailedPrecondition,
-                "{REDIRECT_PREFIX}{endpoints}|"
-            ));
-        }
+        };
+        let peer_endpoint: Arc<str> = peers[0].clone();
 
-        // Non-worker caller: proxy the blob from a peer worker.
-        if self
-            .try_read_from_worker(key.borrow(), writer, offset, length)
-            .await?
-        {
-            return Ok(());
-        }
+        // Create buf_channel pairs for each racer. Each spawned task writes
+        // into its own tx; we read from the rx to see who produces data first.
+        let (mut server_tx, mut server_rx) = make_buf_channel_pair();
+        let (mut peer_tx, mut peer_rx) = make_buf_channel_pair();
 
-        // No worker had it either.
-        Err(make_err!(
-            Code::NotFound,
-            "Blob {:?} not found in inner store or any worker",
-            key.borrow().into_digest()
-        ))
+        // We need owned keys for the spawned tasks.
+        let server_key = key.borrow().into_owned();
+        let peer_key = key.borrow().into_owned();
+
+        // Clone inner store for the server task.
+        let inner = self.inner.clone();
+
+        // Spawn server fetch.
+        let server_handle: JoinHandle<Result<(), Error>> = tokio::spawn(async move {
+            IS_WORKER_REQUEST
+                .scope(
+                    true,
+                    inner.get_part(server_key.borrow(), &mut server_tx, offset, length),
+                )
+                .await
+        });
+
+        // Spawn peer fetch.
+        let peer_handle: JoinHandle<Result<(), Error>> = tokio::spawn(async move {
+            peer_store
+                .get_part(peer_key.borrow(), &mut peer_tx, offset, length)
+                .await
+        });
+
+        // Race: wait for the first racer to produce a data chunk (or error).
+        tokio::select! {
+            server_result = server_rx.recv() => {
+                match server_result {
+                    Ok(chunk) if !chunk.is_empty() => {
+                        // Server produced data first — it wins.
+                        peer_handle.abort();
+                        debug!(
+                            ?digest,
+                            "WorkerProxyStore: server won race against peer"
+                        );
+                        writer.send(chunk).await
+                            .err_tip(|| "WorkerProxyStore: sending server winner chunk")?;
+                        Self::forward_racer("server", writer, &mut server_rx, server_handle).await
+                    }
+                    Ok(_empty) => {
+                        // Server returned EOF immediately (zero-length blob).
+                        peer_handle.abort();
+                        debug!(
+                            ?digest,
+                            "WorkerProxyStore: server won race (empty blob)"
+                        );
+                        writer.send_eof()
+                            .err_tip(|| "WorkerProxyStore: sending EOF for empty blob")?;
+                        server_handle.await
+                            .map_err(|e| make_err!(Code::Internal, "server task join: {e}"))?
+                    }
+                    Err(_server_err) => {
+                        // Server racer failed — wait for peer.
+                        warn!(
+                            ?digest,
+                            "WorkerProxyStore: server racer failed, waiting for peer"
+                        );
+                        let peer_chunk = peer_rx.recv().await
+                            .err_tip(|| "WorkerProxyStore: peer recv after server failure")?;
+                        if peer_chunk.is_empty() {
+                            writer.send_eof()
+                                .err_tip(|| "WorkerProxyStore: peer EOF after server failure")?;
+                            return peer_handle.await
+                                .map_err(|e| make_err!(Code::Internal, "peer task join: {e}"))?;
+                        }
+                        info!(
+                            ?digest,
+                            endpoint = %peer_endpoint,
+                            "WorkerProxyStore: peer won race (server failed)"
+                        );
+                        writer.send(peer_chunk).await
+                            .err_tip(|| "WorkerProxyStore: sending peer fallback chunk")?;
+                        Self::forward_racer("peer", writer, &mut peer_rx, peer_handle).await
+                    }
+                }
+            }
+            peer_result = peer_rx.recv() => {
+                match peer_result {
+                    Ok(chunk) if !chunk.is_empty() => {
+                        // Peer produced data first — it wins.
+                        server_handle.abort();
+                        info!(
+                            ?digest,
+                            endpoint = %peer_endpoint,
+                            "WorkerProxyStore: peer won race against server"
+                        );
+                        writer.send(chunk).await
+                            .err_tip(|| "WorkerProxyStore: sending peer winner chunk")?;
+                        Self::forward_racer("peer", writer, &mut peer_rx, peer_handle).await
+                    }
+                    Ok(_empty) => {
+                        // Peer returned EOF immediately (zero-length blob).
+                        server_handle.abort();
+                        info!(
+                            ?digest,
+                            endpoint = %peer_endpoint,
+                            "WorkerProxyStore: peer won race (empty blob)"
+                        );
+                        writer.send_eof()
+                            .err_tip(|| "WorkerProxyStore: sending EOF for empty blob from peer")?;
+                        peer_handle.await
+                            .map_err(|e| make_err!(Code::Internal, "peer task join: {e}"))?
+                    }
+                    Err(_peer_err) => {
+                        // Peer racer failed — wait for server.
+                        warn!(
+                            ?digest,
+                            endpoint = %peer_endpoint,
+                            "WorkerProxyStore: peer racer failed, waiting for server"
+                        );
+                        let server_chunk = server_rx.recv().await
+                            .err_tip(|| "WorkerProxyStore: server recv after peer failure")?;
+                        if server_chunk.is_empty() {
+                            writer.send_eof()
+                                .err_tip(|| "WorkerProxyStore: server EOF after peer failure")?;
+                            return server_handle.await
+                                .map_err(|e| make_err!(Code::Internal, "server task join: {e}"))?;
+                        }
+                        debug!(
+                            ?digest,
+                            "WorkerProxyStore: server won race (peer failed)"
+                        );
+                        writer.send(server_chunk).await
+                            .err_tip(|| "WorkerProxyStore: sending server fallback chunk")?;
+                        Self::forward_racer("server", writer, &mut server_rx, server_handle).await
+                    }
+                }
+            }
+        }
     }
 
     fn inner_store(&self, key: Option<StoreKey>) -> &dyn StoreDriver {
@@ -879,6 +1058,98 @@ mod tests {
             !StoreDriver::optimized_for(&*proxy, StoreOptimizations::NoopUpdates),
             "Should delegate non-LazyExistence optimizations to inner store"
         );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // 14. Race: inner store has blob, peer registered — server wins race.
+    // ---------------------------------------------------------------
+    #[nativelink_test]
+    async fn test_race_server_wins_when_inner_has_blob() -> Result<(), Error> {
+        let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
+        let locality_map = new_shared_blob_locality_map();
+        let proxy = WorkerProxyStore::new(inner.clone(), locality_map.clone());
+        let store = Store::new(proxy.clone());
+
+        let value = b"race test data";
+        let digest = DigestInfo::try_new(VALID_HASH1, value.len() as u64)?;
+
+        // Put blob in inner store.
+        inner
+            .update_oneshot(digest, Bytes::from_static(value))
+            .await?;
+
+        // Inject a peer that also has the blob (MemoryStore with same data).
+        let peer_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+        peer_store
+            .update_oneshot(digest, Bytes::from_static(value))
+            .await?;
+        proxy.inject_worker_connection("grpc://peer:50071", peer_store);
+
+        locality_map
+            .write()
+            .register_blobs("grpc://peer:50071", &[digest]);
+
+        // NOT in IS_WORKER_REQUEST scope, so racing path is taken.
+        let result = store.get_part_unchunked(digest, 0, None).await?;
+        assert_eq!(result.as_ref(), value);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // 15. Race: inner store miss, peer has blob — peer wins race.
+    // ---------------------------------------------------------------
+    #[nativelink_test]
+    async fn test_race_peer_wins_when_inner_misses() -> Result<(), Error> {
+        let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
+        let locality_map = new_shared_blob_locality_map();
+        let proxy = WorkerProxyStore::new(inner, locality_map.clone());
+        let store = Store::new(proxy.clone());
+
+        let value = b"peer only data";
+        let digest = DigestInfo::try_new(VALID_HASH1, value.len() as u64)?;
+
+        // Inner store is empty. Peer has the blob.
+        let peer_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+        peer_store
+            .update_oneshot(digest, Bytes::from_static(value))
+            .await?;
+        proxy.inject_worker_connection("grpc://peer:50071", peer_store);
+
+        locality_map
+            .write()
+            .register_blobs("grpc://peer:50071", &[digest]);
+
+        let result = store.get_part_unchunked(digest, 0, None).await?;
+        assert_eq!(result.as_ref(), value);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // 16. Race: both inner and peer miss — returns error.
+    // ---------------------------------------------------------------
+    #[nativelink_test]
+    async fn test_race_both_miss_returns_error() -> Result<(), Error> {
+        let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
+        let locality_map = new_shared_blob_locality_map();
+        let proxy = WorkerProxyStore::new(inner, locality_map.clone());
+        let store = Store::new(proxy.clone());
+
+        let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
+
+        // Both inner and peer are empty.
+        let peer_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+        proxy.inject_worker_connection("grpc://peer:50071", peer_store);
+
+        locality_map
+            .write()
+            .register_blobs("grpc://peer:50071", &[digest]);
+
+        let result = store.get_part_unchunked(digest, 0, None).await;
+        assert!(result.is_err(), "Expected error when both miss");
 
         Ok(())
     }
