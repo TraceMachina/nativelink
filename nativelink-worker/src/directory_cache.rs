@@ -42,7 +42,7 @@ const MERKLE_METADATA_FILENAME: &str = ".merkle_tree_meta";
 /// if the version file is missing or stale, the entire cache is wiped.
 const CACHE_VERSION_FILENAME: &str = ".cache_version";
 /// Bump this when the cache format changes.
-const CACHE_FORMAT_VERSION: u32 = 3;
+const CACHE_FORMAT_VERSION: u32 = 4;
 
 /// Merkle tree metadata for a cached directory entry.
 ///
@@ -1416,7 +1416,7 @@ impl DirectoryCache {
                 }
             } else {
                 // Serial fallback: fetch each file from CAS individually.
-                for (file_digest, file_path, is_executable) in &files_to_download {
+                for (file_digest, file_path, _is_executable) in &files_to_download {
                     let data = self
                         .cas_store
                         .get_part_unchunked(StoreKey::Digest(*file_digest), 0, None)
@@ -1426,13 +1426,14 @@ impl DirectoryCache {
                         .await
                         .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
 
+                    // Always set 0o555 to match CAS defaults (see create_file).
                     #[cfg(unix)]
-                    if *is_executable {
+                    {
                         use std::os::unix::fs::PermissionsExt;
                         let mut perms = fs::metadata(&file_path).await
                             .err_tip(|| "Failed to get file metadata")?
                             .permissions();
-                        perms.set_mode(0o755);
+                        perms.set_mode(0o555);
                         fs::set_permissions(&file_path, perms).await
                             .err_tip(|| "Failed to set file permissions")?;
                     }
@@ -1587,15 +1588,17 @@ impl DirectoryCache {
             .await
             .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
 
-        // Set permissions
+        // Always set 0o555 to match CAS store defaults. Some build tools
+        // (rules_cc, rules_rust) set is_executable=false on shell scripts
+        // that must be executable; 0o555 as the base avoids EPERM.
         #[cfg(unix)]
-        if file_node.is_executable {
+        {
             use std::os::unix::fs::PermissionsExt;
             let mut perms = fs::metadata(&file_path)
                 .await
                 .err_tip(|| "Failed to get file metadata")?
                 .permissions();
-            perms.set_mode(0o755);
+            perms.set_mode(0o555);
             fs::set_permissions(&file_path, perms)
                 .await
                 .err_tip(|| "Failed to set file permissions")?;
