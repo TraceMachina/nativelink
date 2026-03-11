@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
@@ -23,6 +23,7 @@ use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
+use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
@@ -969,6 +970,16 @@ impl WorkerScheduler for SimpleScheduler {
     async fn update_worker_load(&self, worker_id: &WorkerId, cpu_load_pct: u32) -> Result<(), Error> {
         self.worker_scheduler
             .update_worker_load(worker_id, cpu_load_pct)
+            .await
+    }
+
+    async fn update_cached_directories(
+        &self,
+        worker_id: &WorkerId,
+        digests: HashSet<DigestInfo>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .update_cached_directories(worker_id, digests)
             .await
     }
 }

@@ -102,6 +102,13 @@ pub struct BlobsAvailableNotification {
     /// / 0 means unknown (old workers that don't report load).
     #[prost(uint32, tag = "6")]
     pub cpu_load_pct: u32,
+    /// / Digests of input root directories that are cached in this worker's
+    /// / directory cache. The scheduler can give routing preference to workers
+    /// / that already have the action's input_root_digest cached.
+    #[prost(message, repeated, tag = "7")]
+    pub cached_directory_digests: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
 }
 /// / Notification that blobs have been evicted from a worker.
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -325,6 +325,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
     async fn send_periodic_blobs_available(
         grpc_client: &mut T,
         state: &BlobsAvailableState,
+        running_actions_manager: &Arc<U>,
         is_first: bool,
     ) {
         let (digest_infos, evicted_digests) = if is_first {
@@ -366,6 +367,14 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         let new_or_touched_count = digest_infos.len();
         let evicted_count = evicted_digests.len();
 
+        // Collect cached directory digests from the directory cache.
+        let cached_dir_digests = running_actions_manager.cached_directory_digests().await;
+        let cached_dir_count = cached_dir_digests.len();
+        let cached_directory_digests = cached_dir_digests
+            .into_iter()
+            .map(|d| d.into())
+            .collect();
+
         let load = get_cpu_load_pct();
         debug!("BlobsAvailable cpu_load_pct={load}");
         let notification = BlobsAvailableNotification {
@@ -375,6 +384,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             evicted_digests,
             digest_infos,
             cpu_load_pct: load,
+            cached_directory_digests,
         };
 
         if let Err(err) = grpc_client.blobs_available(notification).await {
@@ -382,6 +392,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 ?err,
                 new_or_touched_count,
                 evicted_count,
+                cached_dir_count,
                 is_first,
                 "Failed to send periodic BlobsAvailable"
             );
@@ -389,6 +400,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             info!(
                 new_or_touched_count,
                 evicted_count,
+                cached_dir_count,
                 is_first,
                 "Sent periodic BlobsAvailable"
             );
@@ -420,6 +432,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             if !state.interval.is_zero() {
                 let mut grpc_client = self.grpc_client.clone();
                 let state = state.clone();
+                let ram = self.running_actions_manager.clone();
                 futures.push(
                     async move {
                         let mut is_first = true;
@@ -428,6 +441,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             Self::send_periodic_blobs_available(
                                 &mut grpc_client,
                                 &state,
+                                &ram,
                                 is_first,
                             )
                             .await;
@@ -662,6 +676,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                             evicted_digests: Vec::new(),
                                                             digest_infos: Vec::new(),
                                                             cpu_load_pct: load,
+                                                            cached_directory_digests: Vec::new(),
                                                         }
                                                     ).await {
                                                         warn!(?err, "Failed to send blobs_available notification");

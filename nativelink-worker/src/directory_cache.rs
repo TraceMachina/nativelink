@@ -197,6 +197,14 @@ impl DirectoryCache {
         })
     }
 
+    /// Returns the digests of all currently cached input root directories.
+    /// The scheduler uses this to give routing preference to workers that
+    /// already have an action's input_root_digest cached.
+    pub async fn cached_digests(&self) -> Vec<DigestInfo> {
+        let cache = self.cache.read().await;
+        cache.keys().copied().collect()
+    }
+
     /// Gets or creates a directory in the cache, then hardlinks it to the destination.
     ///
     /// # Arguments
@@ -697,18 +705,24 @@ impl DirectoryCache {
             } else if metadata.is_file() {
                 let size = metadata.len();
 
-                // Preserve execute bit: r-xr-xr-x (0o555) for executables,
-                // r--r--r-- (0o444) for non-executables.
+                // Strip write bits only, preserving read+execute.
+                // This avoids corrupting CAS inodes (hardlinks share the inode)
+                // while correctly making cached files read-only.
+                // 0o555 files (CAS default) stay 0o555 — no syscall needed.
+                // 0o644 files (serial fallback) become 0o444.
+                // 0o755 files (serial fallback executable) become 0o555.
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let current_mode = metadata.permissions().mode();
-                    let new_mode = if current_mode & 0o111 != 0 { 0o555 } else { 0o444 };
-                    let mut perms = metadata.permissions();
-                    perms.set_mode(new_mode);
-                    fs::set_permissions(path, perms)
-                        .await
-                        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+                    let current_mode = metadata.permissions().mode() & 0o777;
+                    let new_mode = current_mode & 0o555; // strip write bits
+                    if new_mode != current_mode {
+                        let mut perms = metadata.permissions();
+                        perms.set_mode(new_mode);
+                        fs::set_permissions(path, perms)
+                            .await
+                            .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+                    }
                 }
                 #[cfg(windows)]
                 {

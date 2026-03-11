@@ -23,6 +23,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
+use nativelink_util::common::DigestInfo;
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use tokio::sync::mpsc::UnboundedSender;
@@ -121,6 +122,11 @@ pub struct Worker {
     #[metric(help = "CPU load percentage reported by the worker.")]
     pub cpu_load_pct: u32,
 
+    /// Digests of input root directories cached in the worker's directory cache.
+    /// The scheduler gives routing preference to workers that already have the
+    /// action's input_root_digest cached.
+    pub cached_directory_digests: HashSet<DigestInfo>,
+
     /// Stats about the worker.
     #[metric]
     metrics: Arc<Metrics>,
@@ -187,6 +193,7 @@ impl Worker {
             quarantined_at: None,
             cas_endpoint,
             cpu_load_pct: 0,
+            cached_directory_digests: HashSet::new(),
             metrics: Arc::new(Metrics {
                 connected_timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)

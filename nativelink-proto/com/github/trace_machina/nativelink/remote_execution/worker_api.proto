@@ -117,6 +117,10 @@ message BlobsAvailableNotification {
     /// CPU load percentage: load_avg_1m / num_cpus * 100.
     /// 0 means unknown (old workers that don't report load).
     uint32 cpu_load_pct = 6;
+    /// Digests of input root directories that are cached in this worker's
+    /// directory cache. The scheduler can give routing preference to workers
+    /// that already have the action's input_root_digest cached.
+    repeated build.bazel.remote.execution.v2.Digest cached_directory_digests = 7;
 }
 
 /// Notification that blobs have been evicted from a worker.
