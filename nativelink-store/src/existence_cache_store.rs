@@ -279,6 +279,24 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 .existence_cache
                 .insert(digest, ExistenceItem(size))
                 .await;
+
+            // Diagnostic: verify the blob actually persisted in the inner store.
+            // If this fires, it means the inner store reported success but the
+            // blob is not findable immediately after write.
+            let mut verify = [None];
+            if let Ok(()) = self
+                .inner_store
+                .has_with_results(&[digest.into()], &mut verify)
+                .await
+            {
+                if verify[0].is_none() {
+                    tracing::error!(
+                        ?digest,
+                        "CRITICAL: inner store update() succeeded but has() returns \
+                         None immediately after! Blob was NOT persisted to slow store.",
+                    );
+                }
+            }
         }
         {
             let maybe_keys = self.pause_item_callbacks.lock().take();
