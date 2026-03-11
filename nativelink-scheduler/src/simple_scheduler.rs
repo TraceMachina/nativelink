@@ -965,6 +965,12 @@ impl WorkerScheduler for SimpleScheduler {
             .set_drain_worker(worker_id, is_draining)
             .await
     }
+
+    async fn update_worker_load(&self, worker_id: &WorkerId, cpu_load_pct: u32) -> Result<(), Error> {
+        self.worker_scheduler
+            .update_worker_load(worker_id, cpu_load_pct)
+            .await
+    }
 }
 
 impl RootMetricsComponent for SimpleScheduler {}

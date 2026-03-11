@@ -353,19 +353,34 @@ impl ApiWorkerSchedulerImpl {
         // multiple consecutive actions all matching the same "least recently used" worker.
         let workers_iter = self.workers.iter();
 
-        let worker_id = match self.allocation_strategy {
-            // Use rfind to get the least recently used that satisfies the properties.
+        // Collect viable candidates with their load info for load-aware selection.
+        let viable: Vec<_> = match self.allocation_strategy {
             WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
                 .rev()
                 .filter(|(worker_id, _)| candidates.contains(worker_id))
-                .find(&worker_matches)
-                .map(|(_, w)| w.id.clone()),
-
-            // Use find to get the most recently used that satisfies the properties.
+                .filter(|pair| worker_matches(pair))
+                .map(|(_, w)| (w.id.clone(), w.cpu_load_pct))
+                .collect(),
             WorkerAllocationStrategy::MostRecentlyUsed => workers_iter
                 .filter(|(worker_id, _)| candidates.contains(worker_id))
-                .find(&worker_matches)
-                .map(|(_, w)| w.id.clone()),
+                .filter(|pair| worker_matches(pair))
+                .map(|(_, w)| (w.id.clone(), w.cpu_load_pct))
+                .collect(),
+        };
+
+        // Pick the lightest-loaded worker among viable candidates.
+        // Workers with cpu_load_pct == 0 (unknown) are sorted last among
+        // workers that have reported load. Falls back to LRU/MRU order
+        // (first in the vec) when no workers have reported load.
+        let worker_id = if viable.iter().any(|(_, load)| *load > 0) {
+            // At least one worker has reported load — pick lightest.
+            viable
+                .iter()
+                .min_by_key(|(_, load)| if *load == 0 { u32::MAX } else { *load })
+                .map(|(id, _)| id.clone())
+        } else {
+            // No load data — use first viable (LRU/MRU order).
+            viable.first().map(|(id, _)| id.clone())
         };
 
         // Promote the found worker in the LRU so the next find_worker_for_action
@@ -449,15 +464,31 @@ impl ApiWorkerSchedulerImpl {
                 // top score are considered tied and the most recently
                 // refreshed one wins.
                 let mut sorted: Vec<_> = scores.into_iter().collect();
+                // Look up cpu_load_pct for tiebreaking within 10% score range.
+                let load_for_worker = |wid: &WorkerId| -> u32 {
+                    self.workers.0.peek(wid)
+                        .map(|w| w.cpu_load_pct)
+                        .unwrap_or(0)
+                };
                 sorted.sort_by(|a, b| {
                     let (score_a, ts_a) = a.1;
                     let (score_b, ts_b) = b.1;
                     let max_score = score_a.max(score_b);
-                    // Within 10% of each other? Use timestamp as tiebreaker.
+                    // Within 10% of each other? Use CPU load, then timestamp.
                     let threshold = max_score / 10; // 10% of the larger score
                     if score_a.abs_diff(score_b) <= threshold {
-                        // Scores are similar, prefer more recent timestamp.
-                        ts_b.cmp(&ts_a)
+                        // Scores are similar — prefer lower CPU load.
+                        let load_a = load_for_worker(&a.0);
+                        let load_b = load_for_worker(&b.0);
+                        if load_a != load_b && (load_a > 0 || load_b > 0) {
+                            // Sort unknown (0) after known loads.
+                            let effective_a = if load_a == 0 { u32::MAX } else { load_a };
+                            let effective_b = if load_b == 0 { u32::MAX } else { load_b };
+                            effective_a.cmp(&effective_b)
+                        } else {
+                            // Same load or both unknown — prefer more recent timestamp.
+                            ts_b.cmp(&ts_a)
+                        }
                     } else {
                         // Scores differ significantly, prefer higher score.
                         score_b.cmp(&score_a)
@@ -1497,6 +1528,20 @@ impl WorkerScheduler for ApiWorkerScheduler {
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
         let mut inner = self.inner.write().await;
         inner.set_drain_worker(worker_id, is_draining).await
+    }
+
+    async fn update_worker_load(&self, worker_id: &WorkerId, cpu_load_pct: u32) -> Result<(), Error> {
+        // Use peek_mut to avoid promoting the worker in the LRU cache —
+        // load updates should not affect scheduling order.
+        let mut inner = self.inner.write().await;
+        let worker = inner.workers.0.peek_mut(worker_id).ok_or_else(|| {
+            make_input_err!(
+                "Worker not found in worker map in update_worker_load() {}",
+                worker_id
+            )
+        })?;
+        worker.cpu_load_pct = cpu_load_pct;
+        Ok(())
     }
 }
 

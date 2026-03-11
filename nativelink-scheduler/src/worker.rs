@@ -117,6 +117,11 @@ pub struct Worker {
     #[metric(help = "The worker's CAS endpoint for peer blob sharing.")]
     pub cas_endpoint: String,
 
+    /// CPU load percentage reported by the worker (load_avg_1m / num_cpus * 100).
+    /// 0 means unknown (worker hasn't reported load yet).
+    #[metric(help = "CPU load percentage reported by the worker.")]
+    pub cpu_load_pct: u32,
+
     /// Stats about the worker.
     #[metric]
     metrics: Arc<Metrics>,
@@ -182,6 +187,7 @@ impl Worker {
             max_inflight_tasks,
             quarantined_at: None,
             cas_endpoint,
+            cpu_load_pct: 0,
             metrics: Arc::new(Metrics {
                 connected_timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)

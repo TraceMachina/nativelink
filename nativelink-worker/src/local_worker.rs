@@ -63,6 +63,23 @@ use crate::worker_utils::make_connect_worker_request;
 /// Default interval for periodic BlobsAvailable reports (milliseconds).
 const DEFAULT_BLOBS_AVAILABLE_INTERVAL_MS: u64 = 500;
 
+/// Returns the current CPU load as a percentage (load_avg_1m / num_cpus * 100).
+/// Returns 0 if the load cannot be determined.
+fn get_cpu_load_pct() -> u32 {
+    let num_cpus = std::thread::available_parallelism()
+        .map(|n| n.get() as f64)
+        .unwrap_or(1.0);
+    let mut loadavg: [f64; 1] = [0.0];
+    // SAFETY: getloadavg writes at most `nelem` doubles into the array.
+    let ret = unsafe { libc::getloadavg(loadavg.as_mut_ptr(), 1) };
+    if ret < 1 {
+        return 0;
+    }
+    let pct = (loadavg[0] / num_cpus * 100.0).round() as u32;
+    // Clamp to a reasonable maximum (can exceed 100 on overloaded systems).
+    pct.min(1000)
+}
+
 /// Build the advertised gRPC endpoint for peer blob sharing.
 /// Uses the machine's hostname so a single config works across all workers.
 /// The hostname is resolved once and cached for the lifetime of the process.
@@ -287,7 +304,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             // We always send 2 keep alive requests per timeout. Http2 should manage most of our
             // timeout issues, this is a secondary check to ensure we can still send data.
             sleep(Duration::from_secs_f32(timeout / 2.)).await;
-            if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
+            if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {
+                cpu_load_pct: get_cpu_load_pct(),
+            }).await {
                 return Err(make_err!(
                     Code::Internal,
                     "Failed to send KeepAlive in LocalWorker : {:?}",
@@ -350,6 +369,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             is_full_snapshot: is_first,
             evicted_digests,
             digest_infos,
+            cpu_load_pct: get_cpu_load_pct(),
         };
 
         if let Err(err) = grpc_client.blobs_available(notification).await {
@@ -592,6 +612,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 let running_actions_manager = self.running_actions_manager.clone();
                                 let complete = ExecuteComplete {
                                     operation_id: operation_id.clone(),
+                                    cpu_load_pct: get_cpu_load_pct(),
                                 };
                                 move |res: Result<ActionResult, Error>| async move {
                                     let instance_name = maybe_instance_name
@@ -631,6 +652,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                             is_full_snapshot: false,
                                                             evicted_digests: Vec::new(),
                                                             digest_infos: Vec::new(),
+                                                            cpu_load_pct: get_cpu_load_pct(),
                                                         }
                                                     ).await {
                                                         warn!(?err, "Failed to send blobs_available notification");
