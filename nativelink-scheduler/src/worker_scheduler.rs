@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use nativelink_error::Error;
 use nativelink_metric::RootMetricsComponent;
 use nativelink_util::action_messages::{OperationId, WorkerId};
+use nativelink_util::common::DigestInfo;
 use nativelink_util::operation_state_manager::UpdateOperationType;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 
@@ -59,4 +62,31 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
 
     /// Sets if the worker is draining or not.
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error>;
+
+    /// Updates the CPU load reported by a worker.
+    /// `cpu_load_pct` is load_avg_1m / num_cpus * 100. 0 means unknown.
+    async fn update_worker_load(&self, worker_id: &WorkerId, cpu_load_pct: u32) -> Result<(), Error>;
+
+    /// Updates the set of cached directory digests for a worker.
+    /// The scheduler uses this to give routing preference to workers that
+    /// already have the action's input_root_digest cached in their directory cache.
+    async fn update_cached_directories(
+        &self,
+        worker_id: &WorkerId,
+        digests: HashSet<DigestInfo>,
+    ) -> Result<(), Error>;
+
+    /// Updates the set of cached subtree digests for a worker using delta encoding.
+    ///
+    /// When `is_full_snapshot` is true, `full_set` replaces the entire set.
+    /// When `is_full_snapshot` is false, `added` digests are inserted and
+    /// `removed` digests are deleted from the existing set.
+    async fn update_cached_subtrees(
+        &self,
+        worker_id: &WorkerId,
+        is_full_snapshot: bool,
+        full_set: Vec<DigestInfo>,
+        added: Vec<DigestInfo>,
+        removed: Vec<DigestInfo>,
+    ) -> Result<(), Error>;
 }

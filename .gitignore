@@ -25,3 +25,4 @@ nativelink.bazelrc
 *.log
 buck-out/
 .cargo/config.toml
+.claude/worktrees/

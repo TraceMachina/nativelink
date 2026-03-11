@@ -22,15 +22,17 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex;
+use bytes::Bytes;
 use futures::task::Poll;
 use futures::{Stream, StreamExt, poll};
 use mock_instant::thread_local::{MockClock, SystemTime as MockSystemTime};
 use nativelink_config::schedulers::{PropertyType, SimpleSpec};
+use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    ExecuteRequest, Platform, digest_function,
+    Directory, ExecuteRequest, FileNode, Platform, digest_function,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
@@ -43,10 +45,12 @@ use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_fa
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
+use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
     INTERNAL_ERROR_EXIT_CODE, NameOrPath, OperationId, SymlinkInfo, WorkerId,
 };
+use nativelink_util::blob_locality_map::new_shared_blob_locality_map;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
@@ -54,6 +58,8 @@ use nativelink_util::operation_state_manager::{
     UpdateOperationType,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
+use nativelink_util::store_trait::{Store, StoreLike};
+use prost::Message;
 use pretty_assertions::assert_eq;
 use tokio::sync::{Notify, mpsc};
 use utils::scheduler_utils::{INSTANCE_NAME, make_base_action_info, update_eq};
@@ -134,6 +140,8 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -159,6 +167,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
                 queued_timestamp: Some(insert_timestamp.into()),
                 platform: Some(Platform::default()),
                 worker_id: worker_id.into(),
+                peer_hints: Vec::new(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -234,6 +243,8 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
         task_change_notify.clone(),
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -295,6 +306,8 @@ async fn find_executing_action() -> Result<(), Error> {
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -339,6 +352,7 @@ async fn find_executing_action() -> Result<(), Error> {
                 queued_timestamp: Some(insert_timestamp.into()),
                 platform: Some(Platform::default()),
                 worker_id: worker_id.into(),
+                peer_hints: Vec::new(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -380,6 +394,8 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest1 = DigestInfo::new([99u8; 32], 512);
     let action_digest2 = DigestInfo::new([88u8; 32], 512);
@@ -418,6 +434,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         queued_timestamp: Some(insert_timestamp1.into()),
         platform: Some(Platform::default()),
         worker_id: worker_id1.to_string(),
+        peer_hints: Vec::new(),
     };
 
     let mut expected_start_execute_for_worker2 = StartExecute {
@@ -431,6 +448,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         queued_timestamp: Some(insert_timestamp2.into()),
         platform: Some(Platform::default()),
         worker_id: worker_id1.to_string(),
+        peer_hints: Vec::new(),
     };
     let operation_id1 = {
         // Worker1 should now see first execution request.
@@ -574,6 +592,8 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -664,6 +684,8 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
     let mut platform_properties = HashMap::new();
@@ -718,6 +740,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
                 queued_timestamp: Some(insert_timestamp.into()),
                 platform: Some((&worker2_properties).into()),
                 worker_id: worker_id2.to_string(),
+                peer_hints: Vec::new(),
             })),
         };
         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
@@ -761,6 +784,8 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -817,6 +842,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
                 queued_timestamp: Some(insert_timestamp1.into()),
                 platform: Some(Platform::default()),
                 worker_id: worker_id.into(),
+                peer_hints: Vec::new(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -870,6 +896,8 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let worker_id = WorkerId("worker_id".to_string());
     let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -1028,6 +1056,8 @@ async fn matching_engine_fails_sends_abort() -> Result<(), Error> {
             task_change_notify,
             MockInstantWrapped::default,
             None,
+            None, // cas_store
+            None, // locality_map
         );
         // Initial worker calls do_try_match, so send it no items.
         senders.get_range_of_actions.send(vec![]).unwrap();
@@ -1074,6 +1104,8 @@ async fn matching_engine_fails_sends_abort() -> Result<(), Error> {
             task_change_notify,
             MockInstantWrapped::default,
             None,
+            None, // cas_store
+            None, // locality_map
         );
         // senders.tx_get_awaited_action_by_id.send(Ok(None)).unwrap();
         senders.get_range_of_actions.send(vec![]).unwrap();
@@ -1135,6 +1167,8 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1168,6 +1202,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         queued_timestamp: Some(insert_timestamp.into()),
         platform: Some(Platform::default()),
         worker_id: worker_id1.to_string(),
+        peer_hints: Vec::new(),
     };
 
     {
@@ -1205,13 +1240,18 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         );
     }
 
-    // Keep worker 2 alive.
+    // Keep worker 2 alive at 2x timeout so it survives both phases.
     scheduler
-        .worker_keep_alive_received(&worker_id2, NOW_TIME + WORKER_TIMEOUT_S)
+        .worker_keep_alive_received(&worker_id2, NOW_TIME + 2 * WORKER_TIMEOUT_S)
         .await?;
-    // This should remove worker 1 (the one executing our job).
+    // Phase 1: quarantine worker 1 at 1x timeout (stops receiving new work).
     scheduler
         .remove_timedout_workers(NOW_TIME + WORKER_TIMEOUT_S)
+        .await?;
+    tokio::task::yield_now().await;
+    // Phase 2: evict worker 1 at 2x timeout (fully removed, job rescheduled).
+    scheduler
+        .remove_timedout_workers(NOW_TIME + 2 * WORKER_TIMEOUT_S)
         .await?;
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
 
@@ -1269,6 +1309,8 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1372,6 +1414,8 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1493,6 +1537,8 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1603,6 +1649,8 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1638,6 +1686,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
                 queued_timestamp: Some(insert_timestamp.into()),
                 platform: Some(Platform::default()),
                 worker_id: worker_id.clone().into(),
+                peer_hints: Vec::new(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -1753,6 +1802,8 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1921,6 +1972,8 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1989,6 +2042,8 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2151,6 +2206,8 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     assert_eq!(dropped.load(Ordering::Relaxed), false);
 
@@ -2181,6 +2238,8 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2267,6 +2326,8 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2346,6 +2407,8 @@ async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2419,6 +2482,8 @@ async fn logs_when_no_workers_match() -> Result<(), Error> {
         task_change_notify,
         MockInstantWrapped::default,
         None,
+        None, // cas_store
+        None, // locality_map
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2447,6 +2512,1153 @@ async fn logs_when_no_workers_match() -> Result<(), Error> {
         "Property mismatch on worker property prop. Minimum(0) < Minimum(1)"
     ));
     assert!(logs_contain("No workers matched"));
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn worker_fails_precondition_completes_immediately_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            max_job_retries: 5,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    let operation_id = {
+        // Other tests check full data. We only care if we got StartAction.
+        let operation_id = match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(exec)) => exec.operation_id,
+            v => panic!("Expected StartAction, got : {v:?}"),
+        };
+        // Other tests check full data. We only care if client thinks we are Executing.
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Executing
+        );
+        OperationId::from(operation_id.as_str())
+    };
+
+    let err = make_err!(Code::FailedPrecondition, "Missing input blobs");
+    // Send FailedPrecondition error from worker. This should NOT be retried
+    // even though max_job_retries is 5.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(err.clone()),
+            )
+            .await,
+    );
+
+    {
+        // Client should get notification saying the action completed (not re-queued).
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+        let expected_action_state = ActionState {
+            // Name is a random string, so we ignore it and just make it the same.
+            client_operation_id: action_state.client_operation_id.clone(),
+            stage: ActionStage::Completed(ActionResult {
+                output_files: Vec::default(),
+                output_folders: Vec::default(),
+                output_file_symlinks: Vec::default(),
+                output_directory_symlinks: Vec::default(),
+                exit_code: INTERNAL_ERROR_EXIT_CODE,
+                stdout_digest: DigestInfo::zero_digest(),
+                stderr_digest: DigestInfo::zero_digest(),
+                execution_metadata: ExecutionMetadata {
+                    worker: worker_id.to_string(),
+                    queued_timestamp: SystemTime::UNIX_EPOCH,
+                    worker_start_timestamp: SystemTime::UNIX_EPOCH,
+                    worker_completed_timestamp: SystemTime::UNIX_EPOCH,
+                    input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
+                    input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
+                    execution_start_timestamp: SystemTime::UNIX_EPOCH,
+                    execution_completed_timestamp: SystemTime::UNIX_EPOCH,
+                    output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
+                    output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+                },
+                server_logs: HashMap::default(),
+                error: Some(err.clone()),
+                message: String::new(),
+            }),
+            action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
+        };
+        let mut received_state = action_state.as_ref().clone();
+        if let ActionStage::Completed(stage) = &mut received_state.stage {
+            if let Some(real_err) = &mut stage.error {
+                // Verify the error contains the FailedPrecondition message.
+                assert!(
+                    real_err.to_string().contains("Missing input blobs"),
+                    "{real_err} did not contain 'Missing input blobs'",
+                );
+                assert!(
+                    real_err
+                        .to_string()
+                        .contains("Job cancelled because it attempted to execute too many times"),
+                    "{real_err} did not contain 'Job cancelled because it attempted to execute too many times'",
+                );
+                *real_err = err;
+            }
+        } else {
+            panic!(
+                "Expected Completed (not re-queued), got : {:?}",
+                action_state.stage
+            );
+        }
+        assert_eq!(received_state, expected_action_state);
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Locality-aware scheduling tests
+// ============================================================================
+
+/// Helper: adds a worker with a specific CAS endpoint (for locality mapping).
+async fn setup_new_worker_with_cas_endpoint(
+    scheduler: &SimpleScheduler,
+    worker_id: WorkerId,
+    props: PlatformProperties,
+    cas_endpoint: &str,
+) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let worker = Worker::new_with_cas_endpoint(
+        worker_id.clone(),
+        props,
+        tx,
+        NOW_TIME,
+        0,
+        cas_endpoint.to_string(),
+    );
+    scheduler
+        .add_worker(worker)
+        .await
+        .err_tip(|| "Failed to add worker")?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id, &mut rx).await;
+    Ok(rx)
+}
+
+/// Helper: schedules an action with a custom `input_root_digest`.
+async fn setup_action_with_input_root(
+    scheduler: &SimpleScheduler,
+    action_digest: DigestInfo,
+    input_root_digest: DigestInfo,
+    platform_properties: HashMap<String, String>,
+    insert_timestamp: SystemTime,
+) -> Result<Box<dyn ActionStateResult>, Error> {
+    let mut action_info = make_base_action_info(insert_timestamp, action_digest);
+    Arc::make_mut(&mut action_info).platform_properties = platform_properties;
+    Arc::make_mut(&mut action_info).input_root_digest = input_root_digest;
+    let client_id = OperationId::default();
+    let result = scheduler.add_action(client_id, action_info).await;
+    tokio::task::yield_now().await;
+    result
+}
+
+/// Helper: extracts the StartExecute from a worker receiver, returning
+/// (operation_id, start_execute).
+async fn recv_start_execute(
+    rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>,
+) -> (String, StartExecute) {
+    match rx.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(se)) => (se.operation_id.clone(), se),
+        v => panic!("Expected StartAction, got: {v:?}"),
+    }
+}
+
+#[nativelink_test]
+async fn locality_scoring_selects_best_worker_test() -> Result<(), Error> {
+    // Test: When a locality map is populated and CAS store has Directory protos,
+    // the worker with the most cached input bytes should be preferred.
+    let worker_id_a = WorkerId("worker_a".to_string());
+    let worker_id_b = WorkerId("worker_b".to_string());
+    let cas_endpoint_a = "worker-a:50081";
+    let cas_endpoint_b = "worker-b:50081";
+
+    // Create file digests that will be in the input tree.
+    let file_digest1 = DigestInfo::new([1u8; 32], 5000); // 5000 bytes
+    let file_digest2 = DigestInfo::new([2u8; 32], 3000); // 3000 bytes
+    let file_digest3 = DigestInfo::new([3u8; 32], 2000); // 2000 bytes
+
+    // Build a Directory proto with these files as the input root.
+    let input_root_dir = Directory {
+        files: vec![
+            FileNode {
+                name: "file1.txt".to_string(),
+                digest: Some(file_digest1.into()),
+                is_executable: false,
+                ..Default::default()
+            },
+            FileNode {
+                name: "file2.txt".to_string(),
+                digest: Some(file_digest2.into()),
+                is_executable: false,
+                ..Default::default()
+            },
+            FileNode {
+                name: "file3.txt".to_string(),
+                digest: Some(file_digest3.into()),
+                is_executable: false,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let dir_bytes = input_root_dir.encode_to_vec();
+    let input_root_digest = DigestInfo::new(
+        {
+            use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+            let mut hasher = DigestHasherFunc::Sha256.hasher();
+            hasher.update(&dir_bytes);
+            let digest_info = hasher.finalize_digest();
+            **digest_info.packed_hash()
+        },
+        dir_bytes.len() as u64,
+    );
+
+    // Create a CAS store and populate it with the directory proto.
+    let cas_store_inner = MemoryStore::new(&MemorySpec::default());
+    let cas_store = Store::new(cas_store_inner.clone());
+    let key: nativelink_util::store_trait::StoreKey<'_> = input_root_digest.into();
+    cas_store
+        .update_oneshot(key, Bytes::from(dir_bytes))
+        .await?;
+
+    // Create and populate the locality map.
+    // Worker A has file1 (5000) and file3 (2000) = 7000 total.
+    // Worker B has file2 (3000) = 3000 total.
+    // Worker A should win.
+    let locality_map = new_shared_blob_locality_map();
+    {
+        let mut map = locality_map.write();
+        map.register_blobs(cas_endpoint_a, &[file_digest1, file_digest3]);
+        map.register_blobs(cas_endpoint_b, &[file_digest2]);
+    }
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        Some(cas_store),
+        Some(locality_map),
+    );
+
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    // Add workers WITH cas_endpoints so the endpoint_to_worker map is populated.
+    let mut rx_a = setup_new_worker_with_cas_endpoint(
+        &scheduler,
+        worker_id_a.clone(),
+        PlatformProperties::default(),
+        cas_endpoint_a,
+    )
+    .await?;
+    let mut rx_b = setup_new_worker_with_cas_endpoint(
+        &scheduler,
+        worker_id_b.clone(),
+        PlatformProperties::default(),
+        cas_endpoint_b,
+    )
+    .await?;
+
+    // Schedule the action.
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener = setup_action_with_input_root(
+        &scheduler,
+        action_digest,
+        input_root_digest,
+        HashMap::new(),
+        insert_timestamp,
+    )
+    .await?;
+
+    // Worker A should get the action because it has the highest locality score (7000 > 3000).
+    let (selected_worker_id, _se) = tokio::select! {
+        msg = rx_a.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_a, got: {v:?}"),
+            };
+            (worker_id_a.clone(), se)
+        }
+        msg = rx_b.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_b, got: {v:?}"),
+            };
+            (worker_id_b.clone(), se)
+        }
+    };
+
+    assert_eq!(
+        selected_worker_id, worker_id_a,
+        "Locality scoring should select worker_a (7000 cached bytes > worker_b's 3000)"
+    );
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn no_peer_hints_without_resolved_tree_test() -> Result<(), Error> {
+    // Test: When a locality map has entries for the input_root_digest itself
+    // but there is no CAS store / no resolved tree, peer hints should be
+    // empty. The old fallback that generated a single hint for
+    // input_root_digest never worked because workers register individual
+    // file digests, not directory digests.
+    let worker_id = WorkerId("worker_recv".to_string());
+    let peer_endpoint = "peer-worker:50081";
+
+    let input_root = DigestInfo::new([77u8; 32], 4096);
+
+    // Create locality map and register the input_root_digest on a peer endpoint.
+    let locality_map = new_shared_blob_locality_map();
+    {
+        let mut map = locality_map.write();
+        map.register_blobs(peer_endpoint, &[input_root]);
+    }
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // no CAS store -- no resolved tree available
+        Some(locality_map),
+    );
+
+    let action_digest = DigestInfo::new([88u8; 32], 256);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+
+    // Schedule action with a specific input_root.
+    let insert_timestamp = make_system_time(1);
+    let _action_listener = setup_action_with_input_root(
+        &scheduler,
+        action_digest,
+        input_root,
+        HashMap::new(),
+        insert_timestamp,
+    )
+    .await?;
+
+    // Worker should receive StartAction with empty peer_hints (no resolved tree).
+    let (_, start_execute) = recv_start_execute(&mut rx_from_worker).await;
+
+    assert!(
+        start_execute.peer_hints.is_empty(),
+        "peer_hints should be empty without a resolved tree (directory digests are not useful)"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn peer_hints_from_resolved_tree_test() -> Result<(), Error> {
+    // Test: When a CAS store has a Directory proto for the input root, and
+    // the locality map has entries for individual file digests, the
+    // StartExecute message should contain per-file peer hints sorted by
+    // size descending.
+    let worker_id = WorkerId("worker_recv".to_string());
+    let peer_endpoint = "peer-worker:50081";
+
+    // Create file digests.
+    let file_large = DigestInfo::new([10u8; 32], 10000);
+    let file_small = DigestInfo::new([11u8; 32], 500);
+
+    // Build Directory proto.
+    let input_root_dir = Directory {
+        files: vec![
+            FileNode {
+                name: "large.bin".to_string(),
+                digest: Some(file_large.into()),
+                is_executable: false,
+                ..Default::default()
+            },
+            FileNode {
+                name: "small.txt".to_string(),
+                digest: Some(file_small.into()),
+                is_executable: false,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let dir_bytes = input_root_dir.encode_to_vec();
+    let input_root_digest = DigestInfo::new(
+        {
+            use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+            let mut hasher = DigestHasherFunc::Sha256.hasher();
+            hasher.update(&dir_bytes);
+            let digest_info = hasher.finalize_digest();
+            **digest_info.packed_hash()
+        },
+        dir_bytes.len() as u64,
+    );
+
+    // Create and populate CAS store.
+    let cas_store_inner = MemoryStore::new(&MemorySpec::default());
+    let cas_store = Store::new(cas_store_inner);
+    let key: nativelink_util::store_trait::StoreKey<'_> = input_root_digest.into();
+    cas_store
+        .update_oneshot(key, Bytes::from(dir_bytes))
+        .await?;
+
+    // Create locality map with file blobs registered on a peer.
+    let locality_map = new_shared_blob_locality_map();
+    {
+        let mut map = locality_map.write();
+        map.register_blobs(peer_endpoint, &[file_large, file_small]);
+    }
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        Some(cas_store),
+        Some(locality_map),
+    );
+
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+
+    let insert_timestamp = make_system_time(1);
+    let _action_listener = setup_action_with_input_root(
+        &scheduler,
+        action_digest,
+        input_root_digest,
+        HashMap::new(),
+        insert_timestamp,
+    )
+    .await?;
+
+    let (_, start_execute) = recv_start_execute(&mut rx_from_worker).await;
+
+    // Should have per-file peer hints (one per file in the tree).
+    assert_eq!(
+        start_execute.peer_hints.len(),
+        2,
+        "Should have 2 peer hints (one per file in the input tree)"
+    );
+
+    // Hints should be sorted by size descending (large first).
+    let first_hint_digest = DigestInfo::try_from(
+        start_execute.peer_hints[0]
+            .digest
+            .as_ref()
+            .expect("hint should have digest"),
+    )
+    .unwrap();
+    let second_hint_digest = DigestInfo::try_from(
+        start_execute.peer_hints[1]
+            .digest
+            .as_ref()
+            .expect("hint should have digest"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        first_hint_digest, file_large,
+        "First hint should be the largest file"
+    );
+    assert_eq!(
+        second_hint_digest, file_small,
+        "Second hint should be the smaller file"
+    );
+
+    // Both hints should reference the peer endpoint.
+    for hint in &start_execute.peer_hints {
+        assert!(
+            hint.peer_endpoints.contains(&peer_endpoint.to_string()),
+            "Each hint should reference the peer endpoint"
+        );
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn fallback_to_lru_when_no_locality_data_test() -> Result<(), Error> {
+    // Test: When a locality map and CAS store are configured but contain NO
+    // blob data for the action's input tree, the scheduler should fall back
+    // to the normal LRU worker selection without errors.
+    let worker_id_a = WorkerId("worker_a".to_string());
+    let worker_id_b = WorkerId("worker_b".to_string());
+    let cas_endpoint_a = "worker-a:50081";
+    let cas_endpoint_b = "worker-b:50081";
+
+    // Build a Directory proto with files, but do NOT register those files
+    // in the locality map -- simulating a fresh deployment or cold start.
+    let file_digest1 = DigestInfo::new([30u8; 32], 4000);
+    let file_digest2 = DigestInfo::new([31u8; 32], 2000);
+
+    let input_root_dir = Directory {
+        files: vec![
+            FileNode {
+                name: "cold_file1.bin".to_string(),
+                digest: Some(file_digest1.into()),
+                is_executable: false,
+                ..Default::default()
+            },
+            FileNode {
+                name: "cold_file2.bin".to_string(),
+                digest: Some(file_digest2.into()),
+                is_executable: false,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let dir_bytes = input_root_dir.encode_to_vec();
+    let input_root_digest = DigestInfo::new(
+        {
+            use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+            let mut hasher = DigestHasherFunc::Sha256.hasher();
+            hasher.update(&dir_bytes);
+            let digest_info = hasher.finalize_digest();
+            **digest_info.packed_hash()
+        },
+        dir_bytes.len() as u64,
+    );
+
+    // Create CAS store with the directory proto so tree resolution succeeds.
+    let cas_store_inner = MemoryStore::new(&MemorySpec::default());
+    let cas_store = Store::new(cas_store_inner);
+    let key: nativelink_util::store_trait::StoreKey<'_> = input_root_digest.into();
+    cas_store
+        .update_oneshot(key, Bytes::from(dir_bytes))
+        .await?;
+
+    // Create an EMPTY locality map -- no blobs registered on any endpoint.
+    let locality_map = new_shared_blob_locality_map();
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        Some(cas_store),
+        Some(locality_map),
+    );
+
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    // Add two workers with CAS endpoints.
+    let mut rx_a = setup_new_worker_with_cas_endpoint(
+        &scheduler,
+        worker_id_a.clone(),
+        PlatformProperties::default(),
+        cas_endpoint_a,
+    )
+    .await?;
+    let mut rx_b = setup_new_worker_with_cas_endpoint(
+        &scheduler,
+        worker_id_b.clone(),
+        PlatformProperties::default(),
+        cas_endpoint_b,
+    )
+    .await?;
+
+    // Schedule action with the input root.
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener = setup_action_with_input_root(
+        &scheduler,
+        action_digest,
+        input_root_digest,
+        HashMap::new(),
+        insert_timestamp,
+    )
+    .await?;
+
+    // One of the workers should receive the action (LRU fallback).
+    // We don't care which worker gets it -- just that it succeeds.
+    let (selected_worker_id, start_execute) = tokio::select! {
+        msg = rx_a.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_a, got: {v:?}"),
+            };
+            (worker_id_a.clone(), se)
+        }
+        msg = rx_b.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_b, got: {v:?}"),
+            };
+            (worker_id_b.clone(), se)
+        }
+    };
+
+    // Verify the action was dispatched to one of the two workers.
+    assert!(
+        selected_worker_id == worker_id_a || selected_worker_id == worker_id_b,
+        "Action should be dispatched to one of the available workers via LRU fallback"
+    );
+
+    // With no locality data, there should be no peer hints (no blobs are registered).
+    assert!(
+        start_execute.peer_hints.is_empty(),
+        "peer_hints should be empty when locality map has no data for input files, got {} hints",
+        start_execute.peer_hints.len()
+    );
+
+    // Client should see the Executing state.
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn locality_scoring_with_empty_map_and_no_cas_store_test() -> Result<(), Error> {
+    // Test: When locality_map is provided but cas_store is None (tree
+    // resolution impossible), scheduling should still work via LRU fallback.
+    // This covers the path where resolve_input_tree returns None.
+    let worker_id = WorkerId("worker_solo".to_string());
+
+    // Create locality map but don't populate it.
+    let locality_map = new_shared_blob_locality_map();
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // No CAS store -- tree resolution returns None
+        Some(locality_map),
+    );
+
+    let action_digest = DigestInfo::new([55u8; 32], 256);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    // Worker should receive the action via normal LRU selection.
+    let (_, start_execute) = recv_start_execute(&mut rx_from_worker).await;
+
+    // No peer hints should be generated (no tree, no locality data).
+    assert!(
+        start_execute.peer_hints.is_empty(),
+        "peer_hints should be empty when no CAS store is configured"
+    );
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn locality_scoring_partial_data_still_selects_best_worker_test() -> Result<(), Error> {
+    // Test: When only SOME workers have locality data, the scoring should
+    // still pick the one with the most cached bytes, and the worker with
+    // no cached data should get a score of 0 (falling behind).
+    let worker_id_a = WorkerId("worker_a".to_string());
+    let worker_id_b = WorkerId("worker_b".to_string());
+    let cas_endpoint_a = "worker-a:50081";
+    let cas_endpoint_b = "worker-b:50081";
+
+    // Files in the input tree.
+    let file_digest1 = DigestInfo::new([40u8; 32], 8000);
+    let file_digest2 = DigestInfo::new([41u8; 32], 1000);
+
+    let input_root_dir = Directory {
+        files: vec![
+            FileNode {
+                name: "big.dat".to_string(),
+                digest: Some(file_digest1.into()),
+                is_executable: false,
+                ..Default::default()
+            },
+            FileNode {
+                name: "small.dat".to_string(),
+                digest: Some(file_digest2.into()),
+                is_executable: false,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let dir_bytes = input_root_dir.encode_to_vec();
+    let input_root_digest = DigestInfo::new(
+        {
+            use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+            let mut hasher = DigestHasherFunc::Sha256.hasher();
+            hasher.update(&dir_bytes);
+            let digest_info = hasher.finalize_digest();
+            **digest_info.packed_hash()
+        },
+        dir_bytes.len() as u64,
+    );
+
+    // Create CAS store with directory proto.
+    let cas_store_inner = MemoryStore::new(&MemorySpec::default());
+    let cas_store = Store::new(cas_store_inner);
+    let key: nativelink_util::store_trait::StoreKey<'_> = input_root_digest.into();
+    cas_store
+        .update_oneshot(key, Bytes::from(dir_bytes))
+        .await?;
+
+    // Only worker B has file_digest1 (8000 bytes). Worker A has nothing.
+    let locality_map = new_shared_blob_locality_map();
+    {
+        let mut map = locality_map.write();
+        map.register_blobs(cas_endpoint_b, &[file_digest1]);
+    }
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        Some(cas_store),
+        Some(locality_map),
+    );
+
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_a = setup_new_worker_with_cas_endpoint(
+        &scheduler,
+        worker_id_a.clone(),
+        PlatformProperties::default(),
+        cas_endpoint_a,
+    )
+    .await?;
+    let mut rx_b = setup_new_worker_with_cas_endpoint(
+        &scheduler,
+        worker_id_b.clone(),
+        PlatformProperties::default(),
+        cas_endpoint_b,
+    )
+    .await?;
+
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener = setup_action_with_input_root(
+        &scheduler,
+        action_digest,
+        input_root_digest,
+        HashMap::new(),
+        insert_timestamp,
+    )
+    .await?;
+
+    // Worker B should be selected (8000 cached bytes vs. 0 for worker A).
+    let (selected_worker_id, _se) = tokio::select! {
+        msg = rx_a.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_a, got: {v:?}"),
+            };
+            (worker_id_a.clone(), se)
+        }
+        msg = rx_b.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_b, got: {v:?}"),
+            };
+            (worker_id_b.clone(), se)
+        }
+    };
+
+    assert_eq!(
+        selected_worker_id, worker_id_b,
+        "Locality scoring should select worker_b (8000 cached bytes vs. worker_a's 0)"
+    );
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------
+// CPU-load-aware scheduling tests
+// ---------------------------------------------------------------
+
+#[nativelink_test]
+async fn cpu_load_update_worker_load_stores_correctly() -> Result<(), Error> {
+    // Verify that update_worker_load stores the load on the worker and
+    // influences scheduling. We set load on a single worker, submit an
+    // action, and confirm the worker still receives it (proving the
+    // update didn't break anything and the worker is still viable).
+    let worker_id = WorkerId("worker_load_test".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+
+    let mut rx = setup_new_worker(
+        &scheduler,
+        worker_id.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+
+    // Update the worker's CPU load.
+    scheduler.update_worker_load(&worker_id, 42).await?;
+
+    // Submit an action — the single worker should still be selected.
+    let action_digest = DigestInfo::new([10u8; 32], 256);
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    // Worker should receive the action.
+    let (_op_id, _se) = recv_start_execute(&mut rx).await;
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn cpu_load_lightest_loaded_worker_gets_picked() -> Result<(), Error> {
+    // Create 3 workers with different cpu_load_pct values.
+    // Worker A=80, Worker B=20, Worker C=50.
+    // Worker B (lightest load) should be selected for the action.
+    let worker_id_a = WorkerId("worker_a".to_string());
+    let worker_id_b = WorkerId("worker_b".to_string());
+    let worker_id_c = WorkerId("worker_c".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+
+    // Add all 3 workers (no queued actions yet, so no matching happens).
+    let mut rx_a = setup_new_worker(
+        &scheduler,
+        worker_id_a.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+    let mut rx_b = setup_new_worker(
+        &scheduler,
+        worker_id_b.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+    let mut rx_c = setup_new_worker(
+        &scheduler,
+        worker_id_c.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+
+    // Set CPU loads: A=80, B=20, C=50.
+    scheduler.update_worker_load(&worker_id_a, 80).await?;
+    scheduler.update_worker_load(&worker_id_b, 20).await?;
+    scheduler.update_worker_load(&worker_id_c, 50).await?;
+
+    // Submit an action.
+    let action_digest = DigestInfo::new([20u8; 32], 512);
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    // Determine which worker received the action.
+    let (selected_worker_id, _se) = tokio::select! {
+        msg = rx_a.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_a, got: {v:?}"),
+            };
+            (worker_id_a.clone(), se)
+        }
+        msg = rx_b.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_b, got: {v:?}"),
+            };
+            (worker_id_b.clone(), se)
+        }
+        msg = rx_c.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_c, got: {v:?}"),
+            };
+            (worker_id_c.clone(), se)
+        }
+    };
+
+    assert_eq!(
+        selected_worker_id, worker_id_b,
+        "Worker B (cpu_load_pct=20) should be selected as lightest-loaded"
+    );
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn cpu_load_unknown_zero_sorted_last() -> Result<(), Error> {
+    // Create 2 workers: one with cpu_load_pct=60 (known) and one with
+    // cpu_load_pct=0 (unknown). The worker with known load should be
+    // selected over the unknown one, even though 0 < 60 numerically.
+    let worker_id_known = WorkerId("worker_known".to_string());
+    let worker_id_unknown = WorkerId("worker_unknown".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+
+    let mut rx_known = setup_new_worker(
+        &scheduler,
+        worker_id_known.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+    let mut rx_unknown = setup_new_worker(
+        &scheduler,
+        worker_id_unknown.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+
+    // Set only one worker's load; the other stays at default 0 (unknown).
+    scheduler.update_worker_load(&worker_id_known, 60).await?;
+    // worker_unknown stays at cpu_load_pct=0.
+
+    // Submit an action.
+    let action_digest = DigestInfo::new([30u8; 32], 512);
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    // Determine which worker received the action.
+    let (selected_worker_id, _se) = tokio::select! {
+        msg = rx_known.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_known, got: {v:?}"),
+            };
+            (worker_id_known.clone(), se)
+        }
+        msg = rx_unknown.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_unknown, got: {v:?}"),
+            };
+            (worker_id_unknown.clone(), se)
+        }
+    };
+
+    assert_eq!(
+        selected_worker_id, worker_id_known,
+        "Worker with known load (60) should be preferred over unknown (0)"
+    );
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn cpu_load_falls_back_to_lru_when_no_load_data() -> Result<(), Error> {
+    // Create 2 workers with cpu_load_pct=0 on both (no load data).
+    // Scheduling should still work via LRU/MRU fallback.
+    let worker_id_1 = WorkerId("worker_1".to_string());
+    let worker_id_2 = WorkerId("worker_2".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+
+    // Add both workers (both have cpu_load_pct=0 by default).
+    let mut rx_1 = setup_new_worker(
+        &scheduler,
+        worker_id_1.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+    let mut rx_2 = setup_new_worker(
+        &scheduler,
+        worker_id_2.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+
+    // Neither worker has load data — cpu_load_pct stays at 0.
+
+    // Submit an action. It should be assigned to one of the workers
+    // via LRU fallback (the first in LRU order).
+    let action_digest = DigestInfo::new([40u8; 32], 512);
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    // Either worker is acceptable — just verify one was selected.
+    let (selected_worker_id, _se) = tokio::select! {
+        msg = rx_1.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_1, got: {v:?}"),
+            };
+            (worker_id_1.clone(), se)
+        }
+        msg = rx_2.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_2, got: {v:?}"),
+            };
+            (worker_id_2.clone(), se)
+        }
+    };
+
+    // Verify a worker was actually selected (the assert_eq on stage below
+    // also proves this, but let's be explicit).
+    assert!(
+        selected_worker_id == worker_id_1 || selected_worker_id == worker_id_2,
+        "One of the workers should have been selected via LRU fallback"
+    );
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
 
     Ok(())
 }

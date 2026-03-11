@@ -676,7 +676,7 @@ where
                 // No action found. It is ok if the action was not found. It
                 // probably means that the action was dropped, but worker was
                 // still processing it.
-                warn!(
+                debug!(
                     %operation_id,
                     "Unable to update action due to it being missing, probably dropped"
                 );
@@ -716,21 +716,16 @@ where
 
             // Make sure we don't update an action that is already completed.
             if awaited_action.state().stage.is_finished() {
-                match &update {
-                    UpdateOperationType::UpdateWithDisconnect | UpdateOperationType::KeepAlive => {
-                        // No need to error a keep-alive when it's completed, it's just
-                        // unnecessary log noise.
-                        return Ok(());
-                    }
-                    _ => {
-                        return Err(make_err!(
-                            Code::Internal,
-                            "Action {operation_id} is already completed with state {:?} - maybe_worker_id: {:?}",
-                            awaited_action.state().stage,
-                            maybe_worker_id,
-                        ));
-                    }
-                }
+                // This is a benign race: the worker finished after the scheduler
+                // already timed out the operation (e.g. client stopped listening).
+                // No client is waiting for the result, so just log and move on.
+                debug!(
+                    %operation_id,
+                    ?maybe_worker_id,
+                    stage = ?awaited_action.state().stage,
+                    "Ignoring late update for already-completed action"
+                );
+                return Ok(());
             }
 
             let stage = match &update {
@@ -756,16 +751,46 @@ where
                         warn!(state = ?awaited_action.state(), "Action already assigned");
                         return Err(make_err!(Code::Aborted, "Action already assigned"));
                     }
-                    stage.clone()
+                    // Exit code 9 = SIGKILL, typically from the OOM killer.
+                    // Treat as a retryable infrastructure error rather than
+                    // a permanent action failure.
+                    if let ActionStage::Completed(result) = stage {
+                        if result.exit_code == 9 {
+                            awaited_action.attempts += 1;
+                            if awaited_action.attempts <= self.max_job_retries {
+                                warn!(
+                                    %operation_id,
+                                    attempts = awaited_action.attempts,
+                                    max_retries = self.max_job_retries,
+                                    "Action killed by SIGKILL (OOM?), re-queuing with max priority"
+                                );
+                                awaited_action.boost_priority();
+                                ActionStage::Queued
+                            } else {
+                                warn!(
+                                    %operation_id,
+                                    attempts = awaited_action.attempts,
+                                    "Action killed by SIGKILL (OOM?) and exceeded max retries"
+                                );
+                                stage.clone()
+                            }
+                        } else {
+                            stage.clone()
+                        }
+                    } else {
+                        stage.clone()
+                    }
                 }
                 UpdateOperationType::UpdateWithError(err) => {
                     // Don't count a backpressure failure as an attempt for an action.
                     let due_to_backpressure = err.code == Code::ResourceExhausted;
+                    // Missing inputs can only be fixed by the client re-uploading.
+                    let missing_inputs = err.code == Code::FailedPrecondition;
                     if !due_to_backpressure {
                         awaited_action.attempts += 1;
                     }
 
-                    if awaited_action.attempts > self.max_job_retries {
+                    if missing_inputs || awaited_action.attempts > self.max_job_retries {
                         ActionStage::Completed(ActionResult {
                             execution_metadata: ExecutionMetadata {
                                 worker: maybe_worker_id.map_or_else(String::default, ToString::to_string),

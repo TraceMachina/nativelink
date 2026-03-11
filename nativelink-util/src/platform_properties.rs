@@ -21,7 +21,7 @@ use nativelink_metric::{
 use nativelink_proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property as ProtoProperty;
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::debug;
 
 /// `PlatformProperties` helps manage the configuration of platform properties to
 /// keys and types. The scheduler uses these properties to decide what jobs
@@ -54,12 +54,12 @@ impl PlatformProperties {
                     if full_worker_logging {
                         match check_value {
                             PlatformPropertyValue::Minimum(_) => {
-                                info!(
+                                debug!(
                                     "Property mismatch on worker property {property}. {worker_value:?} < {check_value:?}"
                                 );
                             }
                             _ => {
-                                info!(
+                                debug!(
                                     "Property mismatch on worker property {property}. {worker_value:?} != {check_value:?}"
                                 );
                             }
@@ -69,7 +69,7 @@ impl PlatformProperties {
                 }
             } else {
                 if full_worker_logging {
-                    info!("Property missing on worker property {property}");
+                    debug!("Property missing on worker property {property}");
                 }
                 return false;
             }

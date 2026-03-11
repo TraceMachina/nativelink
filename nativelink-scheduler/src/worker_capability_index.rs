@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 
 use nativelink_util::action_messages::WorkerId;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
-use tracing::info;
+use tracing::debug;
 
 /// A property key-value pair used for indexing.
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
@@ -136,7 +136,7 @@ impl WorkerCapabilityIndex {
     ) -> HashSet<WorkerId> {
         if self.all_workers.is_empty() {
             if full_worker_logging {
-                info!("No workers available to match!");
+                debug!("No workers available to match!");
             }
             return HashSet::new();
         }
@@ -173,7 +173,7 @@ impl WorkerCapabilityIndex {
                                 .filter(|pk| &pk.0.name == name)
                                 .map(|pk| pk.0.value.clone())
                                 .collect();
-                            info!(
+                            debug!(
                                 "No candidate workers due to a lack of matching '{name}' = {value:?}. Workers have: {values:?}"
                             );
                         }
@@ -202,7 +202,7 @@ impl WorkerCapabilityIndex {
 
                     if internal_candidates.is_empty() {
                         if full_worker_logging {
-                            info!(
+                            debug!(
                                 "No candidate workers due to a lack of key '{name}'. Job asked for {value:?}"
                             );
                         }

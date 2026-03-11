@@ -160,6 +160,28 @@ pub struct SimpleSpec {
         deserialize_with = "convert_duration_with_shellexpand_and_negative"
     )]
     pub worker_match_logging_interval_s: i64,
+
+    /// Maximum number of actions that can be matched to workers for a single
+    /// client (identified by `instance_name`) in one matching cycle. When
+    /// multiple clients are competing for workers, this prevents one client
+    /// from monopolizing all available workers by round-robin interleaving
+    /// actions from different clients.
+    ///
+    /// Set to 0 to disable fair scheduling (unlimited matches per client
+    /// per cycle). Default: 0 (disabled).
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_matches_per_client_per_cycle: usize,
+
+    /// Name of the CAS store used for resolving input trees during
+    /// locality-aware scheduling. When set, the scheduler resolves the
+    /// full input tree for each action and scores workers by how many
+    /// input bytes they already have cached.
+    ///
+    /// This should reference a CAS store in the `stores` section.
+    /// If not set, locality-aware tree scoring is disabled (only the
+    /// action affinity tier is used).
+    #[serde(default)]
+    pub cas_store: Option<StoreRefName>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]

@@ -286,7 +286,7 @@ impl SortedAwaitedActions {
             operation_id: new_awaited_action.operation_id().clone(),
         });
 
-        let Some(sorted_awaited_action) = maybe_sorted_awaited_action else {
+        let Some(mut sorted_awaited_action) = maybe_sorted_awaited_action else {
             return Err(make_err!(
                 Code::Internal,
                 "sorted_action_info_hash_keys and action_info_hash_key_to_awaited_action are out of sync - {} - {:?}",
@@ -294,6 +294,13 @@ impl SortedAwaitedActions {
                 new_awaited_action,
             ));
         };
+
+        // Update sort_key to match the new awaited action. Without this,
+        // boost_priority() (used during SIGKILL retry) changes the sort_key
+        // on the AwaitedAction stored in the watch channel, but the BTree
+        // entry retains the old sort_key, causing all subsequent lookups to
+        // fail with "out of sync".
+        sorted_awaited_action.sort_key = new_awaited_action.sort_key();
 
         self.insert_sort_map_for_stage(&new_awaited_action.state().stage, &sorted_awaited_action)
             .err_tip(|| "In AwaitedActionDb::update_awaited_action")?;
@@ -417,14 +424,19 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     debug!(%operation_id, "Clearing operation from state manager");
                     let awaited_action = tx.borrow().clone();
                     // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
+                    // Only remove the entry if it still points to THIS operation.
+                    // A newer operation may have claimed this key slot if the
+                    // action completed and was re-requested before this cleanup ran.
                     match &awaited_action.action_info().unique_qualifier {
                         ActionUniqueQualifier::Cacheable(action_key) => {
-                            let maybe_awaited_action = self
+                            let dominated_by_self = self
                                 .action_info_hash_key_to_awaited_action
-                                .remove(action_key);
-                            if !awaited_action.state().stage.is_finished()
-                                && maybe_awaited_action.is_none()
-                            {
+                                .get(action_key)
+                                .map_or(false, |mapped_op_id| *mapped_op_id == operation_id);
+                            if dominated_by_self {
+                                self.action_info_hash_key_to_awaited_action
+                                    .remove(action_key);
+                            } else if !awaited_action.state().stage.is_finished() {
                                 error!(
                                     %operation_id,
                                     ?awaited_action,
@@ -552,18 +564,22 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         }
         match &new_awaited_action.action_info().unique_qualifier {
             ActionUniqueQualifier::Cacheable(action_key) => {
-                let maybe_awaited_action =
-                    action_info_hash_key_to_awaited_action.remove(action_key);
-                match maybe_awaited_action {
-                    Some(removed_operation_id) => {
-                        if &removed_operation_id != new_awaited_action.operation_id() {
-                            error!(
-                                ?removed_operation_id,
-                                ?new_awaited_action,
-                                ?action_key,
-                                "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
-                            );
-                        }
+                // Only remove the entry if it belongs to this operation.
+                // A newer operation may have claimed this key slot if the
+                // original was cleaned up and re-requested.
+                match action_info_hash_key_to_awaited_action.get(action_key) {
+                    Some(mapped_operation_id)
+                        if mapped_operation_id == new_awaited_action.operation_id() =>
+                    {
+                        action_info_hash_key_to_awaited_action.remove(action_key);
+                    }
+                    Some(mapped_operation_id) => {
+                        error!(
+                            ?mapped_operation_id,
+                            ?new_awaited_action,
+                            ?action_key,
+                            "action_info_hash_key_to_awaited_action points to a different operation_id",
+                        );
                     }
                     None => {
                         error!(
@@ -700,6 +716,20 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     &new_awaited_action,
                 );
             }
+        }
+
+        // Log orphaned completed actions (no active WaitExecution subscriber).
+        // These are typically from Bazel dynamic execution where the local leg
+        // won and the client dropped the remote stream.
+        if matches!(
+            new_awaited_action.state().stage,
+            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_)
+        ) && tx.receiver_count() == 0
+        {
+            debug!(
+                operation_id = ?new_awaited_action.operation_id(),
+                "Completed action has no subscribers (likely orphaned dynamic execution)",
+            );
         }
 
         // Notify all listeners of the new state and ignore if no one is listening.

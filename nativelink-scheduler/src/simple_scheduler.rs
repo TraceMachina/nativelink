@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
@@ -23,6 +23,7 @@ use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
+use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
@@ -30,6 +31,7 @@ use nativelink_util::operation_state_manager::{
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
 use nativelink_util::origin_event::OriginMetadata;
+use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
@@ -39,7 +41,7 @@ use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
-use tracing::{debug, error, info, info_span, warn};
+use tracing::{debug, error, info_span, warn};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
@@ -51,7 +53,9 @@ use crate::worker_scheduler::WorkerScheduler;
 
 /// Default timeout for workers in seconds.
 /// If this changes, remember to change the documentation in the config.
-const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
+/// A 5-second timeout causes unnecessary worker churn on any brief network
+/// hiccup or GC pause, so we use a more generous default.
+const DEFAULT_WORKER_TIMEOUT_S: u64 = 30;
 
 /// Mark operations as completed with error if no client has updated them
 /// within this duration.
@@ -146,6 +150,11 @@ pub struct SimpleScheduler {
     /// e.g. "worker busy", "can't find any worker"
     /// Set to None to disable. This is quite noisy, so we limit it
     worker_match_logging_interval: Option<Duration>,
+
+    /// Maximum number of actions that can be matched per client
+    /// (identified by `instance_name`) in one matching cycle.
+    /// 0 means unlimited (fair scheduling disabled).
+    max_matches_per_client_per_cycle: usize,
 }
 
 impl core::fmt::Debug for SimpleScheduler {
@@ -216,98 +225,31 @@ impl SimpleScheduler {
     // can create a map of capabilities of each worker and then try and match
     // the actions to the worker using the map lookup (ie. map reduce).
     async fn do_try_match(&self, full_worker_logging: bool) -> Result<(), Error> {
-        async fn match_action_to_worker(
-            action_state_result: &dyn ActionStateResult,
-            workers: &ApiWorkerScheduler,
-            matching_engine_state_manager: &dyn MatchingEngineStateManager,
-            platform_property_manager: &PlatformPropertyManager,
-            full_worker_logging: bool,
-        ) -> Result<(), Error> {
-            let (action_info, maybe_origin_metadata) =
-                action_state_result
-                    .as_action_info()
-                    .await
-                    .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
+        /// Maximum number of actions to process concurrently during matching.
+        /// find_and_reserve_worker atomically finds AND reserves the worker
+        /// (reducing platform properties and inserting into running_action_infos)
+        /// under a single lock acquisition, so concurrent matches cannot
+        /// select the same worker.
+        const MATCH_CONCURRENCY: usize = 8;
 
-            // TODO(palfrey) We should not compute this every time and instead store
-            // it with the ActionInfo when we receive it.
-            let platform_properties = platform_property_manager
-                .make_platform_properties(action_info.platform_properties.clone())
-                .err_tip(
-                    || "Failed to make platform properties in SimpleScheduler::do_try_match",
-                )?;
+        // Cache for computed platform properties, keyed by sorted key-value
+        // pairs. This avoids recomputing the same PlatformProperties for
+        // actions that share identical platform requirements (the common case).
+        let props_cache: std::sync::Mutex<
+            HashMap<Vec<(String, String)>, Arc<PlatformProperties>>,
+        > = std::sync::Mutex::new(HashMap::new());
 
-            let action_info = ActionInfoWithProps {
-                inner: action_info,
-                platform_properties,
-            };
-
-            // Try to find a worker for the action.
-            let worker_id = {
-                match workers
-                    .find_worker_for_action(&action_info.platform_properties, full_worker_logging)
-                    .await
-                {
-                    Some(worker_id) => worker_id,
-                    // If we could not find a worker for the action,
-                    // we have nothing to do.
-                    None => return Ok(()),
-                }
-            };
-
-            let attach_operation_fut = async move {
-                // Extract the operation_id from the action_state.
-                let operation_id = {
-                    let (action_state, _origin_metadata) = action_state_result
-                        .as_state()
-                        .await
-                        .err_tip(|| "Failed to get action_info from as_state_result stream")?;
-                    action_state.client_operation_id.clone()
-                };
-
-                // Tell the matching engine that the operation is being assigned to a worker.
-                let assign_result = matching_engine_state_manager
-                    .assign_operation(&operation_id, Ok(&worker_id))
-                    .await
-                    .err_tip(|| "Failed to assign operation in do_try_match");
-                if let Err(err) = assign_result {
-                    if err.code == Code::Aborted {
-                        // If the operation was aborted, it means that the operation was
-                        // cancelled due to another operation being assigned to the worker.
-                        return Ok(());
-                    }
-                    // Any other error is a real error.
-                    return Err(err);
-                }
-
-                debug!(%worker_id, %operation_id, ?action_info, "Notifying worker of operation");
-                workers
-                    .worker_notify_run_action(worker_id, operation_id, action_info)
-                    .await
-                    .err_tip(|| {
-                        "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
-                    })
-            };
-            tokio::pin!(attach_operation_fut);
-
-            let origin_metadata = maybe_origin_metadata.unwrap_or_default();
-
-            let ctx = Context::current_with_baggage(vec![KeyValue::new(
-                ENDUSER_ID,
-                origin_metadata.identity,
-            )]);
-
-            info_span!("do_try_match")
-                .in_scope(|| attach_operation_fut)
-                .with_context(ctx)
-                .await
-        }
-
-        let mut result = Ok(());
+        // Per-client match counter for fair scheduling. When
+        // max_matches_per_client_per_cycle > 0, limits how many actions
+        // from the same instance_name can be matched in one cycle,
+        // preventing a single client from monopolizing all workers.
+        let per_client_matches: std::sync::Mutex<HashMap<String, usize>> =
+            std::sync::Mutex::new(HashMap::new());
+        let max_per_client = self.max_matches_per_client_per_cycle;
 
         let start = Instant::now();
 
-        let mut stream = self
+        let stream = self
             .get_queued_operations()
             .await
             .err_tip(|| "Failed to get queued operations in do_try_match")?;
@@ -320,17 +262,49 @@ impl SimpleScheduler {
             );
         }
 
-        while let Some(action_state_result) = stream.next().await {
-            result = result.merge(
-                match_action_to_worker(
-                    action_state_result.as_ref(),
+        // Collect all queued actions so we own them, then process up to
+        // MATCH_CONCURRENCY concurrently using FuturesUnordered. Each action
+        // independently finds a worker and assigns itself; conflicts are
+        // resolved by the existing error handling (Aborted codes, None from
+        // find_worker, etc.).
+        let queued_actions: Vec<Box<dyn ActionStateResult>> = stream.collect().await;
+
+        let mut futures_set = futures::stream::FuturesUnordered::<
+            std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + '_>>,
+        >::new();
+        let mut action_iter = queued_actions.into_iter();
+        let mut result = Ok(());
+
+        // Seed the initial batch.
+        for action_state_result in action_iter.by_ref().take(MATCH_CONCURRENCY) {
+            futures_set.push(Box::pin(Self::match_action_to_worker_cached(
+                action_state_result,
+                self.worker_scheduler.as_ref(),
+                self.matching_engine_state_manager.as_ref(),
+                self.platform_property_manager.as_ref(),
+                &props_cache,
+                &per_client_matches,
+                max_per_client,
+                full_worker_logging,
+            )));
+        }
+
+        // Process futures as they complete, adding new ones to maintain concurrency.
+        while let Some(match_result) = futures_set.next().await {
+            result = result.merge(match_result);
+
+            if let Some(action_state_result) = action_iter.next() {
+                futures_set.push(Box::pin(Self::match_action_to_worker_cached(
+                    action_state_result,
                     self.worker_scheduler.as_ref(),
                     self.matching_engine_state_manager.as_ref(),
                     self.platform_property_manager.as_ref(),
+                    &props_cache,
+                    &per_client_matches,
+                    max_per_client,
                     full_worker_logging,
-                )
-                .await,
-            );
+                )));
+            }
         }
 
         let total_elapsed = start.elapsed();
@@ -344,6 +318,165 @@ impl SimpleScheduler {
 
         result
     }
+
+    /// Matches a single action to a worker, using a shared cache for computed
+    /// platform properties to avoid redundant recomputation across actions
+    /// with identical platform requirements.
+    ///
+    /// When `max_per_client > 0`, enforces fair scheduling by limiting how
+    /// many actions from the same `instance_name` can be matched per cycle.
+    /// Actions that exceed the limit are skipped (left in queue for next cycle).
+    async fn match_action_to_worker_cached(
+        action_state_result: Box<dyn ActionStateResult>,
+        workers: &ApiWorkerScheduler,
+        matching_engine_state_manager: &dyn MatchingEngineStateManager,
+        platform_property_manager: &PlatformPropertyManager,
+        props_cache: &std::sync::Mutex<
+            HashMap<Vec<(String, String)>, Arc<PlatformProperties>>,
+        >,
+        per_client_matches: &std::sync::Mutex<HashMap<String, usize>>,
+        max_per_client: usize,
+        full_worker_logging: bool,
+    ) -> Result<(), Error> {
+        let (action_info, maybe_origin_metadata) = action_state_result
+            .as_action_info()
+            .await
+            .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
+
+        // Fair scheduling: atomically check and optimistically increment the
+        // per-client counter. If the client has hit its limit, skip the action.
+        // If the match later fails, we decrement to undo the reservation.
+        let client_name = action_info.instance_name().clone();
+        let claimed_slot = if max_per_client > 0 {
+            let mut map = per_client_matches.lock().unwrap_or_else(|e| e.into_inner());
+            let count = map.entry(client_name.clone()).or_insert(0);
+            if *count >= max_per_client {
+                // Skip — action stays queued for next cycle.
+                return Ok(());
+            }
+            *count += 1;
+            true
+        } else {
+            false
+        };
+
+        // Helper to undo the optimistic increment on failure paths.
+        let undo_claim = |per_client_matches: &std::sync::Mutex<HashMap<String, usize>>,
+                          client_name: &str| {
+            let mut map = per_client_matches.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(count) = map.get_mut(client_name) {
+                *count = count.saturating_sub(1);
+            }
+        };
+
+        // Build a deterministic cache key from the raw platform
+        // properties (sorted key-value pairs).
+        let mut cache_key: Vec<(String, String)> =
+            action_info.platform_properties.clone().into_iter().collect();
+        cache_key.sort();
+
+        // Look up or compute and cache the platform properties.
+        let platform_properties = {
+            let mut cache = props_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cached) = cache.get(&cache_key) {
+                cached.clone()
+            } else {
+                let computed = platform_property_manager
+                    .make_platform_properties(action_info.platform_properties.clone())
+                    .err_tip(|| {
+                        "Failed to make platform properties in SimpleScheduler::do_try_match"
+                    })?;
+                let arc = Arc::new(computed);
+                cache.insert(cache_key, arc.clone());
+                arc
+            }
+        };
+
+        let action_info_with_props = ActionInfoWithProps {
+            inner: action_info,
+            platform_properties: (*platform_properties).clone(),
+        };
+
+        // Extract the operation_id from the action_state BEFORE finding a
+        // worker, so we can pass it to find_and_reserve_worker for atomic
+        // reservation.
+        let operation_id = {
+            let (action_state, _origin_metadata) = action_state_result
+                .as_state()
+                .await
+                .err_tip(|| "Failed to get action_info from as_state_result stream")?;
+            action_state.client_operation_id.clone()
+        };
+
+        // Atomically find a worker AND reserve it for this operation.
+        // The worker's platform properties are reduced and the action is
+        // recorded in running_action_infos under a single lock acquisition,
+        // preventing concurrent matches from selecting the same worker.
+        let (worker_id, tx, msg) = match workers
+            .find_and_reserve_worker(
+                &action_info_with_props.platform_properties,
+                &operation_id,
+                &action_info_with_props,
+                full_worker_logging,
+            )
+            .await
+        {
+            Some(result) => result,
+            // No worker found — undo the optimistic increment.
+            None => {
+                if claimed_slot {
+                    undo_claim(per_client_matches, &client_name);
+                }
+                return Ok(());
+            }
+        };
+
+        // Tell the matching engine that the operation is being assigned to a worker.
+        let assign_result = matching_engine_state_manager
+            .assign_operation(&operation_id, Ok(&worker_id))
+            .await
+            .err_tip(|| "Failed to assign operation in do_try_match");
+        if let Err(err) = assign_result {
+            // Undo the worker reservation since the assignment failed.
+            workers.unreserve_worker(&worker_id, &operation_id).await;
+            if claimed_slot {
+                undo_claim(per_client_matches, &client_name);
+            }
+            if err.code == Code::Aborted {
+                // The operation was cancelled due to another operation
+                // being assigned to the worker.
+                return Ok(());
+            }
+            // Any other error is a real error.
+            return Err(err);
+        }
+
+        let origin_metadata = maybe_origin_metadata.unwrap_or_default();
+        let ctx = Context::current_with_baggage(vec![KeyValue::new(
+            ENDUSER_ID,
+            origin_metadata.identity,
+        )]);
+
+        let notify_fut = async {
+            debug!(
+                %worker_id,
+                %operation_id,
+                ?action_info_with_props,
+                "Notifying worker of operation"
+            );
+            workers
+                .send_reserved_worker_notification(&worker_id, tx, msg)
+                .await
+                .err_tip(|| {
+                    "Failed to send_reserved_worker_notification in SimpleScheduler::do_try_match"
+                })
+        };
+
+        info_span!("do_try_match")
+            .in_scope(|| notify_fut)
+            .with_context(ctx)
+            .await
+    }
 }
 
 impl SimpleScheduler {
@@ -353,23 +486,40 @@ impl SimpleScheduler {
         task_change_notify: Arc<Notify>,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
+        Self::new_with_cas_store(
+            spec,
+            awaited_action_db,
+            task_change_notify,
+            maybe_origin_event_tx,
+            None,
+            None,
+        )
+    }
+
+    pub fn new_with_cas_store<A: AwaitedActionDb>(
+        spec: &SimpleSpec,
+        awaited_action_db: A,
+        task_change_notify: Arc<Notify>,
+        maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        cas_store: Option<nativelink_util::store_trait::Store>,
+        locality_map: Option<nativelink_util::blob_locality_map::SharedBlobLocalityMap>,
+    ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         Self::new_with_callback(
             spec,
             awaited_action_db,
             || {
-                // The cost of running `do_try_match()` is very high, but constant
-                // in relation to the number of changes that have happened. This
-                // means that grabbing this lock to process `do_try_match()` should
-                // always yield to any other tasks that might want the lock. The
-                // easiest and most fair way to do this is to sleep for a small
-                // amount of time. Using something like tokio::task::yield_now()
-                // does not yield as aggressively as we'd like if new futures are
-                // scheduled within a future.
-                tokio::time::sleep(Duration::from_millis(1))
+                // Yield to allow other tasks to make progress between match
+                // cycles. A full 1ms sleep is too aggressive and caps matching
+                // to ~1000 cycles/sec. sleep(ZERO) defers to the next timer
+                // tick, preventing busy-spinning when no other tasks are
+                // runnable (unlike yield_now which returns immediately).
+                tokio::time::sleep(Duration::ZERO)
             },
             task_change_notify,
             SystemTime::now,
             maybe_origin_event_tx,
+            cas_store,
+            locality_map,
         )
     }
 
@@ -386,6 +536,8 @@ impl SimpleScheduler {
         task_change_notify: Arc<Notify>,
         now_fn: NowFn,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        cas_store: Option<nativelink_util::store_trait::Store>,
+        locality_map: Option<nativelink_util::blob_locality_map::SharedBlobLocalityMap>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             spec.supported_platform_properties
@@ -433,13 +585,15 @@ impl SimpleScheduler {
             Some(worker_registry.clone()),
         );
 
-        let worker_scheduler = ApiWorkerScheduler::new(
+        let worker_scheduler = ApiWorkerScheduler::new_with_locality_map(
             state_manager.clone(),
             platform_property_manager.clone(),
             spec.allocation_strategy,
             worker_change_notify.clone(),
             worker_timeout_s,
             worker_registry,
+            locality_map,
+            cas_store,
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
@@ -450,6 +604,8 @@ impl SimpleScheduler {
                 spawn!("simple_scheduler_task_worker_matching", async move {
                     let mut last_match_successful = true;
                     let mut worker_match_logging_last: Option<Instant> = None;
+                    let mut last_stall_check: Option<Instant> = None;
+                    let mut consecutive_match_errors: u32 = 0;
                     // Break out of the loop only when the inner is dropped.
                     loop {
                         let task_change_fut = task_change_notify.notified();
@@ -542,11 +698,129 @@ impl SimpleScheduler {
                                         for item in value {
                                             items.push(item.to_string());
                                         }
-                                        info!(?items, "Oldest actions in state");
+                                        debug!(?items, "Oldest actions in state");
                                     }
 
                                     worker_match_logging_last.replace(now);
                                 }
+
+                                // Stall detection: every 30s, check for actions stuck
+                                // in Queued state for >60s. Only fires as an error when
+                                // no actions are executing (true deadlock). If workers are
+                                // busy executing, queued stalls are just capacity limits.
+                                let should_check_stalls = match last_stall_check {
+                                    None => true,
+                                    Some(when) => now.duration_since(when) >= Duration::from_secs(30),
+                                };
+                                if should_check_stalls {
+                                    last_stall_check = Some(now);
+                                    let stall_threshold = Duration::from_secs(60);
+                                    match scheduler
+                                        .matching_engine_state_manager
+                                        .filter_operations(OperationFilter {
+                                            stages: OperationStageFlags::Queued,
+                                            order_by_priority_direction: Some(OrderDirection::Desc),
+                                            ..Default::default()
+                                        })
+                                        .await
+                                    {
+                                        Ok(queued_stream) => {
+                                            let queued_actions: Vec<_> = queued_stream.collect().await;
+                                            let mut stalled_count: usize = 0;
+                                            let mut unmatchable_count: usize = 0;
+                                            let prop_manager = scheduler.worker_scheduler.get_platform_property_manager();
+                                            for action_state_result in &queued_actions {
+                                                if let Ok((state, _)) = action_state_result.as_state().await {
+                                                    if let Ok(elapsed) = state.last_transition_timestamp.elapsed() {
+                                                        if elapsed > stall_threshold {
+                                                            stalled_count += 1;
+                                                            // Check if any worker could ever match this action.
+                                                            match action_state_result.as_action_info().await {
+                                                                Ok((action_info, _)) => {
+                                                                    match prop_manager.make_platform_properties(
+                                                                        action_info.platform_properties.clone(),
+                                                                    ) {
+                                                                        Ok(props) => {
+                                                                            if !scheduler.worker_scheduler.has_matching_workers(&props).await {
+                                                                                error!(
+                                                                                    operation_id = %state.client_operation_id,
+                                                                                    action_digest = %state.action_digest,
+                                                                                    properties = ?action_info.platform_properties,
+                                                                                    "Action queued >60s with NO matching workers — \
+                                                                                     no registered worker can satisfy its platform requirements"
+                                                                                );
+                                                                                unmatchable_count += 1;
+                                                                            }
+                                                                        }
+                                                                        Err(e) => {
+                                                                            warn!(
+                                                                                operation_id = %state.client_operation_id,
+                                                                                ?e,
+                                                                                "Failed to parse platform properties for stalled action — cannot check matchability"
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!(
+                                                                        operation_id = %state.client_operation_id,
+                                                                        ?e,
+                                                                        "Failed to get action_info for stalled action — cannot check matchability"
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            let matchable_stalled = stalled_count - unmatchable_count;
+                                            if matchable_stalled > 0 {
+                                                // Check if workers are actively executing. If so,
+                                                // the queue backlog is just capacity pressure.
+                                                let executing_count = match scheduler
+                                                    .matching_engine_state_manager
+                                                    .filter_operations(OperationFilter {
+                                                        stages: OperationStageFlags::Executing,
+                                                        ..Default::default()
+                                                    })
+                                                    .await
+                                                {
+                                                    Ok(s) => s.count().await,
+                                                    Err(e) => {
+                                                        // Query failed — assume workers are busy
+                                                        // rather than raising a false deadlock alarm.
+                                                        warn!(?e, "Failed to query executing actions for stall check");
+                                                        usize::MAX
+                                                    }
+                                                };
+
+                                                if executing_count > 0 {
+                                                    warn!(
+                                                        stalled_count = matchable_stalled,
+                                                        total_queued = queued_actions.len(),
+                                                        executing_count,
+                                                        unmatchable_count,
+                                                        "Actions waiting in queue >60s (workers at capacity)"
+                                                    );
+                                                } else {
+                                                    error!(
+                                                        stalled_count = matchable_stalled,
+                                                        total_queued = queued_actions.len(),
+                                                        unmatchable_count,
+                                                        "Actions stalled in Queued state >60s with NO executing actions (possible scheduling deadlock)"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                ?e,
+                                                "Failed to query queued actions for stall check — scheduler state may be corrupted"
+                                            );
+                                        }
+                                    }
+                                }
+
                                 res
                             }
                             // If the inner went away it means the scheduler is shutting
@@ -554,8 +828,21 @@ impl SimpleScheduler {
                             None => return,
                         };
                         last_match_successful = result.is_ok();
-                        if let Err(err) = result {
-                            error!(?err, "Error while running do_try_match");
+                        if let Err(err) = &result {
+                            consecutive_match_errors += 1;
+                            if consecutive_match_errors >= 10 {
+                                error!(
+                                    consecutive_match_errors,
+                                    ?err,
+                                    "do_try_match failing consecutively — \
+                                     possible scheduler data structure corruption. \
+                                     A server restart may be required to recover.",
+                                );
+                            } else {
+                                error!(?err, "Error while running do_try_match");
+                            }
+                        } else {
+                            consecutive_match_errors = 0;
                         }
 
                         on_matching_engine_run().await;
@@ -586,6 +873,7 @@ impl SimpleScheduler {
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
                 worker_match_logging_interval,
+                max_matches_per_client_per_cycle: spec.max_matches_per_client_per_cycle,
             }
         });
         (action_scheduler, worker_scheduler_clone)
@@ -676,6 +964,35 @@ impl WorkerScheduler for SimpleScheduler {
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
         self.worker_scheduler
             .set_drain_worker(worker_id, is_draining)
+            .await
+    }
+
+    async fn update_worker_load(&self, worker_id: &WorkerId, cpu_load_pct: u32) -> Result<(), Error> {
+        self.worker_scheduler
+            .update_worker_load(worker_id, cpu_load_pct)
+            .await
+    }
+
+    async fn update_cached_directories(
+        &self,
+        worker_id: &WorkerId,
+        digests: HashSet<DigestInfo>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .update_cached_directories(worker_id, digests)
+            .await
+    }
+
+    async fn update_cached_subtrees(
+        &self,
+        worker_id: &WorkerId,
+        is_full_snapshot: bool,
+        full_set: Vec<DigestInfo>,
+        added: Vec<DigestInfo>,
+        removed: Vec<DigestInfo>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .update_cached_subtrees(worker_id, is_full_snapshot, full_set, added, removed)
             .await
     }
 }

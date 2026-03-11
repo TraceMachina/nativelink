@@ -24,6 +24,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
+use nativelink_util::common::DigestInfo;
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use tokio::sync::mpsc::UnboundedSender;
@@ -92,6 +93,12 @@ pub struct Worker {
     #[metric(help = "If the worker is paused.")]
     pub is_paused: bool,
 
+    /// Whether the pause was caused by explicit worker backpressure
+    /// (ResourceExhausted) as opposed to a capacity check. When true,
+    /// the scheduler should not auto-clear is_paused based on capacity
+    /// alone — it should wait for the worker to complete an action.
+    pub paused_due_to_backpressure: bool,
+
     /// Whether the worker is draining.
     #[metric(help = "If the worker is draining.")]
     pub is_draining: bool,
@@ -99,6 +106,33 @@ pub struct Worker {
     /// Maximum inflight tasks for this worker (or 0 for unlimited)
     #[metric(help = "Maximum inflight tasks for this worker (or 0 for unlimited)")]
     pub max_inflight_tasks: u64,
+
+    /// When this worker entered quarantine (i.e. missed keepalive for
+    /// > worker_timeout but < 2*worker_timeout). While quarantined the
+    /// worker will not receive new actions but is not yet evicted.
+    /// Reset to `None` when a keepalive is received.
+    pub quarantined_at: Option<SystemTime>,
+
+    /// The worker's CAS gRPC endpoint for peer blob serving.
+    /// Empty if the worker does not support peer serving.
+    #[metric(help = "The worker's CAS endpoint for peer blob sharing.")]
+    pub cas_endpoint: String,
+
+    /// CPU load percentage reported by the worker (load_avg_1m / num_cpus * 100).
+    /// 0 means unknown (worker hasn't reported load yet).
+    #[metric(help = "CPU load percentage reported by the worker.")]
+    pub cpu_load_pct: u32,
+
+    /// Digests of input root directories cached in the worker's directory cache.
+    /// The scheduler gives routing preference to workers that already have the
+    /// action's input_root_digest cached.
+    pub cached_directory_digests: HashSet<DigestInfo>,
+
+    /// All subtree digests (roots + subtrees) from the worker's directory cache.
+    /// Updated via delta encoding from BlobsAvailableNotification.
+    /// The scheduler uses this for subtree-aware scheduling: checking whether
+    /// the action's input_root_digest appears as ANY subtree in any cached entry.
+    pub cached_subtree_digests: HashSet<DigestInfo>,
 
     /// Stats about the worker.
     #[metric]
@@ -116,7 +150,7 @@ fn send_msg_to_worker(
 /// Reduces the platform properties available on the worker based on the platform properties provided.
 /// This is used because we allow more than 1 job to run on a worker at a time, and this is how the
 /// scheduler knows if more jobs can run on a given worker.
-fn reduce_platform_properties(
+pub(crate) fn reduce_platform_properties(
     parent_props: &mut PlatformProperties,
     reduction_props: &PlatformProperties,
 ) {
@@ -141,6 +175,17 @@ impl Worker {
         timestamp: WorkerTimestamp,
         max_inflight_tasks: u64,
     ) -> Self {
+        Self::new_with_cas_endpoint(id, platform_properties, tx, timestamp, max_inflight_tasks, String::new())
+    }
+
+    pub fn new_with_cas_endpoint(
+        id: WorkerId,
+        platform_properties: PlatformProperties,
+        tx: UnboundedSender<UpdateForWorker>,
+        timestamp: WorkerTimestamp,
+        max_inflight_tasks: u64,
+        cas_endpoint: String,
+    ) -> Self {
         Self {
             id,
             platform_properties,
@@ -149,8 +194,14 @@ impl Worker {
             restored_platform_properties: HashSet::new(),
             last_update_timestamp: timestamp,
             is_paused: false,
+            paused_due_to_backpressure: false,
             is_draining: false,
             max_inflight_tasks,
+            quarantined_at: None,
+            cas_endpoint,
+            cpu_load_pct: 0,
+            cached_directory_digests: HashSet::new(),
+            cached_subtree_digests: HashSet::new(),
             metrics: Arc::new(Metrics {
                 connected_timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -218,6 +269,7 @@ impl Worker {
                     queued_timestamp: Some(action_info.inner.insert_timestamp.into()),
                     platform: Some((&action_info.platform_properties).into()),
                     worker_id,
+                    peer_hints: Vec::new(),
                 };
                 reduce_platform_properties(
                     worker_platform_properties,
@@ -256,6 +308,7 @@ impl Worker {
             self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
         }
         self.is_paused = false;
+        self.paused_due_to_backpressure = false;
         self.metrics.actions_completed.inc();
         Ok(())
     }
@@ -264,7 +317,7 @@ impl Worker {
         !self.running_action_infos.is_empty()
     }
 
-    fn restore_platform_properties(&mut self, props: &PlatformProperties) {
+    pub(crate) fn restore_platform_properties(&mut self, props: &PlatformProperties) {
         for (property, prop_value) in &props.properties {
             if let PlatformPropertyValue::Minimum(value) = prop_value {
                 let worker_props = &mut self.platform_properties.properties;
