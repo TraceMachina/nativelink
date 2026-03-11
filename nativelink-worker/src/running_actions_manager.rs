@@ -2087,12 +2087,47 @@ impl RunningActionImpl {
                     let full_parent_path = Path::new(&full_output_path)
                         .parent()
                         .err_tip(|| format!("Parent path for {full_output_path} has no parent"))?;
-                    fs::create_dir_all(full_parent_path).await.err_tip(|| {
-                        format!(
-                            "Error creating output directory {} (file)",
-                            full_parent_path.display()
-                        )
-                    })?;
+                    if let Err(mkdir_err) = fs::create_dir_all(full_parent_path).await {
+                        // Diagnose: walk up path to find the blocking component.
+                        let mut diag = String::new();
+                        let mut cur = full_parent_path;
+                        while let Some(p) = cur.parent() {
+                            match fs::symlink_metadata(cur).await {
+                                Ok(m) => {
+                                    #[cfg(target_family = "unix")]
+                                    {
+                                        use std::os::unix::fs::MetadataExt;
+                                        diag.push_str(&format!(
+                                            "\n  {} : mode={:o} is_dir={} is_file={} is_symlink={}",
+                                            cur.display(), m.mode() & 0o7777, m.is_dir(), m.is_file(), m.is_symlink()
+                                        ));
+                                    }
+                                    #[cfg(not(target_family = "unix"))]
+                                    {
+                                        diag.push_str(&format!(
+                                            "\n  {} : is_dir={} is_file={} is_symlink={}",
+                                            cur.display(), m.is_dir(), m.is_file(), m.is_symlink()
+                                        ));
+                                    }
+                                }
+                                Err(_) => {
+                                    diag.push_str(&format!("\n  {} : DOES NOT EXIST", cur.display()));
+                                }
+                            }
+                            cur = p;
+                            // Stop after 6 levels to avoid excessive output.
+                            if diag.matches('\n').count() >= 6 {
+                                break;
+                            }
+                        }
+                        return Err(mkdir_err).err_tip(|| {
+                            format!(
+                                "Error creating output directory {} — path diagnostics:{}",
+                                full_parent_path.display(),
+                                diag
+                            )
+                        });
+                    }
                     Result::<(), Error>::Ok(())
                 }
             };
