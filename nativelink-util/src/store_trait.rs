@@ -25,14 +25,26 @@ use std::ffi::OsString;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures::{Future, FutureExt, Stream, join, try_join};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
+
+tokio::task_local! {
+    /// Set to `true` when the current CAS request originates from a worker
+    /// (not a client like Bazel). `WorkerProxyStore` checks this to decide
+    /// between proxying blob data (for clients) and returning a redirect
+    /// with peer endpoints (for workers).
+    pub static IS_WORKER_REQUEST: bool;
+}
+
+/// Prefix for redirect errors returned by `WorkerProxyStore` to worker callers.
+/// The remainder of the message is a comma-separated list of peer gRPC endpoints
+/// that have the requested blob. Example: `"NL_REDIRECT:grpc://w1:50081,grpc://w2:50081"`
+pub const REDIRECT_PREFIX: &str = "NL_REDIRECT:";
 use nativelink_metric::MetricsComponent;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tracing::warn;
 
 use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair};
@@ -81,11 +93,12 @@ pub enum UploadSizeInfo {
 pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
     store: Pin<&S>,
     digest: impl Into<StoreKey<'_>>,
-    file: &mut fs::FileSlot,
+    mut file: fs::FileSlot,
     upload_size: UploadSizeInfo,
-) -> Result<(), Error> {
-    file.rewind()
-        .await
+) -> Result<fs::FileSlot, Error> {
+    use std::io::Seek;
+    file.as_std_mut()
+        .seek(std::io::SeekFrom::Start(0))
         .err_tip(|| "Failed to rewind in upload_file_to_store")?;
     let (mut tx, rx) = make_buf_channel_pair();
 
@@ -93,25 +106,17 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
         .update(digest.into(), rx, upload_size)
         .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
     let read_data_fut = async move {
-        loop {
-            let mut buf = BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE);
-            let read = file
-                .read_buf(&mut buf)
-                .await
-                .err_tip(|| "Failed to read in upload_file_to_store")?;
-            if read == 0 {
-                break;
-            }
-            tx.send(buf.freeze())
-                .await
-                .err_tip(|| "Failed to send in upload_file_to_store")?;
-        }
+        let file = fs::read_file_to_channel(file, &mut tx, u64::MAX, fs::DEFAULT_READ_BUFF_SIZE)
+            .await
+            .err_tip(|| "Failed to read in upload_file_to_store")?;
         tx.send_eof()
-            .err_tip(|| "Could not send EOF to store in upload_file_to_store")
+            .err_tip(|| "Could not send EOF to store in upload_file_to_store")?;
+        Ok::<_, Error>(file)
     };
-    tokio::pin!(read_data_fut);
     let (update_res, read_res) = tokio::join!(update_fut, read_data_fut);
-    update_res.merge(read_res)
+    update_res?;
+    let file = read_res?;
+    Ok(file)
 }
 
 /// Optimizations that stores may want to expose to the callers.
@@ -389,11 +394,11 @@ impl Store {
     }
 
     #[inline]
-    pub fn register_remove_callback(
+    pub fn register_item_callback(
         &self,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
-        self.inner.clone().register_remove_callback(callback)
+        self.inner.clone().register_item_callback(callback)
     }
 }
 
@@ -661,7 +666,7 @@ pub trait StoreDriver:
         self: Pin<&Self>,
         key: StoreKey<'_>,
         path: OsString,
-        mut file: fs::FileSlot,
+        file: fs::FileSlot,
         upload_size: UploadSizeInfo,
     ) -> Result<Option<fs::FileSlot>, Error> {
         let inner_store = self.inner_store(Some(key.borrow()));
@@ -674,7 +679,7 @@ pub trait StoreDriver:
                 .update_with_whole_file(key, path, file, upload_size)
                 .await;
         }
-        slow_update_store_with_file(self, key, &mut file, upload_size).await?;
+        let file = slow_update_store_with_file(self, key, file, upload_size).await?;
         Ok(Some(file))
     }
 
@@ -843,20 +848,21 @@ pub trait StoreDriver:
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error>;
 }
 
-// Callback to be called when a store deletes an item. This is used so
-// compound stores can remove items from their internal state when their
-// underlying stores remove items e.g. caches
-pub trait RemoveItemCallback: Debug + Send + Sync {
+// Callback invoked when a store inserts or deletes an item.
+pub trait ItemCallback: Debug + Send + Sync {
     fn callback<'a>(
         &'a self,
         store_key: StoreKey<'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Called synchronously when a new item is inserted.
+    fn on_insert(&self, _store_key: StoreKey<'_>, _size: u64) {}
 }
 
 /// The instructions on how to decode a value from a Bytes & version into

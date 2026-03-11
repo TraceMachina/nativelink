@@ -29,7 +29,7 @@ use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
 use tracing::{debug, info, trace};
@@ -59,7 +59,7 @@ pub struct ExistenceCacheStore<I: InstantWrapper> {
     // as if it immediately expires them, we should only apply the remove callbacks
     // afterwards. If this is None, we're not pausing; if it's Some it's the location to
     // store them in temporarily
-    pause_remove_callbacks: Mutex<Option<Vec<StoreKey<'static>>>>,
+    pause_item_callbacks: Mutex<Option<Vec<StoreKey<'static>>>>,
 }
 
 impl ExistenceCacheStore<SystemTime> {
@@ -68,7 +68,7 @@ impl ExistenceCacheStore<SystemTime> {
     }
 }
 
-impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheStore<I> {
+impl<I: InstantWrapper> ItemCallback for ExistenceCacheStore<I> {
     fn callback<'a>(
         &'a self,
         store_key: StoreKey<'a>,
@@ -89,14 +89,14 @@ struct ExistenceCacheCallback<I: InstantWrapper> {
     cache: Weak<ExistenceCacheStore<I>>,
 }
 
-impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
+impl<I: InstantWrapper> ItemCallback for ExistenceCacheCallback<I> {
     fn callback<'a>(
         &'a self,
         store_key: StoreKey<'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let cache = self.cache.upgrade();
         if let Some(local_cache) = cache {
-            if let Some(callbacks) = local_cache.pause_remove_callbacks.lock().as_mut() {
+            if let Some(callbacks) = local_cache.pause_item_callbacks.lock().as_mut() {
                 callbacks.push(store_key.into_owned());
             } else {
                 let store_key = store_key.into_owned();
@@ -109,6 +109,7 @@ impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
         }
         Box::pin(async {})
     }
+
 }
 
 impl<I: InstantWrapper> ExistenceCacheStore<I> {
@@ -122,13 +123,13 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
         let existence_cache_store = Arc::new(Self {
             inner_store,
             existence_cache: EvictingMap::new(eviction_policy, anchor_time),
-            pause_remove_callbacks: Mutex::new(None),
+            pause_item_callbacks: Mutex::new(None),
         });
         let other_ref = Arc::downgrade(&existence_cache_store);
         existence_cache_store
             .inner_store
-            .register_remove_callback(Arc::new(ExistenceCacheCallback { cache: other_ref }))
-            .expect("Register remove callback should work");
+            .register_item_callback(Arc::new(ExistenceCacheCallback { cache: other_ref }))
+            .expect("Register item callback should work");
         existence_cache_store
     }
 
@@ -233,21 +234,33 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
+        // Check the inner store directly, bypassing the existence cache.
+        // The existence cache may have a stale positive for a blob that was
+        // evicted from the inner store (the async eviction callback may not
+        // have fired yet). Trusting the cache here would skip the upload,
+        // causing Bazel's "Lost inputs no longer available remotely" error.
         let mut exists = [None];
-        self.inner_has_with_results(&[digest], &mut exists)
+        self.inner_store
+            .has_with_results(&[digest.into()], &mut exists)
             .await
             .err_tip(|| "In ExistenceCacheStore::update")?;
         if exists[0].is_some() {
-            // We need to drain the reader to avoid the writer complaining that we dropped
-            // the connection prematurely.
+            // Blob genuinely exists in the inner store — safe to skip.
             reader
                 .drain()
                 .await
                 .err_tip(|| "In ExistenceCacheStore::update")?;
+            // Refresh the existence cache since we verified it exists.
+            let _ = self
+                .existence_cache
+                .insert(digest, ExistenceItem(exists[0].unwrap()))
+                .await;
             return Ok(());
         }
+        // If the existence cache had a stale entry, remove it now.
+        self.existence_cache.remove(&digest).await;
         {
-            let mut locked_callbacks = self.pause_remove_callbacks.lock();
+            let mut locked_callbacks = self.pause_item_callbacks.lock();
             if locked_callbacks.is_none() {
                 locked_callbacks.replace(vec![]);
             }
@@ -256,15 +269,37 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         let result = self.inner_store.update(digest, reader, size_info).await;
         if result.is_ok() {
             trace!(?digest, "Inserting into existence cache");
-            if let UploadSizeInfo::ExactSize(size) = size_info {
-                let _ = self
-                    .existence_cache
-                    .insert(digest, ExistenceItem(size))
-                    .await;
+            // Cache on both ExactSize and MaxSize — the digest carries the
+            // authoritative size for content-addressed blobs.
+            let size = match size_info {
+                UploadSizeInfo::ExactSize(size) => size,
+                UploadSizeInfo::MaxSize(_) => digest.size_bytes(),
+            };
+            let _ = self
+                .existence_cache
+                .insert(digest, ExistenceItem(size))
+                .await;
+
+            // Diagnostic: verify the blob actually persisted in the inner store.
+            // If this fires, it means the inner store reported success but the
+            // blob is not findable immediately after write.
+            let mut verify = [None];
+            if let Ok(()) = self
+                .inner_store
+                .has_with_results(&[digest.into()], &mut verify)
+                .await
+            {
+                if verify[0].is_none() {
+                    tracing::error!(
+                        ?digest,
+                        "CRITICAL: inner store update() succeeded but has() returns \
+                         None immediately after! Blob was NOT persisted to slow store.",
+                    );
+                }
             }
         }
         {
-            let maybe_keys = self.pause_remove_callbacks.lock().take();
+            let maybe_keys = self.pause_item_callbacks.lock().take();
             if let Some(keys) = maybe_keys {
                 let mut callbacks: FuturesUnordered<_> = keys
                     .into_iter()
@@ -288,11 +323,20 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             .inner_store
             .get_part(digest, writer, offset, length)
             .await;
-        if result.is_ok() {
-            let _ = self
-                .existence_cache
-                .insert(digest, ExistenceItem(digest.size_bytes()))
-                .await;
+        match &result {
+            Ok(()) => {
+                let _ = self
+                    .existence_cache
+                    .insert(digest, ExistenceItem(digest.size_bytes()))
+                    .await;
+            }
+            Err(err) if err.code == nativelink_error::Code::NotFound => {
+                // Blob was evicted from the inner store — remove the stale
+                // existence cache entry so subsequent has() calls get an
+                // accurate result.
+                self.existence_cache.remove(&digest).await;
+            }
+            Err(_) => {}
         }
         result
     }
@@ -309,11 +353,11 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         self
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
-        self.inner_store.register_remove_callback(callback)
+        self.inner_store.register_item_callback(callback)
     }
 }
 

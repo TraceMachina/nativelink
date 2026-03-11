@@ -578,7 +578,7 @@ pub struct RefSpec {
     pub name: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct FilesystemSpec {
     /// Path on the system where to store the actual content. This is where
@@ -599,7 +599,7 @@ pub struct FilesystemSpec {
 
     /// Buffer size to use when reading files. Generally this should be left
     /// to the default value except for testing.
-    /// Default: 32k.
+    /// Default: 256k.
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub read_buffer_size: u32,
 
@@ -624,6 +624,41 @@ pub struct FilesystemSpec {
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_writes: usize,
+
+    /// If true, use sync_data() instead of sync_all() when flushing writes
+    /// to disk. sync_data() only syncs the file data without metadata
+    /// (timestamps, permissions), which is faster. For content-addressed
+    /// storage where the content is verified by hash, metadata sync is
+    /// unnecessary and this significantly reduces write latency.
+    /// Default: true
+    #[serde(default = "default_sync_data_only")]
+    pub sync_data_only: bool,
+
+    /// If true, skip writes when a blob with the same key already exists
+    /// in the store. This is safe for content-addressed storage (CAS) where
+    /// identical keys guarantee identical content. Do NOT enable this for
+    /// stores where the same key can hold different content (e.g. action
+    /// cache).
+    /// When a duplicate write is skipped, the existing entry's access time
+    /// is updated in the LRU to prevent premature eviction.
+    /// Default: false
+    #[serde(default)]
+    pub content_is_immutable: bool,
+}
+
+impl Default for FilesystemSpec {
+    fn default() -> Self {
+        Self {
+            content_path: String::new(),
+            temp_path: String::new(),
+            read_buffer_size: 0,
+            eviction_policy: None,
+            block_size: 0,
+            max_concurrent_writes: 0,
+            sync_data_only: true,
+            content_is_immutable: false,
+        }
+    }
 }
 
 // NetApp ONTAP S3 Spec
@@ -1095,6 +1130,32 @@ pub struct GrpcEndpoint {
     /// If not set or 0, defaults to 20 seconds.
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub http2_keepalive_timeout_s: u64,
+
+    /// Whether to set TCP_NODELAY on the connection socket.
+    /// Disables Nagle's algorithm, reducing latency for small writes.
+    /// Default: true
+    #[serde(default = "default_tcp_nodelay")]
+    pub tcp_nodelay: bool,
+}
+
+fn default_sync_data_only() -> bool {
+    true
+}
+
+fn default_tcp_nodelay() -> bool {
+    true
+}
+
+fn default_batch_update_threshold_bytes() -> u64 {
+    1_048_576
+}
+
+fn default_batch_coalesce_delay_ms() -> u64 {
+    10
+}
+
+const fn default_connections_per_endpoint() -> usize {
+    32
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1121,8 +1182,8 @@ pub struct GrpcSpec {
     pub max_concurrent_requests: usize,
 
     /// The number of connections to make to each specified endpoint to balance
-    /// the load over multiple TCP connections.  Default 1.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    /// the load over multiple TCP connections.  Default 16.
+    #[serde(default = "default_connections_per_endpoint", deserialize_with = "convert_numeric_with_shellexpand")]
     pub connections_per_endpoint: usize,
 
     /// Maximum time (seconds) allowed for a single RPC request (e.g. a
@@ -1132,6 +1193,35 @@ pub struct GrpcSpec {
     /// Default: 120 (seconds)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub rpc_timeout_s: u64,
+
+    /// Maximum blob size (in bytes) for using BatchUpdateBlobs instead of
+    /// ByteStream.Write. Blobs at or below this size skip per-blob streaming
+    /// overhead (UUID generation, resource_name, streaming setup). Only
+    /// applies to CAS stores, not AC.
+    ///
+    /// Set to 0 to disable (all uploads use ByteStream.Write).
+    ///
+    /// Default: 1048576 (1 MiB)
+    #[serde(
+        default = "default_batch_update_threshold_bytes",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub batch_update_threshold_bytes: u64,
+
+    /// Time window (in milliseconds) to coalesce multiple small blob uploads
+    /// into a single BatchUpdateBlobs RPC. Requires
+    /// `batch_update_threshold_bytes > 0`.
+    ///
+    /// When > 0, incoming small uploads are buffered for up to this duration
+    /// before being sent as one batch. When 0, each small upload is sent
+    /// immediately as a single-element BatchUpdateBlobs RPC.
+    ///
+    /// Default: 10 (milliseconds)
+    #[serde(
+        default = "default_batch_coalesce_delay_ms",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub batch_coalesce_delay_ms: u64,
 }
 
 /// The possible error codes that might occur on an upstream request.

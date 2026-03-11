@@ -22,11 +22,11 @@ use std::time::SystemTime;
 
 use async_lock::RwLock;
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{
@@ -36,18 +36,20 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
+    ItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio::sync::Semaphore;
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 
-use crate::callback_utils::RemoveItemCallbackHolder;
+use crate::callback_utils::ItemCallbackHolder;
 use crate::cas_utils::is_zero_digest;
 
 // Default size to allocate memory of the buffer when reading files.
-const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
+// 256 KiB reduces syscalls by 4x compared to 64 KiB. At 10Gbps, 64 KiB reads
+// cause ~19,500 syscalls/sec/stream; 256 KiB brings this down to ~4,900.
+// Modern NVMe SSDs perform significantly better with larger read sizes.
+const DEFAULT_BUFF_SIZE: usize = 256 * 1024;
 // Default block size of all major filesystems is 4KB
 const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024;
 
@@ -139,7 +141,12 @@ impl Drop for EncodedFilePath {
                 .await
                 .err_tip(|| format!("Failed to remove file {}", file_path.display()));
             if let Err(err) = result {
-                error!(?file_path, ?err, "Failed to delete file",);
+                if err.code == Code::NotFound {
+                    // File already deleted (e.g. race between eviction paths).
+                    debug!(?file_path, "File already deleted, ignoring");
+                } else {
+                    error!(?file_path, ?err, "Failed to delete file");
+                }
             } else {
                 debug!(?file_path, "File deleted",);
             }
@@ -201,8 +208,7 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     fn read_file_part(
         &self,
         offset: u64,
-        length: u64,
-    ) -> impl Future<Output = Result<Take<fs::FileSlot>, Error>> + Send;
+    ) -> impl Future<Output = Result<fs::FileSlot, Error>> + Send;
 
     /// This function is a safe way to extract the file name of the underlying file. To protect users from
     /// accidentally creating undefined behavior we encourage users to do the logic they need to do with
@@ -297,10 +303,9 @@ impl FileEntry for FileEntryImpl {
     fn read_file_part(
         &self,
         offset: u64,
-        length: u64,
-    ) -> impl Future<Output = Result<Take<fs::FileSlot>, Error>> + Send {
+    ) -> impl Future<Output = Result<fs::FileSlot, Error>> + Send {
         self.get_file_path_locked(move |full_content_path| async move {
-            let file = fs::open_file(&full_content_path, offset, length)
+            let file = fs::open_file(&full_content_path, offset)
                 .await
                 .err_tip(|| {
                     format!(
@@ -368,9 +373,10 @@ impl LenEntry for FileEntryImpl {
     async fn unref(&self) {
         let mut encoded_file_path = self.encoded_file_path.write().await;
         if encoded_file_path.path_type == PathType::Temp {
-            // We are already a temp file that is now marked for deletion on drop.
-            // This is very rare, but most likely the rename into the content path failed.
-            warn!(
+            // Already a temp file marked for deletion on drop. This happens
+            // when the entry is evicted from the map before emplace_file
+            // renames it into the content path — expected under cache pressure.
+            debug!(
                 key = ?encoded_file_path.key,
                 "File is already a temp file",
             );
@@ -394,7 +400,7 @@ impl LenEntry for FileEntryImpl {
                 key = ?encoded_file_path.key,
                 ?from_path,
                 ?to_path,
-                "Renamed file (unref)",
+                "Evicted blob from filesystem cache (unref)",
             );
             encoded_file_path.path_type = PathType::Temp;
             encoded_file_path.key = new_key;
@@ -421,7 +427,7 @@ pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
 type FsEvictingMap<'a, Fe> =
-    EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime, RemoveItemCallbackHolder>;
+    EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime, ItemCallbackHolder>;
 
 async fn add_files_to_cache<Fe: FileEntry>(
     evicting_map: &FsEvictingMap<'_, Fe>,
@@ -452,14 +458,28 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 key: key.borrow().into_owned(),
             }),
         );
-        let time_since_anchor = anchor_time
-            .duration_since(atime)
-            .map_err(|_| make_input_err!("File access time newer than now"))?;
+        // Use a negative seconds_since_anchor for files that existed before
+        // the anchor time (startup). This correctly represents them as "older
+        // than anything inserted during runtime" in the EvictingMap timeline.
+        // Files with atime closer to startup get values closer to 0 (newer),
+        // while files not accessed for days get large negative values (older).
+        let seconds_since_anchor = if let Ok(before) = anchor_time.duration_since(atime) {
+            let secs = before.as_secs();
+            if secs > i32::MAX as u64 {
+                i32::MIN
+            } else {
+                -(secs as i32)
+            }
+        } else {
+            // atime is after anchor_time (file touched between capturing
+            // `now` and reading metadata) — treat as most-recently-used.
+            0
+        };
         evicting_map
             .insert_with_time(
                 key.into_owned().into(),
                 Arc::new(file_entry),
-                i32::try_from(time_since_anchor.as_secs()).unwrap_or(i32::MAX),
+                seconds_since_anchor,
             )
             .await;
         Ok(())
@@ -549,12 +569,18 @@ async fn add_files_to_cache<Fe: FileEntry>(
         block_size: u64,
         folder: &str,
     ) -> Result<(), Error> {
-        let file_infos = read_files(Some(folder), shared_context).await?;
+        let mut file_infos = read_files(Some(folder), shared_context).await?;
         let file_type = match folder {
             STR_FOLDER => FileType::String,
             DIGEST_FOLDER => FileType::Digest,
             _ => panic!("Invalid folder type"),
         };
+
+        // Sort by atime oldest-first so that the LRU cache ordering matches
+        // actual file access recency. Without this, items are inserted in
+        // directory-iteration order (random), causing recently-used files to
+        // be evicted while cold files survive.
+        file_infos.sort_by(|a, b| a.1.cmp(&b.1));
 
         let path_root = format!("{}/{folder}", shared_context.content_path);
 
@@ -639,6 +665,8 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     /// Limits concurrent write operations to prevent disk I/O saturation.
     write_semaphore: Option<Semaphore>,
+    /// Skip writes when a blob with the same key already exists (CAS dedup).
+    content_is_immutable: bool,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
@@ -709,11 +737,34 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             weak_self: weak_self.clone(),
             rename_fn,
             write_semaphore,
+            content_is_immutable: spec.content_is_immutable,
         }))
     }
 
     pub fn get_arc(&self) -> Option<Arc<Self>> {
         self.weak_self.upgrade()
+    }
+
+    /// Returns all digest entries in the cache with their absolute last-access
+    /// timestamps (seconds since UNIX epoch). String-keyed entries are skipped.
+    /// This is a peek-only operation and does NOT promote entries in the LRU.
+    pub fn get_all_digests_with_timestamps(&self) -> Vec<(DigestInfo, i64)> {
+        self.evicting_map
+            .get_all_entries_with_timestamps()
+            .into_iter()
+            .filter_map(|(key_borrow, abs_timestamp)| {
+                match StoreKey::from(key_borrow) {
+                    StoreKey::Digest(digest) => Some((digest, abs_timestamp)),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// Remove a digest's entry from the evicting map so the next
+    /// `populate_fast_store` is forced to re-download from the slow store.
+    pub async fn remove_entry_for_digest(&self, digest: &DigestInfo) {
+        self.evicting_map.remove(&digest.into()).await;
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
@@ -734,29 +785,56 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store. This may indicate the file was evicted due to cache pressure. Consider increasing 'max_bytes' in your filesystem store's eviction_policy configuration."))
     }
 
+    /// Batch-retrieves file entries for multiple digests in a single lock
+    /// acquisition on the EvictingMap, reducing contention compared to
+    /// calling `get_file_entry_for_digest()` individually for each digest.
+    pub async fn get_file_entries_batch(
+        &self,
+        digests: &[DigestInfo],
+    ) -> Vec<Option<Arc<Fe>>> {
+        // Separate zero digests (which don't go through evicting_map).
+        let store_keys: Vec<StoreKey<'static>> = digests
+            .iter()
+            .filter(|d| !is_zero_digest(**d))
+            .map(|d| (*d).into())
+            .collect();
+
+        let batch_results = self.evicting_map.get_many(store_keys.iter()).await;
+
+        // Reassemble results, inserting zero-digest entries where needed.
+        let mut batch_iter = batch_results.into_iter();
+        digests
+            .iter()
+            .map(|digest| {
+                if is_zero_digest(*digest) {
+                    Some(Arc::new(Fe::create(
+                        0,
+                        0,
+                        RwLock::new(EncodedFilePath {
+                            shared_context: self.shared_context.clone(),
+                            path_type: PathType::Content,
+                            key: (*digest).into(),
+                        }),
+                    )))
+                } else {
+                    batch_iter.next().flatten()
+                }
+            })
+            .collect()
+    }
+
     async fn update_file(
         self: Pin<&Self>,
         mut entry: Fe,
-        mut temp_file: fs::FileSlot,
+        temp_file: fs::FileSlot,
         final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
-        let mut data_size = 0;
-        loop {
-            let mut data = reader
-                .recv()
-                .await
-                .err_tip(|| "Failed to receive data in filesystem store")?;
-            let data_len = data.len();
-            if data_len == 0 {
-                break; // EOF.
-            }
-            temp_file
-                .write_all_buf(&mut data)
-                .await
-                .err_tip(|| "Failed to write data into filesystem store")?;
-            data_size += data_len as u64;
-        }
+        let write_start = std::time::Instant::now();
+        let (data_size, temp_file) = fs::write_file_from_channel(temp_file, &mut reader)
+            .await
+            .err_tip(|| "Failed to write data into filesystem store")?;
+        let write_ms = write_start.elapsed().as_millis();
 
         let _permit = if let Some(sem) = &self.write_semaphore {
             Some(
@@ -768,20 +846,28 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             None
         };
 
-        temp_file
-            .as_ref()
-            .sync_all()
-            .await
-            .err_tip(|| "Failed to sync_data in filesystem store")?;
-
         drop(_permit);
 
-        temp_file.advise_dontneed();
         trace!(?temp_file, "Dropping file to update_file");
         drop(temp_file);
 
         *entry.data_size_mut() = data_size;
-        self.emplace_file(final_key, Arc::new(entry)).await
+        let emplace_start = std::time::Instant::now();
+        let result = self.emplace_file(final_key.borrow().into_owned(), Arc::new(entry)).await;
+        let emplace_ms = emplace_start.elapsed().as_millis();
+
+        let total_ms = write_ms + emplace_ms;
+        if total_ms > 50 {
+            debug!(
+                key = %final_key.as_str(),
+                total_ms,
+                write_ms,
+                emplace_ms,
+                data_size,
+                "FilesystemStore::update_file: slow phases",
+            );
+        }
+        result
     }
 
     async fn emplace_file(&self, key: StoreKey<'static>, entry: Arc<Fe>) -> Result<(), Error> {
@@ -817,7 +903,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             let mut encoded_file_path = entry.get_encoded_file_path().write().await;
             // Then check it's still in there...
             if evicting_map.get(&key).await.is_none() {
-                info!(%key, "Got eviction while emplacing, dropping");
+                debug!(%key, "Got eviction while emplacing, dropping");
                 return Ok(());
             }
 
@@ -827,23 +913,37 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 &key,
             );
 
-            let from_path = encoded_file_path.get_file_path();
-            // Internally tokio spawns fs commands onto a blocking thread anyways.
-            // Since we are already on a blocking thread, we just need the `fs` wrapper to manage
-            // an open-file permit (ensure we don't open too many files at once).
-            let result = (rename_fn)(&from_path, &final_path).err_tip(|| {
-                format!(
-                    "Failed to rename temp file to final path {}",
-                    final_path.display()
-                )
-            });
+            let from_path: OsString = encoded_file_path.get_file_path().into_owned();
+            let final_path_owned: OsString = final_path.into_owned();
+            // Run rename + set_permissions on a blocking thread to avoid
+            // stalling the async runtime with syscalls.
+            let from_clone = from_path.clone();
+            let to_clone = final_path_owned.clone();
+            let result = tokio::task::spawn_blocking(move || -> Result<(), Error> {
+                (rename_fn)(&from_clone, &to_clone)?;
+                // Pre-set CAS file permissions to read+execute (0o555) so that
+                // hardlinked copies already have correct permissions without
+                // needing a per-file chmod during input materialization.
+                #[cfg(target_family = "unix")]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = std::fs::Permissions::from_mode(0o555);
+                    if let Err(err) = std::fs::set_permissions(&to_clone, perms) {
+                        tracing::warn!(?err, path = ?to_clone, "Failed to set CAS file permissions to 0o555");
+                    }
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| make_err!(Code::Internal, "Rename task join error: {e:?}"))
+            .and_then(|r| r.err_tip(|| "Failed to rename temp file to final path"));
 
             // In the event our move from temp file to final file fails we need to ensure we remove
             // the entry from our map.
             // Remember: At this point it is possible for another thread to have a reference to
             // `entry`, so we can't delete the file, only drop() should ever delete files.
             if let Err(err) = result {
-                error!(?err, ?from_path, ?final_path, "Failed to rename file",);
+                error!(?err, ?from_path, ?final_path_owned, "Failed to rename file",);
                 // Warning: To prevent deadlock we need to release our lock or during `remove_if()`
                 // it will call `unref()`, which triggers a write-lock on `encoded_file_path`.
                 drop(encoded_file_path);
@@ -911,7 +1011,26 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             return Ok(());
         }
 
+        // CAS dedup: skip write if blob already exists (same digest = same content).
+        // sizes_for_keys with peek=false promotes the key in the LRU, updating
+        // its access time so it won't be evicted prematurely.
+        if self.content_is_immutable {
+            let owned_key = key.borrow().into_owned();
+            let mut exists = [None];
+            self.evicting_map
+                .sizes_for_keys(core::iter::once(&owned_key), &mut exists, false)
+                .await;
+            if exists[0].is_some() {
+                reader
+                    .drain()
+                    .await
+                    .err_tip(|| "Failed to drain reader for existing blob")?;
+                return Ok(());
+            }
+        }
+
         let temp_key = make_temp_key(&key);
+        let update_total_start = std::time::Instant::now();
 
         // There's a possibility of deadlock here where we take all of the
         // file semaphores with make_and_open_file and the semaphores for
@@ -921,6 +1040,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // reader available to know that the populator is active.
         reader.peek().await?;
 
+        let temp_create_start = std::time::Instant::now();
         let (entry, temp_file, temp_full_path) = Fe::make_and_open_file(
             self.block_size,
             EncodedFilePath {
@@ -930,15 +1050,28 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             },
         )
         .await?;
+        let temp_create_ms = temp_create_start.elapsed().as_millis();
 
-        self.update_file(entry, temp_file, key.into_owned(), reader)
+        let result = self.update_file(entry, temp_file, key.borrow().into_owned(), reader)
             .await
             .err_tip(|| {
                 format!(
                     "While processing with temp file {}",
                     temp_full_path.display()
                 )
-            })
+            });
+
+        let total_ms = update_total_start.elapsed().as_millis();
+        if total_ms > 50 {
+            debug!(
+                key = %key.as_str(),
+                total_ms,
+                temp_create_ms,
+                write_and_emplace_ms = total_ms.saturating_sub(temp_create_ms),
+                "FilesystemStore::update: slow write",
+            );
+        }
+        result
     }
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
@@ -953,7 +1086,21 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             return Ok(());
         }
 
+        // CAS dedup: skip write if blob already exists (same digest = same content).
+        if self.content_is_immutable {
+            let owned_key = key.borrow().into_owned();
+            let mut exists = [None];
+            self.evicting_map
+                .sizes_for_keys(core::iter::once(&owned_key), &mut exists, false)
+                .await;
+            if exists[0].is_some() {
+                return Ok(());
+            }
+        }
+
+        let oneshot_total_start = std::time::Instant::now();
         let temp_key = make_temp_key(&key);
+        let temp_create_start = std::time::Instant::now();
         let (mut entry, mut temp_file, temp_full_path) = Fe::make_and_open_file(
             self.block_size,
             EncodedFilePath {
@@ -964,13 +1111,30 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         )
         .await
         .err_tip(|| "Failed to create temp file in filesystem store update_oneshot")?;
+        let temp_create_ms = temp_create_start.elapsed().as_millis();
 
         // Write directly without channel overhead
+        let data_len = data.len() as u64;
+        let write_ms;
         if !data.is_empty() {
-            temp_file
-                .write_all(&data)
-                .await
-                .err_tip(|| format!("Failed to write data to {}", temp_full_path.display()))?;
+            let write_start = std::time::Instant::now();
+            let temp_full_path_clone = temp_full_path.clone();
+            temp_file = nativelink_util::spawn_blocking!("fs_write_oneshot", move || {
+                use std::io::Write;
+                temp_file
+                    .as_std_mut()
+                    .write_all(&data)
+                    .map_err(|e| Into::<Error>::into(e))
+                    .err_tip(|| {
+                        format!("Failed to write data to {}", temp_full_path_clone.display())
+                    })?;
+                Ok::<_, Error>(temp_file)
+            })
+            .await
+            .map_err(|e| make_err!(Code::Internal, "write oneshot join failed: {e:?}"))??;
+            write_ms = write_start.elapsed().as_millis();
+        } else {
+            write_ms = 0;
         }
 
         let _permit = if let Some(sem) = &self.write_semaphore {
@@ -983,19 +1147,28 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             None
         };
 
-        temp_file
-            .as_ref()
-            .sync_all()
-            .await
-            .err_tip(|| "Failed to sync_data in filesystem store update_oneshot")?;
-
         drop(_permit);
 
-        temp_file.advise_dontneed();
         drop(temp_file);
 
-        *entry.data_size_mut() = data.len() as u64;
-        self.emplace_file(key.into_owned(), Arc::new(entry)).await
+        *entry.data_size_mut() = data_len;
+        let emplace_start = std::time::Instant::now();
+        let result = self.emplace_file(key.borrow().into_owned(), Arc::new(entry)).await;
+        let emplace_ms = emplace_start.elapsed().as_millis();
+
+        let total_ms = oneshot_total_start.elapsed().as_millis();
+        if total_ms > 50 {
+            debug!(
+                key = %key.as_str(),
+                total_ms,
+                temp_create_ms,
+                write_ms,
+                emplace_ms,
+                data_len,
+                "FilesystemStore::update_oneshot: slow write",
+            );
+        }
+        result
     }
 
     async fn update_with_whole_file(
@@ -1008,9 +1181,8 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         let file_size = match upload_size {
             UploadSizeInfo::ExactSize(size) => size,
             UploadSizeInfo::MaxSize(_) => file
-                .as_ref()
+                .as_std()
                 .metadata()
-                .await
                 .err_tip(|| format!("While reading metadata for {}", path.display()))?
                 .len(),
         };
@@ -1030,7 +1202,6 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // We are done with the file, if we hold a reference to the file here, it could
         // result in a deadlock if `emplace_file()` also needs file descriptors.
         trace!(?file, "Dropping file to to update_with_whole_file");
-        file.advise_dontneed();
         drop(file);
         self.emplace_file(key.into_owned(), Arc::new(entry))
             .await
@@ -1063,34 +1234,31 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             )
         })?;
         let read_limit = length.unwrap_or(u64::MAX);
-        let mut temp_file = entry.read_file_part(offset, read_limit).or_else(|err| async move {
+        let temp_file = entry.read_file_part(offset).or_else(|err| async move {
             // If the file is not found, we need to remove it from the eviction map.
             if err.code == Code::NotFound {
-                error!(
+                warn!(
                     ?err,
                     key = ?owned_key,
-                    "Entry was in our map, but not found on disk. Removing from map as a precaution, but process probably need restarted."
+                    "Stale filesystem cache entry: file not found on disk. \
+                     Removed from map; upper store layer will re-fetch from remote."
                 );
                 self.evicting_map.remove(&owned_key).await;
             }
             Err(err)
         }).await?;
 
-        loop {
-            let mut buf = BytesMut::with_capacity(self.read_buffer_size);
-            temp_file
-                .read_buf(&mut buf)
-                .await
-                .err_tip(|| "Failed to read data in filesystem store")?;
-            if buf.is_empty() {
-                break; // EOF.
-            }
-            writer
-                .send(buf.freeze())
-                .await
-                .err_tip(|| "Failed to send chunk in filesystem store get_part")?;
-        }
-        temp_file.get_ref().advise_dontneed();
+        // Hint to the kernel that we'll read sequentially — enables more
+        // aggressive readahead (typically 2-4x the default 128 KiB).
+        temp_file.advise_sequential();
+
+        // NOTE: We intentionally do NOT call advise_dontneed() after reading.
+        // The same blobs are frequently read by multiple workers within
+        // seconds of each other — keeping them in page cache avoids
+        // redundant disk I/O (measured: 76% of read I/O is re-reads).
+        fs::read_file_to_channel(temp_file, writer, read_limit, self.read_buffer_size)
+            .await
+            .err_tip(|| "Failed to read data in filesystem store")?;
         writer
             .send_eof()
             .err_tip(|| "Filed to send EOF in filesystem store get_part")?;
@@ -1114,12 +1282,12 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
         self.evicting_map
-            .add_remove_callback(RemoveItemCallbackHolder::new(callback));
+            .add_item_callback(ItemCallbackHolder::new(callback));
         Ok(())
     }
 }

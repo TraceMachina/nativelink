@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::hash::Hasher;
 use core::ops::BitXor;
 use core::pin::Pin;
-use std::hash::DefaultHasher;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -26,7 +24,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 
 #[derive(Debug, MetricsComponent)]
@@ -127,10 +125,9 @@ impl ShardStore {
                 .bitxor(u32::from_le_bytes(size_bytes[4..8].try_into().unwrap()))
             }
             StoreKey::Str(s) => {
-                let mut hasher = DefaultHasher::new();
-                hasher.write(s.as_bytes());
-                let key_u64 = hasher.finish();
-                (key_u64 >> 32) as u32 // We only need the top 32 bits.
+                let hash = blake3::hash(s.as_bytes());
+                let hash_bytes = hash.as_bytes();
+                u32::from_le_bytes([hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3]])
             }
         };
         self.weights_and_stores
@@ -244,12 +241,12 @@ impl StoreDriver for ShardStore {
         self
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
         for store in &self.weights_and_stores {
-            store.store.register_remove_callback(callback.clone())?;
+            store.store.register_item_callback(callback.clone())?;
         }
         Ok(())
     }

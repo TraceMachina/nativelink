@@ -24,8 +24,10 @@ use futures::TryFutureExt;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasher;
+use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::store_trait::{StoreKey, StoreLike};
 use prost::Message;
+use tracing::debug;
 
 // NOTE(aaronmondal) From some local testing it looks like action cache items are rarely greater than
 // 1.2k. Giving a bit more just in case to reduce allocs.
@@ -104,15 +106,25 @@ pub async fn serialize_and_upload_message<'a, T: Message>(
     let mut buffer = BytesMut::with_capacity(message.encoded_len());
     let digest = message_to_digest(message, &mut buffer, hasher)
         .err_tip(|| "In serialize_and_upload_message")?;
+    let size_bytes = buffer.len() as u64;
     // Note: For unknown reasons we appear to be hitting:
     // https://github.com/rust-lang/rust/issues/92096
     // or a smiliar issue if we try to use the non-store driver function, so we
     // are using the store driver function here.
+    let start = std::time::Instant::now();
     cas_store
         .as_store_driver_pin()
         .update_oneshot(digest.into(), buffer.freeze())
         .await
         .err_tip(|| "In serialize_and_upload_message")?;
+    let elapsed = start.elapsed();
+    debug!(
+        ?digest,
+        size_bytes,
+        elapsed_ms = elapsed.as_millis() as u64,
+        throughput_mbps = format!("{:.1}", throughput_mbps(size_bytes, elapsed)),
+        "serialize_and_upload_message: CAS write completed",
+    );
     Ok(digest)
 }
 

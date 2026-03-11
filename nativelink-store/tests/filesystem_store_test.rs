@@ -44,7 +44,6 @@ use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Take};
 use tokio::sync::{Barrier, Semaphore};
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
@@ -124,11 +123,11 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         self.inner.as_ref().unwrap().get_encoded_file_path()
     }
 
-    async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot>, Error> {
+    async fn read_file_part(&self, offset: u64) -> Result<fs::FileSlot, Error> {
         self.inner
             .as_ref()
             .unwrap()
-            .read_file_part(offset, length)
+            .read_file_part(offset)
             .await
     }
 
@@ -211,14 +210,7 @@ fn make_temp_path(data: &str) -> String {
 }
 
 async fn read_file_contents(file_name: &OsStr) -> Result<Vec<u8>, Error> {
-    let mut file = fs::open_file(file_name, 0, u64::MAX)
-        .await
-        .err_tip(|| format!("Failed to open file: {}", file_name.display()))?;
-    let mut data = vec![];
-    file.read_to_end(&mut data)
-        .await
-        .err_tip(|| "Error reading file to end")?;
-    Ok(data)
+    fs::read(Path::new(file_name)).await
 }
 
 async fn wait_for_no_open_files() -> Result<(), Error> {
@@ -406,7 +398,13 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
         }
     }
 
-    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    // Use a large value so the producer is still blocked mid-stream when we
+    // check the temp directory. With read_buffer_size=1 and channel capacity 64,
+    // the producer sends 1-byte chunks. It needs well over 64 bytes to ensure
+    // it can't finish before the test inspects temp_path.
+    let large_value1: String = "abcdefghij".repeat(10); // 100 bytes
+    let large_value2: String = "ABCDEFGHIJ".repeat(10); // 100 bytes
+    let digest1 = DigestInfo::try_new(HASH1, large_value1.len())?;
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
 
@@ -426,7 +424,9 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
     );
 
     // Insert data into store.
-    store.update_oneshot(digest1, VALUE1.into()).await?;
+    store
+        .update_oneshot(digest1, large_value1.clone().into())
+        .await?;
 
     let (writer, mut reader) = make_buf_channel_pair();
     let store_clone = store.clone();
@@ -444,13 +444,15 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
             .err_tip(|| "Error reading first byte")?;
         assert_eq!(
             first_byte[0],
-            VALUE1.as_bytes()[0],
+            large_value1.as_bytes()[0],
             "Expected first byte to match"
         );
     }
 
     // Replace content.
-    store.update_oneshot(digest1, VALUE2.into()).await?;
+    store
+        .update_oneshot(digest1, large_value2.into())
+        .await?;
 
     // Ensure we let any background tasks finish.
     tokio::task::yield_now().await;
@@ -469,7 +471,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
             let data = read_file_contents(path.as_os_str()).await?;
             assert_eq!(
                 &data[..],
-                VALUE1.as_bytes(),
+                large_value1.as_bytes(),
                 "Expected file content to match"
             );
         }
@@ -486,7 +488,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
 
     assert_eq!(
         &remaining_file_data,
-        &VALUE1.as_bytes()[1..],
+        &large_value1.as_bytes()[1..],
         "Expected file content to match"
     );
 
@@ -514,8 +516,17 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
         }
     }
 
-    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
-    let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
+    // Use a large value so the producer is still blocked mid-stream when we
+    // check the temp directory. With read_buffer_size=1 and channel capacity 64,
+    // the producer sends 1-byte chunks. It needs well over 64 bytes to ensure
+    // it can't finish before the test inspects temp_path. With a small value
+    // (e.g. 10 bytes), all chunks fit in the channel buffer, the get task
+    // completes immediately, and the background delete can race ahead of the
+    // temp directory inspection.
+    let large_value1: String = "abcdefghij".repeat(10); // 100 bytes
+    let large_value2: String = "ABCDEFGHIJ".repeat(10); // 100 bytes
+    let digest1 = DigestInfo::try_new(HASH1, large_value1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, large_value2.len())?;
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
 
@@ -535,23 +546,36 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
     );
 
     // Insert data into store.
-    store.update_oneshot(digest1, VALUE1.into()).await.unwrap();
+    store
+        .update_oneshot(digest1, large_value1.clone().into())
+        .await
+        .unwrap();
 
-    let mut reader = {
-        let (writer, reader) = make_buf_channel_pair();
-        let store_clone = store.clone();
-        background_spawn!(
-            "file_gets_cleans_up_on_cache_eviction_store_get",
-            async move { store_clone.get(digest1, writer).await.unwrap() },
+    let (writer, mut reader) = make_buf_channel_pair();
+    let store_clone = store.clone();
+    background_spawn!(
+        "file_gets_cleans_up_on_cache_eviction_store_get",
+        async move { store_clone.get(digest1, writer).await.unwrap() },
+    );
+
+    {
+        // Check to ensure our first byte has been received. The future should be stalled
+        // here because the large value exceeds the channel capacity with read_buffer_size=1.
+        let first_byte = reader
+            .consume(Some(1))
+            .await
+            .err_tip(|| "Error reading first byte")?;
+        assert_eq!(
+            first_byte[0],
+            large_value1.as_bytes()[0],
+            "Expected first byte to match"
         );
-        reader
-    };
-    // Ensure we have received 1 byte in our buffer. This will ensure we have a reference to
-    // our file open.
-    assert!(reader.peek().await.is_ok(), "Could not peek into reader");
+    }
 
     // Insert new content. This will evict the old item.
-    store.update_oneshot(digest2, VALUE2.into()).await?;
+    store
+        .update_oneshot(digest2, large_value2.into())
+        .await?;
 
     // Ensure we let any background tasks finish.
     tokio::task::yield_now().await;
@@ -570,7 +594,7 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
             let data = read_file_contents(path.as_os_str()).await?;
             assert_eq!(
                 &data[..],
-                VALUE1.as_bytes(),
+                large_value1.as_bytes(),
                 "Expected file content to match"
             );
         }
@@ -580,12 +604,16 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
         );
     }
 
-    let reader_data = reader
+    let remaining_file_data = reader
         .consume(Some(1024))
         .await
         .err_tip(|| "Error reading remaining bytes")?;
 
-    assert_eq!(&reader_data, VALUE1, "Expected file content to match");
+    assert_eq!(
+        &remaining_file_data,
+        &large_value1.as_bytes()[1..],
+        "Expected file content to match"
+    );
 
     loop {
         if DELETES_FINISHED.load(Ordering::Relaxed) == 1 {
@@ -619,9 +647,9 @@ async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error
     let file_entry = store.get_file_entry_for_digest(&digest).await?;
     {
         // The file contents should equal our initial data.
-        let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
+        let mut reader = file_entry.read_file_part(0).await?;
         let mut file_contents = String::new();
-        reader.read_to_string(&mut file_contents).await?;
+        std::io::Read::read_to_string(reader.as_std_mut(), &mut file_contents)?;
         assert_eq!(file_contents, VALUE1);
     }
 
@@ -630,9 +658,9 @@ async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error
 
     {
         // The file contents still equal our old data.
-        let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
+        let mut reader = file_entry.read_file_part(0).await?;
         let mut file_contents = String::new();
-        reader.read_to_string(&mut file_contents).await?;
+        std::io::Read::read_to_string(reader.as_std_mut(), &mut file_contents)?;
         assert_eq!(file_contents, VALUE1);
     }
 
@@ -723,11 +751,11 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
                 let dir_entry = dir_entry?;
                 {
                     // Some filesystems won't sync automatically, so force it.
-                    let file_handle = fs::open_file(dir_entry.path().into_os_string(), 0, u64::MAX)
+                    let file_handle = fs::open_file(dir_entry.path().into_os_string(), 0)
                         .await
                         .err_tip(|| "Failed to open temp file")?;
                     // We don't care if it fails, this is only best attempt.
-                    drop(file_handle.get_ref().as_ref().sync_all().await);
+                    drop(file_handle.as_std().sync_all());
                 }
                 // Ensure we have written to the file too. This ensures we have an open file handle.
                 // Failing to do this may result in the file existing, but the `update_fut` not actually
@@ -983,7 +1011,7 @@ async fn update_whole_file_with_zero_digest() -> Result<(), Error> {
         let temp_file_path = Path::new(&temp_file_dir).join("zero-length-file");
         std::fs::write(&temp_file_path, b"")
             .err_tip(|| format!("Writing to {temp_file_path:?}"))?;
-        let file_slot = fs::open_file(&temp_file_path, 0, 0).await?.into_inner();
+        let file_slot = fs::open_file(&temp_file_path, 0).await?;
         store
             .update_with_whole_file(
                 digest,
@@ -1244,9 +1272,13 @@ async fn update_with_whole_file_closes_file() -> Result<(), Error> {
     let file_path = OsString::from(format!("{temp_path}/dummy_file"));
     let mut file = fs::create_file(&file_path).await?;
     {
-        file.write_all(value.as_bytes()).await?;
-        file.as_mut().sync_all().await?;
-        file.seek(tokio::io::SeekFrom::Start(0)).await?;
+        use std::io::{Seek, Write};
+        file.as_std_mut().write_all(value.as_bytes())
+            .err_tip(|| "Could not write to file")?;
+        file.as_std().sync_all()
+            .err_tip(|| "Could not sync file")?;
+        file.as_std_mut().seek(std::io::SeekFrom::Start(0))
+            .err_tip(|| "Could not seek file")?;
     }
 
     store
@@ -1288,7 +1320,8 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
     let file_path = OsString::from(format!("{temp_path}/dummy_file"));
     let original_inode = {
         let file = fs::create_file(&file_path).await?;
-        let original_inode = file.as_ref().metadata().await?.ino();
+        let original_inode = file.as_std().metadata()
+            .err_tip(|| "Could not get metadata")?.ino();
 
         let result = store
             .update_with_whole_file(
@@ -1305,14 +1338,8 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         original_inode
     };
 
-    let expected_file_name = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
-    let new_inode = fs::create_file(expected_file_name)
-        .await
-        .unwrap()
-        .as_ref()
-        .metadata()
-        .await?
-        .ino();
+    let expected_file_name = format!("{content_path}/{DIGEST_FOLDER}/{digest}");
+    let new_inode = tokio::fs::metadata(&expected_file_name).await?.ino();
     assert_eq!(
         original_inode, new_inode,
         "Expected the same inode for the file"
@@ -1457,6 +1484,7 @@ async fn safe_small_safe_eviction() -> Result<(), Error> {
             messages: vec![format!(
                 "{VALID_HASH}-{bytes} not found in filesystem store here"
             )],
+            details: vec![],
         }),
         "Expected data to not exist in store, because eviction"
     );

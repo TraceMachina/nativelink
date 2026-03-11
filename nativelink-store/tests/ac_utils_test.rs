@@ -62,10 +62,9 @@ async fn upload_file_to_store_with_large_file() -> Result<(), Error> {
     }
     {
         // Upload our file.
-        let file = fs::open_file(&filepath, 0, u64::MAX)
+        let file = fs::open_file(&filepath, 0)
             .await
-            .unwrap()
-            .into_inner();
+            .unwrap();
         store
             .update_with_whole_file(
                 digest,

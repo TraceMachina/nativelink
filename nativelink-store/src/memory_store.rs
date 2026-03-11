@@ -31,10 +31,10 @@ use nativelink_util::health_utils::{
     HealthRegistryBuilder, HealthStatusIndicator, default_health_status_indicator,
 };
 use nativelink_util::store_trait::{
-    RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
+    ItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
 
-use crate::callback_utils::RemoveItemCallbackHolder;
+use crate::callback_utils::ItemCallbackHolder;
 use crate::cas_utils::is_zero_digest;
 
 #[derive(Clone)]
@@ -66,7 +66,7 @@ pub struct MemoryStore {
         StoreKey<'static>,
         BytesWrapper,
         SystemTime,
-        RemoveItemCallbackHolder,
+        ItemCallbackHolder,
     >,
 }
 
@@ -81,8 +81,8 @@ impl MemoryStore {
 
     /// Returns the number of key-value pairs that are currently in the the cache.
     /// Function is not for production code paths.
-    pub fn len_for_test(&self) -> usize {
-        self.evicting_map.len_for_test()
+    pub async fn len_for_test(&self) -> usize {
+        self.evicting_map.len_for_test().await
     }
 
     pub async fn remove_entry(&self, key: StoreKey<'_>) -> bool {
@@ -126,7 +126,8 @@ impl StoreDriver for MemoryStore {
         );
         let iterations = self
             .evicting_map
-            .range(range, move |key, _value| handler(key.borrow()));
+            .range(range, move |key, _value| handler(key.borrow()))
+            .await;
         Ok(iterations)
     }
 
@@ -136,17 +137,12 @@ impl StoreDriver for MemoryStore {
         mut reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        // Internally Bytes might hold a reference to more data than just our data. To prevent
-        // this potential case, we make a full copy of our data for long-term storage.
-        let final_buffer = {
-            let buffer = reader
-                .consume(None)
-                .await
-                .err_tip(|| "Failed to collect all bytes from reader in memory_store::update")?;
-            let mut new_buffer = BytesMut::with_capacity(buffer.len());
-            new_buffer.extend_from_slice(&buffer[..]);
-            new_buffer.freeze()
-        };
+        // consume() returns a standalone Bytes from a frozen BytesMut inside
+        // buf_channel — no shared parent buffer, so no need to copy.
+        let final_buffer = reader
+            .consume(None)
+            .await
+            .err_tip(|| "Failed to collect all bytes from reader in memory_store::update")?;
 
         self.evicting_map
             .insert(key.into_owned().into(), BytesWrapper(final_buffer))
@@ -232,12 +228,12 @@ impl StoreDriver for MemoryStore {
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
         self.evicting_map
-            .add_remove_callback(RemoveItemCallbackHolder::new(callback));
+            .add_item_callback(ItemCallbackHolder::new(callback));
         Ok(())
     }
 }

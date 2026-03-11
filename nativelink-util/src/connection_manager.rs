@@ -111,7 +111,7 @@ struct ConnectionManagerWorker {
 /// The maximum number of queued requests to obtain a connection from the
 /// worker before applying back pressure to the requestor.  It makes sense to
 /// keep this small since it has to wait for a response anyway.
-const WORKER_BACKLOG: usize = 8;
+const WORKER_BACKLOG: usize = 64;
 
 impl ConnectionManager {
     /// Create a connection manager that creates a balance list between a given

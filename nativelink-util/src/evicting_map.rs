@@ -23,15 +23,16 @@ use core::pin::Pin;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_metric::MetricsComponent;
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, warn};
 
+use crate::background_spawn;
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics_utils::{Counter, CounterWithTime};
 
@@ -89,11 +90,13 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     }
 }
 
-// Callback to be called when the EvictingMap removes an item
-// either via eviction or direct deletion. This will be called with
-// whatever key type the EvictingMap uses.
-pub trait RemoveItemCallback<Q>: Debug + Send + Sync {
+// Callback invoked when the EvictingMap inserts or removes an item.
+pub trait ItemCallback<Q>: Debug + Send + Sync {
     fn callback(&self, store_key: &Q) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    /// Called synchronously when a new item is inserted.
+    /// Default is a no-op.
+    fn on_insert(&self, _store_key: &Q, _size: u64) {}
 }
 
 #[derive(Debug, MetricsComponent)]
@@ -101,7 +104,7 @@ struct State<
     K: Ord + Hash + Eq + Clone + Debug + Send + Borrow<Q>,
     Q: Ord + Hash + Eq + Debug,
     T: LenEntry + Debug + Send,
-    C: RemoveItemCallback<Q>,
+    C: ItemCallback<Q>,
 > {
     lru: LruCache<K, EvictionItem<T>>,
     btree: Option<BTreeSet<K>>,
@@ -120,7 +123,7 @@ struct State<
     lifetime_inserted_bytes: Counter,
 
     _key_type: PhantomData<Q>,
-    remove_callbacks: Vec<C>,
+    item_callbacks: Vec<C>,
 }
 
 type RemoveFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -129,7 +132,7 @@ impl<
     K: Ord + Hash + Eq + Clone + Debug + Send + Sync + Borrow<Q>,
     Q: Ord + Hash + Eq + Debug + Sync,
     T: LenEntry + Debug + Sync + Send,
-    C: RemoveItemCallback<Q>,
+    C: ItemCallback<Q>,
 > State<K, Q, T, C>
 {
     /// Removes an item from the cache and returns the data for deferred cleanup.
@@ -157,7 +160,7 @@ impl<
         }
 
         let callbacks = self
-            .remove_callbacks
+            .item_callbacks
             .iter()
             .map(|callback| callback.callback(key))
             .collect();
@@ -168,6 +171,10 @@ impl<
 
     /// Inserts a new item into the cache. If the key already exists, the old item is returned
     /// for deferred cleanup.
+    ///
+    /// Note: This method does NOT fire `on_insert` callbacks. The caller is
+    /// responsible for collecting the key+size pairs and firing callbacks
+    /// after releasing the State mutex to avoid nested locking.
     #[must_use]
     fn put(&mut self, key: &K, eviction_item: EvictionItem<T>) -> Option<(T, Vec<RemoveFuture>)>
     where
@@ -183,18 +190,20 @@ impl<
             .map(|old_item| self.remove(key.borrow(), &old_item, true))
     }
 
-    fn add_remove_callback(&mut self, callback: C) {
-        self.remove_callbacks.push(callback);
+    fn add_item_callback(&mut self, callback: C) {
+        self.item_callbacks.push(callback);
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct NoopRemove;
+pub struct NoopCallback;
 
-impl<Q> RemoveItemCallback<Q> for NoopRemove {
+impl<Q> ItemCallback<Q> for NoopCallback {
     fn callback(&self, _store_key: &Q) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         Box::pin(async {})
     }
+
+    fn on_insert(&self, _store_key: &Q, _size: u64) {}
 }
 
 #[derive(Debug, MetricsComponent)]
@@ -203,7 +212,7 @@ pub struct EvictingMap<
     Q: Ord + Hash + Eq + Debug,
     T: LenEntry + Debug + Send,
     I: InstantWrapper,
-    C: RemoveItemCallback<Q> = NoopRemove,
+    C: ItemCallback<Q> = NoopCallback,
 > {
     #[metric]
     state: Mutex<State<K, Q, T, C>>,
@@ -224,7 +233,7 @@ where
     Q: Ord + Hash + Eq + Debug + Sync,
     T: LenEntry + Debug + Clone + Send + Sync,
     I: InstantWrapper,
-    C: RemoveItemCallback<Q>,
+    C: ItemCallback<Q>,
 {
     pub fn new(config: &EvictionPolicy, anchor_time: I) -> Self {
         Self {
@@ -240,7 +249,7 @@ where
                 replaced_items: CounterWithTime::default(),
                 lifetime_inserted_bytes: Counter::default(),
                 _key_type: PhantomData,
-                remove_callbacks: Vec::new(),
+                item_callbacks: Vec::new(),
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,
@@ -265,7 +274,7 @@ where
     /// and return the number of items that were processed.
     /// The `handler` function should return `true` to continue processing the next item
     /// or `false` to stop processing.
-    pub fn range<F>(&self, prefix_range: impl RangeBounds<Q> + Send, mut handler: F) -> u64
+    pub async fn range<F>(&self, prefix_range: impl RangeBounds<Q> + Send, mut handler: F) -> u64
     where
         F: FnMut(&K, &T) -> bool + Send,
         K: Ord,
@@ -291,7 +300,7 @@ where
 
     /// Returns the number of key-value pairs that are currently in the the cache.
     /// Function is not for production code paths.
-    pub fn len_for_test(&self) -> usize {
+    pub async fn len_for_test(&self) -> usize {
         self.state.lock().lru.len()
     }
 
@@ -335,6 +344,9 @@ where
             self.max_bytes
         };
 
+        let elapsed_seconds =
+            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+
         let mut items_to_unref = Vec::new();
         let mut removal_futures = Vec::new();
 
@@ -343,7 +355,13 @@ where
                 .lru
                 .pop_lru()
                 .expect("Tried to peek() then pop() but failed");
-            debug!(?key, "Evicting",);
+            let age_secs = elapsed_seconds.saturating_sub(eviction_item.seconds_since_anchor);
+            let size = eviction_item.data.len();
+            if age_secs < 120 {
+                warn!(?key, age_secs, size, "Evicting recently-inserted item");
+            } else {
+                debug!(?key, age_secs, size, "Evicting");
+            }
             let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);
             removal_futures.extend(futures.into_iter());
@@ -385,7 +403,16 @@ where
         R: Borrow<Q> + Send,
     {
         let (removal_futures, data_to_unref) = {
+            let lock_start = std::time::Instant::now();
             let mut state = self.state.lock();
+            let lock_wait = lock_start.elapsed();
+            if lock_wait.as_millis() > 1 {
+                warn!(
+                    lock_wait_ms = lock_wait.as_millis(),
+                    op = "sizes_for_keys",
+                    "EvictingMap: lock contention",
+                );
+            }
 
             let lru_len = state.lru.len();
             let mut data_to_unref = Vec::new();
@@ -404,7 +431,15 @@ where
                         if self.should_evict(lru_len, entry, 0, u64::MAX) {
                             *result = None;
                             if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
-                                info!(?key, "Item expired, evicting");
+                                let elapsed_seconds =
+                                    i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+                                let age_secs = elapsed_seconds.saturating_sub(eviction_item.seconds_since_anchor);
+                                let size = eviction_item.data.len();
+                                if age_secs < 120 {
+                                    warn!(?key, age_secs, size, "Expired recently-inserted item");
+                                } else {
+                                    debug!(?key, age_secs, size, "Item expired, evicting");
+                                }
                                 let (data, futures) =
                                     state.remove(key.borrow(), &eviction_item, false);
                                 // Store data for later unref - we can't drop state here as we're still iterating
@@ -426,50 +461,142 @@ where
             (removal_futures, data_to_unref)
         };
 
-        // Perform the async callbacks outside of the lock
-        let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
-        while callbacks.next().await.is_some() {}
-        let mut callbacks: FuturesUnordered<_> =
-            data_to_unref.iter().map(LenEntry::unref).collect();
-        while callbacks.next().await.is_some() {}
+        // Fire-and-forget eviction cleanup in background.
+        if !removal_futures.is_empty() || !data_to_unref.is_empty() {
+            drop(background_spawn!("evicting_map_sizes_cleanup", async move {
+                let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while callbacks.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> =
+                    data_to_unref.iter().map(LenEntry::unref).collect();
+                while callbacks.next().await.is_some() {}
+            }));
+        }
     }
 
     pub async fn get(&self, key: &Q) -> Option<T> {
-        // Fast path: Check if we need eviction before acquiring lock for eviction
-        let needs_eviction = {
-            let state = self.state.lock();
+        let lock_start = std::time::Instant::now();
+        let mut state = self.state.lock();
+        let lock_wait = lock_start.elapsed();
+        if lock_wait.as_millis() > 1 {
+            warn!(
+                lock_wait_ms = lock_wait.as_millis(),
+                op = "get",
+                "EvictingMap: lock contention",
+            );
+        }
+
+        // Perform eviction if needed, collecting items for background cleanup.
+        let eviction_cleanup = {
             if let Some((_, peek_entry)) = state.lru.peek_lru() {
-                self.should_evict(
+                if self.should_evict(
                     state.lru.len(),
                     peek_entry,
                     state.sum_store_size,
                     self.max_bytes,
-                )
+                ) {
+                    let (items_to_unref, removal_futures) = self.evict_items(&mut *state);
+                    if !removal_futures.is_empty() || !items_to_unref.is_empty() {
+                        Some((items_to_unref, removal_futures))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             } else {
-                false
+                None
             }
         };
 
-        // Perform eviction if needed
-        if needs_eviction {
-            let (items_to_unref, removal_futures) = {
-                let mut state = self.state.lock();
-                self.evict_items(&mut *state)
-            };
-            // Unref items outside of lock
-            let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
-            while callbacks.next().await.is_some() {}
-            let mut callbacks: FuturesUnordered<_> =
-                items_to_unref.iter().map(LenEntry::unref).collect();
-            while callbacks.next().await.is_some() {}
+        // Get the item while still holding the lock.
+        let result = state.lru.get_mut(key.borrow()).map(|entry| {
+            entry.seconds_since_anchor =
+                i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+            entry.data.clone()
+        });
+
+        drop(state);
+
+        // Fire-and-forget eviction cleanup in background.
+        if let Some((items_to_unref, removal_futures)) = eviction_cleanup {
+            drop(background_spawn!("evicting_map_get_cleanup", async move {
+                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while futures.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> =
+                    items_to_unref.iter().map(LenEntry::unref).collect();
+                while callbacks.next().await.is_some() {}
+            }));
         }
 
-        // Now get the item
+        result
+    }
+
+    /// Retrieves multiple entries in a single lock acquisition, reducing
+    /// contention compared to calling `get()` in a loop.
+    pub async fn get_many<'b, Iter>(&self, keys: Iter) -> Vec<Option<T>>
+    where
+        Iter: IntoIterator<Item = &'b Q>,
+        Q: 'b,
+    {
+        let lock_start = std::time::Instant::now();
         let mut state = self.state.lock();
-        let entry = state.lru.get_mut(key.borrow())?;
-        entry.seconds_since_anchor =
-            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
-        Some(entry.data.clone())
+        let lock_wait = lock_start.elapsed();
+        if lock_wait.as_millis() > 1 {
+            warn!(
+                lock_wait_ms = lock_wait.as_millis(),
+                op = "get_many",
+                "EvictingMap: lock contention",
+            );
+        }
+
+        // Perform eviction if needed, collecting items for background cleanup.
+        let eviction_cleanup = {
+            if let Some((_, peek_entry)) = state.lru.peek_lru() {
+                if self.should_evict(
+                    state.lru.len(),
+                    peek_entry,
+                    state.sum_store_size,
+                    self.max_bytes,
+                ) {
+                    let (items_to_unref, removal_futures) = self.evict_items(&mut *state);
+                    if !removal_futures.is_empty() || !items_to_unref.is_empty() {
+                        Some((items_to_unref, removal_futures))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        let now = i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+        let results: Vec<Option<T>> = keys
+            .into_iter()
+            .map(|key: &'b Q| {
+                state.lru.get_mut(key.borrow()).map(|entry| {
+                    entry.seconds_since_anchor = now;
+                    entry.data.clone()
+                })
+            })
+            .collect();
+
+        drop(state);
+
+        // Fire-and-forget eviction cleanup in background.
+        if let Some((items_to_unref, removal_futures)) = eviction_cleanup {
+            drop(background_spawn!("evicting_map_get_many_cleanup", async move {
+                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while futures.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> =
+                    items_to_unref.iter().map(LenEntry::unref).collect();
+                while callbacks.next().await.is_some() {}
+            }));
+        }
+
+        results
     }
 
     /// Returns the replaced item if any.
@@ -487,23 +614,58 @@ where
 
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
-        let (items_to_unref, removal_futures) = {
+        let (replaced_items, evicted_items, removal_futures, insert_notifications) = {
+            let lock_start = std::time::Instant::now();
             let mut state = self.state.lock();
+            let lock_wait = lock_start.elapsed();
+            if lock_wait.as_millis() > 1 {
+                warn!(
+                    lock_wait_ms = lock_wait.as_millis(),
+                    op = "insert",
+                    "EvictingMap: lock contention",
+                );
+            }
             self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
         };
+        // State lock released. Fire insert callbacks outside the critical section.
+        if !insert_notifications.is_empty() {
+            let state = self.state.lock();
+            for (key, size) in &insert_notifications {
+                for cb in &state.item_callbacks {
+                    cb.on_insert(key.borrow(), *size);
+                }
+            }
+        }
 
-        let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
-        while futures.next().await.is_some() {}
+        // Replaced items share the same key (and thus content path) as the
+        // new insert. Their unrefs MUST complete before the caller continues
+        // to rename the new file into the same path.
+        let result = if !replaced_items.is_empty() {
+            let futures: FuturesUnordered<_> = replaced_items
+                .into_iter()
+                .map(|item| async move {
+                    item.unref().await;
+                    item
+                })
+                .collect();
+            futures.collect::<Vec<_>>().await.into_iter().next()
+        } else {
+            None
+        };
 
-        // Unref items outside of lock
-        let futures: FuturesUnordered<_> = items_to_unref
-            .into_iter()
-            .map(|item| async move {
-                item.unref().await;
-                item
-            })
-            .collect();
-        futures.collect::<Vec<_>>().await.into_iter().next()
+        // Fire-and-forget eviction cleanup (different keys, no path conflict)
+        // and removal callbacks (cache invalidation, protected by stale-positive handling).
+        if !removal_futures.is_empty() || !evicted_items.is_empty() {
+            drop(background_spawn!("evicting_map_insert_cleanup", async move {
+                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while futures.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> =
+                    evicted_items.iter().map(LenEntry::unref).collect();
+                while callbacks.next().await.is_some() {}
+            }));
+        }
+
+        result
     }
 
     /// Same as `insert()`, but optimized for multiple inserts.
@@ -522,20 +684,35 @@ where
             return Vec::new();
         }
 
-        let (items_to_unref, removal_futures) = {
+        let (replaced_items, evicted_items, removal_futures, insert_notifications) = {
+            let lock_start = std::time::Instant::now();
             let mut state = self.state.lock();
+            let lock_wait = lock_start.elapsed();
+            if lock_wait.as_millis() > 1 {
+                warn!(
+                    lock_wait_ms = lock_wait.as_millis(),
+                    op = "insert_many",
+                    "EvictingMap: lock contention",
+                );
+            }
             self.inner_insert_many(
                 &mut state,
                 inserts,
                 i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX),
             )
         };
+        // State lock released. Fire insert callbacks outside the critical section.
+        if !insert_notifications.is_empty() {
+            let state = self.state.lock();
+            for (key, size) in &insert_notifications {
+                for cb in &state.item_callbacks {
+                    cb.on_insert(key.borrow(), *size);
+                }
+            }
+        }
 
-        let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
-        while futures.next().await.is_some() {}
-
-        // Unref items outside of lock
-        items_to_unref
+        // Replaced items share the same key/path — must await their unrefs.
+        let result: Vec<T> = replaced_items
             .into_iter()
             .map(|item| async move {
                 item.unref().await;
@@ -543,15 +720,39 @@ where
             })
             .collect::<FuturesUnordered<_>>()
             .collect::<Vec<_>>()
-            .await
+            .await;
+
+        // Fire-and-forget eviction cleanup (different keys, no path conflict).
+        if !removal_futures.is_empty() || !evicted_items.is_empty() {
+            drop(background_spawn!("evicting_map_insert_many_cleanup", async move {
+                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while futures.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> =
+                    evicted_items.iter().map(LenEntry::unref).collect();
+                while callbacks.next().await.is_some() {}
+            }));
+        }
+
+        result
     }
 
+    /// Returns `(replaced_items, evicted_items, removal_futures, insert_notifications)`.
+    /// - `replaced_items`: items that were replaced by new inserts (same key).
+    /// - `evicted_items`: items evicted due to size/age/count limits.
+    /// - `removal_futures`: callbacks from item_callbacks for all removed items.
+    /// - `insert_notifications`: (key, size) pairs for firing on_insert callbacks
+    ///   outside the State mutex critical section.
+    ///
+    /// Callers should fire-and-forget the eviction cleanup (evicted_items unrefs
+    /// + removal_futures) via `background_spawn!` to avoid blocking the caller.
+    /// Callers MUST fire on_insert callbacks for each insert_notification after
+    /// releasing the State mutex to avoid nested locking.
     fn inner_insert_many<It>(
         &self,
         state: &mut State<K, Q, T, C>,
         inserts: It,
         seconds_since_anchor: i32,
-    ) -> (Vec<T>, Vec<RemoveFuture>)
+    ) -> (Vec<T>, Vec<T>, Vec<RemoveFuture>, Vec<(K, u64)>)
     where
         It: IntoIterator<Item = (K, T)> + Send,
         // Note: It's not enough to have the inserts themselves be Send. The
@@ -560,6 +761,7 @@ where
     {
         let mut replaced_items = Vec::new();
         let mut removal_futures = Vec::new();
+        let mut insert_notifications = Vec::new();
         for (key, data) in inserts {
             let new_item_size = data.len();
             let eviction_item = EvictionItem {
@@ -573,22 +775,28 @@ where
             }
             state.sum_store_size += new_item_size;
             state.lifetime_inserted_bytes.add(new_item_size);
+            insert_notifications.push((key, new_item_size));
         }
 
         // Perform eviction after all insertions
-        let (items_to_unref, futures) = self.evict_items(state);
+        let (evicted_items, futures) = self.evict_items(state);
         removal_futures.extend(futures);
 
-        // Note: We cannot drop the state lock here since we're borrowing it,
-        // but the caller will handle unreffing these items after releasing the lock
-        replaced_items.extend(items_to_unref);
-
-        (replaced_items, removal_futures)
+        (replaced_items, evicted_items, removal_futures, insert_notifications)
     }
 
     pub async fn remove(&self, key: &Q) -> bool {
-        let (items_to_unref, removed_item, removal_futures) = {
+        let (evicted_items, removed_item, removal_futures) = {
+            let lock_start = std::time::Instant::now();
             let mut state = self.state.lock();
+            let lock_wait = lock_start.elapsed();
+            if lock_wait.as_millis() > 1 {
+                warn!(
+                    lock_wait_ms = lock_wait.as_millis(),
+                    op = "remove",
+                    "EvictingMap: lock contention",
+                );
+            }
 
             // First perform eviction
             let (evicted_items, mut removal_futures) = self.evict_items(&mut *state);
@@ -605,21 +813,25 @@ where
             (evicted_items, removed, removal_futures)
         };
 
-        let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
-        while callbacks.next().await.is_some() {}
+        let was_removed = removed_item.is_some();
 
-        // Unref evicted items outside of lock
-        let mut callbacks: FuturesUnordered<_> =
-            items_to_unref.iter().map(LenEntry::unref).collect();
-        while callbacks.next().await.is_some() {}
-
-        // Unref removed item if any
-        if let Some(item) = removed_item {
-            item.unref().await;
-            return true;
+        // Fire-and-forget all cleanup (evicted + removed + callbacks) in background.
+        let has_cleanup =
+            !removal_futures.is_empty() || !evicted_items.is_empty() || removed_item.is_some();
+        if has_cleanup {
+            drop(background_spawn!("evicting_map_remove_cleanup", async move {
+                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while futures.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> = evicted_items
+                    .iter()
+                    .chain(removed_item.iter())
+                    .map(LenEntry::unref)
+                    .collect();
+                while callbacks.next().await.is_some() {}
+            }));
         }
 
-        false
+        was_removed
     }
 
     /// Same as `remove()`, but allows for a conditional to be applied to the
@@ -648,29 +860,46 @@ where
 
                 (evicted_items, removal_futures, removed_item)
             } else {
-                (vec![], vec![].into_iter().collect(), None)
+                return false;
             }
         };
 
-        // Perform the async callbacks outside of the lock
-        let mut removal_futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
-        while removal_futures.next().await.is_some() {}
+        let was_removed = removed_item.is_some();
 
-        // Unref evicted items
-        let mut callbacks: FuturesUnordered<_> =
-            evicted_items.iter().map(LenEntry::unref).collect();
-        while callbacks.next().await.is_some() {}
-
-        // Unref removed item if any
-        if let Some(item) = removed_item {
-            item.unref().await;
-            true
-        } else {
-            false
+        // Fire-and-forget all cleanup in background.
+        let has_cleanup =
+            !removal_futures.is_empty() || !evicted_items.is_empty() || removed_item.is_some();
+        if has_cleanup {
+            drop(background_spawn!("evicting_map_remove_if_cleanup", async move {
+                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while futures.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> = evicted_items
+                    .iter()
+                    .chain(removed_item.iter())
+                    .map(LenEntry::unref)
+                    .collect();
+                while callbacks.next().await.is_some() {}
+            }));
         }
+
+        was_removed
     }
 
-    pub fn add_remove_callback(&self, callback: C) {
-        self.state.lock().add_remove_callback(callback);
+    pub fn add_item_callback(&self, callback: C) {
+        self.state.lock().add_item_callback(callback);
+    }
+
+    /// Returns all entries in the cache with their LRU timestamps as absolute
+    /// seconds since UNIX epoch. Each entry is (key, unix_timestamp_secs).
+    ///
+    /// This is a peek-only operation: it does NOT promote entries in the LRU.
+    pub fn get_all_entries_with_timestamps(&self) -> Vec<(K, i64)> {
+        let anchor_epoch = self.anchor_time.unix_timestamp() as i64;
+        let state = self.state.lock();
+        let mut result = Vec::with_capacity(state.lru.len());
+        result.extend(state.lru.iter().map(|(k, v)| {
+            (k.clone(), anchor_epoch + v.seconds_since_anchor as i64)
+        }));
+        result
     }
 }

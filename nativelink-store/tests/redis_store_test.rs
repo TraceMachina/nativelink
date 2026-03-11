@@ -639,7 +639,8 @@ fn test_connection_errors() {
             messages: vec![
                 "deadline has elapsed".into(),
                 format!("While connecting to redis with url: redis://nativelink.com:6379/")
-            ]
+            ],
+            details: vec![],
         },
         err
     );
@@ -738,7 +739,8 @@ async fn test_sentinel_connect_with_bad_master() {
             messages: vec![
                 "MasterNameNotFoundBySentinel: Master with given name not found in sentinel - MasterNameNotFoundBySentinel".into(),
                 format!("While connecting to redis with url: redis+sentinel://127.0.0.1:{port}/")
-            ]
+            ],
+            details: vec![],
         },
         RedisStore::new_standard(spec).await.unwrap_err()
     );
@@ -778,7 +780,8 @@ async fn test_redis_connect_timeout() {
             messages: vec![
                 "deadline has elapsed".into(),
                 format!("While connecting to redis with url: redis://127.0.0.1:{port}/")
-            ]
+            ],
+            details: vec![],
         },
         RedisStore::new_standard(spec).await.unwrap_err()
     );

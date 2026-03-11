@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod action_messages;
+pub mod blob_locality_map;
 pub mod buf_channel;
 pub mod channel_body_for_tests;
 pub mod chunked_stream;
@@ -24,6 +25,7 @@ pub mod fastcdc;
 pub mod fs;
 pub mod fs_util;
 pub mod health_utils;
+pub mod log_utils;
 pub mod instant_wrapper;
 pub mod known_platform_property_provider;
 pub mod metrics;
@@ -36,6 +38,7 @@ pub mod proto_stream_utils;
 pub mod resource_info;
 pub mod retry;
 pub mod shutdown_guard;
+pub mod stall_detector;
 pub mod store_trait;
 pub mod task;
 pub mod telemetry;

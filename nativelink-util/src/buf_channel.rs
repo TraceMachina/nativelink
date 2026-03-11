@@ -27,18 +27,37 @@ use tracing::warn;
 
 const ZERO_DATA: Bytes = Bytes::new();
 
+/// Default channel capacity: 64 slots. At 256KiB chunks this gives 16MiB of
+/// buffered data, which is sufficient for most workloads.
+const DEFAULT_BUF_CHANNEL_CAPACITY: usize = 64;
+
 /// Create a channel pair that can be used to transport buffer objects around to
 /// different components. This wrapper is used because the streams give some
 /// utility like managing EOF in a more friendly way, ensure if no EOF is received
 /// it will send an error to the receiver channel before shutting down and count
 /// the number of bytes sent.
+///
+/// Uses the default capacity of 64 slots. For high-throughput or
+/// latency-sensitive paths, use [`make_buf_channel_pair_with_size`] instead.
 #[must_use]
 pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
-    // We allow up to 2 items in the buffer at any given time. There is no major
-    // reason behind this magic number other than thinking it will be nice to give
-    // a little time for another thread to wake up and consume data if another
-    // thread is pumping large amounts of data into the channel.
-    let (tx, rx) = mpsc::channel(2);
+    make_buf_channel_pair_with_size(DEFAULT_BUF_CHANNEL_CAPACITY)
+}
+
+/// Like [`make_buf_channel_pair`], but with a caller-specified channel capacity.
+///
+/// The `capacity` parameter controls how many chunks can be buffered before the
+/// producer is forced to wait. At 256KiB chunks (the default `read_buffer_size`),
+/// each slot represents ~256KiB of buffered data, so:
+///
+/// -  64 slots = ~16MiB (default, good for most workloads)
+/// - 128 slots = ~32MiB (suitable for dual-store writes in FastSlowStore)
+/// - 256 slots = ~64MiB (suitable for high-throughput streaming at 10Gbps+)
+#[must_use]
+pub fn make_buf_channel_pair_with_size(
+    capacity: usize,
+) -> (DropCloserWriteHalf, DropCloserReadHalf) {
+    let (tx, rx) = mpsc::channel(capacity);
     let eof_sent = Arc::new(AtomicBool::new(false));
     (
         DropCloserWriteHalf {
@@ -368,7 +387,9 @@ impl DropCloserReadHalf {
             }
             chunk
         };
-        let mut output = BytesMut::new();
+        // If we get here, first_chunk was not enough and there is more data.
+        // Fall back to concatenation for multiple chunks.
+        let mut output = BytesMut::with_capacity(size.min(first_chunk.len() * 2));
         output.extend_from_slice(&first_chunk);
 
         loop {
@@ -396,20 +417,41 @@ impl DropCloserReadHalf {
 impl Stream for DropCloserReadHalf {
     type Item = Result<Bytes, std::io::Error>;
 
-    // TODO(palfrey) This is not very efficient as we are creating a new future on every
-    // poll() call. It might be better to use a waker.
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Box::pin(self.recv())
-            .as_mut()
-            .poll(cx)
-            .map(|result| match result {
+        // First drain any queued data (e.g., from try_reset_stream or peek).
+        if let Some(chunk) = self.queued_data.pop_front() {
+            // queued_data may contain empty bytes representing EOF.
+            if chunk.is_empty() {
+                return Poll::Ready(None);
+            }
+            return Poll::Ready(Some(Ok(chunk)));
+        }
+
+        // Check for previous errors.
+        if let Some(err) = &self.last_err {
+            return Poll::Ready(Some(Err(err.clone().to_std_err())));
+        }
+
+        // Poll the underlying mpsc channel directly to avoid heap allocation.
+        match self.rx.poll_recv(cx) {
+            Poll::Ready(Some(bytes)) => match self.recv_inner(bytes) {
                 Ok(bytes) => {
                     if bytes.is_empty() {
-                        return None;
+                        Poll::Ready(None) // EOF
+                    } else {
+                        Poll::Ready(Some(Ok(bytes)))
                     }
-                    Some(Ok(bytes))
                 }
-                Err(e) => Some(Err(e.to_std_err())),
-            })
+                Err(e) => Poll::Ready(Some(Err(e.to_std_err()))),
+            },
+            Poll::Ready(None) => {
+                // Channel closed — treat as EOF or error depending on eof_sent flag.
+                match self.recv_inner(ZERO_DATA) {
+                    Ok(_) => Poll::Ready(None),
+                    Err(e) => Poll::Ready(Some(Err(e.to_std_err()))),
+                }
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 }

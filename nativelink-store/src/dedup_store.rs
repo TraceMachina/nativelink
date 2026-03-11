@@ -27,7 +27,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
@@ -209,16 +209,13 @@ impl StoreDriver for DedupStore {
             .map_ok(|frame| async move {
                 let hash = blake3::hash(&frame[..]).into();
                 let index_entry = DigestInfo::new(hash, frame.len() as u64);
-                if self
-                    .content_store
-                    .has(index_entry)
-                    .await
-                    .err_tip(|| "Failed to call .has() in DedupStore::update()")?
-                    .is_some()
-                {
-                    // If our store has this digest, we don't need to upload it.
-                    return Result::<_, Error>::Ok(index_entry);
-                }
+                // Always upload the chunk unconditionally. A previous has()
+                // check here skipped the upload when the chunk appeared to
+                // exist, but the chunk could be evicted between that check
+                // and the index commit — leaving the index pointing to a
+                // missing chunk and causing "Lost inputs" errors.
+                // Content-addressed upload is idempotent, so re-uploading
+                // an existing chunk is safe and cheap.
                 self.content_store
                     .update_oneshot(index_entry, frame)
                     .await
@@ -379,13 +376,13 @@ impl StoreDriver for DedupStore {
         self
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
         self.index_store
-            .register_remove_callback(callback.clone())?;
-        self.content_store.register_remove_callback(callback)?;
+            .register_item_callback(callback.clone())?;
+        self.content_store.register_item_callback(callback)?;
         Ok(())
     }
 }
