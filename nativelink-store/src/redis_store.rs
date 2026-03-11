@@ -337,9 +337,7 @@ where
     /// A manager for subscriptions to keys in Redis.
     subscription_manager: tokio::sync::OnceCell<Arc<RedisSubscriptionManager>>,
 
-    /// Channel for getting subscription messages. Only used by cluster mode where
-    /// the sender is connected at construction time. For standard mode, this is
-    /// None and created on demand in `subscription_manager()`.
+    /// Channel for getting subscription messages
     subscriber_channel: Mutex<Option<UnboundedReceiver<PushInfo>>>,
 
     /// Permits to limit inflight Redis requests. Technically only
@@ -1366,11 +1364,22 @@ impl RedisSubscriptionManager {
                                 },
                                 maybe_push_info = local_subscriber_channel.next() => {
                                     if let Some(push_info) = maybe_push_info {
-                                        if push_info.data.len() != 1 {
-                                            error!(?push_info, "Expected exactly one message on subscriber_channel");
+                                        match push_info.kind {
+                                            redis::PushKind::PMessage => {},
+                                            redis::PushKind::PSubscribe => {
+                                                trace!(?push_info, "PSubscribe, ignore");
+                                                continue;
+                                            }
+                                            _ => {
+                                                warn!(?push_info, "Other push_info message, discarded");
+                                                continue;
+                                            },
+                                        }
+                                        if push_info.data.len() != 3 {
+                                            error!(?push_info, "Expected exactly 3 values on subscriber channel (pattern, channel, value)");
                                             continue;
                                         }
-                                        match push_info.data.first().unwrap() {
+                                        match push_info.data.last().unwrap() {
                                             Value::SimpleString(s) => {
                                                 s.clone()
                                             }
@@ -1388,6 +1397,7 @@ impl RedisSubscriptionManager {
                                     }
                                 }
                             };
+                            trace!(key, "New subscription manager key");
                             let Some(subscribed_keys) = subscribed_keys_weak.upgrade() else {
                                 warn!(
                                     "It appears our parent has been dropped, exiting RedisSubscriptionManager spawn"
