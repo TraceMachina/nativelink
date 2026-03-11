@@ -127,6 +127,12 @@ pub struct Worker {
     /// action's input_root_digest cached.
     pub cached_directory_digests: HashSet<DigestInfo>,
 
+    /// All subtree digests (roots + subtrees) from the worker's directory cache.
+    /// Updated via delta encoding from BlobsAvailableNotification.
+    /// The scheduler uses this for subtree-aware scheduling: checking whether
+    /// the action's input_root_digest appears as ANY subtree in any cached entry.
+    pub cached_subtree_digests: HashSet<DigestInfo>,
+
     /// Stats about the worker.
     #[metric]
     metrics: Arc<Metrics>,
@@ -194,6 +200,7 @@ impl Worker {
             cas_endpoint,
             cpu_load_pct: 0,
             cached_directory_digests: HashSet::new(),
+            cached_subtree_digests: HashSet::new(),
             metrics: Arc::new(Metrics {
                 connected_timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)

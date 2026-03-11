@@ -321,7 +321,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
     /// Sends a periodic BlobsAvailable notification.
     /// - First tick: full snapshot of all digests with timestamps (scans store once).
+    ///   Also sends a full subtree snapshot with ALL subtree digests.
     /// - Subsequent ticks: delta from callback-accumulated changes (no scan).
+    ///   Sends delta-encoded subtree changes (added/removed).
     async fn send_periodic_blobs_available(
         grpc_client: &mut T,
         state: &BlobsAvailableState,
@@ -347,8 +349,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             // Delta: swap out accumulated changes.
             let changes = state.tracker.swap();
             if changes.added.is_empty() && changes.evicted.is_empty() {
-                trace!("BlobsAvailable: no changes since last tick, skipping");
-                return;
+                // Even if no blob changes, we may have subtree changes to report.
+                // We'll check below and skip only if both are empty.
             }
 
             let infos: Vec<BlobDigestInfo> = changes
@@ -364,16 +366,38 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             (infos, evicted_protos)
         };
 
+        // Collect subtree delta or full snapshot.
+        let (cached_directory_digests, added_subtree_digests, removed_subtree_digests, is_full_subtree_snapshot) = if is_first {
+            // Full subtree snapshot: send ALL subtree digests in cached_directory_digests.
+            // Also drain any pending changes accumulated during startup.
+            drop(running_actions_manager.take_pending_subtree_changes().await);
+            let all_subtrees = running_actions_manager.all_subtree_digests().await;
+            let all_subtree_protos = all_subtrees.into_iter().map(|d| d.into()).collect();
+            (all_subtree_protos, Vec::new(), Vec::new(), true)
+        } else {
+            // Delta: take pending subtree changes.
+            let (added, removed) = running_actions_manager.take_pending_subtree_changes().await;
+            let added_protos = added.into_iter().map(|d| d.into()).collect();
+            let removed_protos = removed.into_iter().map(|d| d.into()).collect();
+            (Vec::new(), added_protos, removed_protos, false)
+        };
+
         let new_or_touched_count = digest_infos.len();
         let evicted_count = evicted_digests.len();
+        let cached_dir_count = cached_directory_digests.len();
+        let added_subtree_count = added_subtree_digests.len();
+        let removed_subtree_count = removed_subtree_digests.len();
 
-        // Collect cached directory digests from the directory cache.
-        let cached_dir_digests = running_actions_manager.cached_directory_digests().await;
-        let cached_dir_count = cached_dir_digests.len();
-        let cached_directory_digests = cached_dir_digests
-            .into_iter()
-            .map(|d| d.into())
-            .collect();
+        // Skip sending if there are truly no changes at all.
+        if !is_first
+            && new_or_touched_count == 0
+            && evicted_count == 0
+            && added_subtree_count == 0
+            && removed_subtree_count == 0
+        {
+            trace!("BlobsAvailable: no changes since last tick, skipping");
+            return;
+        }
 
         let load = get_cpu_load_pct();
         debug!("BlobsAvailable cpu_load_pct={load}");
@@ -385,6 +409,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             digest_infos,
             cpu_load_pct: load,
             cached_directory_digests,
+            added_subtree_digests,
+            removed_subtree_digests,
+            is_full_subtree_snapshot,
         };
 
         if let Err(err) = grpc_client.blobs_available(notification).await {
@@ -393,6 +420,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 new_or_touched_count,
                 evicted_count,
                 cached_dir_count,
+                added_subtree_count,
+                removed_subtree_count,
                 is_first,
                 "Failed to send periodic BlobsAvailable"
             );
@@ -401,6 +430,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 new_or_touched_count,
                 evicted_count,
                 cached_dir_count,
+                added_subtree_count,
+                removed_subtree_count,
                 is_first,
                 "Sent periodic BlobsAvailable"
             );
@@ -677,6 +708,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                             digest_infos: Vec::new(),
                                                             cpu_load_pct: load,
                                                             cached_directory_digests: Vec::new(),
+                                                            added_subtree_digests: Vec::new(),
+                                                            removed_subtree_digests: Vec::new(),
+                                                            is_full_subtree_snapshot: false,
                                                         }
                                                     ).await {
                                                         warn!(?err, "Failed to send blobs_available notification");

@@ -14,7 +14,7 @@
 
 use core::future::Future;
 use core::pin::Pin;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -234,12 +234,28 @@ pub struct DirectoryCache {
     ///
     /// Updated when cache entries are inserted or evicted.
     subtree_index: RwLock<HashMap<DigestInfo, PathBuf>>,
+    /// Reference count for each subtree digest across all cached entries.
+    /// When a digest's count drops to zero, it is truly removed and should
+    /// be reported in the "removed" delta.
+    subtree_refcount: RwLock<HashMap<DigestInfo, usize>>,
+    /// Pending subtree digest changes since the last `take_pending_subtree_changes()` call.
+    /// Protected by a Mutex for interior mutability from insertion/eviction paths.
+    pending_subtree_changes: Mutex<PendingSubtreeChanges>,
     /// Cumulative hit count for stats logging
     hit_count: AtomicU64,
     /// Cumulative miss count for stats logging
     miss_count: AtomicU64,
     /// Cumulative subtree hit count for stats logging
     subtree_hit_count: AtomicU64,
+}
+
+/// Accumulated subtree digest changes between periodic reports.
+#[derive(Debug, Default)]
+pub struct PendingSubtreeChanges {
+    /// Subtree digests added since last report.
+    pub added: HashSet<DigestInfo>,
+    /// Subtree digests removed since last report (only those no longer in ANY cached entry).
+    pub removed: HashSet<DigestInfo>,
 }
 
 impl DirectoryCache {
@@ -298,6 +314,7 @@ impl DirectoryCache {
 
         let mut initial_cache = HashMap::new();
         let mut initial_subtree_index = HashMap::new();
+        let mut initial_subtree_refcount: HashMap<DigestInfo, usize> = HashMap::new();
 
         // Load existing cache entries from disk on startup.
         let load_start = Instant::now();
@@ -351,6 +368,7 @@ impl DirectoryCache {
                                     entry_path.join(relpath)
                                 };
                                 initial_subtree_index.insert(*sub_digest, abs_path);
+                                *initial_subtree_refcount.entry(*sub_digest).or_insert(0) += 1;
                                 loaded_subtrees += 1;
                             }
                         }
@@ -401,6 +419,8 @@ impl DirectoryCache {
             fast_slow_store,
             filesystem_store,
             subtree_index: RwLock::new(initial_subtree_index),
+            subtree_refcount: RwLock::new(initial_subtree_refcount),
+            pending_subtree_changes: Mutex::new(PendingSubtreeChanges::default()),
             hit_count: AtomicU64::new(0),
             miss_count: AtomicU64::new(0),
             subtree_hit_count: AtomicU64::new(0),
@@ -413,6 +433,60 @@ impl DirectoryCache {
     pub async fn cached_digests(&self) -> Vec<DigestInfo> {
         let cache = self.cache.read().await;
         cache.keys().copied().collect()
+    }
+
+    /// Returns ALL subtree digests currently tracked across all cached entries.
+    /// Used for the initial full snapshot on (re)connect.
+    pub async fn all_subtree_digests(&self) -> Vec<DigestInfo> {
+        let refcount = self.subtree_refcount.read().await;
+        refcount.keys().copied().collect()
+    }
+
+    /// Atomically takes the pending subtree changes since the last call,
+    /// returning (added, removed) digest lists and clearing the internal state.
+    pub async fn take_pending_subtree_changes(&self) -> (Vec<DigestInfo>, Vec<DigestInfo>) {
+        let mut pending = self.pending_subtree_changes.lock().await;
+        let added: Vec<DigestInfo> = pending.added.drain().collect();
+        let removed: Vec<DigestInfo> = pending.removed.drain().collect();
+        (added, removed)
+    }
+
+    /// Records that subtree digests from a merkle tree were added (new cache entry).
+    /// Increments refcounts and records newly-appearing digests in pending added.
+    async fn record_subtree_insertion(&self, merkle: &MerkleTreeMetadata) {
+        let mut refcount = self.subtree_refcount.write().await;
+        let mut pending = self.pending_subtree_changes.lock().await;
+        for sub_digest in merkle.digest_to_relpath.keys() {
+            let count = refcount.entry(*sub_digest).or_insert(0);
+            if *count == 0 {
+                // This digest is newly appearing across all cached entries.
+                pending.added.insert(*sub_digest);
+                // If it was in the removed set (evicted then re-added before
+                // the delta was taken), cancel it out.
+                pending.removed.remove(sub_digest);
+            }
+            *count += 1;
+        }
+    }
+
+    /// Records that subtree digests from a merkle tree were removed (evicted cache entry).
+    /// Decrements refcounts and records fully-removed digests in pending removed.
+    async fn record_subtree_removal(&self, merkle_digests: &[DigestInfo]) {
+        let mut refcount = self.subtree_refcount.write().await;
+        let mut pending = self.pending_subtree_changes.lock().await;
+        for sub_digest in merkle_digests {
+            if let Some(count) = refcount.get_mut(sub_digest) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    refcount.remove(sub_digest);
+                    // This digest is no longer in ANY cached entry.
+                    pending.removed.insert(*sub_digest);
+                    // If it was in the added set (added then evicted before
+                    // the delta was taken), cancel it out.
+                    pending.added.remove(sub_digest);
+                }
+            }
+        }
     }
 
     /// Gets or creates a directory in the cache, then hardlinks it to the destination.
@@ -633,7 +707,8 @@ impl DirectoryCache {
                     .err_tip(|| "Failed to lock down cache dir after rename")?;
             }
 
-            // Step 5: Update the subtree index with all directories from this entry.
+            // Step 5: Update the subtree index with all directories from this entry,
+            // and record the insertion for delta reporting.
             if let Some(tree) = &resolved_tree {
                 let merkle_meta = MerkleTreeMetadata::from_directory_tree(tree, &digest);
                 let mut index = self.subtree_index.write().await;
@@ -645,6 +720,8 @@ impl DirectoryCache {
                     };
                     index.insert(*sub_digest, abs_path);
                 }
+                drop(index);
+                self.record_subtree_insertion(&merkle_meta).await;
             }
 
             Ok(size)
@@ -1240,7 +1317,7 @@ impl DirectoryCache {
 
                 // Check which blobs are already in the fast store.
                 let unique_digests: Vec<DigestInfo> = {
-                    let mut seen = std::collections::HashSet::new();
+                    let mut seen = HashSet::new();
                     files_to_download
                         .iter()
                         .filter_map(|(d, _, _)| if seen.insert(*d) { Some(*d) } else { None })
@@ -1350,7 +1427,8 @@ impl DirectoryCache {
 
     /// Removes subtree index entries that belong to a given cache entry path.
     /// Loads the merkle metadata file from the cache entry to determine which
-    /// digests to remove.
+    /// digests to remove. Also decrements subtree refcounts and records
+    /// fully-removed digests for delta reporting.
     async fn remove_subtree_index_for_path(
         &self,
         cache_entry_path: &Path,
@@ -1360,6 +1438,8 @@ impl DirectoryCache {
         if let Ok(data) = fs::read_to_string(&merkle_path).await {
             if let Ok(merkle) = MerkleTreeMetadata::deserialize(&data) {
                 let mut removed = 0usize;
+                let merkle_digests: Vec<DigestInfo> =
+                    merkle.digest_to_relpath.keys().copied().collect();
                 for (sub_digest, relpath) in &merkle.digest_to_relpath {
                     // Only remove if the index entry points to this specific cache entry.
                     let abs_path = if relpath.is_empty() {
@@ -1374,6 +1454,10 @@ impl DirectoryCache {
                         }
                     }
                 }
+                // Record subtree removals for delta reporting.
+                // This decrements refcounts and only marks digests as removed
+                // when they are no longer present in ANY cached entry.
+                self.record_subtree_removal(&merkle_digests).await;
                 debug!(
                     path = %cache_entry_path.display(),
                     removed_subtrees = removed,

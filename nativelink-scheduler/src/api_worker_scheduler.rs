@@ -482,14 +482,20 @@ impl ApiWorkerSchedulerImpl {
 
         // ── Directory cache hit bonus ──
         // If a viable worker has the action's input_root_digest in its directory
-        // cache, it can hardlink the entire input tree in milliseconds instead of
+        // cache (either as a root or as a subtree of a previously cached tree),
+        // it can hardlink the entire input tree in milliseconds instead of
         // reconstructing it from CAS. This is a massive win (seconds of I/O saved)
         // and should override load and locality scoring.
+        //
+        // We check both `cached_directory_digests` (root-only, legacy) and
+        // `cached_subtree_digests` (all subtrees, new delta-encoded path).
         let dir_cache_winner: Option<WorkerId> = {
             let mut best: Option<(WorkerId, u32)> = None; // (id, cpu_load)
             for wid in &candidates {
                 if let Some(w) = self.workers.0.peek(wid) {
-                    if w.cached_directory_digests.contains(&input_root_digest)
+                    let has_root_match = w.cached_directory_digests.contains(&input_root_digest);
+                    let has_subtree_match = w.cached_subtree_digests.contains(&input_root_digest);
+                    if (has_root_match || has_subtree_match)
                         && worker_is_viable(wid)
                     {
                         let load = w.cpu_load_pct;
@@ -511,7 +517,7 @@ impl ApiWorkerSchedulerImpl {
                     ?wid,
                     cpu_load_pct = load,
                     %input_root_digest,
-                    "Directory cache hit -- worker has input_root_digest cached, giving scheduling priority"
+                    "Directory cache hit -- worker has input_root_digest cached (root or subtree), giving scheduling priority"
                 );
             }
             best.map(|(wid, _)| wid)
@@ -1354,7 +1360,7 @@ fn score_and_generate_hints(
 fn endpoint_scores_to_worker_scores(
     endpoint_scores: &HashMap<String, (u64, SystemTime)>,
     endpoint_to_worker: &HashMap<String, WorkerId>,
-    candidates: &std::collections::HashSet<WorkerId>,
+    candidates: &HashSet<WorkerId>,
 ) -> HashMap<WorkerId, (u64, SystemTime)> {
     let mut worker_scores: HashMap<WorkerId, (u64, SystemTime)> = HashMap::new();
     for (endpoint, &(score, ts)) in endpoint_scores {
@@ -1378,7 +1384,7 @@ fn endpoint_scores_to_worker_scores(
 /// Returns only the byte score (drops the timestamp) for simpler assertions.
 #[cfg(test)]
 fn score_workers(
-    candidates: &std::collections::HashSet<WorkerId>,
+    candidates: &HashSet<WorkerId>,
     file_digests: &[(DigestInfo, u64)],
     locality_map: &SharedBlobLocalityMap,
     endpoint_to_worker: &HashMap<String, WorkerId>,
@@ -1632,6 +1638,46 @@ impl WorkerScheduler for ApiWorkerScheduler {
         let count = digests.len();
         worker.cached_directory_digests = digests;
         debug!(%worker_id, count, "Worker cached directory digests updated");
+        Ok(())
+    }
+
+    async fn update_cached_subtrees(
+        &self,
+        worker_id: &WorkerId,
+        is_full_snapshot: bool,
+        full_set: Vec<DigestInfo>,
+        added: Vec<DigestInfo>,
+        removed: Vec<DigestInfo>,
+    ) -> Result<(), Error> {
+        let mut inner = self.inner.write().await;
+        let worker = inner.workers.0.peek_mut(worker_id).ok_or_else(|| {
+            make_input_err!(
+                "Worker not found in worker map in update_cached_subtrees() {}",
+                worker_id
+            )
+        })?;
+        if is_full_snapshot {
+            let count = full_set.len();
+            worker.cached_subtree_digests = full_set.into_iter().collect();
+            debug!(%worker_id, count, "Worker cached subtree digests replaced (full snapshot)");
+        } else {
+            let added_count = added.len();
+            let removed_count = removed.len();
+            for digest in added {
+                worker.cached_subtree_digests.insert(digest);
+            }
+            for digest in &removed {
+                worker.cached_subtree_digests.remove(digest);
+            }
+            let total = worker.cached_subtree_digests.len();
+            debug!(
+                %worker_id,
+                added_count,
+                removed_count,
+                total,
+                "Worker cached subtree digests updated (delta)"
+            );
+        }
         Ok(())
     }
 }

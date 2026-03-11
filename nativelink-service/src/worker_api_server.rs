@@ -486,8 +486,8 @@ impl WorkerConnection {
             }
         }
 
-        // Update the worker's cached directory digests if any were reported.
-        if !notification.cached_directory_digests.is_empty() {
+        // Update the worker's cached directory digests if any were reported (legacy path).
+        if !notification.cached_directory_digests.is_empty() && !notification.is_full_subtree_snapshot {
             let cached_dirs: std::collections::HashSet<DigestInfo> = notification
                 .cached_directory_digests
                 .iter()
@@ -497,6 +497,65 @@ impl WorkerConnection {
             debug!(worker_id=?self.worker_id, count, "BlobsAvailable received with cached directory digests");
             if let Err(err) = self.scheduler.update_cached_directories(&self.worker_id, cached_dirs).await {
                 warn!(worker_id=?self.worker_id, ?err, count, "Failed to update cached directory digests");
+            }
+        }
+
+        // Handle delta-encoded subtree digest updates.
+        let has_subtree_update = notification.is_full_subtree_snapshot
+            || !notification.added_subtree_digests.is_empty()
+            || !notification.removed_subtree_digests.is_empty();
+        if has_subtree_update {
+            let is_full = notification.is_full_subtree_snapshot;
+            let full_set: Vec<DigestInfo> = if is_full {
+                notification
+                    .cached_directory_digests
+                    .iter()
+                    .filter_map(|d| DigestInfo::try_from(d.clone()).ok())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let added: Vec<DigestInfo> = notification
+                .added_subtree_digests
+                .iter()
+                .filter_map(|d| DigestInfo::try_from(d.clone()).ok())
+                .collect();
+            let removed: Vec<DigestInfo> = notification
+                .removed_subtree_digests
+                .iter()
+                .filter_map(|d| DigestInfo::try_from(d.clone()).ok())
+                .collect();
+            let full_count = full_set.len();
+            let added_count = added.len();
+            let removed_count = removed.len();
+            debug!(
+                worker_id=?self.worker_id,
+                is_full,
+                full_count,
+                added_count,
+                removed_count,
+                "BlobsAvailable received with subtree digest updates"
+            );
+            if let Err(err) = self
+                .scheduler
+                .update_cached_subtrees(
+                    &self.worker_id,
+                    is_full,
+                    full_set,
+                    added,
+                    removed,
+                )
+                .await
+            {
+                warn!(
+                    worker_id=?self.worker_id,
+                    ?err,
+                    is_full,
+                    full_count,
+                    added_count,
+                    removed_count,
+                    "Failed to update cached subtree digests"
+                );
             }
         }
 

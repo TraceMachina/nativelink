@@ -982,6 +982,19 @@ impl WorkerScheduler for SimpleScheduler {
             .update_cached_directories(worker_id, digests)
             .await
     }
+
+    async fn update_cached_subtrees(
+        &self,
+        worker_id: &WorkerId,
+        is_full_snapshot: bool,
+        full_set: Vec<DigestInfo>,
+        added: Vec<DigestInfo>,
+        removed: Vec<DigestInfo>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .update_cached_subtrees(worker_id, is_full_snapshot, full_set, added, removed)
+            .await
+    }
 }
 
 impl RootMetricsComponent for SimpleScheduler {}
