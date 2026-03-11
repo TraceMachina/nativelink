@@ -3356,3 +3356,309 @@ async fn locality_scoring_partial_data_still_selects_best_worker_test() -> Resul
 
     Ok(())
 }
+
+// ---------------------------------------------------------------
+// CPU-load-aware scheduling tests
+// ---------------------------------------------------------------
+
+#[nativelink_test]
+async fn cpu_load_update_worker_load_stores_correctly() -> Result<(), Error> {
+    // Verify that update_worker_load stores the load on the worker and
+    // influences scheduling. We set load on a single worker, submit an
+    // action, and confirm the worker still receives it (proving the
+    // update didn't break anything and the worker is still viable).
+    let worker_id = WorkerId("worker_load_test".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+
+    let mut rx = setup_new_worker(
+        &scheduler,
+        worker_id.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+
+    // Update the worker's CPU load.
+    scheduler.update_worker_load(&worker_id, 42).await?;
+
+    // Submit an action — the single worker should still be selected.
+    let action_digest = DigestInfo::new([10u8; 32], 256);
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    // Worker should receive the action.
+    let (_op_id, _se) = recv_start_execute(&mut rx).await;
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn cpu_load_lightest_loaded_worker_gets_picked() -> Result<(), Error> {
+    // Create 3 workers with different cpu_load_pct values.
+    // Worker A=80, Worker B=20, Worker C=50.
+    // Worker B (lightest load) should be selected for the action.
+    let worker_id_a = WorkerId("worker_a".to_string());
+    let worker_id_b = WorkerId("worker_b".to_string());
+    let worker_id_c = WorkerId("worker_c".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+
+    // Add all 3 workers (no queued actions yet, so no matching happens).
+    let mut rx_a = setup_new_worker(
+        &scheduler,
+        worker_id_a.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+    let mut rx_b = setup_new_worker(
+        &scheduler,
+        worker_id_b.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+    let mut rx_c = setup_new_worker(
+        &scheduler,
+        worker_id_c.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+
+    // Set CPU loads: A=80, B=20, C=50.
+    scheduler.update_worker_load(&worker_id_a, 80).await?;
+    scheduler.update_worker_load(&worker_id_b, 20).await?;
+    scheduler.update_worker_load(&worker_id_c, 50).await?;
+
+    // Submit an action.
+    let action_digest = DigestInfo::new([20u8; 32], 512);
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    // Determine which worker received the action.
+    let (selected_worker_id, _se) = tokio::select! {
+        msg = rx_a.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_a, got: {v:?}"),
+            };
+            (worker_id_a.clone(), se)
+        }
+        msg = rx_b.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_b, got: {v:?}"),
+            };
+            (worker_id_b.clone(), se)
+        }
+        msg = rx_c.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_c, got: {v:?}"),
+            };
+            (worker_id_c.clone(), se)
+        }
+    };
+
+    assert_eq!(
+        selected_worker_id, worker_id_b,
+        "Worker B (cpu_load_pct=20) should be selected as lightest-loaded"
+    );
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn cpu_load_unknown_zero_sorted_last() -> Result<(), Error> {
+    // Create 2 workers: one with cpu_load_pct=60 (known) and one with
+    // cpu_load_pct=0 (unknown). The worker with known load should be
+    // selected over the unknown one, even though 0 < 60 numerically.
+    let worker_id_known = WorkerId("worker_known".to_string());
+    let worker_id_unknown = WorkerId("worker_unknown".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+
+    let mut rx_known = setup_new_worker(
+        &scheduler,
+        worker_id_known.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+    let mut rx_unknown = setup_new_worker(
+        &scheduler,
+        worker_id_unknown.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+
+    // Set only one worker's load; the other stays at default 0 (unknown).
+    scheduler.update_worker_load(&worker_id_known, 60).await?;
+    // worker_unknown stays at cpu_load_pct=0.
+
+    // Submit an action.
+    let action_digest = DigestInfo::new([30u8; 32], 512);
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    // Determine which worker received the action.
+    let (selected_worker_id, _se) = tokio::select! {
+        msg = rx_known.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_known, got: {v:?}"),
+            };
+            (worker_id_known.clone(), se)
+        }
+        msg = rx_unknown.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_unknown, got: {v:?}"),
+            };
+            (worker_id_unknown.clone(), se)
+        }
+    };
+
+    assert_eq!(
+        selected_worker_id, worker_id_known,
+        "Worker with known load (60) should be preferred over unknown (0)"
+    );
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn cpu_load_falls_back_to_lru_when_no_load_data() -> Result<(), Error> {
+    // Create 2 workers with cpu_load_pct=0 on both (no load data).
+    // Scheduling should still work via LRU/MRU fallback.
+    let worker_id_1 = WorkerId("worker_1".to_string());
+    let worker_id_2 = WorkerId("worker_2".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+
+    // Add both workers (both have cpu_load_pct=0 by default).
+    let mut rx_1 = setup_new_worker(
+        &scheduler,
+        worker_id_1.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+    let mut rx_2 = setup_new_worker(
+        &scheduler,
+        worker_id_2.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+
+    // Neither worker has load data — cpu_load_pct stays at 0.
+
+    // Submit an action. It should be assigned to one of the workers
+    // via LRU fallback (the first in LRU order).
+    let action_digest = DigestInfo::new([40u8; 32], 512);
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    // Either worker is acceptable — just verify one was selected.
+    let (selected_worker_id, _se) = tokio::select! {
+        msg = rx_1.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_1, got: {v:?}"),
+            };
+            (worker_id_1.clone(), se)
+        }
+        msg = rx_2.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_2, got: {v:?}"),
+            };
+            (worker_id_2.clone(), se)
+        }
+    };
+
+    // Verify a worker was actually selected (the assert_eq on stage below
+    // also proves this, but let's be explicit).
+    assert!(
+        selected_worker_id == worker_id_1 || selected_worker_id == worker_id_2,
+        "One of the workers should have been selected via LRU fallback"
+    );
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
