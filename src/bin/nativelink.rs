@@ -761,7 +761,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         tokio::signal::ctrl_c()
             .await
             .expect("Failed to listen to SIGINT");
-        eprintln!("User terminated process via SIGINT");
+        error!("User terminated process via SIGINT");
         std::process::exit(130);
     });
 
