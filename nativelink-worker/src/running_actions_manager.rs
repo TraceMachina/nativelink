@@ -466,7 +466,6 @@ fn collect_files_from_tree(
 const BATCH_READ_CONCURRENCY: usize = 16;
 
 /// Maximum number of concurrent ByteStream fetches in flight.
-const BYTESTREAM_CONCURRENCY: usize = 64;
 
 /// Batch-download small blobs via `BatchReadBlobs` and write them into the fast store.
 /// Returns the set of digests that were successfully fetched.
@@ -1046,22 +1045,26 @@ pub fn download_to_directory<'a>(
             "download_to_directory: batch existence check complete"
         );
 
-        // Steps 4+5 (pipelined): Fetch missing blobs and hardlink concurrently.
+        // Steps 4+5 (pipelined): Three concurrent futures:
         //
-        // Producer task: Iterates files in batches of PIPELINE_BATCH. For each
-        // batch, determines which blobs are already cached vs missing, fetches
-        // missing blobs (BatchReadBlobs for small, ByteStream for large), then
-        // sends ready (file, file_entry) pairs through a channel.
+        //   Fetcher: launches ALL missing blob fetches at once with bounded
+        //     concurrency. As each blob arrives it is inserted into a
+        //     `fetched_set` so the producer knows it is ready.
         //
-        // Consumer task: Reads from the channel, performing up to
-        // HARDLINK_CONCURRENCY hardlinks concurrently.
+        //   Producer: iterates files in batches. Files whose blobs are already
+        //     cached go to the channel immediately. Files whose blobs are
+        //     still being fetched are deferred and retried after a short
+        //     yield. This means hardlinking starts right away for cached
+        //     files while fetches proceed in parallel.
         //
-        // This overlaps fetching batch N+1 with hardlinking batch N, reducing
-        // total wall-clock time when blobs need network fetch.
+        //   Consumer: reads from the channel, hardlinks with bounded
+        //     concurrency (unchanged from before).
+        //
         const HARDLINK_CONCURRENCY: usize = 64;
-        const PIPELINE_BATCH: usize = 64;
-        // Channel capacity: buffer up to 2 batches ahead of the consumer.
-        const CHANNEL_CAPACITY: usize = PIPELINE_BATCH * 2;
+        const FETCH_CONCURRENCY: usize = 128;
+        const HARDLINK_BATCH: usize = 64;
+        // Channel capacity: buffer ahead of the consumer.
+        const CHANNEL_CAPACITY: usize = HARDLINK_BATCH * 2;
 
         type PipelineItem = (
             FileToMaterialize,
@@ -1073,8 +1076,6 @@ pub fn download_to_directory<'a>(
 
         let fetch_start = std::time::Instant::now();
 
-        // Build a per-digest index into `files` so we know which files need
-        // which digests, and can identify the missing set.
         let missing_set: HashSet<DigestInfo> = missing_digests.iter().copied().collect();
 
         info!(
@@ -1082,202 +1083,276 @@ pub fn download_to_directory<'a>(
             cached = cached_set.len(),
             missing = missing_digests.len(),
             missing_bytes,
-            pipeline_batch = PIPELINE_BATCH,
+            fetch_concurrency = FETCH_CONCURRENCY,
             hardlink_concurrency = HARDLINK_CONCURRENCY,
             "download_to_directory: starting pipelined fetch+hardlink",
         );
 
+        // --- Shared state: tracks which missing digests have arrived ---
+        let fetched_set: Arc<std::sync::Mutex<HashSet<DigestInfo>>> =
+            Arc::new(std::sync::Mutex::new(HashSet::with_capacity(missing_digests.len())));
+        let fetch_error: Arc<std::sync::Mutex<Option<Error>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let fetched_notify = Arc::new(Notify::new());
+
+        // --- Fetcher future ---
+        // Launches all missing blob fetches concurrently (bounded).
+        let fetcher_start = std::time::Instant::now();
+        let fetched_set_ref = &fetched_set;
+        let fetch_error_ref = &fetch_error;
+        let fetched_notify_ref = &fetched_notify;
+        let fetcher_fut = async {
+            // Partition into small (BatchReadBlobs) and large (ByteStream).
+            let mut small: Vec<DigestInfo> = Vec::new();
+            let mut large: Vec<DigestInfo> = Vec::new();
+            for &d in &missing_digests {
+                if is_zero_digest(d) {
+                    // Zero digests don't need fetching; mark as ready.
+                    fetched_set_ref.lock().unwrap().insert(d);
+                    continue;
+                }
+                if d.size_bytes() <= BATCH_READ_MAX_BLOB_SIZE {
+                    small.push(d);
+                } else {
+                    large.push(d);
+                }
+            }
+
+            info!(
+                small = small.len(),
+                large = large.len(),
+                missing_bytes,
+                "fetcher: starting all blob fetches",
+            );
+
+            // Fetch small blobs via BatchReadBlobs (already batches internally).
+            let batch_read_fut = async {
+                if small.is_empty() {
+                    return Ok::<(), Error>(());
+                }
+                let fetched = batch_read_small_blobs(cas_store, &small).await?;
+                // Mark all successfully fetched small blobs as ready.
+                {
+                    let mut set = fetched_set_ref.lock().unwrap();
+                    for &d in &small {
+                        // batch_read_small_blobs returns the set of blobs it
+                        // actually got; unfetched ones need ByteStream fallback.
+                        if fetched.contains(&d) {
+                            set.insert(d);
+                        }
+                    }
+                }
+                fetched_notify_ref.notify_one();
+
+                // Fallback for small blobs not returned by BatchReadBlobs.
+                let fallback: Vec<DigestInfo> = small
+                    .iter()
+                    .filter(|d| !fetched.contains(d))
+                    .copied()
+                    .collect();
+                if !fallback.is_empty() {
+                    debug!(
+                        count = fallback.len(),
+                        "fetcher: BatchReadBlobs fallback via ByteStream",
+                    );
+                    futures::stream::iter(fallback.into_iter().map(Ok::<_, Error>))
+                        .try_for_each_concurrent(FETCH_CONCURRENCY, |d| async move {
+                            cas_store
+                                .populate_fast_store_unchecked(d.into())
+                                .await
+                                .err_tip(|| format!("Populating fast store (fallback) for {d:?}"))?;
+                            fetched_set_ref.lock().unwrap().insert(d);
+                            fetched_notify_ref.notify_one();
+                            Ok(())
+                        })
+                        .await?;
+                }
+                Ok(())
+            };
+
+            // Fetch large blobs via ByteStream with bounded concurrency.
+            let bytestream_fut = async {
+                if large.is_empty() {
+                    return Ok::<(), Error>(());
+                }
+                futures::stream::iter(large.into_iter().map(Ok::<_, Error>))
+                    .try_for_each_concurrent(FETCH_CONCURRENCY, |d| async move {
+                        let blob_start = std::time::Instant::now();
+                        cas_store
+                            .populate_fast_store_unchecked(d.into())
+                            .await
+                            .err_tip(|| format!("Populating fast store for {d:?}"))?;
+                        let blob_elapsed = blob_start.elapsed();
+                        if blob_elapsed.as_secs() >= 2 {
+                            warn!(
+                                digest = ?d,
+                                size_bytes = d.size_bytes(),
+                                elapsed_ms = blob_elapsed.as_millis() as u64,
+                                "fetcher: slow blob fetch (>2s)",
+                            );
+                        }
+                        fetched_set_ref.lock().unwrap().insert(d);
+                        fetched_notify_ref.notify_one();
+                        Ok(())
+                    })
+                    .await
+            };
+
+            // Run small and large fetches concurrently.
+            let (batch_result, bs_result) =
+                futures::future::join(batch_read_fut, bytestream_fut).await;
+
+            let fetcher_elapsed = fetcher_start.elapsed();
+
+            // If either failed, record the error so the producer can see it.
+            if let Err(e) = batch_result {
+                *fetch_error_ref.lock().unwrap() = Some(e);
+                fetched_notify_ref.notify_one();
+            }
+            if let Err(e) = bs_result {
+                let mut guard = fetch_error_ref.lock().unwrap();
+                if guard.is_none() {
+                    *guard = Some(e);
+                }
+                fetched_notify_ref.notify_one();
+            }
+
+            info!(
+                elapsed_ms = fetcher_elapsed.as_millis() as u64,
+                fetched = fetched_set_ref.lock().unwrap().len(),
+                missing_total = missing_digests.len(),
+                throughput_mbps = format!("{:.1}", throughput_mbps(missing_bytes, fetcher_elapsed)),
+                "fetcher: all blob fetches complete",
+            );
+        };
+
         // --- Producer future ---
-        // Runs concurrently with the consumer via futures::future::join.
+        // Iterates files, sends cached ones immediately, waits for missing
+        // ones as they arrive from the fetcher.
         let producer_start = std::time::Instant::now();
         let producer_fut = async {
-            let mut batches_sent: usize = 0;
             let mut files_sent: usize = 0;
-            let mut blobs_fetched: usize = 0;
-            let mut fetch_bytes: u64 = 0;
+            let mut deferred_count: usize = 0;
 
-            for batch_files in files.chunks(PIPELINE_BATCH) {
-                let batch_start = std::time::Instant::now();
-                let batch_idx = batches_sent;
+            // Process files in batches for entry pre-fetching efficiency.
+            for batch_files in files.chunks(HARDLINK_BATCH) {
+                // Separate into ready (cached or already fetched) and pending.
+                let mut ready_files: Vec<&FileToMaterialize> = Vec::new();
+                let mut pending_files: Vec<&FileToMaterialize> = Vec::new();
 
-                // Partition this batch into cached and missing digests.
-                // Deduplicate missing digests within this batch to avoid
-                // redundant fetches.
-                let mut batch_missing_unique: Vec<DigestInfo> = Vec::new();
-                let mut batch_missing_seen: HashSet<DigestInfo> = HashSet::new();
-                for f in batch_files {
-                    if missing_set.contains(&f.digest)
-                        && !is_zero_digest(f.digest)
-                        && batch_missing_seen.insert(f.digest)
-                    {
-                        batch_missing_unique.push(f.digest);
-                    }
-                }
-
-                // Fetch missing blobs for this batch.
-                if !batch_missing_unique.is_empty() {
-                    let batch_missing_bytes: u64 =
-                        batch_missing_unique.iter().map(|d| d.size_bytes()).sum();
-
-                    // Partition into small (BatchReadBlobs) and large (ByteStream).
-                    let mut small: Vec<DigestInfo> = Vec::new();
-                    let mut large: Vec<DigestInfo> = Vec::new();
-                    for &d in &batch_missing_unique {
-                        if d.size_bytes() <= BATCH_READ_MAX_BLOB_SIZE {
-                            small.push(d);
+                {
+                    let fetched = fetched_set_ref.lock().unwrap();
+                    for f in batch_files {
+                        if !missing_set.contains(&f.digest) || fetched.contains(&f.digest) {
+                            ready_files.push(f);
                         } else {
-                            large.push(d);
+                            pending_files.push(f);
                         }
                     }
+                }
 
-                    debug!(
-                        batch = batch_idx,
-                        small = small.len(),
-                        large = large.len(),
-                        total_bytes = batch_missing_bytes,
-                        "download_to_directory: pipeline batch fetching missing blobs",
-                    );
+                // Send ready files immediately.
+                if !ready_files.is_empty() {
+                    let ready_digests: Vec<DigestInfo> =
+                        ready_files.iter().map(|f| f.digest).collect();
+                    let entries =
+                        filesystem_store.get_file_entries_batch(&ready_digests).await;
 
-                    // Fetch small and large concurrently.
-                    let batch_read_fut = async {
-                        if small.is_empty() {
-                            return Ok::<HashSet<DigestInfo>, Error>(HashSet::new());
-                        }
-                        batch_read_small_blobs(cas_store, &small).await
-                    };
-
-                    let bytestream_fut = async {
-                        if large.is_empty() {
-                            return Ok::<(), Error>(());
-                        }
-                        futures::stream::iter(large.iter().map(Ok::<_, Error>))
-                            .try_for_each_concurrent(
-                                BYTESTREAM_CONCURRENCY,
-                                |&d| async move {
-                                    let blob_start = std::time::Instant::now();
-                                    cas_store
-                                        .populate_fast_store_unchecked(d.into())
-                                        .await
-                                        .err_tip(|| {
-                                            format!("Populating fast store for {d:?}")
-                                        })?;
-                                    let blob_elapsed = blob_start.elapsed();
-                                    debug!(
-                                        digest = ?d,
-                                        size_bytes = d.size_bytes(),
-                                        elapsed_ms = blob_elapsed.as_millis() as u64,
-                                        "pipeline: ByteStream large blob fetched",
-                                    );
-                                    if blob_elapsed.as_secs() >= 2 {
-                                        warn!(
-                                            digest = ?d,
-                                            size_bytes = d.size_bytes(),
-                                            elapsed_ms = blob_elapsed.as_millis() as u64,
-                                            "pipeline: slow blob fetch (>2s)",
-                                        );
-                                    }
-                                    Ok(())
-                                },
-                            )
-                            .await
-                    };
-
-                    let (batch_result, bs_result) =
-                        futures::future::join(batch_read_fut, bytestream_fut).await;
-                    let batch_fetched = batch_result?;
-                    bs_result?;
-
-                    // Fallback: any small blobs not returned by BatchReadBlobs.
-                    let fallback: Vec<DigestInfo> = small
-                        .iter()
-                        .filter(|d| !batch_fetched.contains(d))
-                        .copied()
-                        .collect();
-                    if !fallback.is_empty() {
-                        debug!(
-                            batch = batch_idx,
-                            count = fallback.len(),
-                            "pipeline: BatchReadBlobs fallback via ByteStream",
+                    for (file, entry) in ready_files.iter().zip(entries) {
+                        let item: PipelineItem = (
+                            FileToMaterialize {
+                                digest: file.digest,
+                                dest: file.dest.clone(),
+                                #[cfg(target_family = "unix")]
+                                unix_mode: file.unix_mode,
+                                mtime: file.mtime.clone(),
+                            },
+                            entry,
                         );
-                        futures::stream::iter(fallback.iter().map(Ok::<_, Error>))
-                            .try_for_each_concurrent(
-                                BYTESTREAM_CONCURRENCY,
-                                |&d| async move {
-                                    cas_store
-                                        .populate_fast_store_unchecked(d.into())
-                                        .await
-                                        .err_tip(|| {
-                                            format!(
-                                                "Populating fast store (fallback) for {d:?}"
-                                            )
-                                        })
-                                },
-                            )
-                            .await?;
+                        if tx.send(item).await.is_err() {
+                            return Ok::<_, Error>(producer_start.elapsed());
+                        }
+                        files_sent += 1;
                     }
-
-                    blobs_fetched += batch_missing_unique.len();
-                    fetch_bytes += batch_missing_bytes;
                 }
 
-                // All blobs for this batch are now in the fast store.
-                // Pre-fetch file entries in one lock acquisition per batch.
-                let batch_digests: Vec<DigestInfo> =
-                    batch_files.iter().map(|f| f.digest).collect();
-                let entries =
-                    filesystem_store.get_file_entries_batch(&batch_digests).await;
+                // Wait for pending files as their blobs arrive.
+                if !pending_files.is_empty() {
+                    deferred_count += pending_files.len();
+                    let mut remaining = pending_files;
 
-                let batch_elapsed = batch_start.elapsed();
-                debug!(
-                    batch = batch_idx,
-                    files = batch_files.len(),
-                    fetched_blobs = if batch_missing_unique.is_empty() { 0 } else { batch_missing_unique.len() },
-                    entry_hits = entries.iter().filter(|e| e.is_some()).count(),
-                    elapsed_ms = batch_elapsed.as_millis() as u64,
-                    "pipeline: batch ready, sending to hardlink consumer",
-                );
+                    loop {
+                        if remaining.is_empty() {
+                            break;
+                        }
 
-                // Send each (file, entry) pair to the consumer.
-                // We must clone FileToMaterialize fields since batch_files
-                // is a slice borrow.
-                for (file, entry) in batch_files.iter().zip(entries) {
-                    let item: PipelineItem = (
-                        FileToMaterialize {
-                            digest: file.digest,
-                            dest: file.dest.clone(),
-                            #[cfg(target_family = "unix")]
-                            unix_mode: file.unix_mode,
-                            mtime: file.mtime.clone(),
-                        },
-                        entry,
-                    );
-                    if tx.send(item).await.is_err() {
-                        // Consumer dropped — it hit an error. Stop producing.
-                        return Ok::<_, Error>((
-                            batches_sent,
-                            blobs_fetched,
-                            fetch_bytes,
-                            producer_start.elapsed(),
-                        ));
+                        // Check for fetcher errors.
+                        if let Some(e) = fetch_error_ref.lock().unwrap().take() {
+                            return Err(e);
+                        }
+
+                        // Partition remaining into newly ready and still pending.
+                        let mut newly_ready: Vec<&FileToMaterialize> = Vec::new();
+                        let mut still_pending: Vec<&FileToMaterialize> = Vec::new();
+                        {
+                            let fetched = fetched_set_ref.lock().unwrap();
+                            for f in remaining {
+                                if fetched.contains(&f.digest) {
+                                    newly_ready.push(f);
+                                } else {
+                                    still_pending.push(f);
+                                }
+                            }
+                        }
+
+                        if !newly_ready.is_empty() {
+                            let ready_digests: Vec<DigestInfo> =
+                                newly_ready.iter().map(|f| f.digest).collect();
+                            let entries =
+                                filesystem_store.get_file_entries_batch(&ready_digests).await;
+
+                            for (file, entry) in newly_ready.iter().zip(entries) {
+                                let item: PipelineItem = (
+                                    FileToMaterialize {
+                                        digest: file.digest,
+                                        dest: file.dest.clone(),
+                                        #[cfg(target_family = "unix")]
+                                        unix_mode: file.unix_mode,
+                                        mtime: file.mtime.clone(),
+                                    },
+                                    entry,
+                                );
+                                if tx.send(item).await.is_err() {
+                                    return Ok(producer_start.elapsed());
+                                }
+                                files_sent += 1;
+                            }
+                        }
+
+                        remaining = still_pending;
+                        if !remaining.is_empty() {
+                            // Wait until the fetcher signals new arrivals.
+                            fetched_notify_ref.notified().await;
+                        }
                     }
-                    files_sent += 1;
                 }
-                batches_sent += 1;
             }
 
             let producer_elapsed = producer_start.elapsed();
             info!(
-                batches = batches_sent,
                 files_sent,
-                blobs_fetched,
-                fetch_bytes,
+                deferred = deferred_count,
                 elapsed_ms = producer_elapsed.as_millis() as u64,
-                throughput_mbps =
-                    format!("{:.1}", throughput_mbps(fetch_bytes, producer_elapsed)),
-                "pipeline: producer finished",
+                "producer: finished sending all files",
             );
 
-            Ok((batches_sent, blobs_fetched, fetch_bytes, producer_elapsed))
+            // Explicitly drop the sender so the consumer's rx.recv()
+            // returns None and the stream ends. join3 keeps all futures
+            // alive until all complete, so without this the consumer
+            // would wait forever.
+            drop(tx);
+
+            Ok(producer_start.elapsed())
         };
 
         // --- Consumer future ---
@@ -1286,25 +1361,14 @@ pub fn download_to_directory<'a>(
         let slow_hardlinks = std::sync::atomic::AtomicU32::new(0);
         let max_hardlink_ms = std::sync::atomic::AtomicU64::new(0);
         let links_completed = std::sync::atomic::AtomicUsize::new(0);
-        let first_link_at = std::sync::Mutex::new(None::<std::time::Instant>);
 
         let consumer_fut = async {
-            // Record when the first hardlink starts (for overlap calc).
-            let record_first_link = || {
-                let mut guard = first_link_at.lock().unwrap();
-                if guard.is_none() {
-                    *guard = Some(std::time::Instant::now());
-                }
-            };
-
-            // Convert the channel receiver into a stream for try_for_each_concurrent.
             let stream = futures::stream::unfold(rx, |mut rx| async {
                 rx.recv().await.map(|item| (Ok::<PipelineItem, Error>(item), rx))
             });
 
             stream
                 .try_for_each_concurrent(HARDLINK_CONCURRENCY, |(file, prefetched)| {
-                    record_first_link();
                     let slow_hardlinks = &slow_hardlinks;
                     let max_hardlink_ms = &max_hardlink_ms;
                     let links_completed = &links_completed;
@@ -1344,54 +1408,30 @@ pub fn download_to_directory<'a>(
                 .await
         };
 
-        // Run producer and consumer concurrently in the same task
-        // (no tokio::spawn needed — avoids 'static lifetime requirement).
-        let (producer_result, consumer_result) =
-            futures::future::join(producer_fut, consumer_fut).await;
+        // Run all three concurrently. The fetcher and producer share state
+        // via fetched_set + Notify. The producer and consumer share the
+        // mpsc channel. The consumer drops when the producer's tx drops.
+        let (_, producer_result, consumer_result) =
+            futures::future::join3(fetcher_fut, producer_fut, consumer_fut).await;
 
         // Check consumer first (it's the critical path).
         consumer_result?;
         // Then check producer.
-        let (batches_produced, blobs_fetched, fetch_bytes_total, producer_elapsed) =
-            producer_result?;
+        let producer_elapsed = producer_result?;
 
         let hardlink_elapsed = hardlink_start.elapsed();
         let fetch_elapsed = fetch_start.elapsed();
-        let fetch_ms = phase_start.elapsed().as_millis();
         let slow_count = slow_hardlinks.load(Ordering::Relaxed);
         let max_link_ms = max_hardlink_ms.load(Ordering::Relaxed);
         let total_linked = links_completed.load(Ordering::Relaxed);
-
-        // Calculate overlap: how much of the producer's time overlapped with
-        // the consumer's hardlinking.
-        let first_link_time = first_link_at.lock().unwrap();
-        let overlap_ms = if let Some(first) = *first_link_time {
-            // Overlap = time from first hardlink start to producer finish.
-            // If producer finished before first hardlink, overlap is 0.
-            let producer_end = fetch_start + producer_elapsed;
-            if producer_end > first {
-                (producer_end - first).as_millis() as u64
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-        let overlap_pct = if producer_elapsed.as_millis() > 0 {
-            (overlap_ms as f64 / producer_elapsed.as_millis() as f64 * 100.0) as u64
-        } else {
-            0
-        };
-        drop(first_link_time);
+        let fetcher_elapsed = fetcher_start.elapsed();
 
         info!(
             total_missing = missing_digests.len(),
             total_missing_bytes = missing_bytes,
-            blobs_fetched,
-            fetch_bytes = fetch_bytes_total,
-            fetch_elapsed_ms = fetch_elapsed.as_millis() as u64,
-            throughput_mbps = format!("{:.1}", throughput_mbps(missing_bytes, fetch_elapsed)),
-            "download_to_directory: pipelined fetch completed",
+            fetch_elapsed_ms = fetcher_elapsed.as_millis() as u64,
+            throughput_mbps = format!("{:.1}", throughput_mbps(missing_bytes, fetcher_elapsed)),
+            "download_to_directory: fetch phase completed",
         );
 
         info!(
@@ -1402,11 +1442,9 @@ pub fn download_to_directory<'a>(
             avg_link_us = if total_linked > 0 {
                 hardlink_elapsed.as_micros() as u64 / total_linked as u64
             } else { 0 },
-            batches = batches_produced,
             producer_ms = producer_elapsed.as_millis() as u64,
-            overlap_ms,
-            overlap_pct,
-            "download_to_directory: pipelined hardlink phase completed",
+            total_elapsed_ms = fetch_elapsed.as_millis() as u64,
+            "download_to_directory: hardlink phase completed",
         );
 
         let total_bytes: u64 = unique_digests.iter().map(|d| d.size_bytes()).sum();
@@ -1414,8 +1452,8 @@ pub fn download_to_directory<'a>(
         info!(
             tree_resolve_ms,
             has_check_ms = has_check_ms - tree_resolve_ms,
-            fetch_ms = fetch_ms - has_check_ms,
-            hardlink_ms = total_ms - fetch_ms,
+            fetch_ms = fetcher_elapsed.as_millis() as u64,
+            hardlink_ms = hardlink_elapsed.as_millis() as u64,
             total_ms,
             num_files = unique_digests.len(),
             total_bytes,
