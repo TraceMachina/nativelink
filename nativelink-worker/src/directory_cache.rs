@@ -675,8 +675,7 @@ impl DirectoryCache {
                 elapsed_ms = readonly_start.elapsed().as_millis() as u64,
                 "DirectoryCache: set_readonly_and_calculate_size completed",
             );
-            // macOS requires the source directory to be writable for rename(2),
-            // even though POSIX only requires write permission on the parent.
+            // macOS requires the source directory to be writable for rename(2).
             // Temporarily restore write permission on the root, rename, then
             // lock it down again.
             #[cfg(unix)]
@@ -1016,6 +1015,7 @@ impl DirectoryCache {
 
     /// Walks a directory tree, setting all entries to read-only and computing
     /// the total file size in a single traversal (avoiding two separate walks).
+    /// Directories are set to 0o555, files have write bits stripped.
     fn set_readonly_and_calculate_size<'a>(
         path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
@@ -1043,7 +1043,9 @@ impl DirectoryCache {
                     total_size += Self::set_readonly_and_calculate_size(&entry.path()).await?;
                 }
 
-                // Set directory to r-xr-xr-x (0o555)
+                // Set directory to read-only (0o555) to protect cache integrity.
+                // Since we use hardlinks (not symlinks), actions never access
+                // cached directories directly — they get fresh writable copies.
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
@@ -1174,12 +1176,12 @@ impl DirectoryCache {
     }
 
     /// Subtree-aware construction: walks the resolved directory tree, creates
-    /// directory symlinks for cached subtrees, and only downloads uncached
+    /// hardlinked subtrees for cached portions, and only downloads uncached
     /// portions via `download_to_directory` or serial fallback.
     ///
-    /// Uses directory symlinks (not hardlinks) because:
-    /// - APFS does not support directory hardlinks
-    /// - Files within symlinked subtrees are already CAS hardlinks and work correctly
+    /// Uses file hardlinks (creating fresh directories) rather than directory
+    /// symlinks because Bazel actions create output directories inside the
+    /// input tree — symlinks would mutate the cache.
     async fn construct_with_subtrees(
         &self,
         root_digest: &DigestInfo,
@@ -1224,35 +1226,25 @@ impl DirectoryCache {
                 let child_path = dir_path.join(&subdir_node.name);
 
                 if let Some(cached_path) = subtree_hits.get(&child_digest) {
-                    // Subtree hit: create a directory symlink to the cached location.
-                    #[cfg(unix)]
-                    {
-                        fs::symlink(cached_path, &child_path)
-                            .await
-                            .err_tip(|| format!(
-                                "Failed to create directory symlink from {} to {}",
-                                cached_path.display(),
-                                child_path.display(),
-                            ))?;
-                    }
-                    #[cfg(windows)]
-                    {
-                        fs::symlink_dir(cached_path, &child_path)
-                            .await
-                            .err_tip(|| format!(
-                                "Failed to create directory symlink from {} to {}",
-                                cached_path.display(),
-                                child_path.display(),
-                            ))?;
-                    }
+                    // Subtree hit: hardlink files from cached subtree into
+                    // fresh writable directories. We can't use directory symlinks
+                    // because Bazel creates output directories inside the input
+                    // tree, which would mutate the cache.
+                    hardlink_directory_tree(cached_path, &child_path)
+                        .await
+                        .err_tip(|| format!(
+                            "Failed to hardlink cached subtree from {} to {}",
+                            cached_path.display(),
+                            child_path.display(),
+                        ))?;
                     subtrees_linked += 1;
                     debug!(
                         child_hash = %&child_digest.packed_hash().to_string()[..12],
                         src = %cached_path.display(),
                         dst = %child_path.display(),
-                        "DirectoryCache: symlinked cached subtree",
+                        "DirectoryCache: hardlinked cached subtree",
                     );
-                    // Do NOT enqueue children -- the symlink covers the entire subtree.
+                    // Do NOT enqueue children -- the hardlink covers the entire subtree.
                 } else {
                     // No subtree hit -- create the directory and recurse.
                     fs::create_dir_all(&child_path).await.err_tip(|| {
