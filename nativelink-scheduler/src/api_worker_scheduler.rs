@@ -391,6 +391,29 @@ impl ApiWorkerSchedulerImpl {
             viable.first().map(|(id, _)| id.clone())
         };
 
+        // Log load-aware selection decision.
+        if let Some(ref wid) = worker_id {
+            let viable_loads: Vec<_> = viable
+                .iter()
+                .map(|(id, load)| {
+                    let short_id = id.0.chars().take(12).collect::<String>();
+                    (short_id, *load)
+                })
+                .collect();
+            let winner_load = viable
+                .iter()
+                .find(|(id, _)| id == wid)
+                .map(|(_, l)| *l)
+                .unwrap_or(0);
+            debug!(
+                candidates = viable.len(),
+                worker_id = %wid,
+                winner_load_pct = winner_load,
+                ?viable_loads,
+                "Load-aware worker selection"
+            );
+        }
+
         // Promote the found worker in the LRU so the next find_worker_for_action
         // call won't pick the same worker again (prevents work bunching).
         if let Some(ref wid) = worker_id {
@@ -1549,6 +1572,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
             )
         })?;
         worker.cpu_load_pct = cpu_load_pct;
+        debug!(%worker_id, cpu_load_pct, "Worker load updated");
         Ok(())
     }
 }

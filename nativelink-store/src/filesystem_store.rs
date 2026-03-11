@@ -774,6 +774,44 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store. This may indicate the file was evicted due to cache pressure. Consider increasing 'max_bytes' in your filesystem store's eviction_policy configuration."))
     }
 
+    /// Batch-retrieves file entries for multiple digests in a single lock
+    /// acquisition on the EvictingMap, reducing contention compared to
+    /// calling `get_file_entry_for_digest()` individually for each digest.
+    pub async fn get_file_entries_batch(
+        &self,
+        digests: &[DigestInfo],
+    ) -> Vec<Option<Arc<Fe>>> {
+        // Separate zero digests (which don't go through evicting_map).
+        let store_keys: Vec<StoreKey<'static>> = digests
+            .iter()
+            .filter(|d| !is_zero_digest(**d))
+            .map(|d| (*d).into())
+            .collect();
+
+        let batch_results = self.evicting_map.get_many(store_keys.iter()).await;
+
+        // Reassemble results, inserting zero-digest entries where needed.
+        let mut batch_iter = batch_results.into_iter();
+        digests
+            .iter()
+            .map(|digest| {
+                if is_zero_digest(*digest) {
+                    Some(Arc::new(Fe::create(
+                        0,
+                        0,
+                        RwLock::new(EncodedFilePath {
+                            shared_context: self.shared_context.clone(),
+                            path_type: PathType::Content,
+                            key: (*digest).into(),
+                        }),
+                    )))
+                } else {
+                    batch_iter.next().flatten()
+                }
+            })
+            .collect()
+    }
+
     async fn update_file(
         self: Pin<&Self>,
         mut entry: Fe,
