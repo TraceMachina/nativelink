@@ -25,7 +25,7 @@ use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use nativelink_config::cas_server::{ByteStreamConfig, HttpListener, WithInstanceName};
 use nativelink_config::stores::{MemorySpec, StoreSpec};
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::byte_stream_server::ByteStream;
@@ -47,7 +47,8 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::yield_now;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tonic::codec::{Codec, CompressionEncoding, ProstCodec};
+use tonic::codec::{Codec, CompressionEncoding};
+use tonic_prost::ProstCodec;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Response, Streaming};
 use tower::service_fn;
@@ -855,13 +856,12 @@ pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
         let result_fut = read_stream.next();
 
         let result = result_fut.await.err_tip(|| "Expected result to be ready")?;
-        let expected_err_str = concat!(
-            "status: NotFound, message: \"Key Digest(DigestInfo(\\\"0123456789abcdef000000000000000000000000000000000123456789abcdef-55\\\")) not found\", details: [], metadata: MetadataMap { headers: {} }",
-        );
-        assert_eq!(
-            Error::from(result.unwrap_err()),
-            make_err!(Code::NotFound, "{expected_err_str}"),
-            "Expected error data to match"
+        let err = Error::from(result.unwrap_err());
+        assert_eq!(err.code, Code::NotFound, "Expected NotFound error code");
+        let msg = err.messages.join(" ");
+        assert!(
+            msg.contains("0123456789abcdef000000000000000000000000000000000123456789abcdef-55"),
+            "Expected error message to contain the digest, got: {msg}"
         );
     }
     Ok(())
@@ -991,7 +991,7 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
         // Test to ensure if we send exactly our max message size, it will succeed.
         let data = Bytes::from(vec![0u8; MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE]);
         let write_request = WriteRequest {
-            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            resource_name: make_resource_name(MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE),
             write_offset: 0,
             finish_write: true,
             data,
@@ -1012,7 +1012,7 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
             MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE + 1
         ]);
         let write_request = WriteRequest {
-            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            resource_name: make_resource_name(MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE + 1),
             write_offset: 0,
             finish_write: true,
             data,

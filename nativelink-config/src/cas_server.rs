@@ -63,8 +63,11 @@ pub enum HttpCompressionAlgorithm {
     #[default]
     None,
 
-    /// Zlib compression.
+    /// Gzip compression.
     Gzip,
+
+    /// Zstandard compression.
+    Zstd,
 }
 
 /// Note: Compressing data in the cloud rarely has a benefit, since most
@@ -192,7 +195,7 @@ pub struct ByteStreamConfig {
     /// 16KiB - 64KiB is optimal.
     ///
     ///
-    /// Default: 64KiB
+    /// Default: 64MiB
     #[serde(
         default,
         deserialize_with = "convert_data_size_with_shellexpand",
@@ -518,10 +521,17 @@ pub struct HttpListener {
     #[serde(default)]
     pub advanced_http: HttpServerConfig,
 
-    /// Maximum number of bytes to decode on each grpc stream chunk.
+    /// Maximum number of bytes to decode on each inbound gRPC message.
     /// Default: 4 MiB
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_decoding_message_size: usize,
+
+    /// Maximum number of bytes to encode on each outbound gRPC message.
+    /// Default: 4 MiB (matches Bazel's Java gRPC client inbound limit).
+    /// Workers with a higher `max_decoding_message_size` should use a
+    /// separate listener with this value raised accordingly.
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_encoding_message_size: usize,
 
     /// Tls Configuration for this server.
     /// If not set, the server will not use TLS.
@@ -820,6 +830,25 @@ pub struct LocalWorkerConfig {
     /// them from CAS for every action.
     /// Default: None (directory cache disabled)
     pub directory_cache: Option<DirectoryCacheConfig>,
+
+    /// If set, the worker will start a CAS + ByteStream gRPC server on
+    /// 0.0.0.0:<port> and advertise grpc://<hostname>:<port> to the
+    /// scheduler and other workers for peer-to-peer blob sharing.
+    /// The hostname is resolved at runtime via gethostname().
+    /// Example: 50081
+    /// Default: None (no peer CAS server)
+    #[serde(default)]
+    pub cas_server_port: Option<u16>,
+
+    /// How often (in milliseconds) the worker should send a periodic
+    /// BlobsAvailable snapshot to the scheduler, reporting which blobs
+    /// are in the local CAS cache and their LRU timestamps.
+    /// Interval in milliseconds. Default: 0 (uses built-in default of
+    /// 500ms).
+    ///
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub blobs_available_interval_ms: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

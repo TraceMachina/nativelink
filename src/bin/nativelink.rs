@@ -16,6 +16,7 @@ use core::net::SocketAddr;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
@@ -45,6 +46,7 @@ use nativelink_service::fetch_server::FetchServer;
 use nativelink_service::health_server::HealthServer;
 use nativelink_service::push_server::PushServer;
 use nativelink_service::worker_api_server::WorkerApiServer;
+use nativelink_util::blob_locality_map;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::fs::set_open_file_limit;
@@ -63,6 +65,7 @@ use nativelink_util::{background_spawn, fs, spawn};
 use nativelink_worker::local_worker::new_local_worker;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateRevocationListDer, PrivateKeyDer};
+use socket2::SockRef;
 use tokio::net::TcpListener;
 use tokio::select;
 #[cfg(target_family = "unix")]
@@ -145,7 +148,13 @@ impl RoutesExt for Routes {
 }
 
 /// If this value changes update the documentation in the config definition.
-const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+
+/// Server-side encoding (response) limit.  Bazel's Java gRPC client defaults
+/// to 4 MiB max inbound message size, so we default to 4 MiB.  Workers that
+/// need larger responses should use a separate listener with a higher
+/// `max_encoding_message_size` in the config.
+const DEFAULT_MAX_ENCODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 macro_rules! service_setup {
     ($v: tt, $http_config: tt) => {{
@@ -156,6 +165,12 @@ macro_rules! service_setup {
             $http_config.max_decoding_message_size
         };
         service = service.max_decoding_message_size(max_decoding_message_size);
+        let max_encoding_message_size = if $http_config.max_encoding_message_size == 0 {
+            DEFAULT_MAX_ENCODING_MESSAGE_SIZE
+        } else {
+            $http_config.max_encoding_message_size
+        };
+        service = service.max_encoding_message_size(max_encoding_message_size);
         let send_algo = &$http_config.compression.send_compression_algorithm;
         if let Some(encoding) = into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None)) {
             service = service.send_compressed(encoding);
@@ -181,6 +196,7 @@ async fn inner_main(
     const fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
             HttpCompressionAlgorithm::Gzip => Some(CompressionEncoding::Gzip),
+            HttpCompressionAlgorithm::Zstd => Some(CompressionEncoding::Zstd),
             HttpCompressionAlgorithm::None => None,
         }
     }
@@ -229,11 +245,17 @@ async fn inner_main(
         })
         .transpose()?;
 
+    // Create a shared blob locality map for peer-to-peer blob sharing.
+    // This map is shared between the scheduler (for locality scoring and
+    // peer hint generation) and WorkerApiServer (for receiving
+    // BlobsAvailable updates from workers).
+    let locality_map = blob_locality_map::new_shared_blob_locality_map();
+
     let mut action_schedulers = HashMap::new();
     let mut worker_schedulers = HashMap::new();
     for SchedulerConfig { name, spec } in cfg.schedulers.iter().flatten() {
         let (maybe_action_scheduler, maybe_worker_scheduler) =
-            scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref())
+            scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref(), Some(locality_map.clone()))
                 .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
         if let Some(action_scheduler) = maybe_action_scheduler {
             action_schedulers.insert(name.clone(), action_scheduler.clone());
@@ -244,6 +266,41 @@ async fn inner_main(
     }
 
     let server_cfgs: Vec<ServerConfig> = cfg.servers.into_iter().collect();
+
+    // Wrap CAS stores with WorkerProxyStore so the server can proxy reads
+    // to workers that have the blob (discovered via BlobsAvailable reports).
+    {
+        let mut cas_store_names: HashSet<String> = HashSet::new();
+        for server_cfg in &server_cfgs {
+            if let Some(ref services) = server_cfg.services {
+                if let Some(ref cas_cfgs) = services.cas {
+                    for c in cas_cfgs {
+                        cas_store_names.insert(c.config.cas_store.clone());
+                    }
+                }
+                if let Some(ref bs_cfgs) = services.bytestream {
+                    for c in bs_cfgs {
+                        cas_store_names.insert(c.config.cas_store.clone());
+                    }
+                }
+            }
+        }
+        for store_name in &cas_store_names {
+            if let Some(original_store) = store_manager.get_store(store_name) {
+                let proxy_store = nativelink_util::store_trait::Store::new(
+                    nativelink_store::worker_proxy_store::WorkerProxyStore::new(
+                        original_store,
+                        locality_map.clone(),
+                    ),
+                );
+                store_manager.add_store(store_name, proxy_store);
+                info!(
+                    store_name,
+                    "Wrapped CAS store with WorkerProxyStore for peer blob sharing"
+                );
+            }
+        }
+    }
 
     for server_cfg in server_cfgs {
         let services = server_cfg
@@ -327,7 +384,7 @@ async fn inner_main(
                 services
                     .worker_api
                     .map_or(Ok(None), |cfg| {
-                        WorkerApiServer::new(&cfg, &worker_schedulers)
+                        WorkerApiServer::new(&cfg, &worker_schedulers, Some(locality_map.clone()))
                             .map(|v| Some(service_setup!(v, http_config)))
                     })
                     .err_tip(|| "Could not create WorkerApi service")?,
@@ -518,18 +575,27 @@ async fn inner_main(
                     || "Could not convert experimental_http2_max_pending_accept_reset_streams",
                 )?);
         }
-        if let Some(value) = http_config.experimental_http2_initial_stream_window_size {
-            http.http2().initial_stream_window_size(value);
-        }
-        if let Some(value) = http_config.experimental_http2_initial_connection_window_size {
-            http.http2().initial_connection_window_size(value);
-        }
+        // Default to 16 MiB stream window and 32 MiB connection window
+        // to avoid capping per-stream throughput at ~64 MB/s with 1ms RTT
+        // (hyper's default of 64 KiB is too small for high-bandwidth links).
+        http.http2().initial_stream_window_size(
+            http_config
+                .experimental_http2_initial_stream_window_size
+                .unwrap_or(16 * 1024 * 1024),
+        );
+        http.http2().initial_connection_window_size(
+            http_config
+                .experimental_http2_initial_connection_window_size
+                .unwrap_or(32 * 1024 * 1024),
+        );
         if let Some(value) = http_config.experimental_http2_adaptive_window {
             http.http2().adaptive_window(value);
         }
-        if let Some(value) = http_config.experimental_http2_max_frame_size {
-            http.http2().max_frame_size(value);
-        }
+        http.http2().max_frame_size(
+            http_config
+                .experimental_http2_max_frame_size
+                .unwrap_or(64 * 1024),
+        );
         if let Some(value) = http_config.experimental_http2_max_concurrent_streams {
             http.http2().max_concurrent_streams(value);
         }
@@ -537,11 +603,14 @@ async fn inner_main(
             http.http2()
                 .keep_alive_timeout(Duration::from_secs(u64::from(value)));
         }
-        if let Some(value) = http_config.experimental_http2_max_send_buf_size {
-            http.http2().max_send_buf_size(
-                usize::try_from(value).err_tip(|| "Could not convert http2_max_send_buf_size")?,
-            );
-        }
+        http.http2().max_send_buf_size(
+            usize::try_from(
+                http_config
+                    .experimental_http2_max_send_buf_size
+                    .unwrap_or(2 * 1024 * 1024),
+            )
+            .err_tip(|| "Could not convert http2_max_send_buf_size")?,
+        );
         if http_config.experimental_http2_enable_connect_protocol == Some(true) {
             http.http2().enable_connect_protocol();
         }
@@ -555,6 +624,25 @@ async fn inner_main(
                     accept_result = tcp_listener.accept() => {
                         match accept_result {
                             Ok((tcp_stream, remote_addr)) => {
+                                // Disable Nagle's algorithm to reduce latency
+                                // on small writes (e.g., gRPC frames).
+                                if let Err(err) = tcp_stream.set_nodelay(true) {
+                                    error!(
+                                        target: "nativelink::services",
+                                        ?err,
+                                        "Failed to set TCP_NODELAY"
+                                    );
+                                }
+                                // Enable TCP keepalive to detect dead connections.
+                                // Uses system defaults (tcp_keepalive_time/intvl/probes).
+                                let sock_ref = SockRef::from(&tcp_stream);
+                                if let Err(err) = sock_ref.set_keepalive(true) {
+                                    error!(
+                                        target: "nativelink::services",
+                                        ?err,
+                                        "Failed to set SO_KEEPALIVE"
+                                    );
+                                }
                                 info!(
                                     target: "nativelink::services",
                                     ?remote_addr,
@@ -710,6 +798,12 @@ fn get_config() -> Result<CasConfig, Error> {
     CasConfig::try_from_json5_file(&args.config_file)
 }
 
+/// Dump all thread stacks to a timestamped file for post-mortem analysis.
+/// Reads /proc/self/task/*/comm, status, wchan, and stack (if permitted).
+fn dump_thread_stacks() {
+    nativelink_util::stall_detector::dump_thread_stacks("runtime-watchdog");
+}
+
 fn main() -> Result<(), Box<dyn core::error::Error>> {
     #[expect(clippy::disallowed_methods, reason = "starting main runtime")]
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -784,6 +878,57 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         warn!("Successfully shut down nativelink.",);
         std::process::exit(143);
     });
+
+    // Spawn a heartbeat task inside the tokio runtime and an external
+    // watchdog OS thread that detects when the runtime stalls.
+    let heartbeat_counter = Arc::new(AtomicU64::new(0));
+    let heartbeat_counter_task = heartbeat_counter.clone();
+    #[expect(clippy::disallowed_methods, reason = "runtime watchdog heartbeat")]
+    runtime.spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_millis(500));
+        loop {
+            ticker.tick().await;
+            heartbeat_counter_task.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    std::thread::Builder::new()
+        .name("runtime-watchdog".to_string())
+        .spawn(move || {
+            let stall_threshold = Duration::from_secs(2);
+            let check_interval = Duration::from_secs(1);
+            loop {
+                let before = heartbeat_counter.load(Ordering::Relaxed);
+                std::thread::sleep(check_interval);
+                let after = heartbeat_counter.load(Ordering::Relaxed);
+                if before == after {
+                    let stall_start = std::time::Instant::now();
+                    let mut stall_logged = false;
+                    // Confirmed stall — wait until it resolves to measure duration.
+                    loop {
+                        std::thread::sleep(Duration::from_millis(100));
+                        let now = heartbeat_counter.load(Ordering::Relaxed);
+                        if now != after {
+                            let stall_duration = stall_start.elapsed();
+                            error!(
+                                "RUNTIME STALL RESOLVED: tokio runtime was unresponsive for {:.1}s (heartbeat stuck at {after})",
+                                stall_duration.as_secs_f64() + check_interval.as_secs_f64(),
+                            );
+                            break;
+                        }
+                        if !stall_logged && stall_start.elapsed() > stall_threshold {
+                            stall_logged = true;
+                            let total = stall_threshold.as_secs_f64()
+                                + check_interval.as_secs_f64();
+                            error!(
+                                "RUNTIME STALL IN PROGRESS: tokio runtime unresponsive for >{total:.1}s (heartbeat stuck at {after})",
+                            );
+                            dump_thread_stacks();
+                        }
+                    }
+                }
+            }
+        })
+        .expect("Failed to spawn runtime watchdog thread");
 
     #[expect(clippy::disallowed_methods, reason = "waiting on everything to finish")]
     runtime

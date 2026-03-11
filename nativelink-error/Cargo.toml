@@ -14,8 +14,8 @@ version = "1.0.0-rc2"
 nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
 
-prost = { version = "0.13.5", default-features = false }
-prost-types = { version = "0.13.5", default-features = false }
+prost = { version = "0.14.3", default-features = false }
+prost-types = { version = "0.14.3", default-features = false }
 redis = { version = "1.0.0", default-features = false }
 rustls-pki-types = { version = "1.13.1", default-features = false }
 serde = { version = "1.0.219", default-features = false }
@@ -26,8 +26,8 @@ tokio = { version = "1.44.1", features = [
   "rt-multi-thread",
   "signal",
 ], default-features = false }
-tonic = { version = "0.13.0", features = [
-  "tls-ring",
+tonic = { version = "0.14.5", features = [
+  "tls-aws-lc",
   "transport",
 ], default-features = false }
 url = { version = "2.5.7", default-features = false }

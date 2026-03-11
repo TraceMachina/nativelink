@@ -16,6 +16,7 @@ use core::convert::Into;
 use core::fmt::{Debug, Formatter};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::task::{Context, Poll};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -41,16 +42,18 @@ use nativelink_proto::google::bytestream::{
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::{
-    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair_with_size,
 };
 use nativelink_util::common::DigestInfo;
+use nativelink_util::log_utils::throughput_mbps;
+use nativelink_util::stall_detector::StallGuard;
 use nativelink_util::digest_hasher::{
     DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func,
 };
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreLike, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{IS_WORKER_REQUEST, Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
@@ -62,7 +65,7 @@ use tracing::{Instrument, Level, debug, error, error_span, info, instrument, tra
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// If this value changes update the documentation in the config definition.
-const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
+const DEFAULT_MAX_BYTES_PER_STREAM: usize = 3 * 1024 * 1024;
 
 /// Metrics for `ByteStream` server operations.
 /// Tracks upload/download activity, throughput, and latency.
@@ -271,6 +274,75 @@ impl Debug for InstanceInfo {
 type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + 'static>>;
 type StoreUpdateFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
 
+/// Wrapper around a `ReadStream` that logs total bytes and elapsed time when
+/// the stream completes (yields `None`) or is dropped before completion.
+struct LoggingReadStream {
+    inner: ReadStream,
+    start_time: Instant,
+    digest: DigestInfo,
+    expected_size: u64,
+    bytes_sent: u64,
+    completed: bool,
+}
+
+impl LoggingReadStream {
+    fn new(inner: ReadStream, start_time: Instant, digest: DigestInfo, expected_size: u64) -> Self {
+        Self {
+            inner,
+            start_time,
+            digest,
+            expected_size,
+            bytes_sent: 0,
+            completed: false,
+        }
+    }
+
+    fn log_completion(&self, status: &str) {
+        let elapsed = self.start_time.elapsed();
+        let elapsed_ms = elapsed.as_millis() as u64;
+        debug!(
+            digest = %self.digest,
+            expected_size = self.expected_size,
+            bytes_sent = self.bytes_sent,
+            elapsed_ms,
+            throughput_mbps = %throughput_mbps(self.bytes_sent, elapsed),
+            status,
+            "ByteStream::read: CAS read completed",
+        );
+    }
+}
+
+impl Stream for LoggingReadStream {
+    type Item = Result<ReadResponse, Status>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let result = self.inner.as_mut().poll_next(cx);
+        match &result {
+            Poll::Ready(Some(Ok(response))) => {
+                self.bytes_sent += response.data.len() as u64;
+            }
+            Poll::Ready(None) => {
+                self.completed = true;
+                self.log_completion("ok");
+            }
+            Poll::Ready(Some(Err(_))) => {
+                self.completed = true;
+                self.log_completion("error");
+            }
+            Poll::Pending => {}
+        }
+        result
+    }
+}
+
+impl Drop for LoggingReadStream {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.log_completion("dropped");
+        }
+    }
+}
+
 struct StreamState {
     uuid: UuidKey,
     tx: DropCloserWriteHalf,
@@ -402,6 +474,15 @@ impl ByteStreamServer {
         let max_bytes_per_stream = if config.max_bytes_per_stream == 0 {
             DEFAULT_MAX_BYTES_PER_STREAM
         } else {
+            if config.max_bytes_per_stream > 4 * 1024 * 1024 {
+                warn!(
+                    configured = config.max_bytes_per_stream,
+                    default = DEFAULT_MAX_BYTES_PER_STREAM,
+                    "max_bytes_per_stream exceeds 4 MiB; Bazel and other REAPI clients \
+                     typically have a 4 MiB gRPC inbound message limit and will reject \
+                     oversized ByteStream.Read chunks with RESOURCE_EXHAUSTED"
+                );
+            }
             config.max_bytes_per_stream
         };
 
@@ -494,8 +575,18 @@ impl ByteStreamServer {
         // Parse UUID string to u128 key for efficient HashMap operations
         let uuid_key = parse_uuid_to_key(uuid_str);
 
-        let (uuid, bytes_received, is_collision) =
-            match instance.active_uploads.lock().entry(uuid_key) {
+        // We handle the three cases in two phases to avoid holding the
+        // mutex guard across a second .lock() call (which would deadlock
+        // on parking_lot::Mutex since it is not reentrant).
+        enum UploadAction {
+            Resume(Box<ActiveStreamGuard>),
+            New(u128, Arc<AtomicU64>),
+            Collision(u128),
+        }
+
+        let action = {
+            let mut active_uploads = instance.active_uploads.lock();
+            match active_uploads.entry(uuid_key) {
                 Entry::Occupied(mut entry) => {
                     let maybe_idle_stream = entry.get_mut();
                     if let Some(idle_stream) = maybe_idle_stream.1.take() {
@@ -510,34 +601,41 @@ impl ByteStreamServer {
                             .metrics
                             .resumed_uploads
                             .fetch_add(1, Ordering::Relaxed);
-                        return idle_stream.into_active_stream(bytes_received, instance);
+                        UploadAction::Resume(Box::new(
+                            idle_stream.into_active_stream(bytes_received, instance),
+                        ))
+                    } else {
+                        // Case 3: Stream is active - generate a unique UUID to avoid collision
+                        let original_key = *entry.key();
+                        let unique_key = Self::generate_unique_uuid_key(original_key);
+                        warn!(
+                            msg = "UUID collision detected, generating unique UUID to prevent conflict",
+                            original_uuid = format!("{:032x}", original_key),
+                            unique_uuid = format!("{:032x}", unique_key)
+                        );
+                        UploadAction::Collision(unique_key)
                     }
-                    // Case 3: Stream is active - generate a unique UUID to avoid collision
-                    // Using nanosecond timestamp makes collision probability essentially zero
-                    let original_key = *entry.key();
-                    let unique_key = Self::generate_unique_uuid_key(original_key);
-                    warn!(
-                        msg = "UUID collision detected, generating unique UUID to prevent conflict",
-                        original_uuid = format!("{:032x}", original_key),
-                        unique_uuid = format!("{:032x}", unique_key)
-                    );
-                    // Entry goes out of scope here, releasing the lock
-
-                    let bytes_received = Arc::new(AtomicU64::new(0));
-                    let mut active_uploads = instance.active_uploads.lock();
-                    // Insert with the unique UUID - this should never collide due to nanosecond precision
-                    active_uploads.insert(unique_key, (bytes_received.clone(), None));
-                    (unique_key, bytes_received, true)
                 }
                 Entry::Vacant(entry) => {
                     // Case 1: UUID doesn't exist, create new stream
                     let bytes_received = Arc::new(AtomicU64::new(0));
                     let uuid = *entry.key();
-                    // Our stream is "in use" if the key is in the map, but the value is None.
                     entry.insert((bytes_received.clone(), None));
-                    (uuid, bytes_received, false)
+                    UploadAction::New(uuid, bytes_received)
                 }
-            };
+            }
+        }; // First lock guard dropped here.
+
+        let (uuid, bytes_received, is_collision) = match action {
+            UploadAction::Resume(guard) => return *guard,
+            UploadAction::New(uuid, bytes_received) => (uuid, bytes_received, false),
+            UploadAction::Collision(unique_key) => {
+                let bytes_received = Arc::new(AtomicU64::new(0));
+                let mut active_uploads = instance.active_uploads.lock();
+                active_uploads.insert(unique_key, (bytes_received.clone(), None));
+                (unique_key, bytes_received, true)
+            }
+        };
 
         // Track metrics for new upload
         instance
@@ -555,7 +653,9 @@ impl ByteStreamServer {
         // removing the entry from the map, otherwise that UUID becomes
         // unusable.
 
-        let (tx, rx) = make_buf_channel_pair();
+        // Use a larger buffer (256 slots = ~64MiB at 256KiB chunks) to sustain
+        // high-throughput streaming at 10Gbps+ without backpressure stalls.
+        let (tx, rx) = make_buf_channel_pair_with_size(256);
         let store = instance.store.clone();
         let store_update_fut = Box::pin(async move {
             // We need to wrap `Store::update()` in a another future because we need to capture
@@ -582,6 +682,7 @@ impl ByteStreamServer {
         instance: &InstanceInfo,
         digest: DigestInfo,
         read_request: ReadRequest,
+        is_worker: bool,
     ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + Send + use<>, Error> {
         struct ReaderState {
             max_bytes_per_stream: usize,
@@ -593,7 +694,9 @@ impl ByteStreamServer {
         let read_limit = u64::try_from(read_request.read_limit)
             .err_tip(|| "Could not convert read_limit to u64")?;
 
-        let (tx, rx) = make_buf_channel_pair();
+        // Use a larger buffer (256 slots = ~64MiB at 256KiB chunks) to sustain
+        // high-throughput streaming at 10Gbps+ without backpressure stalls.
+        let (tx, rx) = make_buf_channel_pair_with_size(256);
 
         let read_limit = if read_limit != 0 {
             Some(read_limit)
@@ -608,14 +711,21 @@ impl ByteStreamServer {
             max_bytes_per_stream: instance.max_bytes_per_stream,
             maybe_get_part_result: None,
             get_part_fut: Box::pin(async move {
-                store
-                    .get_part(
-                        digest,
-                        tx,
-                        u64::try_from(read_request.read_offset)
-                            .err_tip(|| "Could not convert read_offset to u64")?,
-                        read_limit,
-                    )
+                // Propagate the worker/non-worker distinction into the store
+                // layer so WorkerProxyStore can decide whether to proxy or
+                // redirect.
+                IS_WORKER_REQUEST
+                    .scope(is_worker, async {
+                        store
+                            .get_part(
+                                digest,
+                                tx,
+                                u64::try_from(read_request.read_offset)
+                                    .err_tip(|| "Could not convert read_offset to u64")?,
+                                read_limit,
+                            )
+                            .await
+                    })
                     .await
             }),
         });
@@ -762,8 +872,14 @@ impl ByteStreamServer {
                     )
                 } else {
                     if write_offset != tx.get_bytes_written() {
-                        return Err(make_input_err!(
-                            "Received out of order data. Got {}, expected {}",
+                        // The client is trying to resume at an offset we
+                        // don't have (e.g. the idle stream was swept).
+                        // Return UNAVAILABLE so the client retries with
+                        // QueryWriteStatus → committed_size=0 → restart.
+                        return Err(make_err!(
+                            Code::Unavailable,
+                            "Received out of order data (write_offset {} but server has {}). \
+                             Partial upload state was lost; retry from committed offset.",
                             write_offset,
                             tx.get_bytes_written()
                         ));
@@ -785,6 +901,17 @@ impl ByteStreamServer {
                     return Err(make_input_err!("Received more bytes than expected"));
                 }
                 if write_request.finish_write {
+                    // Validate that we received the expected number of bytes
+                    // before accepting the upload. The stream wrapper only
+                    // validates on a *subsequent* poll_next after finish_write,
+                    // which we never perform, so check here explicitly.
+                    if tx.get_bytes_written() != expected_size {
+                        return Err(make_input_err!(
+                            "Client declared size {} but only sent {} bytes",
+                            expected_size,
+                            tx.get_bytes_written()
+                        ));
+                    }
                     // Gracefully close our stream.
                     tx.send_eof()
                         .err_tip(|| "Failed to send EOF in ByteStream::write")?;
@@ -879,8 +1006,10 @@ impl ByteStreamServer {
                     .slice(usize::try_from(bytes_received - write_offset).unwrap_or(usize::MAX)..)
             } else {
                 if write_offset != bytes_received {
-                    return Err(make_input_err!(
-                        "Received out of order data. Got {}, expected {}",
+                    return Err(make_err!(
+                        Code::Unavailable,
+                        "Received out of order data (write_offset {} but server has {}). \
+                         Partial upload state was lost; retry from committed offset.",
                         write_offset,
                         bytes_received
                     ));
@@ -898,6 +1027,15 @@ impl ByteStreamServer {
             }
 
             if write_request.finish_write {
+                // Validate that we received the expected number of bytes
+                // before accepting the upload.
+                if bytes_received != expected_size {
+                    return Err(make_input_err!(
+                        "Client declared size {} but only sent {} bytes",
+                        expected_size,
+                        bytes_received
+                    ));
+                }
                 break;
             }
         }
@@ -994,6 +1132,9 @@ impl ByteStream for ByteStreamServer {
     ) -> Result<Response<Self::ReadStream>, Status> {
         let start_time = Instant::now();
 
+        let is_worker = grpc_request
+            .metadata()
+            .contains_key("x-nativelink-worker");
         let read_request = grpc_request.into_inner();
         let resource_info = ResourceInfo::new(&read_request.resource_name, false)?;
         let instance_name = resource_info.instance_name.as_ref();
@@ -1024,15 +1165,31 @@ impl ByteStream for ByteStreamServer {
             DigestHasherFunc::try_from,
         )?;
 
+        // Covers stream setup only (inner_read returns a Stream).
+        // Actual data transfer stalls are not covered by this guard.
+        let _stall_guard = StallGuard::new(
+            nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
+            "ByteStream::read",
+        );
         let resp = self
-            .inner_read(instance, digest, read_request)
+            .inner_read(instance, digest, read_request, is_worker)
             .instrument(error_span!("bytestream_read"))
             .with_context(
                 make_ctx_for_hash_func(digest_function).err_tip(|| "In BytestreamServer::read")?,
             )
             .await
             .err_tip(|| "In ByteStreamServer::read")
-            .map(|stream| -> Response<Self::ReadStream> { Response::new(Box::pin(stream)) });
+            .map(|stream| -> Response<Self::ReadStream> {
+                // Wrap in LoggingReadStream to log when the client finishes
+                // consuming all data (or drops the stream early).
+                let logging = LoggingReadStream::new(
+                    Box::pin(stream),
+                    start_time,
+                    digest,
+                    expected_size,
+                );
+                Response::new(Box::pin(logging))
+            });
 
         // Track metrics based on result
         #[allow(clippy::cast_possible_truncation)]
@@ -1044,6 +1201,12 @@ impl ByteStream for ByteStreamServer {
 
         match &resp {
             Ok(_) => {
+                debug!(
+                    %digest,
+                    size_bytes = expected_size,
+                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    "ByteStream::read: CAS read stream created",
+                );
                 instance
                     .metrics
                     .read_requests_success
@@ -1052,9 +1215,15 @@ impl ByteStream for ByteStreamServer {
                     .metrics
                     .bytes_read_total
                     .fetch_add(expected_size, Ordering::Relaxed);
-                debug!(return = "Ok(<stream>)");
             }
-            Err(_) => {
+            Err(e) => {
+                error!(
+                    %digest,
+                    size_bytes = expected_size,
+                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    ?e,
+                    "ByteStream::read: failed",
+                );
                 instance
                     .metrics
                     .read_requests_failure
@@ -1149,6 +1318,18 @@ impl ByteStream for ByteStreamServer {
             false
         };
 
+        let oneshot = use_oneshot;
+        debug!(
+            %digest,
+            expected_size,
+            oneshot,
+            "ByteStream::write: starting upload",
+        );
+
+        let _stall_guard = StallGuard::new(
+            nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
+            "ByteStream::write",
+        );
         let result = if use_oneshot {
             self.inner_write_oneshot(instance, digest, stream)
                 .instrument(error_span!("bytestream_write_oneshot"))
@@ -1179,6 +1360,15 @@ impl ByteStream for ByteStreamServer {
 
         match &result {
             Ok(_) => {
+                let elapsed = start_time.elapsed();
+                debug!(
+                    %digest,
+                    size_bytes = expected_size,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    throughput_mbps = format!("{:.1}", throughput_mbps(expected_size, elapsed)),
+                    oneshot,
+                    "ByteStream::write: CAS write completed",
+                );
                 instance
                     .metrics
                     .write_requests_success
@@ -1188,7 +1378,15 @@ impl ByteStream for ByteStreamServer {
                     .bytes_written_total
                     .fetch_add(expected_size, Ordering::Relaxed);
             }
-            Err(_) => {
+            Err(e) => {
+                error!(
+                    %digest,
+                    expected_size,
+                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    oneshot,
+                    ?e,
+                    "ByteStream::write: upload failed",
+                );
                 instance
                     .metrics
                     .write_requests_failure
