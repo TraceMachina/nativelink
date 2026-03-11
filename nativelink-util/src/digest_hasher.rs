@@ -26,10 +26,10 @@ use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Valu
 use opentelemetry::context::Context;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::common::DigestInfo;
-use crate::{fs, spawn_blocking};
+use crate::fs;
 
 static DEFAULT_DIGEST_HASHER_FUNC: OnceLock<DigestHasherFunc> = OnceLock::new();
 
@@ -229,15 +229,27 @@ pub struct DigestHasherImpl {
 }
 
 impl DigestHasherImpl {
-    #[inline]
     async fn hash_file(
-        &mut self,
-        mut file: fs::FileSlot,
+        self,
+        file: fs::FileSlot,
     ) -> Result<(DigestInfo, fs::FileSlot), Error> {
-        let digest = self
-            .compute_from_reader(&mut file)
-            .await
-            .err_tip(|| "In digest_for_file")?;
+        let (mut hasher, file) = crate::spawn_blocking!("hash_file", move || {
+            let mut f = file;
+            let mut hasher = self;
+            let mut buf = vec![0u8; fs::DEFAULT_READ_BUFF_SIZE];
+            loop {
+                let n = std::io::Read::read(f.as_std_mut(), &mut buf)
+                    .err_tip(|| "Read error in hash_file")?;
+                if n == 0 {
+                    break;
+                }
+                DigestHasher::update(&mut hasher, &buf[..n]);
+            }
+            Ok::<_, Error>((hasher, f))
+        })
+        .await
+        .map_err(|e| make_err!(Code::Internal, "hash_file spawn failed: {e:?}"))??;
+        let digest = hasher.finalize_digest();
         Ok((digest, file))
     }
 }
@@ -264,14 +276,12 @@ impl DigestHasher for DigestHasherImpl {
     }
 
     async fn digest_for_file(
-        mut self,
+        self,
         file_path: impl AsRef<std::path::Path>,
         mut file: fs::FileSlot,
         size_hint: Option<u64>,
     ) -> Result<(DigestInfo, fs::FileSlot), Error> {
-        let file_position = file
-            .stream_position()
-            .await
+        let file_position = std::io::Seek::stream_position(file.as_std_mut())
             .err_tip(|| "Couldn't get stream position in digest_for_file")?;
         if file_position != 0 {
             return self.hash_file(file).await;
@@ -287,17 +297,26 @@ impl DigestHasher for DigestHasherImpl {
         match self.hash_func_impl {
             DigestHasherFuncImpl::Sha256(_) => self.hash_file(file).await,
             DigestHasherFuncImpl::Blake3(mut hasher) => {
-                spawn_blocking!("digest_for_file", move || {
-                    hasher.update_mmap(file_path).map_err(|e| {
-                        make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}")
-                    })?;
-                    Result::<_, Error>::Ok((
-                        DigestInfo::new(hasher.finalize().into(), hasher.count()),
-                        file,
-                    ))
-                })
-                .await
-                .err_tip(|| "Could not spawn blocking task in digest_for_file")?
+                // Use rayon::spawn + oneshot instead of spawn_blocking so we
+                // don't hold a tokio blocking thread while rayon's thread pool
+                // does the parallel hashing work.
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                rayon::spawn(move || {
+                    let result = match hasher.update_mmap_rayon(file_path) {
+                        Ok(_) => Ok((
+                            DigestInfo::new(hasher.finalize().into(), hasher.count()),
+                            file,
+                        )),
+                        Err(e) => Err(make_err!(
+                            Code::Internal,
+                            "Error in blake3's update_mmap_rayon: {e:?}"
+                        )),
+                    };
+                    drop(tx.send(result));
+                });
+                rx.await.map_err(|_| {
+                    make_err!(Code::Internal, "Rayon task dropped in digest_for_file")
+                })?
             }
         }
     }

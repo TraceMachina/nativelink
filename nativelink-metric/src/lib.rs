@@ -458,6 +458,18 @@ impl<T: MetricsComponent> MetricsComponent for async_lock::Mutex<T> {
     }
 }
 
+impl<T: MetricsComponent> MetricsComponent for async_lock::RwLock<T> {
+    fn publish(
+        &self,
+        kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, Error> {
+        // It is safe to block in the publishing thread.
+        let lock = self.read_blocking();
+        lock.publish(kind, field_metadata)
+    }
+}
+
 impl<T: MetricsComponent> MetricsComponent for parking_lot::Mutex<T> {
     fn publish(
         &self,
