@@ -2962,6 +2962,7 @@ dependencies = [
  "futures",
  "hostname",
  "hyper 1.8.1",
+ "libc",
  "nativelink-config",
  "nativelink-error",
  "nativelink-macro",

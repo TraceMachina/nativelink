@@ -59,4 +59,8 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
 
     /// Sets if the worker is draining or not.
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error>;
+
+    /// Updates the CPU load reported by a worker.
+    /// `cpu_load_pct` is load_avg_1m / num_cpus * 100. 0 means unknown.
+    async fn update_worker_load(&self, worker_id: &WorkerId, cpu_load_pct: u32) -> Result<(), Error>;
 }

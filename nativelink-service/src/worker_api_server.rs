@@ -327,7 +327,7 @@ impl WorkerConnection {
                         instance.execution_complete(execute_complete).await
                     }
                     Update::BlobsAvailable(notification) => {
-                        instance.handle_blobs_available(notification)
+                        instance.handle_blobs_available(notification).await
                     }
                     Update::BlobsEvicted(_notification) => {
                         // Dead code path: evictions now go through
@@ -360,11 +360,14 @@ impl WorkerConnection {
         });
     }
 
-    async fn inner_keep_alive(&self, _keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
+    async fn inner_keep_alive(&self, keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
         self.scheduler
             .worker_keep_alive_received(&self.worker_id, (self.now_fn)()?.as_secs())
             .await
             .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
+        if keep_alive_request.cpu_load_pct > 0 {
+            drop(self.scheduler.update_worker_load(&self.worker_id, keep_alive_request.cpu_load_pct).await);
+        }
         Ok(())
     }
 
@@ -467,10 +470,13 @@ impl WorkerConnection {
         Ok(())
     }
 
-    fn handle_blobs_available(
+    async fn handle_blobs_available(
         &self,
         notification: nativelink_proto::com::github::trace_machina::nativelink::remote_execution::BlobsAvailableNotification,
     ) -> Result<(), Error> {
+        if notification.cpu_load_pct > 0 {
+            drop(self.scheduler.update_worker_load(&self.worker_id, notification.cpu_load_pct).await);
+        }
         let Some(ref locality_map) = self.locality_map else {
             return Ok(());
         };
@@ -549,6 +555,9 @@ impl WorkerConnection {
     }
 
     async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {
+        if execute_complete.cpu_load_pct > 0 {
+            drop(self.scheduler.update_worker_load(&self.worker_id, execute_complete.cpu_load_pct).await);
+        }
         let operation_id = OperationId::from(execute_complete.operation_id);
         self.scheduler
             .update_action(
