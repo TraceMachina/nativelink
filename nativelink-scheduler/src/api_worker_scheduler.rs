@@ -405,7 +405,7 @@ impl ApiWorkerSchedulerImpl {
                 .find(|(id, _)| id == wid)
                 .map(|(_, l)| *l)
                 .unwrap_or(0);
-            debug!(
+            info!(
                 candidates = viable.len(),
                 worker_id = %wid,
                 winner_load_pct = winner_load,

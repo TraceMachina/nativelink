@@ -697,12 +697,15 @@ impl DirectoryCache {
             } else if metadata.is_file() {
                 let size = metadata.len();
 
-                // Set file to r--r--r-- (0o444)
+                // Preserve execute bit: r-xr-xr-x (0o555) for executables,
+                // r--r--r-- (0o444) for non-executables.
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
+                    let current_mode = metadata.permissions().mode();
+                    let new_mode = if current_mode & 0o111 != 0 { 0o555 } else { 0o444 };
                     let mut perms = metadata.permissions();
-                    perms.set_mode(0o444);
+                    perms.set_mode(new_mode);
                     fs::set_permissions(path, perms)
                         .await
                         .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
