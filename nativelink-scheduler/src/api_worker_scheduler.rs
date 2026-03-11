@@ -1261,7 +1261,7 @@ fn score_and_generate_hints(
 ) -> (HashMap<String, (u64, SystemTime)>, Vec<PeerHint>) {
     /// Maximum number of peer hints to include in a StartExecute message
     /// to avoid oversized messages.
-    const MAX_PEER_HINTS: usize = 1000;
+    const MAX_PEER_HINTS: usize = 16384;
 
     let map = locality_map.read();
     let blobs = map.blobs_map();

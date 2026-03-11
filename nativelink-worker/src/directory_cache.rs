@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -125,6 +125,10 @@ pub struct DirectoryCache {
     /// Concrete FilesystemStore (the fast store inside FastSlowStore).
     /// Required for hardlinking files from the CAS to the cache directory.
     filesystem_store: Option<Arc<FilesystemStore>>,
+    /// Cumulative hit count for stats logging
+    hit_count: AtomicU64,
+    /// Cumulative miss count for stats logging
+    miss_count: AtomicU64,
 }
 
 impl DirectoryCache {
@@ -154,10 +158,31 @@ impl DirectoryCache {
                 .and_then(|fs| fs.get_arc())
         });
 
-        if fast_slow_store.is_some() && filesystem_store.is_some() {
-            info!("DirectoryCache: using fast download_to_directory path for cache misses");
+        let has_fast_path = fast_slow_store.is_some() && filesystem_store.is_some();
+
+        if has_fast_path {
+            info!(
+                cache_root = %config.cache_root.display(),
+                max_entries = config.max_entries,
+                max_size_bytes = config.max_size_bytes,
+                fast_path = true,
+                "DirectoryCache initialized: using fast download_to_directory path for cache misses",
+            );
         } else if fast_slow_store.is_some() {
-            warn!("DirectoryCache: FastSlowStore provided but could not extract FilesystemStore; falling back to serial construction");
+            warn!(
+                cache_root = %config.cache_root.display(),
+                max_entries = config.max_entries,
+                max_size_bytes = config.max_size_bytes,
+                "DirectoryCache initialized: FastSlowStore provided but could not extract FilesystemStore; falling back to serial construction",
+            );
+        } else {
+            info!(
+                cache_root = %config.cache_root.display(),
+                max_entries = config.max_entries,
+                max_size_bytes = config.max_size_bytes,
+                fast_path = false,
+                "DirectoryCache initialized: no FastSlowStore, using serial construction",
+            );
         }
 
         Ok(Self {
@@ -167,6 +192,8 @@ impl DirectoryCache {
             cas_store,
             fast_slow_store,
             filesystem_store,
+            hit_count: AtomicU64::new(0),
+            miss_count: AtomicU64::new(0),
         })
     }
 
@@ -181,12 +208,38 @@ impl DirectoryCache {
     /// * `Ok(false)` - Cache miss (directory was constructed and cached)
     /// * `Err` - Error during construction or hardlinking
     pub async fn get_or_create(&self, digest: DigestInfo, dest_path: &Path) -> Result<bool, Error> {
+        let overall_start = Instant::now();
+
         // Fast path: check if already in cache (read lock only for the lookup)
         if self.try_hardlink_cached(&digest, dest_path).await? {
+            let hits = self.hit_count.fetch_add(1, Ordering::Relaxed) + 1;
+            let misses = self.miss_count.load(Ordering::Relaxed);
+            let total = hits + misses;
+            let hit_rate = if total > 0 { (hits as f64 / total as f64) * 100.0 } else { 0.0 };
+            info!(
+                hash = %&digest.packed_hash().to_string()[..12],
+                elapsed_ms = overall_start.elapsed().as_millis() as u64,
+                hits,
+                misses,
+                hit_rate = format!("{hit_rate:.1}%"),
+                "DirectoryCache HIT (hardlinked from cache)",
+            );
             return Ok(true);
         }
 
-        debug!(?digest, "Directory cache MISS");
+        let misses = self.miss_count.fetch_add(1, Ordering::Relaxed) + 1;
+        let hits = self.hit_count.load(Ordering::Relaxed);
+        let total = hits + misses;
+        let hit_rate = if total > 0 { (hits as f64 / total as f64) * 100.0 } else { 0.0 };
+        info!(
+            hash = %&digest.packed_hash().to_string()[..12],
+            size_bytes = digest.size_bytes(),
+            hits,
+            misses,
+            hit_rate = format!("{hit_rate:.1}%"),
+            has_fast_path = self.fast_slow_store.is_some() && self.filesystem_store.is_some(),
+            "DirectoryCache MISS, starting construction",
+        );
 
         // Get or create construction lock to prevent stampede
         let construction_lock = {
@@ -232,7 +285,11 @@ impl DirectoryCache {
                 fs::create_dir_all(&temp_path).await.err_tip(|| {
                     format!("Failed to create temp dir: {}", temp_path.display())
                 })?;
-                let construction_start = std::time::Instant::now();
+                info!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    "DirectoryCache: fast download_to_directory starting",
+                );
+                let construction_start = Instant::now();
                 let result = crate::running_actions_manager::download_to_directory(
                     fss, fs_pin, &digest, &temp_str,
                 )
@@ -241,7 +298,7 @@ impl DirectoryCache {
                 match &result {
                     Ok(()) => {
                         info!(
-                            ?digest,
+                            hash = %&digest.packed_hash().to_string()[..12],
                             elapsed_ms = elapsed.as_millis() as u64,
                             "DirectoryCache: fast download_to_directory completed",
                         );
@@ -249,7 +306,7 @@ impl DirectoryCache {
                     }
                     Err(e) => {
                         warn!(
-                            ?digest,
+                            hash = %&digest.packed_hash().to_string()[..12],
                             ?e,
                             elapsed_ms = elapsed.as_millis() as u64,
                             "DirectoryCache: fast download_to_directory failed, trying serial fallback",
@@ -270,14 +327,34 @@ impl DirectoryCache {
                 }
                 Some(Err(_)) | None => {
                     // Fall back to serial construct_directory_impl
+                    if fast_path_result.is_none() {
+                        info!(
+                            hash = %&digest.packed_hash().to_string()[..12],
+                            "DirectoryCache: using serial construct_directory_impl (no fast path available)",
+                        );
+                    }
+                    let serial_start = Instant::now();
                     self.construct_directory(digest, &temp_path).await
                         .err_tip(|| "Failed to construct directory for cache")?;
+                    info!(
+                        hash = %&digest.packed_hash().to_string()[..12],
+                        elapsed_ms = serial_start.elapsed().as_millis() as u64,
+                        "DirectoryCache: serial construct_directory_impl completed",
+                    );
                 }
             }
 
             // Combined walk: set read-only permissions and calculate size in one pass.
+            let readonly_start = Instant::now();
             let size = Self::set_readonly_and_calculate_size(&temp_path).await
                 .err_tip(|| "Failed to set readonly and calculate size for cache directory")?;
+            info!(
+                hash = %&digest.packed_hash().to_string()[..12],
+                size_bytes = size,
+                size_mb = format!("{:.2}", size as f64 / (1024.0 * 1024.0)),
+                elapsed_ms = readonly_start.elapsed().as_millis() as u64,
+                "DirectoryCache: set_readonly_and_calculate_size completed",
+            );
             fs::rename(&temp_path, &cache_path).await.err_tip(|| {
                 format!(
                     "Failed to rename temp dir {} to cache path {}",
@@ -292,6 +369,12 @@ impl DirectoryCache {
         let size = match construction_result {
             Ok(s) => s,
             Err(e) => {
+                warn!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    ?e,
+                    elapsed_ms = overall_start.elapsed().as_millis() as u64,
+                    "DirectoryCache MISS construction FAILED",
+                );
                 Self::remove_readonly_dir(&temp_path).await;
                 self.cleanup_construction_lock(&digest, &construction_lock);
                 return Err(e);
@@ -300,7 +383,7 @@ impl DirectoryCache {
 
         // Insert with ref_count=1 to prevent eviction during hardlink.
         // Collect eviction candidates while holding the lock, then delete outside.
-        let evicted_paths = {
+        let (evicted_paths, cache_entries, cache_total_size) = {
             let mut cache = self.cache.write().await;
             let evicted = self.collect_evictions(size, &mut cache);
             cache.insert(
@@ -317,8 +400,20 @@ impl DirectoryCache {
                     ref_count: AtomicUsize::new(1),
                 },
             );
-            evicted
+            let total_size: u64 = cache.values().map(|m| m.size).sum();
+            (evicted, cache.len(), total_size)
         };
+
+        info!(
+            hash = %&digest.packed_hash().to_string()[..12],
+            size_bytes = size,
+            size_mb = format!("{:.2}", size as f64 / (1024.0 * 1024.0)),
+            cache_entries,
+            cache_total_size_mb = format!("{:.2}", cache_total_size as f64 / (1024.0 * 1024.0)),
+            evicted_count = evicted_paths.len(),
+            elapsed_ms = overall_start.elapsed().as_millis() as u64,
+            "DirectoryCache MISS construction complete, inserted into cache",
+        );
 
         // Delete evicted directories outside the lock.
         // Cached directories are read-only (0o555/0o444), so we must make them
@@ -328,7 +423,9 @@ impl DirectoryCache {
         }
 
         // Hardlink to destination (safe — ref_count=1 prevents eviction)
+        let hardlink_start = Instant::now();
         let hardlink_result = hardlink_directory_tree(&cache_path, dest_path).await;
+        let hardlink_elapsed = hardlink_start.elapsed();
 
         // Decrement ref_count regardless of hardlink result
         {
@@ -341,6 +438,25 @@ impl DirectoryCache {
         // Drop the construction lock guard before cleanup
         drop(_guard);
         self.cleanup_construction_lock(&digest, &construction_lock);
+
+        match &hardlink_result {
+            Ok(()) => {
+                info!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    hardlink_ms = hardlink_elapsed.as_millis() as u64,
+                    total_ms = overall_start.elapsed().as_millis() as u64,
+                    "DirectoryCache: hardlinked newly constructed directory to dest",
+                );
+            }
+            Err(e) => {
+                warn!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    ?e,
+                    hardlink_ms = hardlink_elapsed.as_millis() as u64,
+                    "DirectoryCache: failed to hardlink newly constructed directory to dest",
+                );
+            }
+        }
 
         hardlink_result.err_tip(|| "Failed to hardlink newly cached directory")?;
 
@@ -355,20 +471,30 @@ impl DirectoryCache {
         digest: &DigestInfo,
         dest_path: &Path,
     ) -> Result<bool, Error> {
-        let src_path = {
+        let (src_path, cached_size) = {
             // Read lock is sufficient — ref_count and last_access are atomic.
             let cache = self.cache.read().await;
             let Some(metadata) = cache.get(digest) else {
+                debug!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    "DirectoryCache: not in cache (miss)",
+                );
                 return Ok(false);
             };
             metadata.touch();
             metadata.ref_count.fetch_add(1, Ordering::Relaxed);
-            metadata.path.clone()
+            (metadata.path.clone(), metadata.size)
         };
 
-        debug!(?digest, path = ?src_path, "Directory cache HIT");
+        debug!(
+            hash = %&digest.packed_hash().to_string()[..12],
+            cached_size_bytes = cached_size,
+            "DirectoryCache: found in cache, hardlinking",
+        );
 
+        let hardlink_start = Instant::now();
         let result = hardlink_directory_tree(&src_path, dest_path).await;
+        let hardlink_elapsed = hardlink_start.elapsed();
 
         // Always decrement ref_count
         {
@@ -379,9 +505,22 @@ impl DirectoryCache {
         }
 
         match result {
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                info!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    cached_size_bytes = cached_size,
+                    hardlink_ms = hardlink_elapsed.as_millis() as u64,
+                    "DirectoryCache: hardlink from cache succeeded",
+                );
+                Ok(true)
+            }
             Err(e) => {
-                warn!(?digest, error = ?e, "Failed to hardlink from cache, will reconstruct");
+                warn!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    error = ?e,
+                    hardlink_ms = hardlink_elapsed.as_millis() as u64,
+                    "DirectoryCache: hardlink from cache FAILED, will reconstruct",
+                );
                 Ok(false)
             }
         }
@@ -744,13 +883,21 @@ impl DirectoryCache {
 
         // Evict by entry count
         while cache.len() >= self.config.max_entries {
-            if let Some(path) = self.evict_lru_entry(cache) {
+            if let Some((path, digest, size)) = self.evict_lru_entry(cache) {
+                info!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    size_bytes = size,
+                    reason = "count_limit",
+                    entries_remaining = cache.len(),
+                    max_entries = self.config.max_entries,
+                    "DirectoryCache: evicting entry",
+                );
                 evicted_paths.push(path);
             } else {
                 warn!(
                     entries = cache.len(),
                     max = self.config.max_entries,
-                    "Directory cache over entry limit but all entries are in use"
+                    "DirectoryCache: over entry limit but all entries are in use"
                 );
                 break;
             }
@@ -763,13 +910,23 @@ impl DirectoryCache {
                 if current_size + incoming_size <= self.config.max_size_bytes {
                     break;
                 }
-                if let Some(path) = self.evict_lru_entry(cache) {
+                if let Some((path, digest, size)) = self.evict_lru_entry(cache) {
+                    info!(
+                        hash = %&digest.packed_hash().to_string()[..12],
+                        size_bytes = size,
+                        size_freed_mb = format!("{:.2}", size as f64 / (1024.0 * 1024.0)),
+                        reason = "size_limit",
+                        entries_remaining = cache.len(),
+                        current_total_mb = format!("{:.2}", cache.values().map(|m| m.size).sum::<u64>() as f64 / (1024.0 * 1024.0)),
+                        max_size_mb = format!("{:.2}", self.config.max_size_bytes as f64 / (1024.0 * 1024.0)),
+                        "DirectoryCache: evicting entry",
+                    );
                     evicted_paths.push(path);
                 } else {
                     warn!(
                         current_size = current_size + incoming_size,
                         max = self.config.max_size_bytes,
-                        "Directory cache over size limit but all entries are in use"
+                        "DirectoryCache: over size limit but all entries are in use"
                     );
                     break;
                 }
@@ -780,12 +937,12 @@ impl DirectoryCache {
     }
 
     /// Removes the LRU entry with ref_count == 0 from the cache HashMap.
-    /// Returns the evicted entry's path for disk cleanup, or `None` if no
-    /// evictable entry exists.
+    /// Returns the evicted entry's (path, digest, size) for logging and disk
+    /// cleanup, or `None` if no evictable entry exists.
     fn evict_lru_entry(
         &self,
         cache: &mut HashMap<DigestInfo, CachedDirectoryMetadata>,
-    ) -> Option<PathBuf> {
+    ) -> Option<(PathBuf, DigestInfo, u64)> {
         let to_evict = cache
             .iter()
             .filter(|(_, m)| m.ref_count.load(Ordering::Relaxed) == 0)
@@ -794,8 +951,7 @@ impl DirectoryCache {
 
         if let Some(digest) = to_evict {
             if let Some(metadata) = cache.remove(&digest) {
-                debug!(?digest, size = metadata.size, "Evicting cached directory");
-                return Some(metadata.path);
+                return Some((metadata.path, digest, metadata.size));
             }
         }
 
