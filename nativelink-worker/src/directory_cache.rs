@@ -337,14 +337,16 @@ impl DirectoryCache {
             if let Ok(mut entries) = fs::read_dir(&config.cache_root).await {
                 while let Ok(Some(entry)) = entries.next_entry().await {
                     let p = entry.path();
-                    // chmod +rw so we can delete read-only entries
-                    drop(tokio::process::Command::new("chmod")
-                        .args(["-R", "u+rw"])
-                        .arg(&p)
-                        .status()
-                        .await);
-                    drop(fs::remove_dir_all(&p).await);
-                    drop(fs::remove_file(&p).await);
+                    if let Ok(meta) = fs::symlink_metadata(&p).await {
+                        if meta.is_dir() {
+                            // Only chmod directories writable, not files (which
+                            // are hardlinked to CAS). On unix, directory write
+                            // permission is sufficient to unlink files.
+                            Self::remove_readonly_dir(&p).await;
+                        } else {
+                            drop(fs::remove_file(&p).await);
+                        }
+                    }
                 }
             }
             fs::write(&version_path, format!("{CACHE_FORMAT_VERSION}\n"))
@@ -945,9 +947,12 @@ impl DirectoryCache {
         }
     }
 
-    /// Recursively removes a read-only directory by first restoring write permissions.
+    /// Recursively removes a read-only directory by first restoring write
+    /// permissions on directories. Files are NOT chmoded because they are
+    /// hardlinked to CAS entries — changing their mode would corrupt the
+    /// shared inode's permissions for all concurrent actions.
+    /// On unix, only the parent directory needs write permission to unlink files.
     async fn remove_readonly_dir(path: &Path) {
-        // Make writable so remove_dir_all can delete contents
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -959,13 +964,8 @@ impl DirectoryCache {
                             if let Ok(meta) = fs::symlink_metadata(entry.path()).await {
                                 if meta.is_dir() {
                                     Box::pin(Self::remove_readonly_dir(&entry.path())).await;
-                                } else if meta.is_file() {
-                                    drop(fs::set_permissions(
-                                        entry.path(),
-                                        std::fs::Permissions::from_mode(0o644),
-                                    )
-                                    .await);
                                 }
+                                // Do NOT chmod files — they are hardlinked to CAS.
                             }
                         }
                     }
