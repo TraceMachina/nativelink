@@ -427,7 +427,9 @@ fn collect_files_from_tree(
                 if file.is_executable {
                     mode = Some(mode.unwrap_or(0o444) | 0o111);
                 }
-                mode
+                // Always provide explicit mode to prevent CAS inode corruption
+                // from concurrent hardlinks changing shared inode permissions.
+                Some(mode.unwrap_or(0o444))
             };
 
             let mtime = file.node_properties.as_ref().and_then(|p| p.mtime.clone());
@@ -2912,6 +2914,16 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
     /// Returns the digests of input root directories cached in the worker's
     /// directory cache. Returns an empty Vec if no directory cache is configured.
     fn cached_directory_digests(&self) -> impl Future<Output = Vec<DigestInfo>> + Send;
+
+    /// Returns ALL subtree digests across all cached directory entries.
+    /// Used for the initial full snapshot on (re)connect.
+    fn all_subtree_digests(&self) -> impl Future<Output = Vec<DigestInfo>> + Send;
+
+    /// Atomically takes the pending subtree digest changes since the last call.
+    /// Returns (added, removed) digest lists and clears the internal state.
+    fn take_pending_subtree_changes(
+        &self,
+    ) -> impl Future<Output = (Vec<DigestInfo>, Vec<DigestInfo>)> + Send;
 }
 
 /// A function to get the current system time, used to allow mocking for tests
@@ -3947,6 +3959,20 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         match &self.directory_cache {
             Some(cache) => cache.cached_digests().await,
             None => Vec::new(),
+        }
+    }
+
+    async fn all_subtree_digests(&self) -> Vec<DigestInfo> {
+        match &self.directory_cache {
+            Some(cache) => cache.all_subtree_digests().await,
+            None => Vec::new(),
+        }
+    }
+
+    async fn take_pending_subtree_changes(&self) -> (Vec<DigestInfo>, Vec<DigestInfo>) {
+        match &self.directory_cache {
+            Some(cache) => cache.take_pending_subtree_changes().await,
+            None => (Vec::new(), Vec::new()),
         }
     }
 }

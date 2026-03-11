@@ -187,6 +187,14 @@ impl RunningActionsManager for MockRunningActionsManager {
     async fn cached_directory_digests(&self) -> Vec<DigestInfo> {
         Vec::new()
     }
+
+    async fn all_subtree_digests(&self) -> Vec<DigestInfo> {
+        Vec::new()
+    }
+
+    async fn take_pending_subtree_changes(&self) -> (Vec<DigestInfo>, Vec<DigestInfo>) {
+        (Vec::new(), Vec::new())
+    }
 }
 
 #[derive(Debug)]

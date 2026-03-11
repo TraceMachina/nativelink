@@ -105,10 +105,30 @@ pub struct BlobsAvailableNotification {
     /// / Digests of input root directories that are cached in this worker's
     /// / directory cache. The scheduler can give routing preference to workers
     /// / that already have the action's input_root_digest cached.
+    /// / Also used for the full subtree snapshot (when is_full_subtree_snapshot=true,
+    /// / this contains ALL directory digests including subtrees).
     #[prost(message, repeated, tag = "7")]
     pub cached_directory_digests: ::prost::alloc::vec::Vec<
         super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
     >,
+    /// / Delta-encoded subtree updates since last notification.
+    /// / When a cache entry is added, send ALL directory digests in its merkle tree.
+    /// / When a cache entry is evicted, send ALL directory digests that were removed
+    /// / (only those no longer present in ANY cached entry's merkle tree).
+    #[prost(message, repeated, tag = "8")]
+    pub added_subtree_digests: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
+    #[prost(message, repeated, tag = "9")]
+    pub removed_subtree_digests: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
+    /// / True on the first notification after (re)connect — scheduler should
+    /// / replace its cached_subtree_digests state rather than applying a delta.
+    /// / In this case, cached_directory_digests (field 7) contains the full set
+    /// / of all subtree digests.
+    #[prost(bool, tag = "10")]
+    pub is_full_subtree_snapshot: bool,
 }
 /// / Notification that blobs have been evicted from a worker.
 #[derive(Clone, PartialEq, ::prost::Message)]

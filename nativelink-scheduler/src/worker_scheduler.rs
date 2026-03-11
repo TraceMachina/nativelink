@@ -75,4 +75,18 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         worker_id: &WorkerId,
         digests: HashSet<DigestInfo>,
     ) -> Result<(), Error>;
+
+    /// Updates the set of cached subtree digests for a worker using delta encoding.
+    ///
+    /// When `is_full_snapshot` is true, `full_set` replaces the entire set.
+    /// When `is_full_snapshot` is false, `added` digests are inserted and
+    /// `removed` digests are deleted from the existing set.
+    async fn update_cached_subtrees(
+        &self,
+        worker_id: &WorkerId,
+        is_full_snapshot: bool,
+        full_set: Vec<DigestInfo>,
+        added: Vec<DigestInfo>,
+        removed: Vec<DigestInfo>,
+    ) -> Result<(), Error>;
 }
