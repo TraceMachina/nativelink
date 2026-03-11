@@ -322,15 +322,23 @@ impl CasServer {
             .err_tip(|| "Failed to parse `page_token` as `Digest` in `GetTreeRequest`")?
         };
         let page_size = request.page_size;
-        // If `page_size` is 0, paging is not necessary.
+        // If `page_size` is 0, paging is not necessary — return all directories.
+        let page_size_limit = if page_size == 0 {
+            usize::MAX
+        } else {
+            usize::try_from(page_size).unwrap_or(usize::MAX)
+        };
         let mut page_token_matched = page_size == 0;
         deque.push_back(root_digest);
+        let mut page_filled = false;
 
-        while !deque.is_empty() {
+        while !deque.is_empty() && !page_filled {
             let level: Vec<DigestInfo> = deque.drain(..).collect();
+            // Fetch all directories in this BFS level concurrently.
             let mut futs = FuturesUnordered::new();
-            for digest in level {
+            for digest in &level {
                 let store = store.clone();
+                let digest = *digest;
                 futs.push(async move {
                     let dir = get_and_decode_digest::<Directory>(&store, digest.into())
                         .await
@@ -338,35 +346,52 @@ impl CasServer {
                     Ok::<_, Error>((digest, dir))
                 });
             }
-            let page_size_usize = usize::try_from(page_size).unwrap_or(usize::MAX);
+            // Collect results into a map so we can iterate in deterministic (discovery) order.
+            let mut level_results: HashMap<DigestInfo, Directory> =
+                HashMap::with_capacity(level.len());
             while let Some(result) = futs.next().await {
                 let (digest, directory) = result?;
-                if digest == page_token_digest {
+                level_results.insert(digest, directory);
+            }
+            // Process directories in the order they appeared in the deque (BFS discovery order).
+            for (i, digest) in level.iter().enumerate() {
+                let directory = level_results
+                    .remove(digest)
+                    .err_tip(|| "Directory missing from level results")?;
+                if *digest == page_token_digest {
                     page_token_matched = true;
                 }
+                // Always enqueue children so BFS traversal finds the page token
+                // even when it's deeper in the tree.
                 for child in &directory.directories {
                     let child_digest: DigestInfo = child
                         .digest
                         .clone()
-                        .err_tip(|| "Expected Digest to exist in Directory::directories::digest")?
+                        .err_tip(|| {
+                            "Expected Digest to exist in Directory::directories::digest"
+                        })?
                         .try_into()
                         .err_tip(|| "In Directory::file::digest")?;
                     deque.push_back(child_digest);
                 }
                 if page_token_matched {
                     directories.push(directory);
-                    if directories.len() == page_size_usize {
+                    if directories.len() >= page_size_limit {
+                        // Put remaining unprocessed items from this level back
+                        // into the front of the deque for the next page token.
+                        let remaining: Vec<DigestInfo> =
+                            level[i + 1..].iter().copied().collect();
+                        // Prepend remaining items before any children already in deque.
+                        for (j, rem) in remaining.into_iter().enumerate() {
+                            deque.insert(j, rem);
+                        }
+                        page_filled = true;
                         break;
                     }
                 }
             }
-            if page_token_matched
-                && directories.len() >= usize::try_from(page_size).unwrap_or(usize::MAX)
-            {
-                break;
-            }
         }
-        // `next_page_token` will return the `{hash_str}:{size_bytes}` of the next request's first directory digest.
+        // `next_page_token` will return the `{hash_str}-{size_bytes}` of the next request's first directory digest.
         // It will be an empty string when it reached the end of the directory tree.
         let next_page_token: String = deque
             .front()
