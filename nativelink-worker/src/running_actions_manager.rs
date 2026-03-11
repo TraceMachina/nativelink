@@ -425,11 +425,13 @@ fn collect_files_from_tree(
                     None => (None, None),
                 };
                 if file.is_executable {
-                    mode = Some(mode.unwrap_or(0o444) | 0o111);
+                    mode = Some(mode.unwrap_or(0o555) | 0o111);
                 }
-                // Always provide explicit mode to prevent CAS inode corruption
-                // from concurrent hardlinks changing shared inode permissions.
-                Some(mode.unwrap_or(0o444))
+                // Default to 0o555 (read+execute, no write) to match CAS store
+                // defaults. Some build tools (rules_cc, rules_rust) set
+                // is_executable=false on shell scripts that must be executable;
+                // using 0o555 as the base avoids breaking those actions.
+                Some(mode.unwrap_or(0o555))
             };
 
             let mtime = file.node_properties.as_ref().and_then(|p| p.mtime.clone());
