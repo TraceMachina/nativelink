@@ -497,17 +497,31 @@ impl StoreDriver for FastSlowStore {
             }
         };
 
-        let fast_store_fut = self.fast_store.update(key.borrow(), fast_rx, size_info);
-        let slow_store_fut = self.slow_store.update(key.borrow(), slow_rx, size_info);
+        let fast_start = std::time::Instant::now();
+        let fast_store_fut = async {
+            let res = self.fast_store.update(key.borrow(), fast_rx, size_info).await;
+            (res, fast_start.elapsed())
+        };
+        let slow_start = std::time::Instant::now();
+        let slow_store_fut = async {
+            let res = self.slow_store.update(key.borrow(), slow_rx, size_info).await;
+            (res, slow_start.elapsed())
+        };
 
-        let (data_stream_res, fast_res, slow_res) =
+        let (data_stream_res, (fast_res, fast_elapsed), (slow_res, slow_elapsed)) =
             join!(data_stream_fut, fast_store_fut, slow_store_fut);
 
         let total_elapsed = update_start.elapsed();
+        let fast_ms = fast_elapsed.as_millis();
+        let slow_ms = slow_elapsed.as_millis();
+        let slower_leg = if fast_ms >= slow_ms { "fast" } else { "slow" };
         if data_stream_res.is_err() || fast_res.is_err() || slow_res.is_err() {
             warn!(
                 key = %key_debug,
                 elapsed_ms = total_elapsed.as_millis(),
+                fast_ms,
+                slow_ms,
+                slower_leg,
                 total_bytes = bytes_sent,
                 data_stream_ok = data_stream_res.is_ok(),
                 fast_store_ok = fast_res.is_ok(),
@@ -518,6 +532,9 @@ impl StoreDriver for FastSlowStore {
             debug!(
                 key = %key_debug,
                 elapsed_ms = total_elapsed.as_millis(),
+                fast_ms,
+                slow_ms,
+                slower_leg,
                 total_bytes = bytes_sent,
                 "FastSlowStore::update: completed successfully",
             );
@@ -554,9 +571,33 @@ impl StoreDriver for FastSlowStore {
             return self.slow_store.update_oneshot(key, data).await;
         }
 
-        let (fast_res, slow_res) = join!(
-            self.fast_store.update_oneshot(key.borrow(), data.clone()),
-            self.slow_store.update_oneshot(key.borrow(), data),
+        let oneshot_start = std::time::Instant::now();
+        let key_debug = format!("{key:?}");
+        let data_len = data.len();
+        let fast_oneshot_start = std::time::Instant::now();
+        let data_for_slow = data.clone();
+        let fast_fut = async {
+            let res = self.fast_store.update_oneshot(key.borrow(), data).await;
+            (res, fast_oneshot_start.elapsed())
+        };
+        let slow_oneshot_start = std::time::Instant::now();
+        let slow_fut = async {
+            let res = self.slow_store.update_oneshot(key.borrow(), data_for_slow).await;
+            (res, slow_oneshot_start.elapsed())
+        };
+        let ((fast_res, fast_elapsed), (slow_res, slow_elapsed)) = join!(fast_fut, slow_fut);
+        let total_elapsed = oneshot_start.elapsed();
+        let fast_ms = fast_elapsed.as_millis();
+        let slow_ms = slow_elapsed.as_millis();
+        let slower_leg = if fast_ms >= slow_ms { "fast" } else { "slow" };
+        debug!(
+            key = %key_debug,
+            elapsed_ms = total_elapsed.as_millis(),
+            fast_ms,
+            slow_ms,
+            slower_leg,
+            data_len,
+            "FastSlowStore::update_oneshot: completed",
         );
         fast_res.merge(slow_res)?;
         Ok(())

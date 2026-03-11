@@ -48,8 +48,22 @@ impl StallGuard {
     /// Create a stall guard for an operation with the given label.
     /// If the guard is not dropped within `threshold`, a stack dump fires.
     pub fn new(threshold: Duration, label: &'static str) -> Self {
+        Self::new_inner(threshold, label, None)
+    }
+
+    /// Create a stall guard with additional dynamic context (e.g. digest
+    /// hash, size, operation details). The context string is included in
+    /// the stall message and thread dump header when the threshold fires.
+    pub fn with_context(threshold: Duration, label: &'static str, context: String) -> Self {
+        Self::new_inner(threshold, label, Some(context))
+    }
+
+    fn new_inner(threshold: Duration, label: &'static str, context: Option<String>) -> Self {
         let handle = tokio::spawn(async move {
             tokio::time::sleep(threshold).await;
+            let ctx_suffix = context
+                .as_deref()
+                .map_or_else(String::new, |c| format!(" [{c}]"));
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -61,12 +75,17 @@ impl StallGuard {
                     .is_ok()
             {
                 eprintln!(
-                    "STORE OPERATION STALL: {label} has been running for >{threshold:.0?} — dumping thread stacks",
+                    "STORE OPERATION STALL: {label}{ctx_suffix} has been running for >{threshold:.0?} — dumping thread stacks",
                 );
-                dump_thread_stacks(label);
+                let dump_label = if ctx_suffix.is_empty() {
+                    label.to_string()
+                } else {
+                    format!("{label}{ctx_suffix}")
+                };
+                dump_thread_stacks(&dump_label);
             } else {
                 eprintln!(
-                    "STORE OPERATION STALL: {label} has been running for >{threshold:.0?} (dump rate-limited)",
+                    "STORE OPERATION STALL: {label}{ctx_suffix} has been running for >{threshold:.0?} (dump rate-limited)",
                 );
             }
         });

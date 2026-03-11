@@ -812,9 +812,11 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
+        let write_start = std::time::Instant::now();
         let (data_size, temp_file) = fs::write_file_from_channel(temp_file, &mut reader)
             .await
             .err_tip(|| "Failed to write data into filesystem store")?;
+        let write_ms = write_start.elapsed().as_millis();
 
         let _permit = if let Some(sem) = &self.write_semaphore {
             Some(
@@ -832,7 +834,22 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         drop(temp_file);
 
         *entry.data_size_mut() = data_size;
-        self.emplace_file(final_key, Arc::new(entry)).await
+        let emplace_start = std::time::Instant::now();
+        let result = self.emplace_file(final_key.borrow().into_owned(), Arc::new(entry)).await;
+        let emplace_ms = emplace_start.elapsed().as_millis();
+
+        let total_ms = write_ms + emplace_ms;
+        if total_ms > 50 {
+            debug!(
+                key = %final_key.as_str(),
+                total_ms,
+                write_ms,
+                emplace_ms,
+                data_size,
+                "FilesystemStore::update_file: slow phases",
+            );
+        }
+        result
     }
 
     async fn emplace_file(&self, key: StoreKey<'static>, entry: Arc<Fe>) -> Result<(), Error> {
@@ -995,6 +1012,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         }
 
         let temp_key = make_temp_key(&key);
+        let update_total_start = std::time::Instant::now();
 
         // There's a possibility of deadlock here where we take all of the
         // file semaphores with make_and_open_file and the semaphores for
@@ -1004,6 +1022,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // reader available to know that the populator is active.
         reader.peek().await?;
 
+        let temp_create_start = std::time::Instant::now();
         let (entry, temp_file, temp_full_path) = Fe::make_and_open_file(
             self.block_size,
             EncodedFilePath {
@@ -1013,15 +1032,28 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             },
         )
         .await?;
+        let temp_create_ms = temp_create_start.elapsed().as_millis();
 
-        self.update_file(entry, temp_file, key.into_owned(), reader)
+        let result = self.update_file(entry, temp_file, key.borrow().into_owned(), reader)
             .await
             .err_tip(|| {
                 format!(
                     "While processing with temp file {}",
                     temp_full_path.display()
                 )
-            })
+            });
+
+        let total_ms = update_total_start.elapsed().as_millis();
+        if total_ms > 50 {
+            debug!(
+                key = %key.as_str(),
+                total_ms,
+                temp_create_ms,
+                write_and_emplace_ms = total_ms.saturating_sub(temp_create_ms),
+                "FilesystemStore::update: slow write",
+            );
+        }
+        result
     }
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
@@ -1048,7 +1080,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             }
         }
 
+        let oneshot_total_start = std::time::Instant::now();
         let temp_key = make_temp_key(&key);
+        let temp_create_start = std::time::Instant::now();
         let (mut entry, mut temp_file, temp_full_path) = Fe::make_and_open_file(
             self.block_size,
             EncodedFilePath {
@@ -1059,10 +1093,13 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         )
         .await
         .err_tip(|| "Failed to create temp file in filesystem store update_oneshot")?;
+        let temp_create_ms = temp_create_start.elapsed().as_millis();
 
         // Write directly without channel overhead
         let data_len = data.len() as u64;
+        let write_ms;
         if !data.is_empty() {
+            let write_start = std::time::Instant::now();
             let temp_full_path_clone = temp_full_path.clone();
             temp_file = nativelink_util::spawn_blocking!("fs_write_oneshot", move || {
                 use std::io::Write;
@@ -1077,6 +1114,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             })
             .await
             .map_err(|e| make_err!(Code::Internal, "write oneshot join failed: {e:?}"))??;
+            write_ms = write_start.elapsed().as_millis();
+        } else {
+            write_ms = 0;
         }
 
         let _permit = if let Some(sem) = &self.write_semaphore {
@@ -1094,7 +1134,23 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         drop(temp_file);
 
         *entry.data_size_mut() = data_len;
-        self.emplace_file(key.into_owned(), Arc::new(entry)).await
+        let emplace_start = std::time::Instant::now();
+        let result = self.emplace_file(key.borrow().into_owned(), Arc::new(entry)).await;
+        let emplace_ms = emplace_start.elapsed().as_millis();
+
+        let total_ms = oneshot_total_start.elapsed().as_millis();
+        if total_ms > 50 {
+            debug!(
+                key = %key.as_str(),
+                total_ms,
+                temp_create_ms,
+                write_ms,
+                emplace_ms,
+                data_len,
+                "FilesystemStore::update_oneshot: slow write",
+            );
+        }
+        result
     }
 
     async fn update_with_whole_file(

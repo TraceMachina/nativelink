@@ -403,7 +403,16 @@ where
         R: Borrow<Q> + Send,
     {
         let (removal_futures, data_to_unref) = {
+            let lock_start = std::time::Instant::now();
             let mut state = self.state.lock();
+            let lock_wait = lock_start.elapsed();
+            if lock_wait.as_millis() > 1 {
+                warn!(
+                    lock_wait_ms = lock_wait.as_millis(),
+                    op = "sizes_for_keys",
+                    "EvictingMap: lock contention",
+                );
+            }
 
             let lru_len = state.lru.len();
             let mut data_to_unref = Vec::new();
@@ -465,7 +474,16 @@ where
     }
 
     pub async fn get(&self, key: &Q) -> Option<T> {
+        let lock_start = std::time::Instant::now();
         let mut state = self.state.lock();
+        let lock_wait = lock_start.elapsed();
+        if lock_wait.as_millis() > 1 {
+            warn!(
+                lock_wait_ms = lock_wait.as_millis(),
+                op = "get",
+                "EvictingMap: lock contention",
+            );
+        }
 
         // Perform eviction if needed, collecting items for background cleanup.
         let eviction_cleanup = {
@@ -520,7 +538,16 @@ where
         Iter: IntoIterator<Item = &'b Q>,
         Q: 'b,
     {
+        let lock_start = std::time::Instant::now();
         let mut state = self.state.lock();
+        let lock_wait = lock_start.elapsed();
+        if lock_wait.as_millis() > 1 {
+            warn!(
+                lock_wait_ms = lock_wait.as_millis(),
+                op = "get_many",
+                "EvictingMap: lock contention",
+            );
+        }
 
         // Perform eviction if needed, collecting items for background cleanup.
         let eviction_cleanup = {
@@ -588,7 +615,16 @@ where
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
         let (replaced_items, evicted_items, removal_futures, insert_notifications) = {
+            let lock_start = std::time::Instant::now();
             let mut state = self.state.lock();
+            let lock_wait = lock_start.elapsed();
+            if lock_wait.as_millis() > 1 {
+                warn!(
+                    lock_wait_ms = lock_wait.as_millis(),
+                    op = "insert",
+                    "EvictingMap: lock contention",
+                );
+            }
             self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
         };
         // State lock released. Fire insert callbacks outside the critical section.
@@ -649,7 +685,16 @@ where
         }
 
         let (replaced_items, evicted_items, removal_futures, insert_notifications) = {
+            let lock_start = std::time::Instant::now();
             let mut state = self.state.lock();
+            let lock_wait = lock_start.elapsed();
+            if lock_wait.as_millis() > 1 {
+                warn!(
+                    lock_wait_ms = lock_wait.as_millis(),
+                    op = "insert_many",
+                    "EvictingMap: lock contention",
+                );
+            }
             self.inner_insert_many(
                 &mut state,
                 inserts,
@@ -742,7 +787,16 @@ where
 
     pub async fn remove(&self, key: &Q) -> bool {
         let (evicted_items, removed_item, removal_futures) = {
+            let lock_start = std::time::Instant::now();
             let mut state = self.state.lock();
+            let lock_wait = lock_start.elapsed();
+            if lock_wait.as_millis() > 1 {
+                warn!(
+                    lock_wait_ms = lock_wait.as_millis(),
+                    op = "remove",
+                    "EvictingMap: lock contention",
+                );
+            }
 
             // First perform eviction
             let (evicted_items, mut removal_futures) = self.evict_items(&mut *state);
