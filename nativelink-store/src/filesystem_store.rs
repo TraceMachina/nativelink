@@ -459,22 +459,28 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 key: key.borrow().into_owned(),
             }),
         );
-        let time_since_anchor = if let Ok(d) = anchor_time.duration_since(atime) {
-            d
+        // Use a negative seconds_since_anchor for files that existed before
+        // the anchor time (startup). This correctly represents them as "older
+        // than anything inserted during runtime" in the EvictingMap timeline.
+        // Files with atime closer to startup get values closer to 0 (newer),
+        // while files not accessed for days get large negative values (older).
+        let seconds_since_anchor = if let Ok(before) = anchor_time.duration_since(atime) {
+            let secs = before.as_secs();
+            if secs > i32::MAX as u64 {
+                i32::MIN
+            } else {
+                -(secs as i32)
+            }
         } else {
-            warn!(
-                %file_name,
-                atime = %humantime::format_rfc3339(atime),
-                anchor_time = %humantime::format_rfc3339(*anchor_time),
-                "File access time newer than FilesystemStore start time",
-            );
-            Duration::ZERO
+            // atime is after anchor_time (file touched between capturing
+            // `now` and reading metadata) — treat as most-recently-used.
+            0
         };
         evicting_map
             .insert_with_time(
                 key.into_owned().into(),
                 Arc::new(file_entry),
-                i32::try_from(time_since_anchor.as_secs()).unwrap_or(i32::MAX),
+                seconds_since_anchor,
             )
             .await;
         Ok(())
@@ -564,12 +570,18 @@ async fn add_files_to_cache<Fe: FileEntry>(
         block_size: u64,
         folder: &str,
     ) -> Result<(), Error> {
-        let file_infos = read_files(Some(folder), shared_context).await?;
+        let mut file_infos = read_files(Some(folder), shared_context).await?;
         let file_type = match folder {
             STR_FOLDER => FileType::String,
             DIGEST_FOLDER => FileType::Digest,
             _ => panic!("Invalid folder type"),
         };
+
+        // Sort by atime oldest-first so that the LRU cache ordering matches
+        // actual file access recency. Without this, items are inserted in
+        // directory-iteration order (random), causing recently-used files to
+        // be evicted while cold files survive.
+        file_infos.sort_by(|a, b| a.1.cmp(&b.1));
 
         let path_root = format!("{}/{folder}", shared_context.content_path);
 

@@ -590,15 +590,29 @@ impl StoreDriver for FastSlowStore {
         let fast_ms = fast_elapsed.as_millis();
         let slow_ms = slow_elapsed.as_millis();
         let slower_leg = if fast_ms >= slow_ms { "fast" } else { "slow" };
-        debug!(
-            key = %key_debug,
-            elapsed_ms = total_elapsed.as_millis(),
-            fast_ms,
-            slow_ms,
-            slower_leg,
-            data_len,
-            "FastSlowStore::update_oneshot: completed",
-        );
+        if fast_res.is_err() || slow_res.is_err() {
+            warn!(
+                key = %key_debug,
+                elapsed_ms = total_elapsed.as_millis(),
+                fast_ms,
+                slow_ms,
+                slower_leg,
+                data_len,
+                fast_store_ok = fast_res.is_ok(),
+                slow_store_ok = slow_res.is_ok(),
+                "FastSlowStore::update_oneshot: completed with error(s)",
+            );
+        } else {
+            debug!(
+                key = %key_debug,
+                elapsed_ms = total_elapsed.as_millis(),
+                fast_ms,
+                slow_ms,
+                slower_leg,
+                data_len,
+                "FastSlowStore::update_oneshot: completed",
+            );
+        }
         fast_res.merge(slow_res)?;
         Ok(())
     }
