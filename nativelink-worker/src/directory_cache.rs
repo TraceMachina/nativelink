@@ -1262,29 +1262,38 @@ impl DirectoryCache {
                     // fresh writable directories. We can't use directory symlinks
                     // because Bazel creates output directories inside the input
                     // tree, which would mutate the cache.
-                    hardlink_directory_tree(cached_path, &child_path)
-                        .await
-                        .err_tip(|| format!(
-                            "Failed to hardlink cached subtree from {} to {}",
-                            cached_path.display(),
-                            child_path.display(),
-                        ))?;
-                    subtrees_linked += 1;
-                    debug!(
-                        child_hash = %&child_digest.packed_hash().to_string()[..12],
-                        src = %cached_path.display(),
-                        dst = %child_path.display(),
-                        "DirectoryCache: hardlinked cached subtree",
-                    );
-                    // Do NOT enqueue children -- the hardlink covers the entire subtree.
-                } else {
-                    // No subtree hit -- create the directory and recurse.
-                    fs::create_dir_all(&child_path).await.err_tip(|| {
-                        format!("Failed to create directory: {}", child_path.display())
-                    })?;
-                    dirs_created += 1;
-                    queue.push_back((child_digest, child_path));
+                    match hardlink_directory_tree(cached_path, &child_path).await {
+                        Ok(()) => {
+                            subtrees_linked += 1;
+                            debug!(
+                                child_hash = %&child_digest.packed_hash().to_string()[..12],
+                                src = %cached_path.display(),
+                                dst = %child_path.display(),
+                                "DirectoryCache: hardlinked cached subtree",
+                            );
+                            // Do NOT enqueue children -- the hardlink covers the entire subtree.
+                            continue;
+                        }
+                        Err(e) => {
+                            // The cached subtree was evicted between our
+                            // exists() check and now. Fall back to creating
+                            // the directory and downloading its contents.
+                            warn!(
+                                child_hash = %&child_digest.packed_hash().to_string()[..12],
+                                src = %cached_path.display(),
+                                ?e,
+                                "DirectoryCache: subtree evicted during construction, falling back to download",
+                            );
+                        }
+                    }
                 }
+
+                // No subtree hit (or subtree evicted) -- create the directory and recurse.
+                fs::create_dir_all(&child_path).await.err_tip(|| {
+                    format!("Failed to create directory: {}", child_path.display())
+                })?;
+                dirs_created += 1;
+                queue.push_back((child_digest, child_path));
             }
 
             // Collect files that need to be downloaded for this (non-symlinked) directory.
