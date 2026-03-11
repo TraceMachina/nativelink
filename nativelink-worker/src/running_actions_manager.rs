@@ -2074,60 +2074,133 @@ impl RunningActionImpl {
         };
         {
             // Create all directories needed for our output paths. This is required by the bazel spec.
+            let work_dir_for_output = self.work_directory.clone();
             let prepare_output_directories = |output_file| {
+                let work_dir = work_dir_for_output.clone();
                 let full_output_path = if command.working_directory.is_empty() {
-                    format!("{}/{}", self.work_directory, output_file)
+                    format!("{}/{}", work_dir, output_file)
                 } else {
                     format!(
                         "{}/{}/{}",
-                        self.work_directory, command.working_directory, output_file
+                        work_dir, command.working_directory, output_file
                     )
                 };
                 async move {
                     let full_parent_path = Path::new(&full_output_path)
                         .parent()
                         .err_tip(|| format!("Parent path for {full_output_path} has no parent"))?;
-                    if let Err(mkdir_err) = fs::create_dir_all(full_parent_path).await {
-                        // Diagnose: walk up path to find the blocking component.
-                        let mut diag = String::new();
-                        let mut cur = full_parent_path;
-                        while let Some(p) = cur.parent() {
-                            match fs::symlink_metadata(cur).await {
-                                Ok(m) => {
-                                    #[cfg(target_family = "unix")]
-                                    {
-                                        use std::os::unix::fs::MetadataExt;
-                                        diag.push_str(&format!(
-                                            "\n  {} : mode={:o} is_dir={} is_file={} is_symlink={}",
-                                            cur.display(), m.mode() & 0o7777, m.is_dir(), m.is_file(), m.is_symlink()
-                                        ));
-                                    }
-                                    #[cfg(not(target_family = "unix"))]
-                                    {
-                                        diag.push_str(&format!(
-                                            "\n  {} : is_dir={} is_file={} is_symlink={}",
-                                            cur.display(), m.is_dir(), m.is_file(), m.is_symlink()
-                                        ));
+
+                    // Fast path: usually succeeds when no symlinks are involved.
+                    if fs::create_dir_all(full_parent_path).await.is_ok() {
+                        return Result::<(), Error>::Ok(());
+                    }
+
+                    // Slow path: symlinks in the input tree (e.g., bazel-out)
+                    // may point to read-only cached directories (0o555).
+                    // Walk the path and replace blocking symlinks with writable
+                    // shallow-copy directories that preserve access to all
+                    // original entries via absolute symlinks.
+                    let work_root = Path::new(&work_dir);
+                    let relative = full_parent_path.strip_prefix(work_root)
+                        .map_err(|_| make_err!(
+                            Code::Internal,
+                            "Output path {} not under work dir {}",
+                            full_parent_path.display(),
+                            work_root.display()
+                        ))?;
+
+                    let mut current = work_root.to_path_buf();
+                    for component in relative.components() {
+                        let component_name = component.as_os_str();
+                        let next = current.join(component_name);
+
+                        match fs::symlink_metadata(&next).await {
+                            Ok(meta) => {
+                                #[cfg(target_family = "unix")]
+                                if meta.is_symlink() {
+                                    // Check if resolved target is a read-only directory
+                                    let needs_replace = match fs::canonicalize(&next).await {
+                                        Ok(resolved) => {
+                                            match fs::metadata(&resolved).await {
+                                                Ok(m) => m.is_dir() && (m.mode() & 0o200 == 0),
+                                                Err(_) => false,
+                                            }
+                                        }
+                                        Err(_) => false,
+                                    };
+
+                                    if needs_replace {
+                                        let resolved = fs::canonicalize(&next).await
+                                            .err_tip(|| format!("Failed to resolve: {}", next.display()))?;
+
+                                        // Replace symlink with a writable shallow-copy directory.
+                                        // Each entry in the original target gets an absolute symlink,
+                                        // except for self-referential entries (e.g., bazel-out -> .).
+                                        fs::remove_file(&next).await
+                                            .err_tip(|| format!("Failed to remove symlink: {}", next.display()))?;
+                                        fs::create_dir(&next).await
+                                            .err_tip(|| format!("Failed to create dir: {}", next.display()))?;
+
+                                        let rd = fs::read_dir(&resolved).await
+                                            .err_tip(|| format!("Failed to read dir: {}", resolved.display()))?;
+                                        let (_permit, mut inner_rd) = rd.into_inner();
+                                        while let Some(entry) = inner_rd.next_entry().await
+                                            .err_tip(|| format!("Failed to iterate: {}", resolved.display()))?
+                                        {
+                                            let entry_name = entry.file_name();
+                                            // Skip self-referential entries (bazel-out -> . creates
+                                            // an entry pointing back to the replaced dir itself).
+                                            if entry_name == component_name {
+                                                continue;
+                                            }
+                                            let abs_target = resolved.join(&entry_name);
+                                            let link = next.join(&entry_name);
+                                            if let Err(e) = fs::symlink(&abs_target, &link).await {
+                                                warn!(
+                                                    link = %link.display(),
+                                                    target = %abs_target.display(),
+                                                    ?e,
+                                                    "prepare_output_dirs: failed to create shallow-copy symlink",
+                                                );
+                                            }
+                                        }
+
+                                        // Retry — the fix at this level may be sufficient.
+                                        if fs::create_dir_all(full_parent_path).await.is_ok() {
+                                            return Ok(());
+                                        }
                                     }
                                 }
-                                Err(_) => {
-                                    diag.push_str(&format!("\n  {} : DOES NOT EXIST", cur.display()));
+
+                                #[cfg(target_family = "unix")]
+                                if meta.is_dir() && (meta.mode() & 0o200 == 0) {
+                                    // Read-only directory in the work tree (not through symlink).
+                                    // Safe to make writable since work dirs are independent copies.
+                                    let mut perms = meta.permissions();
+                                    perms.set_mode(meta.mode() | 0o200);
+                                    drop(fs::set_permissions(&next, perms).await);
                                 }
                             }
-                            cur = p;
-                            // Stop after 6 levels to avoid excessive output.
-                            if diag.matches('\n').count() >= 6 {
-                                break;
+                            Err(_) => {
+                                // Path doesn't exist — create remaining dirs.
+                                fs::create_dir_all(full_parent_path).await
+                                    .err_tip(|| format!(
+                                        "Error creating output directory {}",
+                                        full_parent_path.display()
+                                    ))?;
+                                return Ok(());
                             }
                         }
-                        return Err(mkdir_err).err_tip(|| {
-                            format!(
-                                "Error creating output directory {} — path diagnostics:{}",
-                                full_parent_path.display(),
-                                diag
-                            )
-                        });
+
+                        current = next;
                     }
+
+                    // Final attempt after all fixes applied.
+                    fs::create_dir_all(full_parent_path).await
+                        .err_tip(|| format!(
+                            "Error creating output directory {} (after symlink fixes)",
+                            full_parent_path.display()
+                        ))?;
                     Result::<(), Error>::Ok(())
                 }
             };

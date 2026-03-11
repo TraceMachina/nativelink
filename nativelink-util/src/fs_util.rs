@@ -108,53 +108,23 @@ fn hardlink_directory_tree_recursive<'a>(
                         )
                     })?;
             } else if metadata.is_symlink() {
-                // Resolve directory symlinks to real directories so the work
-                // tree never contains symlinks pointing to read-only cached
-                // directories (which would cause EPERM when creating output
-                // directories inside them).
-                match fs::canonicalize(&entry_path).await {
-                    Ok(resolved) => {
-                        let resolved_meta = fs::metadata(&resolved).await.err_tip(|| {
-                            format!(
-                                "Failed to stat resolved symlink target: {}",
-                                resolved.display()
-                            )
+                // Read the symlink target and create a new symlink
+                let target = fs::read_link(&entry_path)
+                    .await
+                    .err_tip(|| format!("Failed to read symlink: {}", entry_path.display()))?;
+
+                #[cfg(unix)]
+                fs::symlink(&target, &dst_path)
+                    .await
+                    .err_tip(|| format!("Failed to create symlink: {}", dst_path.display()))?;
+
+                #[cfg(windows)]
+                {
+                    if target.is_dir() {
+                        fs::symlink_dir(&target, &dst_path).await.err_tip(|| {
+                            format!("Failed to create directory symlink: {}", dst_path.display())
                         })?;
-                        if resolved_meta.is_dir() {
-                            // Directory symlink: create a real directory and
-                            // hardlink contents from the resolved target.
-                            fs::create_dir(&dst_path).await.err_tip(|| {
-                                format!(
-                                    "Failed to create dir for resolved symlink: {}",
-                                    dst_path.display()
-                                )
-                            })?;
-                            hardlink_directory_tree_recursive(&resolved, &dst_path).await?;
-                        } else {
-                            // File symlink: preserve as-is.
-                            let target = fs::read_link(&entry_path).await.err_tip(|| {
-                                format!("Failed to read symlink: {}", entry_path.display())
-                            })?;
-                            #[cfg(unix)]
-                            fs::symlink(&target, &dst_path).await.err_tip(|| {
-                                format!("Failed to create symlink: {}", dst_path.display())
-                            })?;
-                            #[cfg(windows)]
-                            fs::symlink_file(&target, &dst_path).await.err_tip(|| {
-                                format!("Failed to create file symlink: {}", dst_path.display())
-                            })?;
-                        }
-                    }
-                    Err(_) => {
-                        // Dangling or looping symlink: preserve as-is.
-                        let target = fs::read_link(&entry_path).await.err_tip(|| {
-                            format!("Failed to read symlink: {}", entry_path.display())
-                        })?;
-                        #[cfg(unix)]
-                        fs::symlink(&target, &dst_path).await.err_tip(|| {
-                            format!("Failed to create symlink: {}", dst_path.display())
-                        })?;
-                        #[cfg(windows)]
+                    } else {
                         fs::symlink_file(&target, &dst_path).await.err_tip(|| {
                             format!("Failed to create file symlink: {}", dst_path.display())
                         })?;
