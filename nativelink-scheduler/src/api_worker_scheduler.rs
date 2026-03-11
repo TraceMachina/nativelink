@@ -451,6 +451,7 @@ impl ApiWorkerSchedulerImpl {
         full_worker_logging: bool,
         endpoint_scores: Option<&HashMap<String, (u64, SystemTime)>>,
         peer_hints: Vec<PeerHint>,
+        resolved_tree: Option<&ResolvedTree>,
     ) -> Option<(WorkerId, UnboundedSender<UpdateForWorker>, UpdateForWorker)> {
         let input_root_digest = action_info.inner.input_root_digest;
 
@@ -480,15 +481,11 @@ impl ApiWorkerSchedulerImpl {
             platform_properties.is_satisfied_by(&w.platform_properties, false)
         };
 
-        // ── Directory cache hit bonus ──
+        // ── Tier 1: Exact root match ──
         // If a viable worker has the action's input_root_digest in its directory
         // cache (either as a root or as a subtree of a previously cached tree),
         // it can hardlink the entire input tree in milliseconds instead of
-        // reconstructing it from CAS. This is a massive win (seconds of I/O saved)
-        // and should override load and locality scoring.
-        //
-        // We check both `cached_directory_digests` (root-only, legacy) and
-        // `cached_subtree_digests` (all subtrees, new delta-encoded path).
+        // reconstructing it from CAS.
         let dir_cache_winner: Option<WorkerId> = {
             let mut best: Option<(WorkerId, u32)> = None; // (id, cpu_load)
             for wid in &candidates {
@@ -499,8 +496,6 @@ impl ApiWorkerSchedulerImpl {
                         && worker_is_viable(wid)
                     {
                         let load = w.cpu_load_pct;
-                        // Among workers with a cache hit, prefer the one with
-                        // the lowest CPU load.
                         let dominated = best.as_ref().is_some_and(|(_, best_load)| {
                             let effective_best = if *best_load == 0 { u32::MAX } else { *best_load };
                             let effective_this = if load == 0 { u32::MAX } else { load };
@@ -521,6 +516,68 @@ impl ApiWorkerSchedulerImpl {
                 );
             }
             best.map(|(wid, _)| wid)
+        };
+
+        // ── Tier 1.5: Partial subtree coverage scoring ──
+        // When no worker has the exact root cached, score workers by the total
+        // file bytes under their cached subtrees. A worker caching a subtree with
+        // 10GB of files scores higher than one caching a subtree with 100 bytes.
+        // We sum the subtree_bytes for each matching directory, taking only the
+        // top-level match (avoid double-counting nested matches).
+        let subtree_coverage_winner: Option<WorkerId> = if dir_cache_winner.is_some() {
+            None // exact match found, skip coverage scoring
+        } else if let Some(tree) = resolved_tree {
+            let total_bytes: u64 = tree.subtree_bytes.get(&input_root_digest).copied().unwrap_or(0);
+            if tree.dir_digests.len() <= 1 || total_bytes == 0 {
+                None // only root (or empty), no subtrees to match
+            } else {
+                let mut best: Option<(WorkerId, u64, u32)> = None; // (id, cached_bytes, cpu_load)
+                for wid in &candidates {
+                    if let Some(w) = self.workers.0.peek(wid) {
+                        if !worker_is_viable(wid) {
+                            continue;
+                        }
+                        // Sum the subtree_bytes for each of the action's directory
+                        // digests that this worker has cached.
+                        let cached_bytes: u64 = tree.dir_digests.iter()
+                            .filter(|d| w.cached_subtree_digests.contains(d))
+                            .map(|d| tree.subtree_bytes.get(d).copied().unwrap_or(0))
+                            .sum();
+                        if cached_bytes == 0 {
+                            continue;
+                        }
+                        let load = w.cpu_load_pct;
+                        let dominated = best.as_ref().is_some_and(|(_, best_bytes, best_load)| {
+                            if cached_bytes != *best_bytes {
+                                return cached_bytes < *best_bytes;
+                            }
+                            // Same coverage — prefer lower CPU load.
+                            let effective_best = if *best_load == 0 { u32::MAX } else { *best_load };
+                            let effective_this = if load == 0 { u32::MAX } else { load };
+                            effective_this >= effective_best
+                        });
+                        if !dominated {
+                            best = Some((wid.clone(), cached_bytes, load));
+                        }
+                    }
+                }
+                if let Some((ref wid, cached_bytes, load)) = best {
+                    let pct = if total_bytes > 0 { cached_bytes * 100 / total_bytes } else { 0 };
+                    info!(
+                        ?wid,
+                        cached_bytes,
+                        total_bytes,
+                        cpu_load_pct = load,
+                        coverage_pct = pct,
+                        %input_root_digest,
+                        "Subtree coverage winner -- worker has {}% of input tree bytes cached in subtrees",
+                        pct,
+                    );
+                }
+                best.map(|(wid, _, _)| wid)
+            }
+        } else {
+            None
         };
 
         // ── Locality scoring ──
@@ -594,11 +651,15 @@ impl ApiWorkerSchedulerImpl {
         };
 
         let worker_id = if let Some(wid) = dir_cache_winner {
-            // Directory cache hit trumps all other scoring.
+            // Exact root match trumps all other scoring.
+            self.workers.get_mut(&wid);
+            wid
+        } else if let Some(wid) = subtree_coverage_winner {
+            // Partial subtree coverage beats blob-level locality.
             self.workers.get_mut(&wid);
             wid
         } else if let Some(wid) = locality_winner {
-            // Promote in LRU.
+            // Blob-level locality scoring.
             self.workers.get_mut(&wid);
             wid
         } else {
@@ -828,9 +889,9 @@ pub struct ApiWorkerScheduler {
     /// When set, enables tier-2 locality scoring.
     cas_store: Option<Store>,
 
-    /// Cached resolved input trees: input_root_digest → (file_digest, size) pairs.
+    /// Cached resolved input trees: input_root_digest → ResolvedTree.
     /// Held under a tokio::Mutex briefly for get/put, not during I/O.
-    tree_cache: Arc<tokio::sync::Mutex<LruCache<DigestInfo, Arc<Vec<(DigestInfo, u64)>>>>>,
+    tree_cache: Arc<tokio::sync::Mutex<LruCache<DigestInfo, Arc<ResolvedTree>>>>,
 }
 
 /// Capacity for the resolved input tree LRU cache.
@@ -1075,7 +1136,7 @@ impl ApiWorkerScheduler {
         // 2-5ms on large actions (50K+ inputs).
         let (endpoint_scores, peer_hints) = match (&resolved_tree, &self.locality_map) {
             (Some(tree), Some(loc_map)) => {
-                let (scores, hints) = score_and_generate_hints(tree, loc_map);
+                let (scores, hints) = score_and_generate_hints(&tree.file_digests, loc_map);
                 (Some(scores), hints)
             }
             _ => (None, Vec::new()),
@@ -1093,6 +1154,7 @@ impl ApiWorkerScheduler {
             full_worker_logging,
             endpoint_scores.as_ref(),
             peer_hints,
+            resolved_tree.as_deref(),
         );
 
         // Track workers iterated (worst case is all workers)
@@ -1172,7 +1234,7 @@ impl ApiWorkerScheduler {
     async fn resolve_input_tree(
         &self,
         input_root_digest: DigestInfo,
-    ) -> Option<Arc<Vec<(DigestInfo, u64)>>> {
+    ) -> Option<Arc<ResolvedTree>> {
         let cas_store = self.cas_store.as_ref()?;
 
         // Check cache first (brief lock).
@@ -1181,7 +1243,8 @@ impl ApiWorkerScheduler {
             if let Some(cached) = cache.get(&input_root_digest) {
                 info!(
                     %input_root_digest,
-                    file_count = cached.len(),
+                    file_count = cached.file_digests.len(),
+                    dir_count = cached.dir_digests.len(),
                     "Tree resolution cache hit"
                 );
                 return Some(cached.clone());
@@ -1191,13 +1254,14 @@ impl ApiWorkerScheduler {
         // Cache miss — resolve the tree by reading Directory protos from CAS.
         let result = resolve_tree_from_cas(cas_store, input_root_digest).await;
         match result {
-            Ok(file_digests) => {
+            Ok(resolved) => {
                 info!(
                     %input_root_digest,
-                    file_count = file_digests.len(),
+                    file_count = resolved.file_digests.len(),
+                    dir_count = resolved.dir_digests.len(),
                     "Resolved input tree from CAS (cache miss)"
                 );
-                let arc = Arc::new(file_digests);
+                let arc = Arc::new(resolved);
                 // Store in cache (brief lock).
                 {
                     let mut cache = self.tree_cache.lock().await;
@@ -1217,14 +1281,28 @@ impl ApiWorkerScheduler {
     }
 }
 
+/// Resolved input tree containing file digests, directory digests,
+/// and per-subtree file byte totals for coverage scoring.
+struct ResolvedTree {
+    /// (file_digest, file_size) pairs, deduplicated.
+    file_digests: Vec<(DigestInfo, u64)>,
+    /// All directory digests in the tree (including root), deduplicated.
+    dir_digests: HashSet<DigestInfo>,
+    /// Total file bytes under each directory subtree (recursive).
+    /// Used to weight subtree coverage scoring — a subtree with 10GB
+    /// of files is worth more than one with 100 bytes.
+    subtree_bytes: HashMap<DigestInfo, u64>,
+}
+
 /// Resolves a directory tree from the CAS store by recursively reading
-/// Directory protos and collecting all (file_digest, file_size) pairs.
-/// Deduplicates by digest.
+/// Directory protos and collecting file digests (for locality scoring),
+/// directory digests (for subtree coverage scoring), and per-subtree
+/// file byte totals (for weighted coverage scoring). Deduplicates both
+/// file and directory digests.
 async fn resolve_tree_from_cas(
     cas_store: &Store,
     root_digest: DigestInfo,
-) -> Result<Vec<(DigestInfo, u64)>, Error> {
-    use std::collections::HashSet;
+) -> Result<ResolvedTree, Error> {
     use futures::stream::FuturesUnordered;
     use futures::StreamExt;
 
@@ -1234,8 +1312,13 @@ async fn resolve_tree_from_cas(
     let mut seen_dirs: HashSet<DigestInfo> = HashSet::new();
     seen_dirs.insert(root_digest);
 
+    // Track tree structure for bottom-up subtree size computation.
+    let mut dir_direct_bytes: HashMap<DigestInfo, u64> = HashMap::new();
+    let mut dir_children: HashMap<DigestInfo, Vec<DigestInfo>> = HashMap::new();
+    // BFS order — used for bottom-up traversal (reverse of BFS = leaves first).
+    let mut bfs_order: Vec<DigestInfo> = vec![root_digest];
+
     while !dirs_to_visit.is_empty() {
-        // Fetch all directories at current level in parallel.
         let fetches: FuturesUnordered<_> = dirs_to_visit
             .drain(..)
             .map(|dir_digest| {
@@ -1253,40 +1336,69 @@ async fn resolve_tree_from_cas(
                     let directory = Directory::decode(bytes).map_err(|e| {
                         make_err!(Code::Internal, "Failed to decode Directory proto: {e}")
                     })?;
-                    Ok::<_, Error>(directory)
+                    Ok::<_, Error>((dir_digest, directory))
                 }
             })
             .collect();
 
-        let results: Vec<Result<Directory, Error>> = fetches.collect().await;
+        let results: Vec<Result<(DigestInfo, Directory), Error>> = fetches.collect().await;
         for result in results {
-            let directory = result?;
+            let (parent_digest, directory) = result?;
 
-            // Collect file digests.
+            // Sum direct file bytes for this directory.
+            let mut direct_bytes: u64 = 0;
             for file_node in &directory.files {
                 if let Some(ref digest) = file_node.digest {
                     if let Ok(digest_info) = DigestInfo::try_from(digest) {
+                        let size = digest_info.size_bytes();
+                        direct_bytes += size;
                         if seen_files.insert(digest_info) {
-                            file_digests.push((digest_info, digest_info.size_bytes()));
+                            file_digests.push((digest_info, size));
                         }
                     }
                 }
             }
+            dir_direct_bytes.insert(parent_digest, direct_bytes);
 
             // Queue subdirectories for visiting (dedup via seen_dirs).
+            let mut children = Vec::new();
             for dir_node in &directory.directories {
                 if let Some(ref digest) = dir_node.digest {
                     if let Ok(digest_info) = DigestInfo::try_from(digest) {
+                        children.push(digest_info);
                         if seen_dirs.insert(digest_info) {
                             dirs_to_visit.push(digest_info);
+                            bfs_order.push(digest_info);
                         }
                     }
                 }
             }
+            dir_children.insert(parent_digest, children);
         }
     }
 
-    Ok(file_digests)
+    // Bottom-up pass: compute total file bytes under each subtree.
+    // Reverse BFS order gives us leaves-first, so children are always
+    // computed before parents.
+    let mut subtree_bytes: HashMap<DigestInfo, u64> = HashMap::new();
+    for &dir_digest in bfs_order.iter().rev() {
+        let direct = dir_direct_bytes.get(&dir_digest).copied().unwrap_or(0);
+        let children_total: u64 = dir_children
+            .get(&dir_digest)
+            .map(|children| {
+                children.iter()
+                    .map(|c| subtree_bytes.get(c).copied().unwrap_or(0))
+                    .sum()
+            })
+            .unwrap_or(0);
+        subtree_bytes.insert(dir_digest, direct + children_total);
+    }
+
+    Ok(ResolvedTree {
+        file_digests,
+        dir_digests: seen_dirs,
+        subtree_bytes,
+    })
 }
 
 /// Scores endpoints by the total bytes of input blobs they have cached
@@ -1820,10 +1932,15 @@ mod tests {
             .await
             .expect("resolve_tree_from_cas failed");
 
-        assert_eq!(result.len(), 3, "Expected 3 file digests");
+        assert_eq!(result.file_digests.len(), 3, "Expected 3 file digests");
+        assert_eq!(result.dir_digests.len(), 1, "Expected 1 directory digest (root)");
+        assert!(result.dir_digests.contains(&dir_digest));
+
+        // Root subtree contains all files: 1000+2000+3000 = 6000
+        assert_eq!(result.subtree_bytes.get(&dir_digest), Some(&6000));
 
         // Verify all three sizes are present (order may vary).
-        let mut sizes: Vec<u64> = result.iter().map(|&(_, s)| s).collect();
+        let mut sizes: Vec<u64> = result.file_digests.iter().map(|&(_, s)| s).collect();
         sizes.sort();
         assert_eq!(sizes, vec![1000, 2000, 3000]);
     }
@@ -1868,9 +1985,17 @@ mod tests {
             .await
             .expect("resolve_tree_from_cas failed");
 
-        assert_eq!(result.len(), 3, "Expected 3 files (1 root + 2 subdir)");
+        assert_eq!(result.file_digests.len(), 3, "Expected 3 files (1 root + 2 subdir)");
+        assert_eq!(result.dir_digests.len(), 2, "Expected 2 directory digests (root + subdir)");
+        assert!(result.dir_digests.contains(&root_dir_digest));
+        assert!(result.dir_digests.contains(&sub_dir_digest));
 
-        let mut sizes: Vec<u64> = result.iter().map(|&(_, s)| s).collect();
+        // subdir has 500+700=1200 bytes of files
+        assert_eq!(result.subtree_bytes.get(&sub_dir_digest), Some(&1200));
+        // root has 1200 (own file) + 1200 (subdir subtree) = 2400
+        assert_eq!(result.subtree_bytes.get(&root_dir_digest), Some(&2400));
+
+        let mut sizes: Vec<u64> = result.file_digests.iter().map(|&(_, s)| s).collect();
         sizes.sort();
         assert_eq!(sizes, vec![500, 700, 1200]);
     }
@@ -1918,11 +2043,19 @@ mod tests {
 
         // The same digest should appear only once.
         assert_eq!(
-            result.len(),
+            result.file_digests.len(),
             1,
             "Duplicate file digest should be deduplicated"
         );
-        assert_eq!(result[0].1, 999);
+        assert_eq!(result.file_digests[0].1, 999);
+        assert_eq!(result.dir_digests.len(), 2, "Expected root + subdir");
+        assert!(result.dir_digests.contains(&root_dir_digest));
+        assert!(result.dir_digests.contains(&sub_dir_digest));
+
+        // Both dirs have the same file (999 bytes) — subtree_bytes counts
+        // each occurrence (not deduplicated, since it's per-directory).
+        assert_eq!(result.subtree_bytes.get(&sub_dir_digest), Some(&999));
+        assert_eq!(result.subtree_bytes.get(&root_dir_digest), Some(&1998)); // 999 + 999
     }
 
     #[tokio::test]
@@ -1997,12 +2130,27 @@ mod tests {
         // seen_dirs ensures it's only visited once. Files: shared(0x11),
         // left(0x22), right(0x33) — all unique digests, so 3 total.
         assert_eq!(
-            result.len(),
+            result.file_digests.len(),
             3,
             "Diamond structure: shared dir visited once, 3 unique files"
         );
+        // 4 directories: root, left, right, shared
+        assert_eq!(result.dir_digests.len(), 4, "Expected 4 directory digests");
+        assert!(result.dir_digests.contains(&root_digest));
+        assert!(result.dir_digests.contains(&left_digest));
+        assert!(result.dir_digests.contains(&right_digest));
+        assert!(result.dir_digests.contains(&shared_digest));
 
-        let mut sizes: Vec<u64> = result.iter().map(|&(_, s)| s).collect();
+        // shared: 100 bytes (its own file)
+        assert_eq!(result.subtree_bytes.get(&shared_digest), Some(&100));
+        // left: 200 (own) + 100 (shared) = 300
+        assert_eq!(result.subtree_bytes.get(&left_digest), Some(&300));
+        // right: 300 (own) + 100 (shared) = 400
+        assert_eq!(result.subtree_bytes.get(&right_digest), Some(&400));
+        // root: 0 (no own files) + 300 (left) + 400 (right) = 700
+        assert_eq!(result.subtree_bytes.get(&root_digest), Some(&700));
+
+        let mut sizes: Vec<u64> = result.file_digests.iter().map(|&(_, s)| s).collect();
         sizes.sort();
         assert_eq!(sizes, vec![100, 200, 300]);
     }
