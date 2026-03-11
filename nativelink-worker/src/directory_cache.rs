@@ -601,6 +601,20 @@ impl DirectoryCache {
                 elapsed_ms = readonly_start.elapsed().as_millis() as u64,
                 "DirectoryCache: set_readonly_and_calculate_size completed",
             );
+            // macOS requires the source directory to be writable for rename(2),
+            // even though POSIX only requires write permission on the parent.
+            // Temporarily restore write permission on the root, rename, then
+            // lock it down again.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&temp_path).await
+                    .err_tip(|| "Failed to get temp dir metadata before rename")?
+                    .permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&temp_path, perms).await
+                    .err_tip(|| "Failed to make temp dir writable before rename")?;
+            }
             fs::rename(&temp_path, &cache_path).await.err_tip(|| {
                 format!(
                     "Failed to rename temp dir {} to cache path {}",
@@ -608,6 +622,16 @@ impl DirectoryCache {
                     cache_path.display()
                 )
             })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&cache_path).await
+                    .err_tip(|| "Failed to get cache dir metadata after rename")?
+                    .permissions();
+                perms.set_mode(0o555);
+                fs::set_permissions(&cache_path, perms).await
+                    .err_tip(|| "Failed to lock down cache dir after rename")?;
+            }
 
             // Step 5: Update the subtree index with all directories from this entry.
             if let Some(tree) = &resolved_tree {
