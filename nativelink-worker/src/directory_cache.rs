@@ -1340,11 +1340,14 @@ impl DirectoryCache {
                 );
 
                 // Check which blobs are already in the fast store.
+                // Skip zero-byte digests — they aren't stored in FilesystemStore.
                 let unique_digests: Vec<DigestInfo> = {
                     let mut seen = HashSet::new();
                     files_to_download
                         .iter()
-                        .filter_map(|(d, _, _)| if seen.insert(*d) { Some(*d) } else { None })
+                        .filter_map(|(d, _, _)| {
+                            if d.size_bytes() > 0 && seen.insert(*d) { Some(*d) } else { None }
+                        })
                         .collect()
                 };
                 let store_keys: Vec<StoreKey<'_>> =
@@ -1377,22 +1380,30 @@ impl DirectoryCache {
 
                 // Hardlink files from the fast store to their destination paths.
                 for (file_digest, file_path, is_executable) in &files_to_download {
-                    let file_entry = fs_store_pin
-                        .get_file_entry_for_digest(file_digest)
-                        .await
-                        .err_tip(|| format!("Getting file entry for {:?}", file_digest))?;
-                    let dest = file_path.clone();
-                    file_entry
-                        .get_file_path_locked(|src_path| async move {
-                            fs::hard_link(&src_path, &dest)
-                                .await
-                                .err_tip(|| format!(
-                                    "Failed to hardlink {:?} to {}",
-                                    src_path,
-                                    dest.display(),
-                                ))
-                        })
-                        .await?;
+                    if file_digest.size_bytes() == 0 {
+                        // Zero-byte files aren't stored in FilesystemStore.
+                        // Create them directly.
+                        fs::write(&file_path, b"")
+                            .await
+                            .err_tip(|| format!("Failed to create empty file: {}", file_path.display()))?;
+                    } else {
+                        let file_entry = fs_store_pin
+                            .get_file_entry_for_digest(file_digest)
+                            .await
+                            .err_tip(|| format!("Getting file entry for {:?}", file_digest))?;
+                        let dest = file_path.clone();
+                        file_entry
+                            .get_file_path_locked(|src_path| async move {
+                                fs::hard_link(&src_path, &dest)
+                                    .await
+                                    .err_tip(|| format!(
+                                        "Failed to hardlink {:?} to {}",
+                                        src_path,
+                                        dest.display(),
+                                    ))
+                            })
+                            .await?;
+                    }
 
                     // Ensure all files have 0o555. CAS files ingested before the
                     // 0o555 default may still be 0o644; we must fix them here since
