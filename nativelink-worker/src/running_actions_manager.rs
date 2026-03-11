@@ -2075,8 +2075,12 @@ impl RunningActionImpl {
         {
             // Create all directories needed for our output paths. This is required by the bazel spec.
             let work_dir_for_output = self.work_directory.clone();
+            // Mutex serializes the slow-path symlink replacement to avoid
+            // concurrent tasks racing on the same symlink (EEXIST / ENOENT).
+            let symlink_fix_lock = Arc::new(tokio::sync::Mutex::new(()));
             let prepare_output_directories = |output_file| {
                 let work_dir = work_dir_for_output.clone();
+                let lock = symlink_fix_lock.clone();
                 let full_output_path = if command.working_directory.is_empty() {
                     format!("{}/{}", work_dir, output_file)
                 } else {
@@ -2106,8 +2110,21 @@ impl RunningActionImpl {
                         // a symlink to the read-only cache). Fall through to fix.
                     }
 
-                    // Slow path: symlinks in the input tree (e.g., bazel-out)
-                    // may point to read-only cached directories (0o555).
+                    // Slow path: serialize to avoid concurrent symlink replacement races.
+                    let _guard = lock.lock().await;
+
+                    // Re-check under lock — another task may have already fixed it.
+                    if fs::create_dir_all(full_parent_path).await.is_ok() {
+                        let mut dir_writable = true;
+                        #[cfg(target_family = "unix")]
+                        if let Ok(m) = fs::metadata(full_parent_path).await {
+                            dir_writable = m.mode() & 0o200 != 0;
+                        }
+                        if dir_writable {
+                            return Result::<(), Error>::Ok(());
+                        }
+                    }
+
                     // Walk the path and replace blocking symlinks with writable
                     // shallow-copy directories that preserve access to all
                     // original entries via absolute symlinks.

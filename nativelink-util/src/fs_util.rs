@@ -187,9 +187,11 @@ fn set_readonly_recursive_impl<'a>(
             use std::os::unix::fs::PermissionsExt;
             let mut perms = metadata.permissions();
 
-            // If it's a directory, set to r-xr-xr-x (555)
-            // If it's a file, set to r--r--r-- (444)
-            let mode = if metadata.is_dir() { 0o555 } else { 0o444 };
+            // Strip write bits but preserve execute bits.
+            // Files marked is_executable (e.g., shell scripts) are 0o555;
+            // stripping write keeps them at 0o555. Non-executable files
+            // at 0o644 become 0o444. Directories at 0o755 become 0o555.
+            let mode = perms.mode() & !0o222;
             perms.set_mode(mode);
 
             fs::set_permissions(path, perms)
