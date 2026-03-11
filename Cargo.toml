@@ -13,8 +13,8 @@ rust-version = "1.87.0"
 version = "1.0.0"
 
 [profile.release]
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
 
 # Prefer this profile in CI, for instance via `cargo test --all --profile=smol`.
 # It reduces the size of the `target` directory from ~12GB to ~1GB.
